@@ -1414,6 +1414,24 @@ def cmd_cache_hash(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    runtime = _resolve_runtime()
+    if runtime is None:
+        return 1
+    if runtime.portable is None:
+        print("error: check requires a portable repository", file=sys.stderr)
+        return 1
+    from obsidian_wiki.portable_check import check_portable_repo
+    report = check_portable_repo(runtime.portable)
+    if args.json:
+        print(json.dumps(report, indent=2 if args.pretty else None, ensure_ascii=False))
+    else:
+        print(f"portable check: {report['status']} ({report['errors']} errors, {report['warnings']} warnings)")
+        for issue in report["issues"]:
+            print(f"{issue['severity']}: {issue['code']}: {issue['path']}: {issue['message']}")
+    return 1 if report["status"] == "fail" else 0
+
+
 def cmd_ast_extract(args: argparse.Namespace) -> int:
     from pathlib import Path
     from obsidian_wiki.ast_extractor import extract
@@ -2059,6 +2077,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ch.add_argument("path", help="file or directory to hash")
     ch.set_defaults(func=cmd_cache_hash)
+
+    ck = sub.add_parser("check", help="validate a portable repository without an LLM")
+    ck.add_argument("--json", action="store_true", help="emit a JSON report")
+    ck.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    ck.set_defaults(func=cmd_check)
 
     ap = sub.add_parser(
         "ast-extract",
