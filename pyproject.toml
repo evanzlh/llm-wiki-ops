@@ -31,8 +31,10 @@ classifiers = [
   "Topic :: Text Processing :: Markup :: Markdown",
   "Topic :: Utilities",
 ]
-# Pure-stdlib CLI — installing skills needs no third-party runtime dependencies.
-dependencies = []
+dependencies = [
+  "packaging>=24",
+  "tomli>=2; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
 # Higher-fidelity AST extraction (tree-sitter parses real ASTs; regex is the default fallback).
