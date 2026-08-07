@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki import cli
+from obsidian_wiki import portable
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable import (
     MANAGED_END,
@@ -79,6 +81,30 @@ def tiny_skills(tmp_path: Path) -> Path:
     nested_git = source / "wiki-ingest" / ".git"
     nested_git.mkdir()
     (nested_git / "config").write_text("must not be copied\n", encoding="utf-8")
+    return source
+
+
+def snapshot_tree(root: Path) -> tuple[tuple[str, str, bytes | str], ...]:
+    """Capture types and content without following directory symlinks."""
+    if not root.exists() and not root.is_symlink():
+        return ()
+    entries: list[tuple[str, str, bytes | str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            entries.append((relative, "symlink", os.readlink(path)))
+        elif path.is_dir():
+            entries.append((relative, "dir", b""))
+        else:
+            entries.append((relative, "file", path.read_bytes()))
+    return tuple(entries)
+
+
+def make_skill_source(root: Path, name: str = "wiki-ingest") -> Path:
+    source = root / "source-skills"
+    skill = source / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
     return source
 
 
@@ -432,3 +458,387 @@ def test_generated_portable_files_do_not_embed_source_or_home_paths(
     assert not any(path.name == ".git" for path in root.rglob("*"))
     assert not (root / "obsidian_wiki").exists()
     assert not (root / ".venv").exists()
+
+
+def test_setup_rejects_symlinked_config_tree_without_external_writes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside-config"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("untouched\n", encoding="utf-8")
+    (root / ".obsidian-wiki").symlink_to(outside, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+    assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+    assert not (outside / "config.toml").exists()
+
+
+def test_rerun_rejects_symlinked_agent_skill_without_changing_target(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    adapter_dir = root / ".claude/skills/wiki-ingest"
+    shutil.rmtree(adapter_dir)
+    outside = tmp_path / "outside-skill"
+    outside.mkdir()
+    external_skill = outside / "SKILL.md"
+    external_skill.write_text("external owner skill\n", encoding="utf-8")
+    adapter_dir.symlink_to(outside, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+    assert external_skill.read_text(encoding="utf-8") == "external owner skill\n"
+
+
+@pytest.mark.parametrize("managed_relative", ["AGENTS.md", ".github", "wiki/concepts"])
+def test_rerun_rejects_symlinked_managed_parent_file_or_descendant(
+    managed_relative: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    managed = root / managed_relative
+    outside = tmp_path / f"outside-{managed.name}"
+    if managed.is_dir():
+        shutil.rmtree(managed)
+        outside.mkdir()
+        (outside / "sentinel").write_text("outside\n", encoding="utf-8")
+        managed.symlink_to(outside, target_is_directory=True)
+    else:
+        managed.unlink()
+        outside.write_text("outside\n", encoding="utf-8")
+        managed.symlink_to(outside)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+    if outside.is_file():
+        assert outside.read_text(encoding="utf-8") == "outside\n"
+    else:
+        assert (outside / "sentinel").read_text(encoding="utf-8") == "outside\n"
+
+
+def test_direct_config_writer_rejects_symlinked_managed_parent(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".obsidian-wiki").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        portable.write_portable_config(root, version="2026.8.3")
+
+    assert list(outside.iterdir()) == []
+
+
+def test_rerun_rejects_managed_bootstrap_parent_file_before_any_write(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".github")
+    (root / ".github").write_text("owner collision\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="parent"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("link_location", ["top-level", "nested", "skill-file"])
+def test_source_skill_symlinks_are_rejected_without_materializing_external_content(
+    link_location: str, tmp_path: Path
+) -> None:
+    source = make_skill_source(tmp_path)
+    secret = tmp_path / "external-secret"
+    secret.write_text("do not copy me\n", encoding="utf-8")
+    if link_location == "top-level":
+        (source / "linked-skill").symlink_to(source / "wiki-ingest", target_is_directory=True)
+    elif link_location == "nested":
+        (source / "wiki-ingest/secret-link").symlink_to(secret)
+    else:
+        skill_file = source / "wiki-ingest/SKILL.md"
+        skill_file.unlink()
+        skill_file.symlink_to(secret)
+    target = tmp_path / "repo"
+
+    with pytest.raises(ValueError, match="symlink"):
+        setup_portable_repo(target, version="2026.8.3", source_skills=source)
+
+    assert not target.exists()
+    assert secret.read_text(encoding="utf-8") == "do not copy me\n"
+
+
+def test_only_real_skill_directories_are_copied(tmp_path: Path) -> None:
+    source = make_skill_source(tmp_path)
+    (source / "top-level.txt").write_text("not a skill\n", encoding="utf-8")
+    (source / "not-a-skill").mkdir()
+    (source / "not-a-skill/note.md").write_text("ordinary\n", encoding="utf-8")
+    (source / ".git").mkdir()
+    (source / ".git/SKILL.md").write_text("# fake cache skill\n", encoding="utf-8")
+    root = tmp_path / "repo"
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=source)
+
+    assert {entry.name for entry in (root / ".skills").iterdir()} == {"wiki-ingest"}
+    assert not (root / ".claude/skills/top-level.txt").exists()
+    assert not (root / ".claude/skills/not-a-skill").exists()
+
+
+def test_source_copy_excludes_vcs_environment_and_cache_artifacts(tmp_path: Path) -> None:
+    source = make_skill_source(tmp_path)
+    skill = source / "wiki-ingest"
+    excluded_dirs = (
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".AppleDouble",
+        ".LSOverride",
+        ".Spotlight-V100",
+        ".Trashes",
+    )
+    for name in excluded_dirs:
+        directory = skill / "nested" / name
+        directory.mkdir(parents=True)
+        (directory / "payload").write_text("excluded\n", encoding="utf-8")
+    excluded_files = (
+        "bytecode.pyc",
+        "optimized.pyo",
+        ".env",
+        ".env.local",
+        ".DS_Store",
+        "Thumbs.db",
+        "desktop.ini",
+        "Icon\r",
+        "._resource",
+    )
+    for name in excluded_files:
+        path = skill / "nested" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("excluded\n", encoding="utf-8")
+    (skill / "nested/keep.md").write_text("keep\n", encoding="utf-8")
+    root = tmp_path / "repo"
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=source)
+
+    copied = root / ".skills/wiki-ingest"
+    assert (copied / "nested/keep.md").read_text(encoding="utf-8") == "keep\n"
+    assert not any(path.name in excluded_dirs for path in copied.rglob("*"))
+    assert not any(
+        path.name in excluded_files
+        for path in copied.rglob("*")
+    )
+
+
+def test_setup_rejects_unrelated_nonempty_target_without_changes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "owner-project"
+    root.mkdir()
+    (root / "README.md").write_text("owner repository\n", encoding="utf-8")
+    (root / "random.bin").write_bytes(b"\x00\x01owner")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="not a portable"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_existing_portable_rerun_preserves_owner_config_and_unmanaged_files(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    config = root / ".obsidian-wiki/config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + 'OBSIDIAN_ALLOWED_LIFECYCLES = "draft,reviewed"\n',
+        encoding="utf-8",
+    )
+    config_bytes = config.read_bytes()
+    agents = root / "AGENTS.md"
+    agents.write_text(
+        "Owner preface.\n\n" + agents.read_text(encoding="utf-8") + "\nOwner footer.\n",
+        encoding="utf-8",
+    )
+    owner_files = {
+        "CLAUDE.md": "owner Claude rules\n",
+        ".cursor/rules/obsidian-wiki.mdc": "owner Cursor rules\n",
+        ".claude/skills/wiki-ingest/SKILL.md": "owner adapter\n",
+    }
+    for relative, content in owner_files.items():
+        (root / relative).write_text(content, encoding="utf-8")
+    (root / ".git").mkdir()
+    (root / ".git/config").write_text("owner git metadata\n", encoding="utf-8")
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert config.read_bytes() == config_bytes
+    assert "Owner preface." in agents.read_text(encoding="utf-8")
+    assert "Owner footer." in agents.read_text(encoding="utf-8")
+    for relative, content in owner_files.items():
+        assert (root / relative).read_text(encoding="utf-8") == content
+    assert (root / ".git/config").read_text(encoding="utf-8") == "owner git metadata\n"
+
+
+def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_rerun(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    alias = root / "CLAUDE.md"
+    initial = alias.read_text(encoding="utf-8")
+    assert MANAGED_START in initial and MANAGED_END in initial
+    alias.write_text(initial + "\nOwner alias convention.\n", encoding="utf-8")
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    rerun = alias.read_text(encoding="utf-8")
+    assert rerun.count(MANAGED_START) == 1
+    assert rerun.count(MANAGED_END) == 1
+    assert "Owner alias convention." in rerun
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "error_match"),
+    [
+        ('implementation = "evanzlh/obsidian-wiki"', 'implementation = "other/wiki"', "implementation"),
+        ('requires_cli = ">=2026.8,<2026.9"', 'requires_cli = ">=2099"', "requires CLI"),
+        ('vault = "wiki"', 'vault = "notes"', "canonical portable paths"),
+        ("schema_version = 1", "schema_version = [", "invalid portable configuration"),
+    ],
+)
+def test_invalid_existing_portable_config_fails_before_any_write(
+    old: str,
+    new: str,
+    error_match: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    config = root / ".obsidian-wiki/config.toml"
+    config.write_text(config.read_text().replace(old, new), encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match=error_match):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("broken", ["index", "log", "manifest", "directory"])
+def test_invalid_existing_portable_artifact_fails_before_any_write(
+    broken: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    if broken == "index":
+        (root / "wiki/index.md").write_text("wrong\n", encoding="utf-8")
+    elif broken == "log":
+        (root / "wiki/log.md").write_text("wrong\n", encoding="utf-8")
+    elif broken == "manifest":
+        (root / "wiki/.manifest.json").write_text("{}\n", encoding="utf-8")
+    else:
+        shutil.rmtree(root / "wiki/concepts")
+        (root / "wiki/concepts").write_text("collision\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="portable"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_malformed_agents_markers_fail_before_any_rerun_write(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    agents = root / "AGENTS.md"
+    agents.write_text(agents.read_text().replace(MANAGED_END, ""), encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="managed markers"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("preexisting_empty", [False, True])
+def test_new_target_failure_is_atomic(
+    preexisting_empty: bool,
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    if preexisting_empty:
+        root.mkdir()
+
+    def fail_bootstrap(_root: Path) -> None:
+        raise RuntimeError("simulated late bootstrap failure")
+
+    monkeypatch.setattr(portable, "install_portable_bootstrap", fail_bootstrap)
+    with pytest.raises(RuntimeError, match="simulated late"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    if preexisting_empty:
+        assert root.is_dir()
+        assert list(root.iterdir()) == []
+    else:
+        assert not root.exists()
+    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
+
+
+def test_cli_reports_malformed_portable_target_without_traceback(tmp_path: Path) -> None:
+    root = tmp_path / "owner-project"
+    root.mkdir()
+    (root / "README.md").write_text("owner\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    result = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+
+    assert result.returncode != 0
+    assert "error:" in result.stderr
+    assert "not a portable" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert snapshot_tree(root) == before
+
+
+def test_compatible_cli_spec_with_epoch_uses_exact_public_version() -> None:
+    assert compatible_cli_spec("1!2026.8") == "==1!2026.8"
+
+
+def test_gitignore_uses_lf_and_escapes_literal_vault_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(os, "linesep", "\r\n")
+
+    ensure_portable_gitignore(root, "#team notes/[draft]*?!")
+
+    data = (root / ".gitignore").read_bytes()
+    assert b"\r" not in data
+    assert b"\\#team\\ notes/\\[draft\\]\\*\\?\\!/hot.md\n" in data

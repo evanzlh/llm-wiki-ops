@@ -749,8 +749,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        target = Path(args.portable).expanduser().resolve()
-        setup_portable_repo(target, version=__version__, source_skills=skills_dir())
+        target = Path(args.portable).expanduser().absolute()
+        try:
+            target = setup_portable_repo(
+                target,
+                version=__version__,
+                source_skills=skills_dir(),
+            )
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(f"Portable repository scaffolded at {target}")
         print(f"Open {target / 'wiki'} in Obsidian")
         return 0
