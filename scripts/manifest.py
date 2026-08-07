@@ -44,6 +44,19 @@ def load_manifest(vault: str) -> dict:
         return json.load(f)
 
 
+def reject_portable_manifest(vault: str) -> int:
+    marker = os.path.join(canonical(vault), ".manifest.json")
+    try:
+        with open(marker, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if isinstance(data, dict) and data.get("schema_version") == 2 and data.get("storage") == "sharded":
+        print("error: manifest v2 is managed by obsidian-wiki", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _newest(a: dict, b: dict) -> dict:
     """Merge two entries for the same file, preferring the newer ingested_at and
     unioning the pages_created / pages_updated lists."""
@@ -60,6 +73,8 @@ def _newest(a: dict, b: dict) -> dict:
 
 
 def cmd_normalize(args: argparse.Namespace) -> int:
+    if reject_portable_manifest(args.vault):
+        return 1
     m = load_manifest(args.vault)
     sources = m.get("sources", {})
     new_sources: dict = {}
@@ -137,6 +152,8 @@ def _match_relative(path: str, index: dict[str, list[tuple[str, dict]]]) -> dict
 
 
 def cmd_delta(args: argparse.Namespace) -> int:
+    if reject_portable_manifest(args.vault):
+        return 1
     m = load_manifest(args.vault)
     sources = m.get("sources", {})
     known = {canonical(k): v for k, v in sources.items()}

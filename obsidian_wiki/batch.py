@@ -173,12 +173,14 @@ def discover_sources(
 def _filter_unchanged(
     files: list[dict],
     vault: Path,
+    *,
+    portable=None,
 ) -> tuple[list[dict], int]:
     """Remove files whose hash matches the manifest. Returns (to_ingest, skipped_count)."""
     try:
         from obsidian_wiki.cache import check_sources, compute_hash
         paths = [Path(f["path"]) for f in files]
-        result = check_sources(vault, paths)
+        result = check_sources(vault, paths, portable=portable)
         unchanged_set = set(result["unchanged"])
         to_ingest = [f for f in files if f["path"] not in unchanged_set]
         return to_ingest, len(unchanged_set)
@@ -230,6 +232,7 @@ def plan_batches(
     max_batch_files: int = 20,
     skip_unchanged: bool = True,
     include_code: bool = False,
+    portable=None,
 ) -> dict[str, Any]:
     """Discover sources, filter unchanged, and split into batches."""
     all_files = discover_sources(source_dir, vault=vault, include_code=include_code)
@@ -239,7 +242,7 @@ def plan_batches(
 
     to_ingest = all_files
     if skip_unchanged and vault.is_dir():
-        to_ingest, skipped_unchanged = _filter_unchanged(all_files, vault)
+        to_ingest, skipped_unchanged = _filter_unchanged(all_files, vault, portable=portable)
 
     max_batch_bytes = int(max_batch_mb * 1024 * 1024)
     batches_raw = _make_batches(

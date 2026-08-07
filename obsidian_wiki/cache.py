@@ -180,12 +180,14 @@ def compute_hash(path: Path) -> str:
     return sha256_file(path)
 
 
-def check_sources(vault: Path, source_paths: list[Path]) -> CheckResult:
+def check_sources(vault: Path, source_paths: list[Path], *, portable=None) -> CheckResult:
     """Classify each source as new / modified / unchanged vs. the manifest.
 
     Also reports manifest entries whose source file no longer exists on disk.
     Handles both manifest shapes and compares hashes prefix-insensitively.
     """
+    if portable is not None:
+        return portable.status_for(source_paths)
     entries = list(_iter_entries(_load_manifest(vault)))
     result: CheckResult = {"new": [], "modified": [], "unchanged": [], "missing": []}
 
@@ -227,6 +229,7 @@ def update_source(
     source_path: Path,
     *,
     pages_produced: list[str] | None = None,
+    portable=None,
 ) -> str:
     """Record the current hash of *source_path* in the manifest. Returns the hash.
 
@@ -234,6 +237,8 @@ def update_source(
     updates it, otherwise appends a new one — preserving the manifest's shape
     (dict or list), duplicate-path entries, and any skill-written fields.
     """
+    if portable is not None:
+        return portable.upsert(source_path, pages=pages_produced or [])
     manifest = _load_raw(vault)
     sources = manifest.get("sources")
     current_hash = compute_hash(source_path)
