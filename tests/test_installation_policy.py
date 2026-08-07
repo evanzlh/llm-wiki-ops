@@ -1,4 +1,9 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,3 +115,48 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
         if token in path.read_text(encoding="utf-8", errors="ignore")
     }
     assert offenders == {}
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required by the supported installer")
+def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    shutil.copytree(
+        ROOT,
+        source,
+        ignore=shutil.ignore_patterns(".venv", "dist", "build", "__pycache__"),
+        symlinks=True,
+    )
+    env = os.environ.copy()
+    env.update(
+        HOME=str(tmp_path / "home"),
+        UV_TOOL_DIR=str(tmp_path / "tools"),
+        UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
+        UV_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    subprocess.run(
+        ["uv", "tool", "install", "."],
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    source.rename(tmp_path / "source-moved")
+    result = subprocess.run(
+        [str(tmp_path / "bin" / "obsidian-wiki"), "--version"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "evanzlh/obsidian-wiki" in result.stdout
+    bundled = subprocess.run(
+        [str(tmp_path / "bin" / "obsidian-wiki"), "list"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "wiki-ingest" in bundled.stdout.splitlines()
