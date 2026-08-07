@@ -14,14 +14,19 @@ import re
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - repository upgrades are Unix-first
+    fcntl = None  # type: ignore[assignment]
 
 from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import PortableConfig, load_portable_config
-
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
 MANAGED_END = "<!-- obsidian-wiki:managed:end -->"
@@ -45,6 +50,9 @@ PORTABLE_VAULT_DIRS = (
 )
 PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
 MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
+_PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
+_UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
+_UPGRADE_JOURNAL = "journal.json"
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -250,16 +258,20 @@ def _discover_source_skills(source_skills: Path) -> tuple[Path, tuple[str, ...]]
             continue
         if kind != "directory":
             continue
+        if _SAFE_SKILL_NAME.fullmatch(entry.name) is None or entry.name in (".", ".."):
+            raise ValueError(f"canonical skill name is not a safe path component: {entry.name!r}")
         skill_file = entry / "SKILL.md"
         skill_kind = _source_entry_kind(skill_file, missing_ok=True)
         if skill_kind is None:
-            continue
+            raise ValueError(
+                f"canonical skill directory is malformed; missing SKILL.md: {entry}"
+            )
         if skill_kind != "file":
             raise ValueError(f"canonical skill SKILL.md must be an ordinary file: {skill_file}")
         _validate_source_tree(entry)
-        if _SAFE_SKILL_NAME.fullmatch(entry.name) is None or entry.name in (".", ".."):
-            raise ValueError(f"canonical skill name is not a safe path component: {entry.name!r}")
         names.append(entry.name)
+    if not names:
+        raise ValueError(f"canonical skills bundle is empty: {source}")
     return source, tuple(names)
 
 
@@ -795,7 +807,11 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
     for relative, agents_reference in _BOOTSTRAP_REFERENCES.items():
         target = root / relative
         _assert_safe_managed_path(root, target)
-        _assert_managed_tree(root, target.parent)
+        _assert_safe_managed_path(root, target.parent)
+        if target.parent.exists() and not target.parent.is_dir():
+            raise ValueError(
+                f"portable bootstrap parent must be an ordinary directory: {target.parent}"
+            )
         if target.exists() and not target.is_file():
             raise ValueError(f"portable bootstrap destination collision: {target}")
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
@@ -960,6 +976,7 @@ def _preflight_existing_portable(
 
 def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) -> None:
     write_portable_config(root, version=version)
+    _ensure_portable_lock_file(root)
     sources = root / "sources"
     _assert_safe_managed_path(root, sources)
     if sources.exists() and not sources.is_dir():
@@ -986,6 +1003,286 @@ def _repair_existing_portable_repo(
     ensure_portable_gitignore(root, "wiki")
 
 
+def _ensure_portable_lock_file(root: Path) -> Path:
+    path = root / _PORTABLE_SKILLS_LOCK
+    _assert_safe_managed_path(root, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_managed_path(root, path)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError(
+                f"portable skills lock must be a single-link ordinary file: {path}"
+            )
+        os.fchmod(descriptor, 0o600)
+    except OSError as exc:
+        raise ValueError(f"cannot open portable skills lock {path}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return path
+
+
+@contextmanager
+def _portable_skills_lock(root: Path) -> Iterator[None]:
+    if fcntl is None:  # pragma: no cover - Linux/macOS are the supported hosts
+        raise RuntimeError("portable skill upgrades require fcntl.flock")
+    path = _ensure_portable_lock_file(root)
+    flags = os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError(
+                f"portable repository skills are locked by another upgrade: {root}"
+            ) from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _repo_relative_path(root: Path, path: Path) -> str:
+    candidate = _absolute_no_resolve(path)
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"transaction path escapes portable repository: {path}") from exc
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise ValueError(f"transaction path is not safely repository-relative: {path}")
+    return PurePosixPath(*relative.parts).as_posix()
+
+
+def _journal_repo_path(root: Path, raw: object, label: str) -> Path:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise ValueError(f"upgrade journal {label} must be a repository-relative path")
+    relative = PurePosixPath(raw)
+    if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+        raise ValueError(f"upgrade journal {label} must remain inside the repository")
+    candidate = root.joinpath(*relative.parts)
+    _assert_safe_managed_path(root, candidate)
+    return candidate
+
+
+def _journal_target_is_managed(relative: str) -> bool:
+    if relative == MANAGED_SKILLS_INVENTORY or relative == "AGENTS.md":
+        return True
+    if relative in _BOOTSTRAP_REFERENCES:
+        return True
+    parts = PurePosixPath(relative).parts
+    if (
+        len(parts) == 2
+        and parts[0] == ".skills"
+        and _SAFE_SKILL_NAME.fullmatch(parts[1]) is not None
+    ):
+        return True
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        agent_parts = PurePosixPath(agent_relative).parts
+        if (
+            len(parts) == len(agent_parts) + 1
+            and parts[: len(agent_parts)] == agent_parts
+            and _SAFE_SKILL_NAME.fullmatch(parts[-1]) is not None
+        ):
+            return True
+    return False
+
+
+def _stage_text_for_replacement(
+    root: Path, transaction: Path, staged: Path, target: Path, text: str
+) -> None:
+    _atomic_replace_text(staged, text, root=transaction)
+    mode = 0o644
+    if target.exists():
+        metadata = target.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"managed replacement target must be an ordinary file: {target}")
+        mode = stat.S_IMODE(metadata.st_mode)
+    os.chmod(staged, mode)
+
+
+def _write_upgrade_journal(root: Path, transaction: Path, payload: dict[str, object]) -> None:
+    journal = transaction / _UPGRADE_JOURNAL
+    _atomic_replace_text(
+        journal,
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        root=root,
+    )
+    os.chmod(journal, 0o600)
+
+
+def _journal_records(
+    root: Path, transaction: Path, payload: object
+) -> tuple[str, list[tuple[Path, Path, Path | None, bool]]]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "implementation",
+        "replacements",
+        "schema_version",
+        "status",
+    }:
+        raise ValueError(f"invalid portable upgrade journal: {transaction / _UPGRADE_JOURNAL}")
+    if payload["schema_version"] != 1 or payload["implementation"] != IMPLEMENTATION_ID:
+        raise ValueError(f"invalid portable upgrade journal identity: {transaction}")
+    status_value = payload["status"]
+    if status_value not in ("prepared", "committed"):
+        raise ValueError(f"invalid portable upgrade journal status: {transaction}")
+    raw_records = payload["replacements"]
+    if not isinstance(raw_records, list) or not raw_records:
+        raise ValueError(f"invalid portable upgrade journal replacements: {transaction}")
+
+    transaction_relative = _repo_relative_path(root, transaction)
+    records: list[tuple[Path, Path, Path | None, bool]] = []
+    target_names: set[str] = set()
+    backup_names: set[str] = set()
+    staged_names: set[str] = set()
+    for index, raw_record in enumerate(raw_records):
+        if not isinstance(raw_record, dict) or set(raw_record) != {
+            "backup",
+            "had_target",
+            "staged",
+            "target",
+        }:
+            raise ValueError(f"invalid portable upgrade journal record {index}: {transaction}")
+        target_raw = raw_record["target"]
+        backup_raw = raw_record["backup"]
+        staged_raw = raw_record["staged"]
+        had_target = raw_record["had_target"]
+        if not isinstance(target_raw, str) or not _journal_target_is_managed(target_raw):
+            raise ValueError(f"unsafe portable upgrade journal target: {target_raw!r}")
+        expected_backup = f"{transaction_relative}/backups/{index}"
+        if backup_raw != expected_backup:
+            raise ValueError(f"unsafe portable upgrade journal backup: {backup_raw!r}")
+        if type(had_target) is not bool:
+            raise ValueError(f"invalid portable upgrade journal had_target: {transaction}")
+        target = _journal_repo_path(root, target_raw, "target")
+        backup = _journal_repo_path(root, backup_raw, "backup")
+        staged: Path | None = None
+        if staged_raw is not None:
+            if (
+                not isinstance(staged_raw, str)
+                or not staged_raw.startswith(f"{transaction_relative}/staged/")
+            ):
+                raise ValueError(f"unsafe portable upgrade journal staged path: {staged_raw!r}")
+            staged = _journal_repo_path(root, staged_raw, "staged")
+        if target_raw in target_names or backup_raw in backup_names:
+            raise ValueError(f"duplicate portable upgrade journal mapping: {transaction}")
+        if staged_raw is not None and staged_raw in staged_names:
+            raise ValueError(f"duplicate portable upgrade journal staged path: {transaction}")
+        target_names.add(target_raw)
+        backup_names.add(str(backup_raw))
+        if staged_raw is not None:
+            staged_names.add(str(staged_raw))
+        records.append((target, backup, staged, had_target))
+    if _repo_relative_path(root, records[-1][0]) != MANAGED_SKILLS_INVENTORY:
+        raise ValueError(f"portable upgrade journal inventory mapping must be last: {transaction}")
+    return str(status_value), records
+
+
+def _load_upgrade_journal(
+    root: Path, transaction: Path
+) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
+    transactions = root / _UPGRADE_TRANSACTIONS
+    _assert_safe_managed_path(root, transaction)
+    if transaction.parent != transactions or not transaction.name.startswith("txn-"):
+        raise ValueError(f"unsafe portable upgrade transaction path: {transaction}")
+    _assert_directory(root, transaction, "upgrade transaction")
+    _assert_managed_tree(root, transaction)
+    journal = transaction / _UPGRADE_JOURNAL
+    try:
+        metadata = journal.lstat()
+    except OSError as exc:
+        raise ValueError(f"portable upgrade journal is missing or invalid: {journal}") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError(f"portable upgrade journal must be an ordinary file: {journal}")
+    try:
+        payload = json.loads(journal.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"portable upgrade journal is invalid: {journal}: {exc}") from exc
+    status, records = _journal_records(root, transaction, payload)
+    assert isinstance(payload, dict)
+    payload["status"] = status
+    return payload, records
+
+
+def _remove_transaction_target(root: Path, path: Path) -> None:
+    _assert_safe_managed_path(root, path)
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink():
+        raise ValueError(f"managed path contains symlink: {path}")
+    if path.is_dir():
+        _assert_managed_tree(root, path)
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _rollback_upgrade_records(
+    root: Path, records: list[tuple[Path, Path, Path | None, bool]]
+) -> list[str]:
+    errors: list[str] = []
+    for target, backup, _staged, had_target in reversed(records):
+        try:
+            if backup.exists():
+                _remove_transaction_target(root, target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                backup.replace(target)
+            elif not had_target:
+                _remove_transaction_target(root, target)
+            elif not target.exists():
+                raise OSError(f"original target and backup are both missing: {target}")
+        except BaseException as exc:
+            errors.append(f"{target}: {exc}")
+    return errors
+
+
+def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
+    _assert_safe_managed_path(root, transaction)
+    _assert_managed_tree(root, transaction)
+    shutil.rmtree(transaction)
+    try:
+        transaction.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _recover_upgrade_transactions(root: Path) -> None:
+    transactions = root / _UPGRADE_TRANSACTIONS
+    _assert_safe_managed_path(root, transactions)
+    if not transactions.exists():
+        return
+    _assert_directory(root, transactions, "upgrade transactions")
+    for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
+        payload, records = _load_upgrade_journal(root, transaction)
+        if payload["status"] == "committed":
+            _cleanup_upgrade_transaction(root, transaction)
+            continue
+        errors = _rollback_upgrade_records(root, records)
+        if errors:
+            raise OSError(
+                "portable skill upgrade recovery is incomplete; preserved journal and "
+                f"backups at {transaction}: {'; '.join(errors)}"
+            )
+        _cleanup_upgrade_transaction(root, transaction)
+
+
 def _preflight_upgrade_paths(
     root: Path,
     *,
@@ -993,9 +1290,9 @@ def _preflight_upgrade_paths(
     current_names: tuple[str, ...],
 ) -> list[tuple[Path, str]]:
     """Validate all managed and potentially owner-owned upgrade targets."""
-    _preflight_managed_destinations(root)
     previous = set(previous_names)
     current = set(current_names)
+    _assert_directory(root, root / ".skills", "canonical skills path")
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         agent_root = root / agent_relative
         _assert_directory(root, agent_root, "agent skills path")
@@ -1020,51 +1317,71 @@ def _preflight_upgrade_paths(
     return _portable_bootstrap_plans(root)
 
 
-def _remove_transaction_target(root: Path, path: Path) -> None:
-    _assert_safe_managed_path(root, path)
-    if not path.exists() and not path.is_symlink():
-        return
-    if path.is_symlink():
-        raise ValueError(f"managed path contains symlink: {path}")
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
-def _apply_staged_replacements(
+def _prepare_upgrade_journal(
     root: Path,
-    staging: Path,
+    transaction: Path,
     replacements: list[tuple[Path, Path | None]],
-    *,
-    version: str,
-    skill_names: tuple[str, ...],
+) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
+    (transaction / "backups").mkdir()
+    transaction_relative = _repo_relative_path(root, transaction)
+    raw_records: list[dict[str, object]] = []
+    for index, (target, staged) in enumerate(replacements):
+        raw_records.append(
+            {
+                "backup": f"{transaction_relative}/backups/{index}",
+                "had_target": target.exists(),
+                "staged": _repo_relative_path(root, staged) if staged is not None else None,
+                "target": _repo_relative_path(root, target),
+            }
+        )
+    payload: dict[str, object] = {
+        "implementation": IMPLEMENTATION_ID,
+        "replacements": raw_records,
+        "schema_version": 1,
+        "status": "prepared",
+    }
+    _status, records = _journal_records(root, transaction, payload)
+    _write_upgrade_journal(root, transaction, payload)
+    return payload, records
+
+
+def _apply_journaled_upgrade(
+    root: Path,
+    transaction: Path,
+    payload: dict[str, object],
+    records: list[tuple[Path, Path, Path | None, bool]],
 ) -> None:
-    """Swap exact managed paths with bounded backups and roll back on failure."""
-    backup_root = staging / "backups"
-    backup_root.mkdir()
-    applied: list[tuple[Path, Path | None]] = []
     try:
-        for index, (target, staged) in enumerate(replacements):
-            _assert_safe_managed_path(root, target)
-            backup: Path | None = None
-            if target.exists():
-                backup = backup_root / str(index)
+        for target, backup, staged, had_target in records:
+            if had_target:
+                if not target.exists():
+                    raise OSError(f"managed upgrade target disappeared: {target}")
+                backup.parent.mkdir(parents=True, exist_ok=True)
                 target.replace(backup)
-            applied.append((target, backup))
+            elif target.exists() or target.is_symlink():
+                raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 staged.replace(target)
-        _write_managed_skills_inventory(
-            root, version=version, skill_names=skill_names
-        )
-    except BaseException:
-        for target, backup in reversed(applied):
-            _remove_transaction_target(root, target)
-            if backup is not None and backup.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                backup.replace(target)
+        payload["status"] = "committed"
+        _write_upgrade_journal(root, transaction, payload)
+    except BaseException as forward_error:
+        rollback_errors = _rollback_upgrade_records(root, records)
+        if rollback_errors:
+            raise OSError(
+                f"portable skill upgrade failed ({forward_error}); rollback is incomplete; "
+                f"journal and backups preserved at {transaction}: "
+                f"{'; '.join(rollback_errors)}"
+            ) from forward_error
+        try:
+            _cleanup_upgrade_transaction(root, transaction)
+        except BaseException as cleanup_error:
+            raise OSError(
+                f"portable skill upgrade failed ({forward_error}); rollback completed but "
+                f"transaction cleanup failed at {transaction}: {cleanup_error}"
+            ) from forward_error
         raise
+    _cleanup_upgrade_transaction(root, transaction)
 
 
 def upgrade_portable_skills(
@@ -1082,86 +1399,111 @@ def upgrade_portable_skills(
     root = _safe_root(Path(root))
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
-    _load_canonical_portable_config(root, version=version)
-    _previous_version, previous_names = _read_managed_skills_inventory(root)
-    source, current_names = _discover_source_skills(source_skills)
-    bootstrap_plans = _preflight_upgrade_paths(
-        root,
-        previous_names=previous_names,
-        current_names=current_names,
-    )
+    with _portable_skills_lock(root):
+        config_path = root / ".obsidian-wiki/config.toml"
+        _assert_ordinary_file(root, config_path, "configuration")
+        _load_canonical_portable_config(root, version=version)
+        _recover_upgrade_transactions(root)
+        _previous_version, previous_names = _read_managed_skills_inventory(root)
+        source, current_names = _discover_source_skills(source_skills)
+        bootstrap_plans = _preflight_upgrade_paths(
+            root,
+            previous_names=previous_names,
+            current_names=current_names,
+        )
 
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{root.name}.skills-upgrade-", dir=root.parent)
-    )
-    try:
-        staged_canonical = staging / "canonical"
-        staged_adapters = staging / "adapters"
-        staged_bootstrap = staging / "bootstrap"
-        for name in current_names:
-            shutil.copytree(
-                source / name,
-                staged_canonical / name,
-                symlinks=False,
-                ignore=_ignore_source_artifacts,
-            )
-            for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
-                adapter = staged_adapters / str(agent_index) / name / "SKILL.md"
-                adapter.parent.mkdir(parents=True, exist_ok=True)
-                adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
-                canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
-                _atomic_replace_text(
-                    adapter,
-                    _adapter_text(
-                        name,
-                        posixpath.relpath(
-                            canonical_relative.as_posix(),
-                            adapter_relative.parent.as_posix(),
+        transactions = root / _UPGRADE_TRANSACTIONS
+        _assert_safe_managed_path(root, transactions)
+        transactions.mkdir(parents=True, exist_ok=True)
+        transaction = Path(tempfile.mkdtemp(prefix="txn-", dir=transactions))
+        journal_written = False
+        try:
+            staged_root = transaction / "staged"
+            staged_canonical = staged_root / "canonical"
+            staged_adapters = staged_root / "adapters"
+            staged_bootstrap = staged_root / "bootstrap"
+            for name in current_names:
+                shutil.copytree(
+                    source / name,
+                    staged_canonical / name,
+                    symlinks=False,
+                    ignore=_ignore_source_artifacts,
+                )
+                for agent_index, (agent_relative, _label) in enumerate(
+                    PROJECT_AGENT_DIRS
+                ):
+                    adapter = staged_adapters / str(agent_index) / name / "SKILL.md"
+                    adapter_relative = (
+                        PurePosixPath(agent_relative) / name / "SKILL.md"
+                    )
+                    canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+                    _stage_text_for_replacement(
+                        root,
+                        transaction,
+                        adapter,
+                        root / agent_relative / name / "SKILL.md",
+                        _adapter_text(
+                            name,
+                            posixpath.relpath(
+                                canonical_relative.as_posix(),
+                                adapter_relative.parent.as_posix(),
+                            ),
                         ),
-                    ),
-                    root=staging,
-                )
+                    )
 
-        bootstrap_staged: dict[Path, Path] = {}
-        for index, (target, text) in enumerate(bootstrap_plans):
-            staged = staged_bootstrap / str(index)
-            staged.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_replace_text(staged, text, root=staging)
-            bootstrap_staged[target] = staged
-
-        replacements: list[tuple[Path, Path | None]] = []
-        previous = set(previous_names)
-        current = set(current_names)
-        for name in sorted(previous | current):
-            replacements.append(
-                (
-                    root / ".skills" / name,
-                    staged_canonical / name if name in current else None,
+            bootstrap_staged: dict[Path, Path] = {}
+            for index, (target, text) in enumerate(bootstrap_plans):
+                staged = staged_bootstrap / str(index)
+                _stage_text_for_replacement(
+                    root, transaction, staged, target, text
                 )
-            )
-            for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+                bootstrap_staged[target] = staged
+
+            replacements: list[tuple[Path, Path | None]] = []
+            previous = set(previous_names)
+            current = set(current_names)
+            for name in sorted(previous | current):
                 replacements.append(
                     (
-                        root / agent_relative / name,
-                        staged_adapters / str(agent_index) / name
-                        if name in current
-                        else None,
+                        root / ".skills" / name,
+                        staged_canonical / name if name in current else None,
                     )
                 )
-        replacements.extend(
-            (target, bootstrap_staged[target]) for target, _text in bootstrap_plans
-        )
-        _apply_staged_replacements(
-            root,
-            staging,
-            replacements,
-            version=version,
-            skill_names=current_names,
-        )
-    finally:
-        if staging.exists() and staging.parent == root.parent:
-            shutil.rmtree(staging)
-    return current_names
+                for agent_index, (agent_relative, _label) in enumerate(
+                    PROJECT_AGENT_DIRS
+                ):
+                    replacements.append(
+                        (
+                            root / agent_relative / name,
+                            staged_adapters / str(agent_index) / name
+                            if name in current
+                            else None,
+                        )
+                    )
+            replacements.extend(
+                (target, bootstrap_staged[target])
+                for target, _text in bootstrap_plans
+            )
+            inventory = root / MANAGED_SKILLS_INVENTORY
+            staged_inventory = staged_root / "inventory/managed-skills.json"
+            _stage_text_for_replacement(
+                root,
+                transaction,
+                staged_inventory,
+                inventory,
+                _inventory_text(version, current_names),
+            )
+            replacements.append((inventory, staged_inventory))
+            payload, records = _prepare_upgrade_journal(
+                root, transaction, replacements
+            )
+            journal_written = True
+        except BaseException:
+            if not journal_written:
+                _cleanup_upgrade_transaction(root, transaction)
+            raise
+        _apply_journaled_upgrade(root, transaction, payload, records)
+        return current_names
 
 
 def setup_portable_repo(
@@ -1195,11 +1537,6 @@ def setup_portable_repo(
         else:
             _preflight_existing_portable(root, version=version, skill_names=skill_names)
             _validate_pre_inventory_migration(root, source, skill_names)
-            _repair_existing_portable_repo(
-                root,
-                source_skills=source,
-                skill_names=skill_names,
-            )
             _write_managed_skills_inventory(
                 root, version=version, skill_names=skill_names
             )

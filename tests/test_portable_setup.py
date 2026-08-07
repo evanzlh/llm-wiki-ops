@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -588,8 +589,6 @@ def test_source_skill_symlinks_are_rejected_without_materializing_external_conte
 def test_only_real_skill_directories_are_copied(tmp_path: Path) -> None:
     source = make_skill_source(tmp_path)
     (source / "top-level.txt").write_text("not a skill\n", encoding="utf-8")
-    (source / "not-a-skill").mkdir()
-    (source / "not-a-skill/note.md").write_text("ordinary\n", encoding="utf-8")
     (source / ".git").mkdir()
     (source / ".git/SKILL.md").write_text("# fake cache skill\n", encoding="utf-8")
     root = tmp_path / "repo"
@@ -598,7 +597,6 @@ def test_only_real_skill_directories_are_copied(tmp_path: Path) -> None:
 
     assert {entry.name for entry in (root / ".skills").iterdir()} == {"wiki-ingest"}
     assert not (root / ".claude/skills/top-level.txt").exists()
-    assert not (root / ".claude/skills/not-a-skill").exists()
 
 
 def test_source_copy_excludes_vcs_environment_and_cache_artifacts(tmp_path: Path) -> None:
@@ -1149,7 +1147,7 @@ def test_upgrade_rolls_back_when_staged_directory_swap_fails(
 
     def fail_staged_canonical(source: Path, target: Path) -> Path:
         if (
-            ".skills-upgrade-" in str(source)
+            "/staged/canonical/" in str(source)
             and source.parent.name == "canonical"
             and source.name == "wiki-ingest"
         ):
@@ -1176,10 +1174,14 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
     agents.write_text(agents.read_text() + "\nOwner sentence.\n", encoding="utf-8")
     before = snapshot_tree(root)
 
-    def fail_inventory(*_args: object, **_kwargs: object) -> None:
-        raise OSError("simulated inventory commit failure")
+    original_replace = Path.replace
 
-    monkeypatch.setattr(portable, "_write_managed_skills_inventory", fail_inventory)
+    def fail_inventory(source: Path, target: Path) -> Path:
+        if "/staged/inventory/managed-skills.json" in str(source):
+            raise OSError("simulated inventory commit failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_inventory)
 
     with pytest.raises(OSError, match="simulated inventory commit"):
         upgrade_portable_skills(
@@ -1187,6 +1189,244 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
         )
 
     assert snapshot_tree(root) == before
+
+
+def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text("# ingest v2\n", encoding="utf-8")
+    (tiny_skills / "wiki-query/SKILL.md").write_text("# query v2\n", encoding="utf-8")
+    old_inventory = (root / ".obsidian-wiki/managed-skills.json").read_bytes()
+    original_replace = Path.replace
+    failures = {"forward": False, "restore": False, "restore_attempts": 0}
+
+    def fail_forward_and_one_restore(source: Path, target: Path) -> Path:
+        source_text = str(source)
+        if (
+            not failures["forward"]
+            and "/canonical/wiki-query" in source_text
+        ):
+            failures["forward"] = True
+            raise OSError("simulated forward swap failure")
+        if (
+            failures["forward"] and "/backups/" in source_text
+        ):
+            failures["restore_attempts"] += 1
+            if (
+                not failures["restore"]
+                and Path(target) == root / ".skills/wiki-ingest"
+            ):
+                failures["restore"] = True
+                raise OSError("simulated rollback restore failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_forward_and_one_restore)
+
+    with pytest.raises(OSError, match="rollback|restore"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    journals = list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
+    assert len(journals) == 1
+    assert list(journals[0].parent.glob("backups/*"))
+    assert failures["restore_attempts"] > 1
+    assert (root / ".obsidian-wiki/managed-skills.json").read_bytes() == old_inventory
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+    original_reader = portable._read_managed_skills_inventory
+
+    def assert_recovered_before_inventory(
+        repository: Path,
+    ) -> tuple[str, tuple[str, ...]]:
+        assert not list(
+            (repository / ".obsidian-wiki/local/skill-upgrades").glob(
+                "*/journal.json"
+            )
+        )
+        return original_reader(repository)
+
+    monkeypatch.setattr(
+        portable, "_read_managed_skills_inventory", assert_recovered_before_inventory
+    )
+    names = upgrade_portable_skills(
+        root, version="2026.8.4", source_skills=tiny_skills
+    )
+
+    assert names == ("wiki-ingest", "wiki-query")
+    assert (root / ".skills/wiki-ingest/SKILL.md").read_text() == "# ingest v2\n"
+    assert (root / ".skills/wiki-query/SKILL.md").read_text() == "# query v2\n"
+    assert not list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
+    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text())[
+        "skills_version"
+    ] == "2026.8.4"
+
+
+def test_upgrade_fails_fast_while_repository_lock_is_held_without_writes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    fcntl = pytest.importorskip("fcntl")
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    lock = root / ".obsidian-wiki/local/portable-skills.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(lock, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    before = snapshot_tree(root)
+    try:
+        with pytest.raises(ValueError, match="locked|another.*upgrade"):
+            upgrade_portable_skills(
+                root, version="2026.8.4", source_skills=tiny_skills
+            )
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+    assert snapshot_tree(root) == before
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("bundle_kind", ["empty", "missing-skill-file"])
+def test_upgrade_rejects_empty_or_malformed_bundle_without_changes(
+    bundle_kind: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    source = tmp_path / "bad-bundle"
+    source.mkdir()
+    if bundle_kind == "missing-skill-file":
+        (source / "wiki-malformed").mkdir()
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="empty|SKILL.md|malformed"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=source)
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_preserves_existing_bootstrap_file_mode(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    agents = root / "AGENTS.md"
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
+    os.chmod(agents, 0o600)
+    os.chmod(inventory, 0o640)
+    os.chmod(adapter, 0o600)
+    agents.write_text(
+        agents.read_text().replace("transaction-only writes", "stale managed rule"),
+        encoding="utf-8",
+    )
+
+    upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert stat.S_IMODE(agents.stat().st_mode) == 0o600
+    assert stat.S_IMODE(inventory.stat().st_mode) == 0o640
+    assert stat.S_IMODE(adapter.stat().st_mode) == 0o600
+    assert "transaction-only writes" in agents.read_text(encoding="utf-8")
+
+
+def test_pre_inventory_migration_late_failure_has_no_partial_writes(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (root / ".obsidian-wiki/managed-skills.json").unlink()
+    agents = root / "AGENTS.md"
+    agents.write_text(
+        agents.read_text().replace("transaction-only writes", "stale managed rule"),
+        encoding="utf-8",
+    )
+    gitignore = root / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text().replace("wiki/hot.md\n", ""), encoding="utf-8"
+    )
+    before = snapshot_tree(root)
+
+    def fail_inventory(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated migration inventory failure")
+
+    monkeypatch.setattr(portable, "_write_managed_skills_inventory", fail_inventory)
+
+    with pytest.raises(OSError, match="migration inventory"):
+        setup_portable_repo(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_ignores_unrelated_owner_symlinks_and_preserves_them(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    outside = tmp_path / "owner-outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("owner data\n", encoding="utf-8")
+    owner_links = [
+        root / "wiki/concepts/owner-link",
+        root / "sources/owner-link",
+        root / ".skills/team-owned/owner-link",
+        root / ".claude/skills/team-owned/owner-link",
+        root / ".cursor/rules/team-owned-link",
+    ]
+    for link in owner_links:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside, target_is_directory=True)
+
+    upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert all(link.is_symlink() and link.resolve() == outside for link in owner_links)
+    assert sentinel.read_text(encoding="utf-8") == "owner data\n"
+
+
+@pytest.mark.parametrize("unsafe_field", ["target", "backup", "staged"])
+def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
+    unsafe_field: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-malicious"
+    transaction.mkdir(parents=True)
+    transaction_relative = transaction.relative_to(root).as_posix()
+    record: dict[str, object] = {
+        "backup": f"{transaction_relative}/backups/0",
+        "had_target": True,
+        "staged": f"{transaction_relative}/staged/inventory",
+        "target": ".obsidian-wiki/managed-skills.json",
+    }
+    record[unsafe_field] = "../outside"
+    journal = transaction / "journal.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "implementation": IMPLEMENTATION_ID,
+                "replacements": [record],
+                "schema_version": 1,
+                "status": "prepared",
+            }
+        ),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside"
+    outside.write_text("owner data\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="journal|unsafe|repository-relative"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert outside.read_text(encoding="utf-8") == "owner data\n"
+    assert journal.is_file()
 
 
 @pytest.mark.parametrize(
