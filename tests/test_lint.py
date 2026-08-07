@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.trust import build_trust_ledger, write_trust_ledger
 
@@ -141,6 +142,60 @@ def test_lint_cli_uses_configured_vault_and_strict_mode(tmp_path: Path) -> None:
     data = json.loads(proc.stdout)
     assert data["status"] == "warn"
     assert "concepts/alpha.md" in data["findings"]["missing_summaries"]
+
+
+def test_lint_cli_prefers_portable_vault_and_schema_from_nested_cwd(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "knowledge"
+    portable_vault = root / "wiki"
+    global_vault = tmp_path / "global-vault"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / ".skills").mkdir()
+    portable_vault.mkdir()
+    portable_page = _page(
+        portable_vault, "concepts/portable.md", summary=None
+    )
+    portable_page.write_text(
+        portable_page.read_text(encoding="utf-8").replace(
+            "lifecycle: reviewed", "lifecycle: active"
+        ),
+        encoding="utf-8",
+    )
+    _page(global_vault, "concepts/global.md")
+    portable_config = root / ".obsidian-wiki/config.toml"
+    portable_config.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+OBSIDIAN_ALLOWED_LIFECYCLES = ["active"]
+''',
+        encoding="utf-8",
+    )
+    global_config = home / ".obsidian-wiki/config"
+    global_config.parent.mkdir(parents=True)
+    global_config.write_text(
+        f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
+    )
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+
+    proc = _run_at(home, nested, "lint", "--json")
+
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout)
+    assert "concepts/portable.md" in report["findings"]["missing_summaries"]
+    assert "concepts/global.md" not in report["findings"]["missing_summaries"]
+    assert "active" in report["schema"]["allowed_lifecycles"]
+    assert report["schema"]["source"] == f"config:{portable_config.resolve()}"
 
 
 def test_lint_vault_legacy_pages_without_trust_schema_warn_by_default(tmp_path: Path) -> None:

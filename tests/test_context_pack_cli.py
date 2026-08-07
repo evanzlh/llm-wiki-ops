@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from obsidian_wiki import IMPLEMENTATION_ID
+
 
 def run_cli(
     home: Path, *args: str, cwd: Path | None = None
@@ -236,3 +238,53 @@ def test_context_pack_requires_a_configured_vault(tmp_path: Path) -> None:
 
     assert proc.returncode == 1
     assert "vault not configured" in proc.stderr
+
+
+def test_context_pack_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "knowledge"
+    portable_vault = root / "wiki"
+    global_vault = tmp_path / "global-vault"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / ".skills").mkdir()
+    portable_vault.mkdir()
+    global_vault.mkdir()
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (portable_vault / "portable.md").write_text(
+        "# Authentication\n\nPortable token policy.\n", encoding="utf-8"
+    )
+    (global_vault / "global.md").write_text(
+        "# Authentication\n\nGlobal token policy.\n", encoding="utf-8"
+    )
+    global_config = home / ".obsidian-wiki/config"
+    global_config.parent.mkdir(parents=True)
+    global_config.write_text(
+        f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
+    )
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+
+    proc = run_cli(
+        home,
+        "context-pack",
+        "authentication",
+        "--budget",
+        "512",
+        cwd=nested,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "portable.md" in proc.stdout
+    assert "global.md" not in proc.stdout

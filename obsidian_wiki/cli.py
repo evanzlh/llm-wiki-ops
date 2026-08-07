@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -19,9 +18,22 @@ from pathlib import Path
 from typing import TypedDict
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
-from obsidian_wiki.config import ConfigError, resolve_config
+from obsidian_wiki.config import (
+    ConfigError,
+    PortableConfig,
+    ResolvedConfig,
+    load_portable_config,
+    resolve_config,
+)
 from obsidian_wiki.portable import (
+    _BOOTSTRAP_REFERENCES,
+    MANAGED_SKILLS_INVENTORY,
     PROJECT_AGENT_DIRS,
+    _adapter_text,
+    _assert_directory,
+    _assert_single_link_managed_tree,
+    _assert_single_link_ordinary_file,
+    _read_managed_skills_inventory_file,
     setup_portable_repo,
     upgrade_portable_skills,
 )
@@ -292,6 +304,35 @@ def resolve_vault_path(cli_vault: str | None) -> str:
     return existing
 
 
+def _resolve_runtime(vault_arg: str | None = None) -> ResolvedConfig | None:
+    """Resolve one CLI runtime through the shared precedence protocol."""
+    try:
+        return resolve_config(
+            vault_arg,
+            cwd=Path.cwd(),
+            home=HOME,
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+    except ConfigError as exc:
+        detail = str(exc)
+        if "must be non-empty" in detail:
+            detail = f"vault not configured: {detail}"
+        print(f"error: {detail}", file=sys.stderr)
+        return None
+
+
+def _resolved_vault(runtime: ResolvedConfig) -> Path | None:
+    if not runtime.vault.is_dir():
+        print(f"error: vault not found: {runtime.vault}", file=sys.stderr)
+        return None
+    return runtime.vault
+
+
+def _schema_config_source(runtime: ResolvedConfig) -> str:
+    return "explicit-vault" if runtime.mode == "explicit" else runtime.source
+
+
 def write_config(vault_path: str) -> None:
     GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     # OBSIDIAN_WIKI_REPO points at the bundled data root so skills that reference
@@ -492,7 +533,213 @@ def _doctor_project_check(project_dir: Path) -> dict[str, str]:
     return {"status": "pass", "detail": "bootstrap files and aliases present", "hint": ""}
 
 
+def _nearest_portable_config() -> Path | None:
+    current = Path.cwd().resolve()
+    while True:
+        candidate = current / ".obsidian-wiki/config.toml"
+        if candidate.exists() or candidate.is_symlink():
+            return candidate
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
+def _portable_doctor_error(config_path: Path, error: str) -> dict[str, object]:
+    checks: list[dict[str, str]] = []
+    _doctor_add(
+        checks,
+        name="portable-config",
+        status="fail",
+        detail=error,
+        hint=f"repair {config_path}",
+    )
+    _doctor_add(
+        checks,
+        name="implementation",
+        status="fail",
+        detail=error,
+        hint=f"expected {IMPLEMENTATION_ID} with compatible CLI {__version__}",
+    )
+    return {"status": "fail", "checks": checks}
+
+
+def _validate_portable_paths(portable: PortableConfig) -> str:
+    root = portable.root
+    expected_config = root / ".obsidian-wiki/config.toml"
+    if portable.path != expected_config:
+        raise ValueError(
+            f"portable configuration path contains a symlink or escapes the repository: "
+            f"{expected_config}"
+        )
+    _assert_single_link_ordinary_file(root, expected_config, "portable configuration")
+
+    configured_paths = (
+        (portable.vault, "vault"),
+        (portable.skills, "skills"),
+        (portable.local_state, "local state"),
+        *((source, "source") for source in portable.sources),
+    )
+    for path, label in configured_paths:
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"portable {label} path escapes the repository: {path}"
+            ) from exc
+        _assert_directory(root, path, f"portable {label} path")
+    if portable.skills != root / ".skills":
+        raise ValueError("portable canonical skills path must be .skills")
+
+    bootstrap_files = (root / "AGENTS.md",) + tuple(
+        root / relative for relative in _BOOTSTRAP_REFERENCES
+    )
+    for path in bootstrap_files:
+        _assert_single_link_ordinary_file(root, path, "portable bootstrap file")
+
+    core_files = (
+        portable.vault / "index.md",
+        portable.vault / "log.md",
+        portable.vault / ".manifest.json",
+    )
+    for path in core_files:
+        _assert_single_link_ordinary_file(root, path, "portable vault core file")
+    try:
+        manifest = json.loads(core_files[-1].read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"portable manifest is invalid: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("portable manifest must contain a JSON object")
+    return (
+        f"vault={portable.vault}; sources={len(portable.sources)}; "
+        "core files and fixed bootstrap files are valid"
+    )
+
+
+def _validate_portable_project_skills(portable: PortableConfig) -> str:
+    root = portable.root
+    inventory = root / MANAGED_SKILLS_INVENTORY
+    skills_version, skill_names = _read_managed_skills_inventory_file(root, inventory)
+    if skills_version != __version__:
+        raise ValueError(
+            f"portable managed skills version {skills_version} does not match {__version__}"
+        )
+    for skill_name in skill_names:
+        canonical = portable.skills / skill_name
+        _assert_single_link_managed_tree(
+            root, canonical, f"portable canonical skill {skill_name}"
+        )
+        _assert_single_link_ordinary_file(
+            root,
+            canonical / "SKILL.md",
+            f"portable canonical skill {skill_name}",
+        )
+        for agent_relative, _label in PROJECT_AGENT_DIRS:
+            adapter_root = root / agent_relative / skill_name
+            adapter = adapter_root / "SKILL.md"
+            _assert_single_link_managed_tree(
+                root, adapter_root, f"portable adapter {skill_name}"
+            )
+            _assert_single_link_ordinary_file(
+                root, adapter, f"portable adapter {skill_name}"
+            )
+            expected_relative = os.path.relpath(
+                canonical / "SKILL.md", adapter_root
+            ).replace(os.sep, "/")
+            expected = _adapter_text(skill_name, expected_relative)
+            if adapter.read_text(encoding="utf-8") != expected:
+                raise ValueError(
+                    f"portable adapter must be a regular relative Markdown adapter: "
+                    f"{adapter}"
+                )
+    return f"{len(skill_names)} managed skill(s) and all relative adapters are valid"
+
+
+def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
+    checks: list[dict[str, str]] = []
+    try:
+        loaded = load_portable_config(
+            portable.root / ".obsidian-wiki/config.toml",
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+        _assert_single_link_ordinary_file(
+            portable.root,
+            portable.root / ".obsidian-wiki/config.toml",
+            "portable configuration",
+        )
+    except (ConfigError, ValueError, OSError) as exc:
+        return _portable_doctor_error(portable.path, str(exc))
+    _doctor_add(
+        checks,
+        name="portable-config",
+        status="pass",
+        detail=str(loaded.path),
+    )
+    _doctor_add(
+        checks,
+        name="implementation",
+        status="pass",
+        detail=f"{loaded.implementation}; CLI {__version__} satisfies {loaded.requires_cli}",
+    )
+    try:
+        path_detail = _validate_portable_paths(loaded)
+    except (ValueError, OSError) as exc:
+        _doctor_add(
+            checks,
+            name="portable-paths",
+            status="fail",
+            detail=str(exc),
+        )
+    else:
+        _doctor_add(
+            checks,
+            name="portable-paths",
+            status="pass",
+            detail=path_detail,
+        )
+    try:
+        skill_detail = _validate_portable_project_skills(loaded)
+    except (ValueError, OSError, UnicodeDecodeError) as exc:
+        _doctor_add(
+            checks,
+            name="project-skills",
+            status="fail",
+            detail=str(exc),
+        )
+    else:
+        _doctor_add(
+            checks,
+            name="project-skills",
+            status="pass",
+            detail=skill_detail,
+        )
+    return {"status": _doctor_status(checks), "checks": checks}
+
+
 def run_doctor(*, vault_override: str | None = None, project_dir: str | None = None) -> dict[str, object]:
+    portable_candidate = _nearest_portable_config()
+    runtime = _resolve_runtime(vault_override)
+    if runtime is not None and runtime.mode == "portable" and runtime.portable is not None:
+        return _run_portable_doctor(runtime.portable)
+    if portable_candidate is not None and vault_override is None:
+        try:
+            _assert_single_link_ordinary_file(
+                portable_candidate.parent.parent,
+                portable_candidate,
+                "portable configuration",
+            )
+            load_portable_config(
+                portable_candidate,
+                installed_version=__version__,
+                implementation=IMPLEMENTATION_ID,
+            )
+        except (ConfigError, ValueError) as exc:
+            return _portable_doctor_error(portable_candidate, str(exc))
+        return _portable_doctor_error(
+            portable_candidate,
+            "portable configuration was discovered but did not resolve",
+        )
+
     checks: list[dict[str, str]] = []
 
     try:
@@ -528,8 +775,8 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
     )
 
     vault_path = ""
-    if vault_override:
-        vault_path = os.path.expanduser(vault_override)
+    if runtime is not None:
+        vault_path = str(runtime.vault)
     elif config_present:
         vault_path = config.get("OBSIDIAN_VAULT_PATH", "")
 
@@ -820,11 +1067,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
 def cmd_sync_setup(args: argparse.Namespace) -> int:
     from obsidian_wiki.sync import configure_sync
 
-    vault_str = resolve_vault_path(args.vault)
-    if not vault_str:
-        print("error: no vault configured — pass --vault or run `obsidian-wiki setup` first", file=sys.stderr)
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-    vault_path = Path(vault_str).expanduser()
+    vault_path = runtime.vault
     try:
         messages = configure_sync(vault_path, args.remote)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -839,11 +1085,10 @@ def cmd_sync_setup(args: argparse.Namespace) -> int:
 def cmd_sync(args: argparse.Namespace) -> int:
     from obsidian_wiki.sync import run_sync
 
-    vault_str = resolve_vault_path(args.vault)
-    if not vault_str:
-        print("error: no vault configured — pass --vault or run `obsidian-wiki setup` first", file=sys.stderr)
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-    code, message = run_sync(Path(vault_str).expanduser())
+    code, message = run_sync(runtime.vault)
     print(message)
     return code
 
@@ -1144,64 +1389,6 @@ def _schema_source_value(
     return configured_value
 
 
-def _read_config_file(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip("'\"")
-    return values
-
-
-def _resolve_schema_command_context(
-    vault_arg: str | None,
-) -> tuple[Path, dict[str, str], str] | None:
-    config: dict[str, str]
-    config_source: str
-    if vault_arg and vault_arg.startswith("@"):
-        name = vault_arg[1:]
-        if not name or re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
-            print("error: named vault must use @ followed by letters, digits, _ or -", file=sys.stderr)
-            return None
-        path = GLOBAL_CONFIG_DIR / f"config.{name}"
-        config = _read_config_file(path)
-        config_source = str(path)
-        resolved = config.get("OBSIDIAN_VAULT_PATH", "")
-    elif vault_arg is not None:
-        config = {}
-        config_source = "explicit-vault"
-        resolved = vault_arg
-    else:
-        current = Path.cwd().resolve()
-        config = {}
-        config_source = str(GLOBAL_CONFIG)
-        while True:
-            candidate = current / ".env"
-            local = _read_config_file(candidate)
-            if "OBSIDIAN_VAULT_PATH" in local:
-                config = local
-                config_source = str(candidate)
-                break
-            if current == HOME or current.parent == current:
-                break
-            current = current.parent
-        if not config:
-            config = _read_config_file(GLOBAL_CONFIG)
-        resolved = config.get("OBSIDIAN_VAULT_PATH", "")
-    if not resolved:
-        print("error: vault not configured; pass a path, @name, or run obsidian-wiki setup", file=sys.stderr)
-        return None
-    vault = Path(resolved).expanduser().resolve()
-    if not vault.is_dir():
-        print(f"error: vault not found: {vault}", file=sys.stderr)
-        return None
-    return vault, config, config_source
-
-
 def _schema_options(
     args: argparse.Namespace,
     config: dict[str, str],
@@ -1282,10 +1469,14 @@ def _schema_options(
 def cmd_lint(args: argparse.Namespace) -> int:
     from obsidian_wiki.lint import lint_vault
 
-    context = _resolve_schema_command_context(args.vault)
-    if context is None:
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-    vault, config, config_source = context
+    vault = _resolved_vault(runtime)
+    if vault is None:
+        return 1
+    config = runtime.values
+    config_source = _schema_config_source(runtime)
 
     strict_trust = args.strict_trust or config.get("OBSIDIAN_TRUST_STRICT", "").strip().lower() in (
         "1",
@@ -1315,57 +1506,6 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_command_vault(vault_arg: str | None) -> Path | None:
-    resolved = (
-        vault_arg
-        if vault_arg is not None
-        else _read_config_value("OBSIDIAN_VAULT_PATH")
-    )
-    if not resolved:
-        print("error: vault not configured; pass a path or run obsidian-wiki setup", file=sys.stderr)
-        return None
-    vault = Path(resolved).expanduser().resolve()
-    if not vault.is_dir():
-        print(f"error: vault not found: {vault}", file=sys.stderr)
-        return None
-    return vault
-
-
-def _read_env_value(path: Path, key: str) -> tuple[bool, str]:
-    if not path.is_file():
-        return False, ""
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith(f"{key}="):
-            return True, line.split("=", 1)[1].strip().strip('"')
-    return False, ""
-
-
-def _resolve_context_pack_vault(vault_arg: str | None) -> Path | None:
-    if vault_arg is not None:
-        return _resolve_command_vault(vault_arg)
-
-    current = Path.cwd().resolve()
-    home = HOME.resolve()
-    while True:
-        found, local_vault = _read_env_value(
-            current / ".env",
-            "OBSIDIAN_VAULT_PATH",
-        )
-        if found:
-            if not local_vault:
-                print(
-                    "error: vault not configured; pass a path or run obsidian-wiki setup",
-                    file=sys.stderr,
-                )
-                return None
-            return _resolve_command_vault(local_vault)
-        if current == home or current.parent == current:
-            break
-        current = current.parent
-    return _resolve_command_vault(None)
-
-
 def cmd_trust_record(args: argparse.Namespace) -> int:
     from obsidian_wiki.trust import (
         TRUST_LEDGER_RELATIVE_PATH,
@@ -1375,10 +1515,14 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
         write_trust_ledger,
     )
 
-    context = _resolve_schema_command_context(args.vault)
-    if context is None:
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-    vault, config, config_source = context
+    vault = _resolved_vault(runtime)
+    if vault is None:
+        return 1
+    config = runtime.values
+    config_source = _schema_config_source(runtime)
     try:
         schema = _schema_options(
             args,
@@ -1475,10 +1619,14 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
 def cmd_trust_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.trust import check_trust_ledger
 
-    context = _resolve_schema_command_context(args.vault)
-    if context is None:
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-    vault, config, config_source = context
+    vault = _resolved_vault(runtime)
+    if vault is None:
+        return 1
+    config = runtime.values
+    config_source = _schema_config_source(runtime)
     try:
         schema = _schema_options(
             args,
@@ -1527,14 +1675,11 @@ def _print_query(result: dict[str, object]) -> None:
 def cmd_query(args: argparse.Namespace) -> int:
     from obsidian_wiki.graphrag import query
 
-    vault_arg = args.vault or _read_config_value("OBSIDIAN_VAULT_PATH")
-    if not vault_arg:
-        print("error: vault not configured; pass --vault or run obsidian-wiki setup", file=sys.stderr)
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
         return 1
-
-    vault = Path(vault_arg).expanduser().resolve()
-    if not vault.is_dir():
-        print(f"error: vault not found: {vault}", file=sys.stderr)
+    vault = _resolved_vault(runtime)
+    if vault is None:
         return 1
 
     result = query(vault, args.question, top_n=args.top, max_should_read=args.max_read)
@@ -1549,9 +1694,16 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def cmd_context_pack(args: argparse.Namespace) -> int:
-    from obsidian_wiki.context_pack import ContextError, build_context_pack, render_markdown
+    from obsidian_wiki.context_pack import (
+        ContextError,
+        build_context_pack,
+        render_markdown,
+    )
 
-    vault = _resolve_context_pack_vault(args.vault)
+    runtime = _resolve_runtime(args.vault)
+    if runtime is None:
+        return 1
+    vault = _resolved_vault(runtime)
     if vault is None:
         return 1
     try:
