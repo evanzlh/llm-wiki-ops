@@ -23,6 +23,7 @@ from obsidian_wiki.portable import (
     ensure_portable_gitignore,
     merge_managed_block,
     setup_portable_repo,
+    upgrade_portable_skills,
 )
 
 
@@ -717,6 +718,475 @@ def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_reru
     assert rerun.count(MANAGED_START) == 1
     assert rerun.count(MANAGED_END) == 1
     assert "Owner alias convention." in rerun
+
+
+def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    first = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    assert first.returncode == 0, first.stderr
+    agents = root / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8") + "\n## Team policy\nUse our glossary.\n",
+        encoding="utf-8",
+    )
+
+    second = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+
+    assert second.returncode == 0, second.stderr
+    assert "## Team policy\nUse our glossary." in agents.read_text(encoding="utf-8")
+
+
+def test_repo_upgrade_skills_repairs_adapter_and_preserves_team_sentence(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    assert setup.returncode == 0, setup.stderr
+    agents = root / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8") + "\nTeam-owned sentence.\n",
+        encoding="utf-8",
+    )
+    adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
+    adapter.unlink()
+
+    result = run_cli(home, root, "repo", "upgrade-skills")
+
+    assert result.returncode == 0, result.stderr
+    assert "Team-owned sentence." in agents.read_text(encoding="utf-8")
+    assert adapter.read_text(encoding="utf-8") == WIKI_INGEST_ADAPTER
+
+
+def test_initial_setup_writes_exact_managed_skills_inventory(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    payload = {
+        "implementation": IMPLEMENTATION_ID,
+        "skills": ["wiki-ingest", "wiki-query"],
+        "skills_version": "2026.8.3",
+    }
+    assert inventory.read_bytes() == (
+        json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+
+
+def test_setup_rerun_preserves_inventory_config_owner_and_managed_skill_bytes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    config = root / ".obsidian-wiki/config.toml"
+    canonical = root / ".skills/wiki-ingest/SKILL.md"
+    inventory_bytes = inventory.read_bytes()
+    config.write_text(config.read_text() + 'OBSIDIAN_ALLOWED_LIFECYCLES = "draft"\n')
+    config_bytes = config.read_bytes()
+    canonical.write_text("owner-edited managed skill\n", encoding="utf-8")
+    owner_skill = root / ".skills/team-skill"
+    owner_skill.mkdir()
+    (owner_skill / "notes.txt").write_text("owner\n", encoding="utf-8")
+    owner_adapter = root / ".claude/skills/team-skill"
+    owner_adapter.mkdir()
+    (owner_adapter / "notes.txt").write_text("owner adapter\n", encoding="utf-8")
+    owner_bootstrap = root / ".cursor/rules/team.mdc"
+    owner_bootstrap.write_text("owner bootstrap\n", encoding="utf-8")
+    agents = root / "AGENTS.md"
+    agents.write_text(agents.read_text() + "\nOwner ending.\n", encoding="utf-8")
+    bundled_new = tiny_skills / "wiki-new"
+    bundled_new.mkdir()
+    (bundled_new / "SKILL.md").write_text("# new\n", encoding="utf-8")
+    before_owner_skill = snapshot_tree(owner_skill)
+    before_owner_adapter = snapshot_tree(owner_adapter)
+
+    setup_portable_repo(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert inventory.read_bytes() == inventory_bytes
+    assert config.read_bytes() == config_bytes
+    assert canonical.read_text(encoding="utf-8") == "owner-edited managed skill\n"
+    assert not (root / ".skills/wiki-new").exists()
+    assert snapshot_tree(owner_skill) == before_owner_skill
+    assert snapshot_tree(owner_adapter) == before_owner_adapter
+    assert owner_bootstrap.read_text(encoding="utf-8") == "owner bootstrap\n"
+    assert "Owner ending." in agents.read_text(encoding="utf-8")
+
+
+def test_setup_migrates_pristine_pre_inventory_repo_only_when_skills_are_exact(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory.unlink()
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert json.loads(inventory.read_text()) == {
+        "implementation": IMPLEMENTATION_ID,
+        "skills": ["wiki-ingest", "wiki-query"],
+        "skills_version": "2026.8.3",
+    }
+
+    inventory.unlink()
+    (root / ".skills/wiki-ingest/SKILL.md").write_text("changed\n", encoding="utf-8")
+    before = snapshot_tree(root)
+    with pytest.raises(ValueError, match="inventory|migration|upgrade"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_replaces_adds_removes_and_rebuilds_managed_skills(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    v2 = tmp_path / "v2"
+    for name, body in (("wiki-ingest", "# ingest v2\n"), ("wiki-new", "# new v2\n")):
+        skill = v2 / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(body, encoding="utf-8")
+    untouched_paths = [
+        root / ".obsidian-wiki/config.toml",
+        root / "wiki/index.md",
+        root / "wiki/log.md",
+        root / "wiki/.manifest.json",
+        root / ".gitignore",
+    ]
+    untouched = {path: path.read_bytes() for path in untouched_paths}
+    git_config = root / ".git/config"
+    git_config.parent.mkdir()
+    git_config.write_text("owner git data\n", encoding="utf-8")
+
+    names = upgrade_portable_skills(root, version="2026.8.4", source_skills=v2)
+
+    assert names == ("wiki-ingest", "wiki-new")
+    assert (root / ".skills/wiki-ingest/SKILL.md").read_text() == "# ingest v2\n"
+    assert (root / ".skills/wiki-new/SKILL.md").read_text() == "# new v2\n"
+    assert not (root / ".skills/wiki-query").exists()
+    for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
+        assert not (root / agent_relative / "wiki-query").exists()
+        for name in names:
+            adapter = root / agent_relative / name
+            assert snapshot_tree(adapter) == (
+                (
+                    "SKILL.md",
+                    "file",
+                    portable._adapter_text(
+                        name,
+                        os.path.relpath(
+                            root / ".skills" / name / "SKILL.md",
+                            adapter,
+                        ).replace(os.sep, "/"),
+                    ).encode(),
+                ),
+            )
+    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text()) == {
+        "implementation": IMPLEMENTATION_ID,
+        "skills": ["wiki-ingest", "wiki-new"],
+        "skills_version": "2026.8.4",
+    }
+    assert {path: path.read_bytes() for path in untouched_paths} == untouched
+    assert git_config.read_text(encoding="utf-8") == "owner git data\n"
+
+
+def test_upgrade_preserves_unlisted_owner_skill_directories(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    owner_paths = [root / ".skills/team-owned"] + [
+        root / agent_relative / "team-owned"
+        for agent_relative, _label in cli.PROJECT_AGENT_DIRS
+    ]
+    for path in owner_paths:
+        path.mkdir(parents=True)
+        (path / "OWNER.txt").write_text(f"owner:{path}\n", encoding="utf-8")
+    before = {path: snapshot_tree(path) for path in owner_paths}
+
+    upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert {path: snapshot_tree(path) for path in owner_paths} == before
+
+
+@pytest.mark.parametrize("collision_location", ["canonical", "adapter"])
+def test_upgrade_new_bundled_skill_owner_collision_fails_closed(
+    collision_location: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    new_skill = tiny_skills / "team-owned"
+    new_skill.mkdir()
+    (new_skill / "SKILL.md").write_text("# bundled\n", encoding="utf-8")
+    collision = (
+        root / ".skills/team-owned"
+        if collision_location == "canonical"
+        else root / ".claude/skills/team-owned"
+    )
+    collision.mkdir(parents=True)
+    (collision / "OWNER.txt").write_text("owner\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="owner|collision|unlisted"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_refreshes_only_bootstrap_managed_regions(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    agents = root / "AGENTS.md"
+    agents.write_text(
+        (
+            "Owner preface\n\n"
+            + agents.read_text().replace("transaction-only writes", "stale managed rule")
+            + "\nOwner footer\n"
+        )
+    )
+    claude = root / "CLAUDE.md"
+    claude.write_text(
+        "Owner before\n"
+        + claude.read_text().replace(
+            "Read and follow `AGENTS.md`", "Stale managed bootstrap"
+        )
+        + "Owner after\n"
+    )
+    unknown = root / ".agent/rules/team.md"
+    unknown.write_text("owner file\n", encoding="utf-8")
+
+    upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert agents.read_text().startswith("Owner preface\n")
+    assert agents.read_text().endswith("Owner footer\n")
+    assert claude.read_text().startswith("Owner before\n")
+    assert claude.read_text().endswith("Owner after\n")
+    assert unknown.read_text() == "owner file\n"
+    assert "stale managed rule" not in agents.read_text()
+    assert "transaction-only writes" in agents.read_text()
+    assert "Stale managed bootstrap" not in claude.read_text()
+    assert "Read and follow `AGENTS.md`" in claude.read_text()
+    assert agents.read_text().count(MANAGED_START) == 1
+    assert claude.read_text().count(MANAGED_START) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"implementation": "other/wiki", "skills_version": "1", "skills": []},
+        {
+            "implementation": IMPLEMENTATION_ID,
+            "skills_version": "1",
+            "skills": [],
+            "extra": True,
+        },
+        {"implementation": IMPLEMENTATION_ID, "skills_version": 1, "skills": []},
+        {"implementation": IMPLEMENTATION_ID, "skills_version": "1", "skills": "x"},
+        {
+            "implementation": IMPLEMENTATION_ID,
+            "skills_version": "1",
+            "skills": ["wiki-query", "wiki-ingest"],
+        },
+        {
+            "implementation": IMPLEMENTATION_ID,
+            "skills_version": "1",
+            "skills": ["wiki-ingest", "wiki-ingest"],
+        },
+        {
+            "implementation": IMPLEMENTATION_ID,
+            "skills_version": "1",
+            "skills": ["../wiki-ingest"],
+        },
+    ],
+)
+def test_upgrade_invalid_inventory_json_schema_fails_before_writes(
+    payload: object, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory.write_text(json.dumps(payload), encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="managed-skills.json"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_invalid_inventory_encoding_and_file_kinds_fail_before_writes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory.write_text("{invalid", encoding="utf-8")
+    before = snapshot_tree(root)
+    with pytest.raises(ValueError, match="managed-skills.json"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+    assert snapshot_tree(root) == before
+
+    inventory.unlink()
+    external = tmp_path / "external-inventory"
+    external.write_text("{}\n", encoding="utf-8")
+    inventory.symlink_to(external)
+    before = snapshot_tree(root)
+    with pytest.raises(ValueError, match="managed-skills.json|symlink"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+    assert snapshot_tree(root) == before
+
+    inventory.unlink()
+    valid = json.dumps(
+        {
+            "implementation": IMPLEMENTATION_ID,
+            "skills": ["wiki-ingest", "wiki-query"],
+            "skills_version": "2026.8.3",
+        }
+    )
+    external.write_text(valid, encoding="utf-8")
+    os.link(external, inventory)
+    before = snapshot_tree(root)
+    with pytest.raises(ValueError, match="hard link|multiple links|managed-skills.json"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("inventory_kind", ["missing", "directory"])
+def test_upgrade_missing_or_nonregular_inventory_fails_before_writes(
+    inventory_kind: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory.unlink()
+    if inventory_kind == "directory":
+        inventory.mkdir()
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="managed skills inventory|managed-skills.json"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    failed = run_cli(home, outside, "repo", "upgrade-skills")
+    assert failed.returncode != 0
+    assert "portable" in failed.stderr.lower() or "configured" in failed.stderr.lower()
+    assert not (home / ".obsidian-wiki").exists()
+
+    root = tmp_path / "repo"
+    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    assert setup.returncode == 0, setup.stderr
+    nested = root / "wiki/concepts/deep"
+    nested.mkdir(parents=True)
+    upgraded = run_cli(home, nested, "repo", "upgrade-skills")
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert str(root.resolve()) in upgraded.stdout
+    assert "skills" in upgraded.stdout
+    assert not (home / ".obsidian-wiki").exists()
+
+
+def test_repo_parser_requires_nested_subcommand_and_rejects_root_argument(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    no_subcommand = run_cli(home, tmp_path, "repo")
+    arbitrary_root = run_cli(home, tmp_path, "repo", "upgrade-skills", str(tmp_path))
+
+    assert no_subcommand.returncode != 0
+    assert "required" in no_subcommand.stderr.lower()
+    assert arbitrary_root.returncode != 0
+    assert "unrecognized arguments" in arbitrary_root.stderr.lower()
+
+
+@pytest.mark.parametrize("unsafe", ["source-symlink", "managed-symlink"])
+def test_upgrade_safety_preflight_leaves_everything_unchanged(
+    unsafe: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    external = tmp_path / "outside"
+    external.mkdir()
+    (external / "sentinel").write_text("outside\n", encoding="utf-8")
+    if unsafe == "source-symlink":
+        (tiny_skills / "wiki-ingest/external").symlink_to(external)
+    else:
+        managed = root / ".claude/skills/wiki-ingest"
+        shutil.rmtree(managed)
+        managed.symlink_to(external, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+    assert (external / "sentinel").read_text() == "outside\n"
+
+
+def test_upgrade_rolls_back_when_staged_directory_swap_fails(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text("# upgraded\n", encoding="utf-8")
+    before = snapshot_tree(root)
+    original_replace = Path.replace
+
+    def fail_staged_canonical(source: Path, target: Path) -> Path:
+        if (
+            ".skills-upgrade-" in str(source)
+            and source.parent.name == "canonical"
+            and source.name == "wiki-ingest"
+        ):
+            raise OSError("simulated staged swap failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_staged_canonical)
+
+    with pytest.raises(OSError, match="simulated staged swap"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text("# upgraded\n", encoding="utf-8")
+    agents = root / "AGENTS.md"
+    agents.write_text(agents.read_text() + "\nOwner sentence.\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    def fail_inventory(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated inventory commit failure")
+
+    monkeypatch.setattr(portable, "_write_managed_skills_inventory", fail_inventory)
+
+    with pytest.raises(OSError, match="simulated inventory commit"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
 
 
 @pytest.mark.parametrize(

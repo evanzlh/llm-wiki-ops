@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import re
 import shutil
 import stat
 import tempfile
@@ -43,6 +44,9 @@ PORTABLE_VAULT_DIRS = (
     ".obsidian",
 )
 PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
+MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
+_INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
+_SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 # Shared by the legacy project install in ``cli.py`` and portable adapters.
@@ -253,8 +257,95 @@ def _discover_source_skills(source_skills: Path) -> tuple[Path, tuple[str, ...]]
         if skill_kind != "file":
             raise ValueError(f"canonical skill SKILL.md must be an ordinary file: {skill_file}")
         _validate_source_tree(entry)
+        if _SAFE_SKILL_NAME.fullmatch(entry.name) is None or entry.name in (".", ".."):
+            raise ValueError(f"canonical skill name is not a safe path component: {entry.name!r}")
         names.append(entry.name)
     return source, tuple(names)
+
+
+def _inventory_text(version: str, skill_names: Iterable[str]) -> str:
+    payload = {
+        "implementation": IMPLEMENTATION_ID,
+        "skills": sorted(skill_names),
+        "skills_version": version,
+    }
+    return json.dumps(payload, sort_keys=True, indent=2) + "\n"
+
+
+def _write_managed_skills_inventory(
+    root: Path, *, version: str, skill_names: Iterable[str]
+) -> None:
+    _atomic_replace_text(
+        root / MANAGED_SKILLS_INVENTORY,
+        _inventory_text(version, skill_names),
+        root=root,
+    )
+
+
+def _read_managed_skills_inventory(root: Path) -> tuple[str, tuple[str, ...]]:
+    path = root / MANAGED_SKILLS_INVENTORY
+    _assert_safe_managed_path(root, path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"portable managed skills inventory is missing: {path}") from exc
+    except OSError as exc:
+        raise ValueError(
+            f"portable managed skills inventory is invalid: {path}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(
+            f"portable managed skills inventory must not be a symlink: {path}"
+        )
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(
+            f"portable managed skills inventory must be an ordinary file: {path}"
+        )
+    if metadata.st_nlink != 1:
+        raise ValueError(
+            f"portable managed skills inventory has multiple links (hard link): {path}"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"portable managed skills inventory is invalid at {path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != _INVENTORY_KEYS:
+        raise ValueError(
+            f"portable managed skills inventory {path} must contain exactly "
+            "implementation, skills, and skills_version"
+        )
+    if payload["implementation"] != IMPLEMENTATION_ID:
+        raise ValueError(
+            f"portable managed skills inventory {path} has wrong implementation"
+        )
+    version = payload["skills_version"]
+    if not isinstance(version, str) or not version:
+        raise ValueError(
+            f"portable managed skills inventory {path} skills_version must be a non-empty string"
+        )
+    skills = payload["skills"]
+    if not isinstance(skills, list) or any(not isinstance(name, str) for name in skills):
+        raise ValueError(
+            f"portable managed skills inventory {path} skills must be a list of strings"
+        )
+    if skills != sorted(skills) or len(skills) != len(set(skills)):
+        raise ValueError(
+            f"portable managed skills inventory {path} skills must be unique and sorted"
+        )
+    for name in skills:
+        if (
+            not name
+            or name in (".", "..")
+            or _SAFE_SKILL_NAME.fullmatch(name) is None
+            or "/" in name
+            or "\\" in name
+        ):
+            raise ValueError(
+                f"portable managed skills inventory {path} contains unsafe skill name {name!r}"
+            )
+    return version, tuple(skills)
 
 
 def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
@@ -523,6 +614,103 @@ def copy_canonical_skills(source_skills: Path, root: Path) -> tuple[str, ...]:
     return names
 
 
+def _copy_missing_managed_skills(
+    source_skills: Path, root: Path, skill_names: Iterable[str]
+) -> None:
+    """Repair only absent skills already named by a valid inventory."""
+    source, available_names = _discover_source_skills(source_skills)
+    available = set(available_names)
+    destination = root / ".skills"
+    missing = tuple(
+        name for name in skill_names if not (destination / name).exists()
+    )
+    for name in missing:
+        if name not in available:
+            raise ValueError(
+                f"managed canonical skill {name!r} is missing and is not in the bundled source"
+            )
+    for name in missing:
+        target = destination / name
+        _assert_safe_managed_path(root, target)
+        shutil.copytree(
+            source / name,
+            target,
+            symlinks=False,
+            ignore=_ignore_source_artifacts,
+        )
+
+
+def _skill_tree_snapshot(
+    path: Path, *, source: bool
+) -> tuple[tuple[str, str, bytes], ...]:
+    """Return an exact ordinary-tree snapshot, optionally applying source ignores."""
+    _validate_source_tree(path)
+    entries: list[tuple[str, str, bytes]] = []
+    for directory, dirnames, filenames in os.walk(path, followlinks=False):
+        current = Path(directory)
+        if source:
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in _SOURCE_IGNORED_DIRS
+            )
+            filenames = sorted(
+                name for name in filenames if not _source_file_is_ignored(name)
+            )
+        else:
+            dirnames[:] = sorted(dirnames)
+            filenames = sorted(filenames)
+        for name in dirnames:
+            child = current / name
+            _source_entry_kind(child)
+            entries.append((child.relative_to(path).as_posix(), "directory", b""))
+        for name in filenames:
+            child = current / name
+            if _source_entry_kind(child) != "file":
+                raise ValueError(f"skill tree entry must be an ordinary file: {child}")
+            entries.append((child.relative_to(path).as_posix(), "file", child.read_bytes()))
+    return tuple(entries)
+
+
+def _validate_pre_inventory_migration(
+    root: Path, source: Path, skill_names: Iterable[str]
+) -> None:
+    """Adopt a Task-3 portable repository only when managed artifacts are exact."""
+    for name in skill_names:
+        canonical = root / ".skills" / name
+        if not canonical.is_dir() or canonical.is_symlink():
+            raise ValueError(
+                "portable managed skills inventory migration requires exact canonical skills; "
+                "run repo upgrade-skills after an explicit migration"
+            )
+        if _skill_tree_snapshot(source / name, source=True) != _skill_tree_snapshot(
+            canonical, source=False
+        ):
+            raise ValueError(
+                "portable managed skills inventory migration found changed canonical skills; "
+                "run repo upgrade-skills after an explicit migration"
+            )
+        for agent_relative, _label in PROJECT_AGENT_DIRS:
+            adapter_dir = root / agent_relative / name
+            adapter = adapter_dir / "SKILL.md"
+            adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
+            canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+            expected = _adapter_text(
+                name,
+                posixpath.relpath(
+                    canonical_relative.as_posix(), adapter_relative.parent.as_posix()
+                ),
+            ).encode("utf-8")
+            if (
+                not adapter.is_file()
+                or adapter.is_symlink()
+                or _skill_tree_snapshot(adapter_dir, source=False)
+                != (("SKILL.md", "file", expected),)
+            ):
+                raise ValueError(
+                    "portable managed skills inventory migration requires exact adapters; "
+                    "run repo upgrade-skills after an explicit migration"
+                )
+
+
 def _adapter_text(skill_name: str, relative_target: str) -> str:
     return (
         "---\n"
@@ -782,6 +970,198 @@ def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) ->
     write_agent_adapters(root, skill_names)
     install_portable_bootstrap(root)
     ensure_portable_gitignore(root, "wiki")
+    _write_managed_skills_inventory(root, version=version, skill_names=skill_names)
+
+
+def _repair_existing_portable_repo(
+    root: Path,
+    *,
+    source_skills: Path,
+    skill_names: tuple[str, ...],
+) -> None:
+    """Repair missing managed artifacts without upgrading existing bytes."""
+    _copy_missing_managed_skills(source_skills, root, skill_names)
+    write_agent_adapters(root, skill_names)
+    install_portable_bootstrap(root)
+    ensure_portable_gitignore(root, "wiki")
+
+
+def _preflight_upgrade_paths(
+    root: Path,
+    *,
+    previous_names: tuple[str, ...],
+    current_names: tuple[str, ...],
+) -> list[tuple[Path, str]]:
+    """Validate all managed and potentially owner-owned upgrade targets."""
+    _preflight_managed_destinations(root)
+    previous = set(previous_names)
+    current = set(current_names)
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        agent_root = root / agent_relative
+        _assert_directory(root, agent_root, "agent skills path")
+
+    for name in sorted(previous | current):
+        targets = [root / ".skills" / name] + [
+            root / agent_relative / name
+            for agent_relative, _label in PROJECT_AGENT_DIRS
+        ]
+        for target in targets:
+            _assert_safe_managed_path(root, target)
+            if not target.exists():
+                continue
+            if name not in previous:
+                raise ValueError(
+                    f"new bundled skill {name!r} collides with an unlisted owner "
+                    f"directory: {target}"
+                )
+            _assert_directory(root, target, f"managed skill directory {name}")
+            _assert_managed_tree(root, target)
+
+    return _portable_bootstrap_plans(root)
+
+
+def _remove_transaction_target(root: Path, path: Path) -> None:
+    _assert_safe_managed_path(root, path)
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink():
+        raise ValueError(f"managed path contains symlink: {path}")
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _apply_staged_replacements(
+    root: Path,
+    staging: Path,
+    replacements: list[tuple[Path, Path | None]],
+    *,
+    version: str,
+    skill_names: tuple[str, ...],
+) -> None:
+    """Swap exact managed paths with bounded backups and roll back on failure."""
+    backup_root = staging / "backups"
+    backup_root.mkdir()
+    applied: list[tuple[Path, Path | None]] = []
+    try:
+        for index, (target, staged) in enumerate(replacements):
+            _assert_safe_managed_path(root, target)
+            backup: Path | None = None
+            if target.exists():
+                backup = backup_root / str(index)
+                target.replace(backup)
+            applied.append((target, backup))
+            if staged is not None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                staged.replace(target)
+        _write_managed_skills_inventory(
+            root, version=version, skill_names=skill_names
+        )
+    except BaseException:
+        for target, backup in reversed(applied):
+            _remove_transaction_target(root, target)
+            if backup is not None and backup.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                backup.replace(target)
+        raise
+
+
+def upgrade_portable_skills(
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+) -> tuple[str, ...]:
+    """Upgrade only repository-managed skills, adapters, and bootstrap blocks.
+
+    The inventory is the ownership boundary. Unlisted directories are never
+    adopted, replaced, or removed, and the new inventory is committed last.
+    """
+    compatible_cli_spec(version)
+    root = _safe_root(Path(root))
+    if not root.is_dir():
+        raise ValueError(f"portable repository root is not a directory: {root}")
+    _load_canonical_portable_config(root, version=version)
+    _previous_version, previous_names = _read_managed_skills_inventory(root)
+    source, current_names = _discover_source_skills(source_skills)
+    bootstrap_plans = _preflight_upgrade_paths(
+        root,
+        previous_names=previous_names,
+        current_names=current_names,
+    )
+
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{root.name}.skills-upgrade-", dir=root.parent)
+    )
+    try:
+        staged_canonical = staging / "canonical"
+        staged_adapters = staging / "adapters"
+        staged_bootstrap = staging / "bootstrap"
+        for name in current_names:
+            shutil.copytree(
+                source / name,
+                staged_canonical / name,
+                symlinks=False,
+                ignore=_ignore_source_artifacts,
+            )
+            for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+                adapter = staged_adapters / str(agent_index) / name / "SKILL.md"
+                adapter.parent.mkdir(parents=True, exist_ok=True)
+                adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
+                canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+                _atomic_replace_text(
+                    adapter,
+                    _adapter_text(
+                        name,
+                        posixpath.relpath(
+                            canonical_relative.as_posix(),
+                            adapter_relative.parent.as_posix(),
+                        ),
+                    ),
+                    root=staging,
+                )
+
+        bootstrap_staged: dict[Path, Path] = {}
+        for index, (target, text) in enumerate(bootstrap_plans):
+            staged = staged_bootstrap / str(index)
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_replace_text(staged, text, root=staging)
+            bootstrap_staged[target] = staged
+
+        replacements: list[tuple[Path, Path | None]] = []
+        previous = set(previous_names)
+        current = set(current_names)
+        for name in sorted(previous | current):
+            replacements.append(
+                (
+                    root / ".skills" / name,
+                    staged_canonical / name if name in current else None,
+                )
+            )
+            for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+                replacements.append(
+                    (
+                        root / agent_relative / name,
+                        staged_adapters / str(agent_index) / name
+                        if name in current
+                        else None,
+                    )
+                )
+        replacements.extend(
+            (target, bootstrap_staged[target]) for target, _text in bootstrap_plans
+        )
+        _apply_staged_replacements(
+            root,
+            staging,
+            replacements,
+            version=version,
+            skill_names=current_names,
+        )
+    finally:
+        if staging.exists() and staging.parent == root.parent:
+            shutil.rmtree(staging)
+    return current_names
 
 
 def setup_portable_repo(
@@ -803,8 +1183,26 @@ def setup_portable_repo(
     target_existed = root.is_dir()
     target_is_empty = target_existed and not any(root.iterdir())
     if target_existed and not target_is_empty:
-        _preflight_existing_portable(root, version=version, skill_names=skill_names)
-        _populate_portable_repo(root, version=version, source_skills=source)
+        inventory_path = root / MANAGED_SKILLS_INVENTORY
+        if inventory_path.exists() or inventory_path.is_symlink():
+            _inventory_version, managed_names = _read_managed_skills_inventory(root)
+            _preflight_existing_portable(root, version=version, skill_names=managed_names)
+            _repair_existing_portable_repo(
+                root,
+                source_skills=source,
+                skill_names=managed_names,
+            )
+        else:
+            _preflight_existing_portable(root, version=version, skill_names=skill_names)
+            _validate_pre_inventory_migration(root, source, skill_names)
+            _repair_existing_portable_repo(
+                root,
+                source_skills=source,
+                skill_names=skill_names,
+            )
+            _write_managed_skills_inventory(
+                root, version=version, skill_names=skill_names
+            )
         return root
 
     root.parent.mkdir(parents=True, exist_ok=True)

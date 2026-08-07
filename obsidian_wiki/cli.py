@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import TypedDict
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
-from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
+from obsidian_wiki.config import ConfigError, resolve_config
+from obsidian_wiki.portable import (
+    PROJECT_AGENT_DIRS,
+    setup_portable_repo,
+    upgrade_portable_skills,
+)
 
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
@@ -1611,6 +1616,31 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
+    try:
+        resolved = resolve_config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+        if resolved.mode != "portable" or resolved.portable is None:
+            raise ConfigError(
+                "repo upgrade-skills must run inside a portable repository"
+            )
+        root = resolved.portable.root
+        names = upgrade_portable_skills(
+            root,
+            version=__version__,
+            source_skills=skills_dir(),
+        )
+    except (ConfigError, ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Upgraded {len(names)} repository skills at {root} to {__version__}")
+    return 0
+
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1641,6 +1671,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     ip = sub.add_parser("info", help="show install paths, version, and config")
     ip.set_defaults(func=cmd_info)
+
+    rp = sub.add_parser("repo", help="maintain a portable repository")
+    repo_sub = rp.add_subparsers(dest="repo_command", required=True)
+    rus = repo_sub.add_parser(
+        "upgrade-skills",
+        help="upgrade repository-managed skills and adapters from this CLI",
+    )
+    rus.set_defaults(func=cmd_repo_upgrade_skills)
 
     gq = sub.add_parser(
         "graph-query",
@@ -1986,7 +2024,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # Warn about stale installs on every command except `setup` (which fixes it)
     # and `info` (which calls _check_stale itself with richer output).
-    if getattr(args, "command", None) not in ("setup", "info", "doctor", None):
+    if getattr(args, "command", None) not in ("setup", "repo", "info", "doctor", None):
         _check_stale()
     try:
         return args.func(args)
