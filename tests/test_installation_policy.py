@@ -9,6 +9,34 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env.update(
+        HOME=str(tmp_path / "home"),
+        UV_TOOL_DIR=str(tmp_path / "tools"),
+        UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
+        UV_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    return env
+
+
+def test_uv_tool_environment_ignores_parent_python_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")
+    monkeypatch.setenv("PYTHONHOME", "/inherited/python/home")
+    monkeypatch.delenv("PYTHONNOUSERSITE", raising=False)
+
+    env = _uv_tool_environment(tmp_path)
+
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert env["PYTHONNOUSERSITE"] == "1"
+
+
 def test_unsupported_install_entrypoints_are_absent() -> None:
     absent = (
         "setup.sh",
@@ -117,7 +145,9 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
     assert offenders == {}
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required by the supported installer")
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="uv is required by the supported installer"
+)
 def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     source = tmp_path / "source"
     shutil.copytree(
@@ -126,13 +156,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         ignore=shutil.ignore_patterns(".venv", "dist", "build", "__pycache__"),
         symlinks=True,
     )
-    env = os.environ.copy()
-    env.update(
-        HOME=str(tmp_path / "home"),
-        UV_TOOL_DIR=str(tmp_path / "tools"),
-        UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
-        UV_CACHE_DIR=str(tmp_path / "cache"),
-    )
+    env = _uv_tool_environment(tmp_path)
     subprocess.run(
         ["uv", "tool", "install", "."],
         cwd=source,
@@ -140,23 +164,49 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         text=True,
         capture_output=True,
         check=True,
+        timeout=180,
     )
     source.rename(tmp_path / "source-moved")
+    bin_dir = Path(env["UV_TOOL_BIN_DIR"])
+    executable = shutil.which("obsidian-wiki", path=str(bin_dir))
+    assert executable is not None, f"obsidian-wiki was not installed in {bin_dir}"
     result = subprocess.run(
-        [str(tmp_path / "bin" / "obsidian-wiki"), "--version"],
+        [executable, "--version"],
         cwd=tmp_path,
         env=env,
         text=True,
         capture_output=True,
         check=True,
+        timeout=30,
     )
     assert "evanzlh/obsidian-wiki" in result.stdout
-    bundled = subprocess.run(
-        [str(tmp_path / "bin" / "obsidian-wiki"), "list"],
+    info = subprocess.run(
+        [executable, "info"],
         cwd=tmp_path,
         env=env,
         text=True,
         capture_output=True,
         check=True,
+        timeout=30,
+    )
+    skills_lines = [
+        line.partition(":")[2].strip()
+        for line in info.stdout.splitlines()
+        if line.startswith("skills:")
+    ]
+    assert len(skills_lines) == 1, info.stdout
+    skills_path = Path(skills_lines[0]).resolve()
+    tool_dir = Path(env["UV_TOOL_DIR"]).resolve()
+    assert skills_path.is_relative_to(tool_dir), (
+        f"bundled skills resolved outside isolated tool dir: {skills_path}"
+    )
+    bundled = subprocess.run(
+        [executable, "list"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
     )
     assert "wiki-ingest" in bundled.stdout.splitlines()
