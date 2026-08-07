@@ -4,8 +4,8 @@ Everything beyond the [README](../README.md) landing page.
 
 | Page | What's in it |
 |---|---|
-| [Installation](installation.md) | pip, git clone, agent-driven setup, Skills CLI, multiple vaults |
-| [Agent Compatibility](agents.md) | The full agent matrix and per-agent manual setup |
+| [Installation](installation.md) | The supported clone-and-`uv` install, upgrades, portable repositories, and personal mode |
+| [Agent Compatibility](agents.md) | The full agent matrix and personal/portable setup modes |
 | [Skills Reference](skills.md) | All 39 skills, what each does, and its slash command |
 | [CLI Reference](cli.md) | Every `obsidian-wiki` subcommand ([繁體中文: context packs](cli.zh-TW.md)) |
 | [Configuration](configuration.md) | Every config variable, QMD semantic search, `_raw/` staging, GitHub sync |

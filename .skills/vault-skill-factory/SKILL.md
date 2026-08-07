@@ -20,9 +20,11 @@ conversation into a page; the factory turns a body of pages into a reusable skil
 
 ## Hard guardrails (read first)
 
-- **Never write into `.skills/`** and **never run `setup.sh`** or create symlinks into any global
-  skill directory (`~/.claude/skills`, `~/.codex/skills`, …). Generated skills go to the review
-  dir only. Installation is a separate, explicit human decision.
+- **Never write into `.skills/`** or create symlinks into any global skill
+  directory (`~/.claude/skills`, `~/.codex/skills`, …). Never run a global
+  `obsidian-wiki setup` without the user's explicit agreement. Even with that
+  agreement, generated skills stay in the review directory: this factory never
+  installs them. Installation is a separate, explicit human decision.
 - **Never auto-install.** End by telling the user where the skill is and how to install it
   *project-locally* if they want — do not do it for them.
 - Source pages are trusted vault content, but do not invent capabilities: the generated skill must
@@ -119,7 +121,9 @@ Tell the user:
   ```
   ln -s ../../.skills/<name> <repo>/.claude/skills/<name>   # after copying <name>/ into .skills/, sans SKILL_FACTORY.md
   ```
-  Note explicitly: review first; do not run `setup.sh` (it fans skills into global dirs); never global-install without explicit agreement.
+  Note explicitly: review first; never run a global `obsidian-wiki setup`
+  without the user's explicit agreement, and never auto-install the generated
+  skill even when that separate global-setup agreement exists.
 
 Do **not** install it yourself. Do not write to `.skills/`. Done.
 

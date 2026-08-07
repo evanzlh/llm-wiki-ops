@@ -20,7 +20,7 @@ The deterministic `lint`, `trust-record`, and `trust-check` commands use the sam
 | Variable | What it does | Default |
 |---|---|---|
 | `OBSIDIAN_VAULT_PATH` | **Required.** Absolute path to your vault | — |
-| `OBSIDIAN_WIKI_REPO` | Where this repo is cloned (set by setup; used for skill/asset lookups) | *auto* |
+| `OBSIDIAN_WIKI_REPO` | Installed CLI bundled-data root (set by personal setup; used for skill/asset lookups) | *auto* |
 | `OBSIDIAN_SOURCES_DIR` | Comma-separated source directories to ingest documents from | *(empty)* |
 | `OBSIDIAN_CATEGORIES` | Wiki page categories (directories created in the vault) | `concepts,entities,skills,references,synthesis,journal` |
 | `OBSIDIAN_MAX_PAGES_PER_INGEST` | Max pages created or updated per ingest | `15` |
@@ -168,7 +168,7 @@ awk -F= '/^OBSIDIAN_VAULT_PATH=/{print $2 "/_raw"; exit}' "$(git rev-parse --sho
 
 ## Syncing your vault to GitHub
 
-Your vault is a directory of plain markdown files — push it to a private GitHub repo and you get version history, backup, and cross-device sync for free. `obsidian-wiki setup` and `setup.sh` both offer to configure this during install; they share one implementation (`obsidian_wiki/sync.py`), so pip and source installs get an identical flow.
+Your vault is a directory of plain markdown files — push it to a private GitHub repo and you get version history, backup, and cross-device sync for free. The source-installed CLI offers this during personal setup and exposes the same implementation later through `obsidian-wiki sync-setup`.
 
 **What setup does:**
 

@@ -218,28 +218,19 @@ inconclusive sessions are skipped automatically.
 
 **Installation steps:**
 
-1. Find the obsidian-wiki repo path. If `OBSIDIAN_WIKI_REPO` is set in config, use that.
-   Otherwise, check common locations: `~/Documents/projects/obsidian-wiki`, `~/obsidian-wiki`,
-   or ask the user.
+1. Verify that `command -v obsidian-wiki` succeeds. The source-installed CLI is
+   required; do not use a checkout as an execution fallback.
 
-2. Locate the `wiki-stop-capture.sh` script. Its path differs between a pip/uv install and a
-   source checkout, so check both layouts under `<REPO_PATH>` and use the first that exists:
+2. Locate `wiki-stop-capture.sh` through the installed CLI's bundled data. Run
+   `obsidian-wiki info`, read the absolute `skills:` path, and use its parent as
+   `<REPO_PATH>`. The hook bundled into the locally built wheel is then:
 
-   - `<REPO_PATH>/hooks/wiki-stop-capture.sh` — packaged install (`OBSIDIAN_WIKI_REPO`
-     points at the bundled `_data/` dir, which ships the hook under `hooks/`).
-   - `<REPO_PATH>/.claude/hooks/wiki-stop-capture.sh` — source checkout.
+   - `<REPO_PATH>/hooks/wiki-stop-capture.sh`
 
-   If neither exists (e.g. an older wheel that predates bundling the hook), fetch the canonical
-   copy to a stable location and point at that instead:
-
-   ```bash
-   mkdir -p ~/.obsidian-wiki/hooks
-   curl -fsSL https://raw.githubusercontent.com/Ar9av/obsidian-wiki/main/.claude/hooks/wiki-stop-capture.sh \
-     -o ~/.obsidian-wiki/hooks/wiki-stop-capture.sh
-   chmod +x ~/.obsidian-wiki/hooks/wiki-stop-capture.sh
-   ```
-
-   Use the resolved absolute path as `<HOOK_PATH>` below.
+   Confirm that this file exists and resolve it to an absolute path as
+   `<HOOK_PATH>`. If it is absent, stop and ask the user to rebuild the installed
+   CLI from the supported source clone; do not download or copy a replacement
+   from an upstream location.
 
 3. Merge the hook entry into `~/.claude/settings.json`:
 
@@ -270,7 +261,7 @@ inconclusive sessions are skipped automatically.
    > other, so sessions ending inside the repo itself fire both registrations. This is expected and
    > harmless — the hook claims an atomic per-session sentinel, so only one nudge is emitted. Leave
    > both in place: removing the project entry dirties a tracked framework file and disables capture
-   > for anyone who clones the repo without doing the global install.
+   > for anyone who clones the repo without doing the personal setup.
 
 4. Confirm: "Stop hook installed. Claude Code will prompt `/wiki-capture --quick` at the
    end of any session where you write files or run ≥ 4 shell commands."
@@ -289,15 +280,14 @@ If yes:
 
 1. Ask for the repo URL (e.g. `https://github.com/you/my-wiki.git`). Recommend it be **private**
    if the vault holds personal notes.
-2. Run the CLI, which handles `git init`, a default `.gitignore`, and wiring the `origin` remote —
-   this is the same code path `obsidian-wiki setup`'s interactive prompt and `setup.sh` use, so
-   there's one implementation to keep correct (see issue #153 for why that matters):
+2. Verify that `command -v obsidian-wiki` succeeds, then run the installed CLI,
+   which handles `git init`, a default `.gitignore`, and wiring the `origin` remote:
    ```bash
    obsidian-wiki sync-setup "<repo-url>" --vault "$OBSIDIAN_VAULT_PATH"
    ```
-   If the `obsidian-wiki` binary isn't on PATH (source checkout without an install), run it from
-   the repo instead: `PYTHONPATH="$OBSIDIAN_WIKI_REPO" python3 -m obsidian_wiki.cli sync-setup ...`
-   using whichever of `OBSIDIAN_WIKI_REPO` or a local checkout path is available.
+   If the installed executable is unavailable, stop and direct the user to the
+   supported clone-and-`uv tool install .` flow. Do not execute source from a
+   checkout as a fallback.
 3. Tell the user they can run `obsidian-wiki sync` any time afterward to commit and push pending
    vault changes (stages everything, commits with a timestamp, pushes). There's no config file to
    check for sync status — the vault's own `git remote` is the source of truth.

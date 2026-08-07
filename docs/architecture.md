@@ -125,6 +125,8 @@ The OKF round-trip is lossless. The `graph.json` round-trip is not — it carrie
 
 ## Repo layout
 
+The source-built wheel is the bundled-data carrier for installed operation. It contains the canonical skills, bootstrap files, and hook assets, so the CLI built by `uv tool install .` does not execute the source checkout or require the clone to remain in place.
+
 ```
 obsidian-wiki/
 ├── .skills/                             # ← Canonical skill definitions (source of truth)
@@ -152,11 +154,10 @@ obsidian-wiki/
 ├── .pi/skills/       → symlinks to .skills/*
 ├── .kiro/skills/     → symlinks to .skills/*
 │
-├── setup.sh                             # One-command agent setup
 ├── .env.example                         # Configuration template
 └── docs/                                # You are here
 ```
 
-Global symlink targets created by setup are listed in [Installation](installation.md#what-setupsh-wires-up).
+The two supported setup modes are described in [Installation](installation.md): personal mode connects bundled skills to agent-wide discovery paths, while Portable Repository mode writes tracked repository-local integrations.
 
 For the full pattern — three-layer architecture, page templates, project organization — read [`.skills/llm-wiki/SKILL.md`](../.skills/llm-wiki/SKILL.md).

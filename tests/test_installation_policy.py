@@ -40,3 +40,28 @@ def test_fork_policy_is_explicit() -> None:
     assert "independently" in policy
     assert "does not track future upstream changes" in policy
     assert "Portable Repository mode" in policy
+
+
+def test_no_unsupported_install_guidance_remains() -> None:
+    checked_roots = (ROOT / "docs", ROOT / ".skills")
+    files = [ROOT / "README.md", ROOT / "README_ZH.md", ROOT / "AGENTS.md"]
+    for base in checked_roots:
+        files.extend(
+            path
+            for path in base.rglob("*")
+            if path.is_file() and "superpowers" not in path.parts
+        )
+    banned = (
+        "pip install obsidian-wiki",
+        "pipx install obsidian-wiki",
+        "npx skills add Ar9av/obsidian-wiki",
+        "bash setup.sh",
+        "uv tool install git+",
+    )
+    offenders = {
+        path.relative_to(ROOT).as_posix(): token
+        for path in files
+        for token in banned
+        if token in path.read_text(encoding="utf-8", errors="ignore")
+    }
+    assert offenders == {}

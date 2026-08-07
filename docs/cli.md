@@ -1,9 +1,8 @@
 # CLI Reference
 
-The `obsidian-wiki` Python package ships a CLI for setup, inspection, and the deterministic parts of the workflow — the things that don't need an LLM. Everything else is a [skill](skills.md) your agent runs.
+The `obsidian-wiki` Python package ships a CLI for setup, inspection, and the deterministic parts of the workflow — the things that don't need an LLM. Everything else is a [skill](skills.md) your agent runs. Install it with the supported [local-clone source build](installation.md#install-from-a-clone).
 
 ```bash
-pip install obsidian-wiki
 obsidian-wiki --help
 obsidian-wiki --version
 ```

@@ -37,7 +37,24 @@ This is a read-only skill. It must not modify the vault, including `log.md`,
 
 ## Execute
 
-Build the requested arguments, then prefer the installed executable:
+The installed `obsidian-wiki` executable is the only invocation route. Verify it
+before building the requested arguments:
+
+```bash
+command -v obsidian-wiki
+```
+
+If that command fails, stop and tell the user to install the CLI from a local
+clone:
+
+```bash
+git clone https://github.com/evanzlh/obsidian-wiki.git
+cd obsidian-wiki
+uv tool install .
+```
+
+Do not execute package source from an arbitrary checkout or from
+`OBSIDIAN_WIKI_REPO`. After the installed executable is available, run:
 
 ```bash
 obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH" "<topic>" --budget 8000
@@ -49,34 +66,9 @@ For recent activity:
 obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH" --recent --budget 8000
 ```
 
-Append the requested flags exactly. If `obsidian-wiki` is unavailable but
-`$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py` exists, run the same arguments from
-that configured clone:
-
-```bash
-python3 -m obsidian_wiki.cli context-pack --vault "$OBSIDIAN_VAULT_PATH" "<topic>" --budget 8000
-```
-
-Use the executable-or-clone fallback explicitly:
-
-```bash
-if command -v obsidian-wiki >/dev/null 2>&1; then
-  obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH" "<topic>" --budget 8000
-elif [ -n "${OBSIDIAN_WIKI_REPO:-}" ] && [ -f "$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py" ]; then
-  (
-    cd "$OBSIDIAN_WIKI_REPO"
-    python3 -m obsidian_wiki.cli context-pack --vault "$OBSIDIAN_VAULT_PATH" "<topic>" --budget 8000
-  )
-else
-  # Tell the user to run: pip install obsidian-wiki
-  # or rerun setup from a valid clone.
-fi
-```
-
-For `--recent`, substitute `--recent` for `"<topic>"` and keep the default
-`--budget 8000`. If neither invocation route exists, give the user the
-actionable guidance `pip install obsidian-wiki` or `rerun setup from a valid
-clone`; do not silently fall back to manually loading the whole vault.
+Append the requested flags exactly. For `--recent`, substitute `--recent` for
+`"<topic>"` and keep the default `--budget 8000`. If the installed CLI is not
+available, do not silently fall back to manually loading the whole vault.
 
 ## Return
 

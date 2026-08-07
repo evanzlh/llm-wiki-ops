@@ -1,8 +1,8 @@
 # Agent Compatibility
 
-Works with **any AI coding agent that can read files**. `setup.sh` and `obsidian-wiki setup` handle skill discovery for each one automatically.
+Works with **any AI coding agent that can read files**. First install the CLI through the supported [source-clone flow](installation.md#install-from-a-clone). Then use `obsidian-wiki setup` for personal mode or `obsidian-wiki setup --portable <path>` to create a portable repository.
 
-Each agent has its own convention for discovering skills. Setup symlinks the canonical `.skills/` directory into each agent's expected location — you write skills once, every agent can use them.
+Each agent has its own convention for discovering skills. Personal setup connects the CLI's bundled skills to agent-wide locations. Portable setup writes tracked repository-local skills and bootstrap files so collaborators get the same instructions from the knowledge repository.
 
 ## Matrix
 
@@ -30,14 +30,21 @@ Each agent has its own convention for discovering skills. Setup symlinks the can
 
 Named-vault routing (`@work update wiki`) works in every agent above, because `@name` is documented in the shared skills and bootstrap context that all of them load.
 
-## Manual setup
+## Setup modes
 
-Only needed if you're not running `setup.sh` or `obsidian-wiki setup`.
+Use the installed CLI for both supported modes:
+
+```bash
+obsidian-wiki setup --vault ~/brain
+obsidian-wiki setup --portable ./team-knowledge
+```
+
+The first command configures personal, agent-wide discovery on the current machine. The second creates a clone-ready repository without writing global config or global agent directories. The agent-specific notes below describe what the CLI wires.
 
 <details>
 <summary><b>Claude Code</b></summary>
 
-Skills are auto-discovered from `.claude/skills/`. Either run `setup.sh` or copy `.skills/*` to `.claude/skills/`. The `CLAUDE.md` file at the repo root is automatically loaded as project context.
+Skills are auto-discovered from `.claude/skills/`. Personal setup connects the installed bundled skills there; portable repositories track their own `.claude/skills/` adapters. The `CLAUDE.md` file at the repo root is automatically loaded as project context.
 
 ```bash
 cd /path/to/obsidian-wiki && claude "set up my wiki"
@@ -47,19 +54,19 @@ cd /path/to/obsidian-wiki && claude "set up my wiki"
 <details>
 <summary><b>Cursor</b></summary>
 
-Skills are auto-discovered from `.cursor/skills/`. The `.cursor/rules/obsidian-wiki.mdc` file provides always-on context. Either run `setup.sh` or copy `.skills/*` to `.cursor/skills/`. Then type `/wiki-setup` in the chat.
+Skills are auto-discovered from `.cursor/skills/`. The `.cursor/rules/obsidian-wiki.mdc` file provides always-on context. Personal or portable CLI setup creates the matching integration. Then type `/wiki-setup` in the chat.
 </details>
 
 <details>
 <summary><b>Windsurf</b></summary>
 
-Cascade reads rules from `.windsurf/rules/` and skills from `.windsurf/skills/`. Either run `setup.sh` or copy `.skills/*` to `.windsurf/skills/`. Then tell Cascade: "set up my wiki".
+Cascade reads rules from `.windsurf/rules/` and skills from `.windsurf/skills/`. Personal or portable CLI setup creates the matching integration. Then tell Cascade: "set up my wiki".
 </details>
 
 <details>
 <summary><b>Codex</b></summary>
 
-Reads `AGENTS.md` for project context. `setup.sh` installs skills globally to `~/.codex/skills/`. Either run `setup.sh` or manually symlink `.skills/*` to `~/.codex/skills/`.
+Reads `AGENTS.md` for project context. Personal CLI setup connects the installed bundled skills at `~/.codex/skills/`; portable repositories supply tracked local instructions.
 
 ```bash
 cd /path/to/obsidian-wiki && codex "set up my wiki"
@@ -69,7 +76,7 @@ cd /path/to/obsidian-wiki && codex "set up my wiki"
 <details>
 <summary><b>Gemini CLI</b></summary>
 
-Reads `GEMINI.md` and discovers global skills from `~/.gemini/skills/`. Either run `setup.sh` or manually symlink `.skills/*` to `~/.gemini/skills/`.
+Reads `GEMINI.md` and discovers global skills from `~/.gemini/skills/`. Personal CLI setup connects the installed bundled skills; portable repositories supply tracked local instructions.
 
 ```bash
 cd /path/to/obsidian-wiki && gemini "set up my wiki"
@@ -79,25 +86,25 @@ cd /path/to/obsidian-wiki && gemini "set up my wiki"
 <details>
 <summary><b>Google Antigravity</b></summary>
 
-Always-on via `.agent/rules/` + `.agent/workflows/`. `setup.sh` ships both files and symlinks skills into `.agents/skills/`. The legacy `~/.gemini/antigravity/skills/` path is also wired.
+Always-on via `.agent/rules/` + `.agent/workflows/`. CLI setup supplies both files and the `.agents/skills/` integration. Personal mode also supports the legacy `~/.gemini/antigravity/skills/` path.
 </details>
 
 <details>
 <summary><b>Kiro IDE/CLI</b></summary>
 
-Always-on via `.kiro/steering/*.md` with `inclusion: always`. `setup.sh` symlinks `.skills/*` into both `.kiro/skills/` and `~/.kiro/skills/`. Invoke with `/wiki-ingest`, `/wiki-query`, etc.
+Always-on via `.kiro/steering/*.md` with `inclusion: always`. CLI setup supplies the appropriate repository-local or personal skill integration. Invoke with `/wiki-ingest`, `/wiki-query`, etc.
 </details>
 
 <details>
 <summary><b>OpenCode / Aider / Factory Droid / Trae</b></summary>
 
-All read `AGENTS.md` at the repo root. `setup.sh` symlinks skills into `~/.agents/skills/` (shared discovery path). Trae also gets `~/.trae/skills/` and `~/.trae-cn/skills/`.
+All read `AGENTS.md` at the repo root. Personal CLI setup uses `~/.agents/skills/` as the shared discovery path and also connects Trae's dedicated skill locations. Portable repositories keep the corresponding instructions local.
 </details>
 
 <details>
 <summary><b>Hermes</b></summary>
 
-Reads `.hermes.md` first, then falls back to `AGENTS.md`. Skills discovered from `~/.hermes/skills/`. Run `setup.sh` or manually symlink `.skills/*` there.
+Reads `.hermes.md` first, then falls back to `AGENTS.md`. Skills are discovered from `~/.hermes/skills/` in personal mode or the tracked repository integration in portable mode.
 
 ```bash
 cd /path/to/obsidian-wiki && hermes "set up my wiki"
@@ -123,13 +130,13 @@ cd /path/to/obsidian-wiki && openclaw "set up my wiki"
 
 **VS Code Chat:** reads `.github/copilot-instructions.md`. Say "set up my wiki" in Copilot Chat.
 
-**CLI:** discovers skills from `~/.copilot/skills/`. Run `setup.sh` or manually symlink `.skills/*` there.
+**CLI:** discovers skills from `~/.copilot/skills/`; personal CLI setup connects the bundled skills there, while portable repositories carry their own integration.
 </details>
 
 <details>
 <summary><b>Pi</b></summary>
 
-Reads `AGENTS.md` (walking up from cwd). Discovers skills from `.pi/skills/`, `.agents/skills/`, and `~/.pi/agent/skills/`. Run `setup.sh` or manually symlink `.skills/*` to `~/.pi/agent/skills/`.
+Reads `AGENTS.md` (walking up from cwd). Discovers skills from `.pi/skills/`, `.agents/skills/`, and `~/.pi/agent/skills/`; CLI setup populates the locations appropriate to personal or portable mode.
 
 ```bash
 cd /path/to/obsidian-wiki && pi "set up my wiki"

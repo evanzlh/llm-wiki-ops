@@ -1,6 +1,6 @@
 # Skills Reference
 
-Everything lives in [`.skills/`](../.skills/). Each skill is a markdown file the agent reads when your request matches its description — there's no runtime, no plugin system, no registration step.
+Everything lives in [`.skills/`](../.skills/). Each skill is a markdown file the agent reads when your request matches its description — there's no runtime, no plugin system, no registration step. Install this project through the supported [local-clone source build](installation.md#install-from-a-clone); this page does not define another project installation route.
 
 Slash commands (`/skill-name`) work in Claude Code, Cursor, Windsurf, and most CLI agents. Everywhere else, just describe what you want.
 
@@ -84,7 +84,7 @@ These two build a retrieval index over your raw agent sessions. They write a sid
 
 ## Recommended companion: Obsidian Skills by Kepano
 
-This framework handles the knowledge-management workflow — ingest, query, lint, rebuild. For Obsidian format mastery, install [**kepano/obsidian-skills**](https://github.com/kepano/obsidian-skills) alongside it. Optional, but it improves output quality:
+This framework handles the knowledge-management workflow — ingest, query, lint, rebuild. For Obsidian format mastery, you may separately add [**kepano/obsidian-skills**](https://github.com/kepano/obsidian-skills) alongside it. This optional companion does not install or replace obsidian-wiki, but it can improve output quality:
 
 | Skill | What it adds |
 |---|---|

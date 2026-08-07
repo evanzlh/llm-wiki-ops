@@ -2,7 +2,7 @@
 
 The wiki-setup skill wires a Claude Code Stop hook that runs
 ``wiki-stop-capture.sh``. That script lives under ``.claude/hooks/`` in the repo,
-which the sdist prunes — so it was silently missing from the published wheel and
+which the sdist prunes — so it was silently missing from the locally built wheel and
 the installed hook pointed at a nonexistent path. These tests pin the packaging
 config that force-includes the script and the skill instructions that resolve it.
 """
@@ -55,14 +55,14 @@ class WikiSetupSkillTest(unittest.TestCase):
         self.skill = (ROOT / ".skills" / "wiki-setup" / "SKILL.md").read_text()
 
     def test_skill_points_at_packaged_hook_path(self) -> None:
-        # Must reference the packaged layout, not only the source-checkout path.
+        # Must reference the installed bundled-data layout, not a source checkout.
         self.assertIn("<REPO_PATH>/hooks/wiki-stop-capture.sh", self.skill)
 
-    def test_skill_offers_github_fallback(self) -> None:
-        self.assertIn(
-            "raw.githubusercontent.com/Ar9av/obsidian-wiki/main/.claude/hooks/wiki-stop-capture.sh",
-            self.skill,
-        )
+    def test_skill_uses_only_installed_bundled_hook(self) -> None:
+        self.assertIn("installed CLI's bundled data", self.skill)
+        self.assertNotIn("raw.githubusercontent.com", self.skill)
+        self.assertNotIn(".claude/hooks/wiki-stop-capture.sh", self.skill)
+        self.assertNotIn("PYTHONPATH=", self.skill)
 
     def test_setup_creates_manifest(self) -> None:
         # Secondary fix: doctor requires .manifest.json among core vault files.

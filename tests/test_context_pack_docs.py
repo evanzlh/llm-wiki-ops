@@ -17,14 +17,15 @@ def test_context_skill_uses_cli_and_is_read_only() -> None:
     assert "AGENTS.md" in skill
 
 
-def test_context_skill_canonicalizes_vault_and_has_clone_fallback() -> None:
+def test_context_skill_canonicalizes_vault_and_requires_installed_cli() -> None:
     skill = read(".skills/wiki-context-pack/SKILL.md")
     assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' in skill
     assert "command -v obsidian-wiki" in skill
-    assert '"$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py"' in skill
-    assert "python3 -m obsidian_wiki.cli context-pack" in skill
-    assert "pip install obsidian-wiki" in skill
-    assert "rerun setup from a valid clone" in skill
+    assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in skill
+    assert "uv tool install ." in skill
+    assert '"$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py"' not in skill
+    assert "python3 -m obsidian_wiki.cli context-pack" not in skill
+    assert "pip install obsidian-wiki" not in skill
 
 
 def test_context_skill_preserves_cli_output_and_recent_default_budget() -> None:

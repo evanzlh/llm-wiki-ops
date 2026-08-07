@@ -1,8 +1,8 @@
-"""Report README translation drift.
+"""Report Simplified Chinese README translation drift.
 
 Lists commits that changed README.md after the last commit that touched
-README_TW.md, plus the combined English diff that still needs to be
-translated and backfilled into README_TW.md. Advisory only — exits 1 on
+README_ZH.md, plus the combined English diff that still needs to be
+translated and backfilled into README_ZH.md. Advisory only — exits 1 on
 drift so callers can detect it, but CI never uses it to block a merge.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import subprocess
 
 
 ENGLISH = "README.md"
-TRANSLATION = "README_TW.md"
+TRANSLATION = "README_ZH.md"
 
 
 def git(*args: str) -> str:
@@ -21,10 +21,10 @@ def git(*args: str) -> str:
 
 
 def main() -> int:
-    # ponytail: a TW-only commit marks everything before it as synced;
+    # A translation-only commit marks everything before it as synced;
     # per-commit pairing if that ever misleads
-    last_tw = git("log", "-1", "--format=%H", "--", TRANSLATION).strip()
-    log_range = f"{last_tw}..HEAD" if last_tw else "HEAD"
+    last_translation = git("log", "-1", "--format=%H", "--", TRANSLATION).strip()
+    log_range = f"{last_translation}..HEAD" if last_translation else "HEAD"
     pending = git(
         "log", "--format=%h %s", log_range, "--", ENGLISH
     ).strip()
@@ -37,7 +37,7 @@ def main() -> int:
     print(pending)
     print()
     print(f"English changes not yet reflected in {TRANSLATION}:")
-    if last_tw:
+    if last_translation:
         print(git("diff", log_range, "--", ENGLISH))
     else:
         print(f"{TRANSLATION} has no history — the entire {ENGLISH} is untranslated.")
