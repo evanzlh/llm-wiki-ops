@@ -294,8 +294,9 @@ def _write_managed_skills_inventory(
     )
 
 
-def _read_managed_skills_inventory(root: Path) -> tuple[str, tuple[str, ...]]:
-    path = root / MANAGED_SKILLS_INVENTORY
+def _read_managed_skills_inventory_file(
+    root: Path, path: Path
+) -> tuple[str, tuple[str, ...]]:
     _assert_safe_managed_path(root, path)
     try:
         metadata = path.lstat()
@@ -358,6 +359,12 @@ def _read_managed_skills_inventory(root: Path) -> tuple[str, tuple[str, ...]]:
                 f"portable managed skills inventory {path} contains unsafe skill name {name!r}"
             )
     return version, tuple(skills)
+
+
+def _read_managed_skills_inventory(root: Path) -> tuple[str, tuple[str, ...]]:
+    return _read_managed_skills_inventory_file(
+        root, root / MANAGED_SKILLS_INVENTORY
+    )
 
 
 def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
@@ -1221,6 +1228,150 @@ def _load_upgrade_journal(
     return payload, records
 
 
+def _journal_skill_name(root: Path, target: Path) -> str | None:
+    parts = PurePosixPath(_repo_relative_path(root, target)).parts
+    if len(parts) == 2 and parts[0] == ".skills":
+        return parts[1]
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        agent_parts = PurePosixPath(agent_relative).parts
+        if len(parts) == len(agent_parts) + 1 and parts[: len(agent_parts)] == agent_parts:
+            return parts[-1]
+    return None
+
+
+def _replacement_snapshot(
+    root: Path, path: Path
+) -> tuple[tuple[str, str, int, bytes], ...]:
+    """Return exact replacement content and modes without following links."""
+    _assert_safe_managed_path(root, path)
+    snapshot: list[tuple[str, str, int, bytes]] = []
+
+    def visit(current: Path, relative: PurePosixPath) -> None:
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise ValueError(
+                f"portable upgrade recovery proof is missing or unreadable: {current}: {exc}"
+            ) from exc
+        mode = metadata.st_mode
+        relative_name = "" if relative == PurePosixPath(".") else relative.as_posix()
+        if stat.S_ISLNK(mode):
+            raise ValueError(
+                f"portable upgrade recovery proof contains a symlink: {current}"
+            )
+        if stat.S_ISREG(mode):
+            if metadata.st_nlink != 1:
+                raise ValueError(
+                    "portable upgrade recovery proof contains a multiply-linked file: "
+                    f"{current}"
+                )
+            try:
+                content = current.read_bytes()
+            except OSError as exc:
+                raise ValueError(
+                    f"portable upgrade recovery proof is unreadable: {current}: {exc}"
+                ) from exc
+            snapshot.append(
+                (relative_name, "file", stat.S_IMODE(mode), content)
+            )
+            return
+        if not stat.S_ISDIR(mode):
+            raise ValueError(
+                "portable upgrade recovery proof contains a special filesystem entry: "
+                f"{current}"
+            )
+        snapshot.append((relative_name, "directory", stat.S_IMODE(mode), b""))
+        try:
+            children = sorted(current.iterdir(), key=lambda child: child.name)
+        except OSError as exc:
+            raise ValueError(
+                f"portable upgrade recovery proof directory is unreadable: {current}: {exc}"
+            ) from exc
+        for child in children:
+            visit(child, relative / child.name)
+
+    visit(path, PurePosixPath("."))
+    return tuple(snapshot)
+
+
+def _copy_staged_replacement(root: Path, staged: Path, target: Path) -> None:
+    """Install a new target while retaining staged content as crash proof."""
+    expected = _replacement_snapshot(root, staged)
+    if staged.is_dir():
+        shutil.copytree(staged, target, symlinks=False, copy_function=shutil.copy2)
+    elif staged.is_file() and not staged.is_symlink():
+        shutil.copy2(staged, target, follow_symlinks=False)
+    else:  # pragma: no cover - snapshot classification rejects this first
+        raise ValueError(f"portable upgrade staged replacement is invalid: {staged}")
+    if _replacement_snapshot(root, target) != expected:
+        raise OSError(
+            f"portable upgrade could not verify copied replacement: {target}"
+        )
+
+
+def _authorize_upgrade_recovery(
+    root: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    rollback: bool,
+) -> set[Path]:
+    inventory_target, inventory_backup, inventory_staged, inventory_had_target = (
+        records[-1]
+    )
+    if inventory_target != root / MANAGED_SKILLS_INVENTORY:
+        raise ValueError("portable upgrade journal has an inconsistent inventory target")
+    if not inventory_had_target or inventory_staged is None:
+        raise ValueError(
+            "portable upgrade journal inventory mapping must replace an existing inventory"
+        )
+
+    if inventory_backup.exists():
+        old_inventory = inventory_backup
+        target_exists = inventory_target.exists()
+        staged_exists = inventory_staged.exists()
+        if target_exists == staged_exists:
+            raise ValueError(
+                "portable upgrade journal has an inconsistent swapped inventory state"
+            )
+    else:
+        old_inventory = inventory_target
+        if not old_inventory.exists():
+            raise ValueError(
+                "portable upgrade journal old inventory and backup are both missing"
+            )
+    _old_version, old_names = _read_managed_skills_inventory_file(
+        root, old_inventory
+    )
+    old_skills = set(old_names)
+    removable_new_targets: set[Path] = set()
+
+    for target, backup, staged, had_target in records[:-1]:
+        skill_name = _journal_skill_name(root, target)
+        if had_target and skill_name is not None and skill_name not in old_skills:
+            raise ValueError(
+                f"portable upgrade journal cannot claim unlisted owner skill "
+                f"{skill_name!r}: {target}"
+            )
+        if not had_target and backup.exists():
+            raise ValueError(
+                f"portable upgrade journal has a backup for an originally absent target: "
+                f"{target}"
+            )
+        if rollback and not had_target and (target.exists() or target.is_symlink()):
+            if staged is None:
+                raise ValueError(
+                    "portable upgrade recovery has no staged proof for an originally "
+                    f"absent target; preserved without mutation: {target}"
+                )
+            if _replacement_snapshot(root, target) != _replacement_snapshot(root, staged):
+                raise ValueError(
+                    "portable upgrade recovery staged proof does not match an originally "
+                    f"absent target; preserved without mutation: {target}"
+                )
+            removable_new_targets.add(target)
+    return removable_new_targets
+
+
 def _remove_transaction_target(root: Path, path: Path) -> None:
     _assert_safe_managed_path(root, path)
     if not path.exists() and not path.is_symlink():
@@ -1235,8 +1386,12 @@ def _remove_transaction_target(root: Path, path: Path) -> None:
 
 
 def _rollback_upgrade_records(
-    root: Path, records: list[tuple[Path, Path, Path | None, bool]]
+    root: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    removable_new_targets: set[Path] | None = None,
 ) -> list[str]:
+    removable = removable_new_targets or set()
     errors: list[str] = []
     for target, backup, _staged, had_target in reversed(records):
         try:
@@ -1245,6 +1400,11 @@ def _rollback_upgrade_records(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 backup.replace(target)
             elif not had_target:
+                if target.exists() and target not in removable:
+                    raise OSError(
+                        "refusing to remove an originally absent target without "
+                        f"runtime transaction proof: {target}"
+                    )
                 _remove_transaction_target(root, target)
             elif not target.exists():
                 raise OSError(f"original target and backup are both missing: {target}")
@@ -1271,10 +1431,15 @@ def _recover_upgrade_transactions(root: Path) -> None:
     _assert_directory(root, transactions, "upgrade transactions")
     for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
         payload, records = _load_upgrade_journal(root, transaction)
+        removable_new_targets = _authorize_upgrade_recovery(
+            root, records, rollback=payload["status"] == "prepared"
+        )
         if payload["status"] == "committed":
             _cleanup_upgrade_transaction(root, transaction)
             continue
-        errors = _rollback_upgrade_records(root, records)
+        errors = _rollback_upgrade_records(
+            root, records, removable_new_targets=removable_new_targets
+        )
         if errors:
             raise OSError(
                 "portable skill upgrade recovery is incomplete; preserved journal and "
@@ -1351,6 +1516,7 @@ def _apply_journaled_upgrade(
     payload: dict[str, object],
     records: list[tuple[Path, Path, Path | None, bool]],
 ) -> None:
+    created_targets: set[Path] = set()
     try:
         for target, backup, staged, had_target in records:
             if had_target:
@@ -1362,11 +1528,17 @@ def _apply_journaled_upgrade(
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                staged.replace(target)
+                if had_target:
+                    staged.replace(target)
+                else:
+                    created_targets.add(target)
+                    _copy_staged_replacement(root, staged, target)
         payload["status"] = "committed"
         _write_upgrade_journal(root, transaction, payload)
     except BaseException as forward_error:
-        rollback_errors = _rollback_upgrade_records(root, records)
+        rollback_errors = _rollback_upgrade_records(
+            root, records, removable_new_targets=created_targets
+        )
         if rollback_errors:
             raise OSError(
                 f"portable skill upgrade failed ({forward_error}); rollback is incomplete; "

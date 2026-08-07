@@ -1429,6 +1429,157 @@ def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
     assert journal.is_file()
 
 
+@pytest.mark.parametrize("target_kind", ["canonical", "adapter"])
+@pytest.mark.parametrize("had_target", [True, False])
+def test_upgrade_recovery_cannot_claim_unlisted_owner_skill(
+    target_kind: str, had_target: bool, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    target_relative = (
+        ".skills/team-owned"
+        if target_kind == "canonical"
+        else ".claude/skills/team-owned"
+    )
+    owner = root / target_relative
+    owner.mkdir(parents=True)
+    (owner / "OWNER.txt").write_text("owner bytes\n", encoding="utf-8")
+
+    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-malicious-owner"
+    staged_owner = transaction / "staged/owner"
+    staged_owner.mkdir(parents=True)
+    (staged_owner / "OWNER.txt").write_text(
+        "owner bytes\n" if had_target else "transaction bytes\n",
+        encoding="utf-8",
+    )
+    attacker_backup = transaction / "backups/0"
+    if had_target:
+        attacker_backup.mkdir(parents=True)
+        (attacker_backup / "ATTACKER.txt").write_text(
+            "attacker bytes\n", encoding="utf-8"
+        )
+
+    staged_inventory = transaction / "staged/inventory"
+    staged_inventory.parent.mkdir(parents=True, exist_ok=True)
+    old_payload = json.loads(
+        (root / ".obsidian-wiki/managed-skills.json").read_text(encoding="utf-8")
+    )
+    if not had_target:
+        old_payload["skills"] = sorted([*old_payload["skills"], "team-owned"])
+    staged_inventory.write_text(
+        json.dumps(old_payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    transaction_relative = transaction.relative_to(root).as_posix()
+    journal = transaction / "journal.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "implementation": IMPLEMENTATION_ID,
+                "replacements": [
+                    {
+                        "backup": f"{transaction_relative}/backups/0",
+                        "had_target": had_target,
+                        "staged": (
+                            None
+                            if had_target
+                            else f"{transaction_relative}/staged/owner"
+                        ),
+                        "target": target_relative,
+                    },
+                    {
+                        "backup": f"{transaction_relative}/backups/1",
+                        "had_target": True,
+                        "staged": f"{transaction_relative}/staged/inventory",
+                        "target": ".obsidian-wiki/managed-skills.json",
+                    },
+                ],
+                "schema_version": 1,
+                "status": "prepared",
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = snapshot_tree(root)
+
+    with pytest.raises(
+        (ValueError, OSError),
+        match="inventory|owner|unlisted|managed|recovery|absent",
+    ):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+    assert (owner / "OWNER.txt").read_text(encoding="utf-8") == "owner bytes\n"
+    assert not (owner / "ATTACKER.txt").exists()
+
+
+def test_recovery_removes_proven_new_skill_targets_created_before_inventory_commit(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    new_skill = tiny_skills / "wiki-new"
+    new_skill.mkdir()
+    (new_skill / "SKILL.md").write_text("# wiki-new\n", encoding="utf-8")
+    original_apply = portable._apply_journaled_upgrade
+
+    def crash_before_inventory(
+        repository: Path,
+        _transaction: Path,
+        _payload: dict[str, object],
+        records: list[tuple[Path, Path, Path | None, bool]],
+    ) -> None:
+        for target, backup, staged, had_target in records:
+            if target == repository / ".obsidian-wiki/managed-skills.json":
+                raise OSError("simulated process crash before inventory commit")
+            if had_target:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                target.replace(backup)
+            if staged is not None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if had_target:
+                    staged.replace(target)
+                elif staged.is_dir():
+                    shutil.copytree(staged, target, copy_function=shutil.copy2)
+                else:
+                    shutil.copy2(staged, target)
+
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", crash_before_inventory)
+    with pytest.raises(OSError, match="before inventory commit"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert (root / ".skills/wiki-new/SKILL.md").is_file()
+    for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
+        assert (root / agent_relative / "wiki-new/SKILL.md").is_file()
+    assert list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
+
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", original_apply)
+    names = upgrade_portable_skills(
+        root, version="2026.8.4", source_skills=tiny_skills
+    )
+
+    assert names == ("wiki-ingest", "wiki-new", "wiki-query")
+    assert (root / ".skills/wiki-new/SKILL.md").read_text() == "# wiki-new\n"
+    for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
+        assert (root / agent_relative / "wiki-new/SKILL.md").is_file()
+    assert not list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
+    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text())[
+        "skills"
+    ] == ["wiki-ingest", "wiki-new", "wiki-query"]
+
+
 @pytest.mark.parametrize(
     ("old", "new", "error_match"),
     [
