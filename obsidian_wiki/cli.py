@@ -12,10 +12,16 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9/3.10
+    import tomli as tomllib
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import (
@@ -31,6 +37,7 @@ from obsidian_wiki.portable import (
     PROJECT_AGENT_DIRS,
     _adapter_text,
     _assert_directory,
+    _assert_safe_managed_path,
     _assert_single_link_managed_tree,
     _assert_single_link_ordinary_file,
     _read_managed_skills_inventory_file,
@@ -591,6 +598,54 @@ def _is_absent_runtime_config(error: ConfigError) -> bool:
     return error.args == ("vault not configured",)
 
 
+def _portable_lexical_paths(
+    portable: PortableConfig,
+) -> tuple[Path, Path, Path, tuple[Path, ...]]:
+    """Re-read validated path strings without resolving away symlink evidence."""
+    config_path = portable.root / ".obsidian-wiki/config.toml"
+    try:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        paths = data["paths"]
+        vault = paths["vault"]
+        skills = paths["skills"]
+        local_state = paths["local_state"]
+        sources = paths["sources"]
+    except (KeyError, OSError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(
+            f"portable configuration paths could not be read safely: {config_path}: {exc}"
+        ) from exc
+    if (
+        not isinstance(vault, str)
+        or not isinstance(skills, str)
+        or not isinstance(local_state, str)
+        or not isinstance(sources, list)
+        or any(not isinstance(source, str) for source in sources)
+    ):
+        raise ValueError(f"portable configuration paths are invalid: {config_path}")
+    root = portable.root
+    return (
+        root / vault,
+        root / skills,
+        root / local_state,
+        tuple(root / source for source in sources),
+    )
+
+
+def _assert_optional_portable_directory(root: Path, path: Path, label: str) -> None:
+    """Allow a wholly absent lazy path while rejecting every unsafe existing entry."""
+    _assert_safe_managed_path(root, path)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError(f"portable {label} path is unreadable: {path}") from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"portable {label} path contains a symlink: {path}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"portable {label} path must be an ordinary directory: {path}")
+
+
 def _validate_portable_paths(portable: PortableConfig) -> str:
     root = portable.root
     expected_config = root / ".obsidian-wiki/config.toml"
@@ -601,20 +656,12 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
         )
     _assert_single_link_ordinary_file(root, expected_config, "portable configuration")
 
-    configured_paths = (
-        (portable.vault, "vault"),
-        (portable.skills, "skills"),
-        (portable.local_state, "local state"),
-        *((source, "source") for source in portable.sources),
-    )
-    for path, label in configured_paths:
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(
-                f"portable {label} path escapes the repository: {path}"
-            ) from exc
-        _assert_directory(root, path, f"portable {label} path")
+    vault, skills, local_state, sources = _portable_lexical_paths(portable)
+    _assert_directory(root, vault, "vault path")
+    _assert_directory(root, skills, "skills path")
+    _assert_optional_portable_directory(root, local_state, "local state")
+    for source in sources:
+        _assert_optional_portable_directory(root, source, "source")
     if portable.skills != root / ".skills":
         raise ValueError("portable canonical skills path must be .skills")
 

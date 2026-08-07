@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,48 @@ def _make_portable_repo(tmp_path: Path) -> tuple[Path, Path]:
     nested = root / "work/nested"
     nested.mkdir(parents=True)
     return root, nested
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _portable_snapshot(root: Path) -> tuple[tuple[str, str, bytes | str], ...]:
+    entries: list[tuple[str, str, bytes | str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if relative.parts and relative.parts[0] == ".git":
+            continue
+        name = relative.as_posix()
+        if path.is_symlink():
+            entries.append((name, "symlink", os.readlink(path)))
+        elif path.is_dir():
+            entries.append((name, "directory", ""))
+        elif path.is_file():
+            entries.append((name, "file", path.read_bytes()))
+        else:
+            entries.append((name, "special", ""))
+    return tuple(entries)
+
+
+def _replace_portable_path(
+    root: Path, *, old: str, new: str
+) -> None:
+    config = root / ".obsidian-wiki/config.toml"
+    text = config.read_text(encoding="utf-8")
+    assert old in text
+    config.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def _portable_check(proc: subprocess.CompletedProcess[str], name: str) -> dict[str, str]:
+    report = json.loads(proc.stdout)
+    return next(check for check in report["checks"] if check["name"] == name)
 
 
 def test_doctor_json_clean_install(tmp_path: Path) -> None:
@@ -261,6 +304,223 @@ def test_doctor_portable_mode_does_not_require_global_config(tmp_path: Path) -> 
         check["name"] not in {"global-config", "agent-installs"}
         for check in report["checks"]
     )
+
+
+def test_doctor_fresh_portable_clone_allows_lazy_paths_without_mutation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    origin, _nested = _make_portable_repo(tmp_path)
+    _git(origin, "init")
+    _git(origin, "config", "user.email", "doctor@example.invalid")
+    _git(origin, "config", "user.name", "Doctor Test")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-m", "portable fixture")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", str(origin), str(clone))
+    lazy_paths = (clone / ".obsidian-wiki/local", clone / "sources")
+    assert all(not path.exists() and not path.is_symlink() for path in lazy_paths)
+    before = _portable_snapshot(clone)
+
+    proc = _run(home, "doctor", "--json", cwd=clone)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout)["status"] == "pass"
+    assert _portable_check(proc, "portable-paths")["status"] == "pass"
+    assert _portable_snapshot(clone) == before
+    assert all(not path.exists() and not path.is_symlink() for path in lazy_paths)
+
+
+def test_doctor_allows_multiple_missing_nested_sources_and_local_state(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    shutil.rmtree(root / ".obsidian-wiki/local")
+    (root / "sources").rmdir()
+    _replace_portable_path(
+        root,
+        old='sources = ["sources"]',
+        new='sources = ["sources/inbox", "imports/deep/nested"]',
+    )
+    _replace_portable_path(
+        root,
+        old='local_state = ".obsidian-wiki/local"',
+        new='local_state = ".obsidian-wiki/runtime/cache"',
+    )
+    lazy_paths = (
+        root / "sources/inbox",
+        root / "imports/deep/nested",
+        root / ".obsidian-wiki/runtime/cache",
+    )
+    before = _portable_snapshot(root)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _portable_check(proc, "portable-paths")["status"] == "pass"
+    assert _portable_snapshot(root) == before
+    assert all(not path.exists() and not path.is_symlink() for path in lazy_paths)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "relative"),
+    [
+        ('sources = ["sources"]', 'sources = ["runtime/inbox"]', "runtime/inbox"),
+        (
+            'local_state = ".obsidian-wiki/local"',
+            'local_state = ".obsidian-wiki/runtime/cache"',
+            ".obsidian-wiki/runtime/cache",
+        ),
+    ],
+)
+def test_doctor_rejects_dangling_symlink_at_lazy_path(
+    old: str,
+    new: str,
+    relative: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    _replace_portable_path(root, old=old, new=new)
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(root / "missing-target", target_is_directory=True)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    check = _portable_check(proc, "portable-paths")
+    assert check["status"] == "fail"
+    assert "symlink" in check["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "leaf_relative", "ancestor_relative"),
+    [
+        (
+            'sources = ["sources"]',
+            'sources = ["runtime/deep/inbox"]',
+            "runtime/deep/inbox",
+            "runtime",
+        ),
+        (
+            'local_state = ".obsidian-wiki/local"',
+            'local_state = ".obsidian-wiki/runtime/deep/cache"',
+            ".obsidian-wiki/runtime/deep/cache",
+            ".obsidian-wiki/runtime",
+        ),
+    ],
+)
+@pytest.mark.parametrize("entry_kind", ["file", "symlink", "fifo"])
+@pytest.mark.parametrize("position", ["leaf", "ancestor"])
+def test_doctor_rejects_unsafe_existing_component_of_lazy_path(
+    old: str,
+    new: str,
+    leaf_relative: str,
+    ancestor_relative: str,
+    entry_kind: str,
+    position: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    _replace_portable_path(root, old=old, new=new)
+    unsafe = root / (leaf_relative if position == "leaf" else ancestor_relative)
+    unsafe.parent.mkdir(parents=True, exist_ok=True)
+    if entry_kind == "file":
+        unsafe.write_text("not a directory", encoding="utf-8")
+    elif entry_kind == "symlink":
+        target = root / "safe-target"
+        target.mkdir()
+        unsafe.symlink_to(target, target_is_directory=True)
+    else:
+        os.mkfifo(unsafe)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    check = _portable_check(proc, "portable-paths")
+    assert check["status"] == "fail"
+    detail = check["detail"].lower()
+    if entry_kind == "symlink":
+        assert "symlink" in detail
+    else:
+        assert "directory" in detail
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('sources = ["sources"]', 'sources = ["../outside"]'),
+        (
+            'local_state = ".obsidian-wiki/local"',
+            'local_state = "../outside"',
+        ),
+    ],
+)
+def test_doctor_rejects_escaping_lazy_path(
+    old: str,
+    new: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    _replace_portable_path(root, old=old, new=new)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    report = json.loads(proc.stdout)
+    assert report["status"] == "fail"
+    assert "repository-relative" in json.dumps(report)
+
+
+@pytest.mark.parametrize("relative", ["wiki", ".skills"])
+def test_doctor_still_requires_portable_vault_and_skills(
+    relative: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    shutil.rmtree(root / relative)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    assert _portable_check(proc, "portable-paths")["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "alias", "target"),
+    [
+        ('vault = "wiki"', 'vault = "vault-alias"', "vault-alias", "wiki"),
+        (
+            'skills = ".skills"',
+            'skills = "skills-alias"',
+            "skills-alias",
+            ".skills",
+        ),
+    ],
+)
+def test_doctor_rejects_lexical_symlink_for_required_portable_path(
+    old: str,
+    new: str,
+    alias: str,
+    target: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    _replace_portable_path(root, old=old, new=new)
+    (root / alias).symlink_to(root / target, target_is_directory=True)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    check = _portable_check(proc, "portable-paths")
+    assert check["status"] == "fail"
+    assert "symlink" in check["detail"].lower()
 
 
 def test_doctor_wrong_portable_implementation_fails_without_global_fallback(
