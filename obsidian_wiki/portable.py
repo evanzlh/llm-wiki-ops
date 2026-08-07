@@ -53,6 +53,7 @@ MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
 _UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
 _UPGRADE_JOURNAL = "journal.json"
+_UPGRADE_JOURNAL_SCHEMA = 2
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -1108,6 +1109,45 @@ def _journal_target_is_managed(relative: str) -> bool:
     return False
 
 
+def _parent_path_order(root: Path, path: Path) -> tuple[int, str]:
+    relative = PurePosixPath(_repo_relative_path(root, path))
+    return len(relative.parts), relative.as_posix()
+
+
+def _validate_journal_created_parents(
+    root: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    raw_parents: object,
+) -> tuple[Path, ...]:
+    if not isinstance(raw_parents, list) or any(
+        not isinstance(raw, str) for raw in raw_parents
+    ):
+        raise ValueError("portable upgrade journal created_parents must be a list of paths")
+    parents = tuple(
+        _journal_repo_path(root, raw, "created parent") for raw in raw_parents
+    )
+    if len(parents) != len(set(parents)) or list(parents) != sorted(
+        parents, key=lambda path: _parent_path_order(root, path)
+    ):
+        raise ValueError(
+            "portable upgrade journal created parents must be unique and canonically ordered"
+        )
+
+    allowed: set[Path] = set()
+    for target, _backup, _staged, _had_target in records:
+        parent = target.parent
+        while parent != root:
+            allowed.add(parent)
+            parent = parent.parent
+    unexpected = [parent for parent in parents if parent not in allowed]
+    if unexpected:
+        raise ValueError(
+            "portable upgrade journal created parent is not an ancestor of a fixed "
+            f"replacement target: {unexpected[0]}"
+        )
+    return parents
+
+
 def _stage_text_for_replacement(
     root: Path, transaction: Path, staged: Path, target: Path, text: str
 ) -> None:
@@ -1133,15 +1173,19 @@ def _write_upgrade_journal(root: Path, transaction: Path, payload: dict[str, obj
 
 def _journal_records(
     root: Path, transaction: Path, payload: object
-) -> tuple[str, list[tuple[Path, Path, Path | None, bool]]]:
+) -> tuple[str, list[tuple[Path, Path, Path | None, bool]], tuple[Path, ...]]:
     if not isinstance(payload, dict) or set(payload) != {
+        "created_parents",
         "implementation",
         "replacements",
         "schema_version",
         "status",
     }:
         raise ValueError(f"invalid portable upgrade journal: {transaction / _UPGRADE_JOURNAL}")
-    if payload["schema_version"] != 1 or payload["implementation"] != IMPLEMENTATION_ID:
+    if (
+        payload["schema_version"] != _UPGRADE_JOURNAL_SCHEMA
+        or payload["implementation"] != IMPLEMENTATION_ID
+    ):
         raise ValueError(f"invalid portable upgrade journal identity: {transaction}")
     status_value = payload["status"]
     if status_value not in ("prepared", "committed"):
@@ -1195,12 +1239,19 @@ def _journal_records(
         records.append((target, backup, staged, had_target))
     if _repo_relative_path(root, records[-1][0]) != MANAGED_SKILLS_INVENTORY:
         raise ValueError(f"portable upgrade journal inventory mapping must be last: {transaction}")
-    return str(status_value), records
+    created_parents = _validate_journal_created_parents(
+        root, records, payload["created_parents"]
+    )
+    return str(status_value), records, created_parents
 
 
 def _load_upgrade_journal(
     root: Path, transaction: Path
-) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
+) -> tuple[
+    dict[str, object],
+    list[tuple[Path, Path, Path | None, bool]],
+    tuple[Path, ...],
+]:
     transactions = root / _UPGRADE_TRANSACTIONS
     _assert_safe_managed_path(root, transaction)
     if transaction.parent != transactions or not transaction.name.startswith("txn-"):
@@ -1222,10 +1273,10 @@ def _load_upgrade_journal(
         payload = json.loads(journal.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"portable upgrade journal is invalid: {journal}: {exc}") from exc
-    status, records = _journal_records(root, transaction, payload)
+    status, records, created_parents = _journal_records(root, transaction, payload)
     assert isinstance(payload, dict)
     payload["status"] = status
-    return payload, records
+    return payload, records, created_parents
 
 
 def _journal_skill_name(root: Path, target: Path) -> str | None:
@@ -1561,6 +1612,22 @@ def _rollback_upgrade_records(
     return errors
 
 
+def _rollback_created_parents(root: Path, created_parents: tuple[Path, ...]) -> list[str]:
+    errors: list[str] = []
+    for parent in reversed(created_parents):
+        try:
+            _assert_safe_managed_path(root, parent)
+            if not parent.exists() and not parent.is_symlink():
+                continue
+            metadata = parent.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError(f"created parent is no longer an ordinary directory: {parent}")
+            parent.rmdir()
+        except BaseException as exc:
+            errors.append(f"created parent {parent}: {exc}")
+    return errors
+
+
 def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
     _assert_safe_managed_path(root, transaction)
     _assert_managed_tree(root, transaction)
@@ -1584,7 +1651,7 @@ def _recover_upgrade_transactions(
         return
     _assert_directory(root, transactions, "upgrade transactions")
     for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
-        payload, records = _load_upgrade_journal(root, transaction)
+        payload, records, created_parents = _load_upgrade_journal(root, transaction)
         removable_new_targets = _authorize_upgrade_recovery(
             root,
             transaction,
@@ -1600,6 +1667,7 @@ def _recover_upgrade_transactions(
         errors = _rollback_upgrade_records(
             root, records, removable_new_targets=removable_new_targets
         )
+        errors.extend(_rollback_created_parents(root, created_parents))
         if errors:
             raise OSError(
                 "portable skill upgrade recovery is incomplete; preserved journal and "
@@ -1659,13 +1727,26 @@ def _prepare_upgrade_journal(
                 "target": _repo_relative_path(root, target),
             }
         )
+    created_parents: set[Path] = set()
+    for target, _staged in replacements:
+        parent = target.parent
+        while parent != root and not parent.exists():
+            _assert_safe_managed_path(root, parent)
+            created_parents.add(parent)
+            parent = parent.parent
     payload: dict[str, object] = {
+        "created_parents": [
+            _repo_relative_path(root, parent)
+            for parent in sorted(
+                created_parents, key=lambda path: _parent_path_order(root, path)
+            )
+        ],
         "implementation": IMPLEMENTATION_ID,
         "replacements": raw_records,
-        "schema_version": 1,
+        "schema_version": _UPGRADE_JOURNAL_SCHEMA,
         "status": "prepared",
     }
-    _status, records = _journal_records(root, transaction, payload)
+    _status, records, _created_parents = _journal_records(root, transaction, payload)
     _write_upgrade_journal(root, transaction, payload)
     return payload, records
 
@@ -1677,6 +1758,9 @@ def _apply_journaled_upgrade(
     records: list[tuple[Path, Path, Path | None, bool]],
 ) -> None:
     created_targets: set[Path] = set()
+    _status, _validated_records, created_parents = _journal_records(
+        root, transaction, payload
+    )
     try:
         for target, backup, staged, had_target in records:
             if had_target:
@@ -1701,6 +1785,7 @@ def _apply_journaled_upgrade(
         rollback_errors = _rollback_upgrade_records(
             root, records, removable_new_targets=created_targets
         )
+        rollback_errors.extend(_rollback_created_parents(root, created_parents))
         if rollback_errors:
             raise OSError(
                 f"portable skill upgrade failed ({forward_error}); rollback is incomplete; "

@@ -218,9 +218,10 @@ def write_prepared_skill_upgrade_journal(
         }
     )
     payload: dict[str, object] = {
+        "created_parents": [],
         "implementation": IMPLEMENTATION_ID,
         "replacements": records,
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "prepared",
     }
     rewrite_prepared_skill_upgrade_journal(root, transaction, payload)
@@ -1297,14 +1298,21 @@ def test_upgrade_rolls_back_when_staged_directory_swap_fails(
     assert snapshot_tree(root) == before
 
 
+@pytest.mark.parametrize("preexisting_empty_parent", [False, True])
 def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
-    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+    preexisting_empty_parent: bool,
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     (tiny_skills / "wiki-ingest/SKILL.md").write_text("# upgraded\n", encoding="utf-8")
     agents = root / "AGENTS.md"
     agents.write_text(agents.read_text() + "\nOwner sentence.\n", encoding="utf-8")
+    shutil.rmtree(root / ".github")
+    if preexisting_empty_parent:
+        (root / ".github").mkdir()
     before = snapshot_tree(root)
 
     original_copy2 = shutil.copy2
@@ -1326,6 +1334,41 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
         )
 
     assert snapshot_tree(root) == before
+
+
+def test_upgrade_rollback_preserves_concurrently_populated_created_parent(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".github")
+    original_copy2 = shutil.copy2
+
+    def populate_parent_then_fail(
+        source: Path, target: Path, *, follow_symlinks: bool = True
+    ) -> str:
+        if "/staged/inventory/managed-skills.json" in str(source):
+            (root / ".github/OWNER.txt").write_text(
+                "concurrent owner data\n", encoding="utf-8"
+            )
+            raise OSError("simulated inventory commit failure")
+        return original_copy2(
+            source, target, follow_symlinks=follow_symlinks
+        )
+
+    monkeypatch.setattr(shutil, "copy2", populate_parent_then_fail)
+
+    with pytest.raises(OSError, match="rollback|parent|incomplete"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert (root / ".github/OWNER.txt").read_text(encoding="utf-8") == (
+        "concurrent owner data\n"
+    )
+    assert list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
 
 
 def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
@@ -1546,9 +1589,10 @@ def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
     journal.write_text(
         json.dumps(
             {
+                "created_parents": [],
                 "implementation": IMPLEMENTATION_ID,
                 "replacements": [record],
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "prepared",
             }
         ),
@@ -1564,6 +1608,39 @@ def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
 
     assert outside.read_text(encoding="utf-8") == "owner data\n"
     assert journal.is_file()
+
+
+@pytest.mark.parametrize(
+    "created_parents",
+    [
+        ["."],
+        ["../outside"],
+        ["wiki"],
+        [".claude", ".claude"],
+        [".claude/skills", ".claude"],
+    ],
+)
+def test_upgrade_recovery_rejects_malformed_created_parent_journal_without_writes(
+    created_parents: list[str], tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    transaction, payload = write_prepared_skill_upgrade_journal(
+        root, tiny_skills, version="2026.8.4"
+    )
+    payload["created_parents"] = created_parents
+    rewrite_prepared_skill_upgrade_journal(root, transaction, payload)
+    before = snapshot_tree(root)
+
+    with pytest.raises(
+        ValueError,
+        match="created parent|journal|repository-relative|ancestor|canonically",
+    ):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
 
 
 @pytest.mark.parametrize("target_kind", ["canonical", "adapter"])
@@ -1802,6 +1879,69 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
     assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text())[
         "skills"
     ] == ["wiki-ingest", "wiki-new", "wiki-query"]
+
+
+def test_next_invocation_recovery_removes_created_bootstrap_parents_before_upgrade(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".github")
+    original_apply = portable._apply_journaled_upgrade
+
+    def crash_before_inventory(
+        repository: Path,
+        _transaction: Path,
+        _payload: dict[str, object],
+        records: list[tuple[Path, Path, Path | None, bool]],
+    ) -> None:
+        for target, backup, staged, had_target in records:
+            if target == repository / ".obsidian-wiki/managed-skills.json":
+                raise OSError("simulated process crash before inventory commit")
+            if had_target:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                target.replace(backup)
+            if staged is not None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if had_target:
+                    staged.replace(target)
+                elif staged.is_dir():
+                    shutil.copytree(staged, target, copy_function=shutil.copy2)
+                else:
+                    shutil.copy2(staged, target)
+
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", crash_before_inventory)
+    with pytest.raises(OSError, match="before inventory commit"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert (root / ".github/copilot-instructions.md").is_file()
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", original_apply)
+    original_preflight = portable._preflight_upgrade_paths
+
+    def assert_parent_recovered_before_upgrade(
+        repository: Path,
+        *,
+        previous_names: tuple[str, ...],
+        current_names: tuple[str, ...],
+    ) -> list[tuple[Path, str]]:
+        assert not (repository / ".github").exists()
+        return original_preflight(
+            repository,
+            previous_names=previous_names,
+            current_names=current_names,
+        )
+
+    monkeypatch.setattr(
+        portable, "_preflight_upgrade_paths", assert_parent_recovered_before_upgrade
+    )
+    names = upgrade_portable_skills(
+        root, version="2026.8.4", source_skills=tiny_skills
+    )
+
+    assert names == ("wiki-ingest", "wiki-query")
+    assert (root / ".github/copilot-instructions.md").is_file()
 
 
 @pytest.mark.parametrize(
