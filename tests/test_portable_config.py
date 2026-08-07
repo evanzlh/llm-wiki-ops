@@ -40,7 +40,7 @@ def test_load_resolves_paths_against_repository_root(tmp_path: Path) -> None:
     assert config.settings["OBSIDIAN_LINK_FORMAT"] == "wikilink"
 
 
-@pytest.mark.parametrize("value", ["/tmp/wiki", "C:/wiki", "../../wiki"])
+@pytest.mark.parametrize("value", ["/tmp/wiki", "C:/wiki", "C:wiki", "../../wiki"])
 def test_absolute_or_escaping_vault_is_rejected(tmp_path: Path, value: str) -> None:
     path = write_portable(
         tmp_path,
@@ -125,3 +125,51 @@ CLAUDE_HISTORY_PATH = "/tmp/claude"
     )
     with pytest.raises(ConfigError, match="portable setting"):
         load_portable_config(path, installed_version="2026.8", implementation=IMPLEMENTATION_ID)
+
+
+def test_composite_portable_setting_is_rejected_with_config_path(tmp_path: Path) -> None:
+    path = write_portable(
+        tmp_path,
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+OBSIDIAN_ALLOWED_LIFECYCLES = [{{name = "active"}}]
+''',
+    )
+    with pytest.raises(ConfigError, match="unsupported settings value") as exc_info:
+        load_portable_config(path, installed_version="2026.8", implementation=IMPLEMENTATION_ID)
+    assert str(path) in str(exc_info.value)
+
+
+def test_boolean_setting_list_is_normalized_to_lowercase(tmp_path: Path) -> None:
+    path = write_portable(
+        tmp_path,
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+OBSIDIAN_ALLOWED_LIFECYCLES = [true, false]
+''',
+    )
+    config = load_portable_config(path, installed_version="2026.8", implementation=IMPLEMENTATION_ID)
+    assert config.settings["OBSIDIAN_ALLOWED_LIFECYCLES"] == "true,false"
+
+
+def test_invalid_utf8_is_reported_as_path_qualified_config_error(tmp_path: Path) -> None:
+    path = write_portable(tmp_path)
+    path.write_bytes(b"\xff")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_portable_config(path, installed_version="2026.8", implementation=IMPLEMENTATION_ID)
+    assert str(path) in str(exc_info.value)

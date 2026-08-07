@@ -58,7 +58,8 @@ def _contained_path(root: Path, raw: str, label: str) -> Path:
     if "\\" in raw:
         raise ConfigError(f"{label} must use portable forward-slash separators")
     value = Path(raw)
-    if value.is_absolute() or PureWindowsPath(raw).is_absolute():
+    windows_value = PureWindowsPath(raw)
+    if value.is_absolute() or windows_value.is_absolute() or windows_value.drive:
         raise ConfigError(f"{label} must be repository-relative")
     resolved_root = root.resolve()
     resolved = (resolved_root / value).resolve(strict=False)
@@ -75,6 +76,14 @@ def _overlaps(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
 
+def _setting_scalar(value: Any, key: str) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    raise ConfigError(f"unsupported settings value for {key}")
+
+
 def _settings(raw: Any) -> dict[str, str]:
     if raw is None:
         return {}
@@ -85,13 +94,9 @@ def _settings(raw: Any) -> dict[str, str]:
         if key not in PORTABLE_SETTING_KEYS:
             raise ConfigError(f"unsupported portable setting: {key}")
         if isinstance(value, list):
-            values[key] = ",".join(str(item) for item in value)
-        elif isinstance(value, bool):
-            values[key] = "true" if value else "false"
-        elif isinstance(value, (str, int, float)):
-            values[key] = str(value)
+            values[key] = ",".join(_setting_scalar(item, key) for item in value)
         else:
-            raise ConfigError(f"unsupported settings value for {key}")
+            values[key] = _setting_scalar(value, key)
     return values
 
 
@@ -184,5 +189,12 @@ def load_portable_config(
         )
     except ConfigError as exc:
         raise ConfigError(f"{config_path}: {exc}") from exc
-    except (InvalidSpecifier, InvalidVersion, tomllib.TOMLDecodeError, OSError, TypeError) as exc:
+    except (
+        InvalidSpecifier,
+        InvalidVersion,
+        tomllib.TOMLDecodeError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+    ) as exc:
         raise ConfigError(f"{config_path}: invalid portable configuration: {exc}") from exc
