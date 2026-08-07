@@ -53,7 +53,7 @@ MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
 _UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
 _UPGRADE_JOURNAL = "journal.json"
-_UPGRADE_JOURNAL_SCHEMA = 2
+_UPGRADE_JOURNAL_SCHEMA = 3
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -799,20 +799,35 @@ def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     return None
 
 
+def _render_bootstrap_target(root: Path, target: Path, existing: str) -> str:
+    """Render one fixed bootstrap target from its authoritative old content."""
+    agents_path = root / "AGENTS.md"
+    if target == agents_path:
+        if not existing:
+            existing = _TEAM_CONVENTIONS
+        elif MANAGED_START not in existing and "## Team conventions" not in existing:
+            existing = f"{_TEAM_CONVENTIONS}\n{existing}"
+        return merge_managed_block(existing, _PORTABLE_AGENT_INSTRUCTIONS)
+
+    relative = _repo_relative_path(root, target)
+    try:
+        agents_reference = _BOOTSTRAP_REFERENCES[relative]
+    except KeyError as exc:  # pragma: no cover - callers use the fixed target set
+        raise ValueError(f"unexpected portable bootstrap target: {target}") from exc
+    planned = _planned_bootstrap_text(existing, agents_reference)
+    return existing if planned is None else planned
+
+
 def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
     agents_path = root / "AGENTS.md"
     _assert_safe_managed_path(root, agents_path)
     if agents_path.exists() and not agents_path.is_file():
         raise ValueError(f"portable AGENTS.md must be an ordinary file: {agents_path}")
     existing = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
-    if not existing:
-        existing = _TEAM_CONVENTIONS
-    elif MANAGED_START not in existing and "## Team conventions" not in existing:
-        existing = f"{_TEAM_CONVENTIONS}\n{existing}"
-    merged = merge_managed_block(existing, _PORTABLE_AGENT_INSTRUCTIONS)
-
-    plans: list[tuple[Path, str]] = [(agents_path, merged)]
-    for relative, agents_reference in _BOOTSTRAP_REFERENCES.items():
+    plans: list[tuple[Path, str]] = [
+        (agents_path, _render_bootstrap_target(root, agents_path, existing))
+    ]
+    for relative in _BOOTSTRAP_REFERENCES:
         target = root / relative
         _assert_safe_managed_path(root, target)
         _assert_safe_managed_path(root, target.parent)
@@ -823,9 +838,7 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
         if target.exists() and not target.is_file():
             raise ValueError(f"portable bootstrap destination collision: {target}")
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        planned = _planned_bootstrap_text(current, agents_reference)
-        if planned is not None:
-            plans.append((target, planned))
+        plans.append((target, _render_bootstrap_target(root, target, current)))
     return plans
 
 
@@ -1199,16 +1212,19 @@ def _journal_records(
     target_names: set[str] = set()
     backup_names: set[str] = set()
     staged_names: set[str] = set()
+    install_names: set[str] = set()
     for index, raw_record in enumerate(raw_records):
         if not isinstance(raw_record, dict) or set(raw_record) != {
             "backup",
             "had_target",
+            "install",
             "staged",
             "target",
         }:
             raise ValueError(f"invalid portable upgrade journal record {index}: {transaction}")
         target_raw = raw_record["target"]
         backup_raw = raw_record["backup"]
+        install_raw = raw_record["install"]
         staged_raw = raw_record["staged"]
         had_target = raw_record["had_target"]
         if not isinstance(target_raw, str) or not _journal_target_is_managed(target_raw):
@@ -1228,14 +1244,29 @@ def _journal_records(
             ):
                 raise ValueError(f"unsafe portable upgrade journal staged path: {staged_raw!r}")
             staged = _journal_repo_path(root, staged_raw, "staged")
+        expected_install = (
+            f"{transaction_relative}/install/{index}" if staged is not None else None
+        )
+        if install_raw != expected_install:
+            raise ValueError(
+                f"unsafe portable upgrade journal install candidate: {install_raw!r}"
+            )
+        if install_raw is not None:
+            _journal_repo_path(root, install_raw, "install candidate")
         if target_raw in target_names or backup_raw in backup_names:
             raise ValueError(f"duplicate portable upgrade journal mapping: {transaction}")
         if staged_raw is not None and staged_raw in staged_names:
             raise ValueError(f"duplicate portable upgrade journal staged path: {transaction}")
+        if install_raw is not None and install_raw in install_names:
+            raise ValueError(
+                f"duplicate portable upgrade journal install path: {transaction}"
+            )
         target_names.add(target_raw)
         backup_names.add(str(backup_raw))
         if staged_raw is not None:
             staged_names.add(str(staged_raw))
+        if install_raw is not None:
+            install_names.add(str(install_raw))
         records.append((target, backup, staged, had_target))
     if _repo_relative_path(root, records[-1][0]) != MANAGED_SKILLS_INVENTORY:
         raise ValueError(f"portable upgrade journal inventory mapping must be last: {transaction}")
@@ -1346,7 +1377,7 @@ def _replacement_snapshot(
 
 
 def _source_replacement_snapshot(
-    path: Path,
+    path: Path, *, root_mode: int | None = None
 ) -> tuple[tuple[str, str, int, bytes], ...]:
     """Return the exact canonical tree that source staging will copy."""
     _validate_source_tree(path)
@@ -1360,7 +1391,11 @@ def _source_replacement_snapshot(
                 (
                     relative_name,
                     "directory",
-                    stat.S_IMODE(metadata.st_mode),
+                    (
+                        root_mode
+                        if relative_name == "" and root_mode is not None
+                        else stat.S_IMODE(metadata.st_mode)
+                    ),
                     b"",
                 )
             )
@@ -1409,6 +1444,25 @@ def _authorize_upgrade_recovery(
     source: Path,
     current_names: tuple[str, ...],
 ) -> set[Path]:
+    def validate_artifacts(
+        index: int,
+        staged: Path,
+        expected: tuple[tuple[str, str, int, bytes], ...],
+        label: str,
+    ) -> None:
+        if _replacement_snapshot(root, staged) != expected:
+            raise ValueError(
+                f"portable upgrade recovery {label} proof does not match trusted content"
+            )
+        install = transaction / "install" / str(index)
+        if (install.exists() or install.is_symlink()) and _replacement_snapshot(
+            root, install
+        ) != expected:
+            raise ValueError(
+                f"portable upgrade recovery {label} install candidate does not "
+                "match its retained proof"
+            )
+
     inventory_target, inventory_backup, inventory_staged, inventory_had_target = (
         records[-1]
     )
@@ -1445,21 +1499,16 @@ def _authorize_upgrade_recovery(
             _inventory_text(version, current_names).encode("utf-8"),
         ),
     )
-    if _replacement_snapshot(root, inventory_staged) != expected_inventory:
-        raise ValueError(
-            "portable upgrade recovery staged inventory does not match the trusted bundle"
-        )
-    if inventory_backup.exists() and inventory_target.exists():
-        if _replacement_snapshot(root, inventory_target) != expected_inventory:
-            raise ValueError(
-                "portable upgrade recovery installed inventory does not match the trusted bundle"
-            )
-    elif not rollback and inventory_backup.exists():
-        raise ValueError(
-            "portable committed upgrade recovery is missing its installed inventory"
-        )
+    validate_artifacts(
+        len(records) - 1,
+        inventory_staged,
+        expected_inventory,
+        "inventory",
+    )
 
-    expected_skill_records: dict[Path, tuple[Path | None, bool, str, int | None]] = {}
+    expected_skill_records: dict[
+        Path, tuple[Path | None, bool, str, int | None]
+    ] = {}
     for name in sorted(old_skills | current_skills):
         expected_skill_records[root / ".skills" / name] = (
             transaction / "staged/canonical" / name
@@ -1479,8 +1528,8 @@ def _authorize_upgrade_recovery(
                 agent_index,
             )
     actual_skill_records = {
-        target: (staged, had_target)
-        for target, _backup, staged, had_target in records[:-1]
+        target: (index, backup, staged, had_target)
+        for index, (target, backup, staged, had_target) in enumerate(records[:-1])
         if _journal_skill_name(root, target) is not None
     }
     if set(actual_skill_records) != set(expected_skill_records):
@@ -1500,22 +1549,27 @@ def _authorize_upgrade_recovery(
     for target, (expected_staged, expected_had_target, name, agent_index) in (
         expected_skill_records.items()
     ):
-        staged, had_target = actual_skill_records[target]
+        index, backup, staged, had_target = actual_skill_records[target]
         if staged != expected_staged or had_target != expected_had_target:
             raise ValueError(
                 "portable upgrade recovery skill record has an unexpected staged layout "
                 f"or ownership flag: {target}"
             )
-        if had_target or staged is None:
+        if staged is None:
             continue
-        staged_snapshot = _replacement_snapshot(root, staged)
+        original = backup if backup.exists() else target
+        if had_target and not original.exists():
+            raise ValueError(
+                f"portable upgrade recovery original skill is missing: {target}"
+            )
+        root_mode = (
+            stat.S_IMODE(original.lstat().st_mode) if had_target else 0o755
+        )
         if agent_index is None:
-            trusted_snapshot = _source_replacement_snapshot(source / name)
-            if staged_snapshot != trusted_snapshot:
-                raise ValueError(
-                    "portable upgrade recovery canonical content or mode does not match "
-                    f"the trusted source bundle: {target}"
-                )
+            trusted_snapshot = _source_replacement_snapshot(
+                source / name, root_mode=root_mode
+            )
+            validate_artifacts(index, staged, trusted_snapshot, f"canonical {target}")
         else:
             agent_relative = PROJECT_AGENT_DIRS[agent_index][0]
             adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
@@ -1527,20 +1581,98 @@ def _authorize_upgrade_recovery(
                     adapter_relative.parent.as_posix(),
                 ),
             ).encode("utf-8")
+            skill_mode = 0o644
+            if had_target:
+                skill_file = original / "SKILL.md"
+                try:
+                    skill_metadata = skill_file.lstat()
+                except OSError as exc:
+                    raise ValueError(
+                        f"portable upgrade recovery original adapter is missing: {target}"
+                    ) from exc
+                if not stat.S_ISREG(skill_metadata.st_mode) or stat.S_ISLNK(
+                    skill_metadata.st_mode
+                ):
+                    raise ValueError(
+                        f"portable upgrade recovery original adapter is invalid: {target}"
+                    )
+                skill_mode = stat.S_IMODE(skill_metadata.st_mode)
+            trusted_snapshot = (
+                ("", "directory", root_mode, b""),
+                ("SKILL.md", "file", skill_mode, trusted_adapter),
+            )
+            validate_artifacts(index, staged, trusted_snapshot, f"adapter {target}")
+
+    fixed_bootstrap_targets = (root / "AGENTS.md",) + tuple(
+        root / relative for relative in _BOOTSTRAP_REFERENCES
+    )
+    actual_bootstrap_records = {
+        target: (index, backup, staged, had_target)
+        for index, (target, backup, staged, had_target) in enumerate(records[:-1])
+        if _journal_skill_name(root, target) is None
+    }
+    if set(actual_bootstrap_records) != set(fixed_bootstrap_targets):
+        missing = sorted(
+            _repo_relative_path(root, target)
+            for target in set(fixed_bootstrap_targets) - set(actual_bootstrap_records)
+        )
+        unexpected = sorted(
+            _repo_relative_path(root, target)
+            for target in set(actual_bootstrap_records) - set(fixed_bootstrap_targets)
+        )
+        raise ValueError(
+            "portable upgrade recovery bootstrap record plan is incomplete or "
+            f"unexpected; missing={missing}, unexpected={unexpected}"
+        )
+    for bootstrap_index, target in enumerate(fixed_bootstrap_targets):
+        index, backup, staged, had_target = actual_bootstrap_records[target]
+        expected_staged = transaction / "staged/bootstrap" / str(bootstrap_index)
+        if staged != expected_staged:
+            raise ValueError(
+                f"portable upgrade recovery bootstrap staged layout is invalid: {target}"
+            )
+        original = backup if backup.exists() else target
+        if had_target:
+            try:
+                metadata = original.lstat()
+            except OSError as exc:
+                raise ValueError(
+                    f"portable upgrade recovery bootstrap authority is missing: {target}"
+                ) from exc
             if (
-                len(staged_snapshot) != 2
-                or staged_snapshot[0][0:2] != ("", "directory")
-                or staged_snapshot[1] != (
-                    "SKILL.md",
-                    "file",
-                    0o644,
-                    trusted_adapter,
-                )
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
             ):
                 raise ValueError(
-                    "portable upgrade recovery adapter content or mode does not match "
-                    f"the trusted generated adapter: {target}"
+                    f"portable upgrade recovery bootstrap authority is invalid: {target}"
                 )
+            try:
+                original_text = original.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ValueError(
+                    f"portable upgrade recovery bootstrap authority is unreadable: {target}"
+                ) from exc
+            mode = stat.S_IMODE(metadata.st_mode)
+        else:
+            if backup.exists() or backup.is_symlink():
+                raise ValueError(
+                    "portable upgrade journal has a bootstrap backup for an originally "
+                    f"absent target: {target}"
+                )
+            original_text = ""
+            mode = 0o644
+        expected_bootstrap = (
+            (
+                "",
+                "file",
+                mode,
+                _render_bootstrap_target(root, target, original_text).encode("utf-8"),
+            ),
+        )
+        validate_artifacts(
+            index, staged, expected_bootstrap, f"bootstrap {target}"
+        )
 
     removable_new_targets: set[Path] = set()
 
@@ -1568,6 +1700,21 @@ def _authorize_upgrade_recovery(
                     f"absent target; preserved without mutation: {target}"
                 )
             removable_new_targets.add(target)
+
+    if not rollback:
+        for target, _backup, staged, _had_target in records:
+            if staged is None:
+                if target.exists() or target.is_symlink():
+                    raise ValueError(
+                        f"portable committed upgrade retained a removed target: {target}"
+                    )
+            elif not target.exists() or (
+                _replacement_snapshot(root, target)
+                != _replacement_snapshot(root, staged)
+            ):
+                raise ValueError(
+                    f"portable committed upgrade target diverged from proof: {target}"
+                )
     return removable_new_targets
 
 
@@ -1592,12 +1739,28 @@ def _rollback_upgrade_records(
 ) -> list[str]:
     removable = removable_new_targets or set()
     errors: list[str] = []
-    for target, backup, _staged, had_target in reversed(records):
+    for target, backup, staged, had_target in reversed(records):
         try:
             if backup.exists():
-                _remove_transaction_target(root, target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                backup.replace(target)
+                backup_snapshot = _replacement_snapshot(root, backup)
+                if not target.exists() and not target.is_symlink():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    backup.replace(target)
+                    continue
+                target_snapshot = _replacement_snapshot(root, target)
+                if target_snapshot == backup_snapshot:
+                    _remove_transaction_target(root, backup)
+                    continue
+                if staged is not None and target_snapshot == _replacement_snapshot(
+                    root, staged
+                ):
+                    _remove_transaction_target(root, target)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    backup.replace(target)
+                    continue
+                raise OSError(
+                    "owner-diverged target cannot be overwritten during rollback"
+                )
             elif not had_target:
                 if target.exists() and target not in removable:
                     raise OSError(
@@ -1651,6 +1814,27 @@ def _recover_upgrade_transactions(
         return
     _assert_directory(root, transactions, "upgrade transactions")
     for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
+        journal = transaction / _UPGRADE_JOURNAL
+        if not journal.exists() and not journal.is_symlink():
+            _assert_safe_managed_path(root, transaction)
+            try:
+                metadata = transaction.lstat()
+            except OSError as exc:
+                raise ValueError(
+                    f"portable upgrade transaction is unreadable: {transaction}"
+                ) from exc
+            if (
+                transaction.parent != transactions
+                or not transaction.name.startswith("txn-")
+                or not stat.S_ISDIR(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+            ):
+                raise ValueError(f"unsafe portable upgrade transaction path: {transaction}")
+            # A journal is the mutation boundary.  Without one, every entry is
+            # disposable preparation state; rmtree unlinks internal symlinks
+            # without following them.
+            shutil.rmtree(transaction)
+            continue
         payload, records, created_parents = _load_upgrade_journal(root, transaction)
         removable_new_targets = _authorize_upgrade_recovery(
             root,
@@ -1716,13 +1900,21 @@ def _prepare_upgrade_journal(
     replacements: list[tuple[Path, Path | None]],
 ) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
     (transaction / "backups").mkdir()
+    (transaction / "install").mkdir()
     transaction_relative = _repo_relative_path(root, transaction)
     raw_records: list[dict[str, object]] = []
     for index, (target, staged) in enumerate(replacements):
+        install: Path | None = None
+        if staged is not None:
+            install = transaction / "install" / str(index)
+            _copy_staged_replacement(root, staged, install)
         raw_records.append(
             {
                 "backup": f"{transaction_relative}/backups/{index}",
                 "had_target": target.exists(),
+                "install": (
+                    _repo_relative_path(root, install) if install is not None else None
+                ),
                 "staged": _repo_relative_path(root, staged) if staged is not None else None,
                 "target": _repo_relative_path(root, target),
             }
@@ -1762,7 +1954,19 @@ def _apply_journaled_upgrade(
         root, transaction, payload
     )
     try:
-        for target, backup, staged, had_target in records:
+        for index, (target, backup, staged, had_target) in enumerate(records):
+            install = transaction / "install" / str(index)
+            if staged is not None:
+                if not install.exists() or install.is_symlink():
+                    raise OSError(
+                        f"portable upgrade install candidate disappeared: {install}"
+                    )
+                if _replacement_snapshot(root, install) != _replacement_snapshot(
+                    root, staged
+                ):
+                    raise OSError(
+                        f"portable upgrade install candidate diverged from proof: {install}"
+                    )
             if had_target:
                 if not target.exists():
                     raise OSError(f"managed upgrade target disappeared: {target}")
@@ -1772,13 +1976,9 @@ def _apply_journaled_upgrade(
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if target == root / MANAGED_SKILLS_INVENTORY:
-                    _copy_staged_replacement(root, staged, target)
-                elif had_target:
-                    staged.replace(target)
-                else:
+                if not had_target:
                     created_targets.add(target)
-                    _copy_staged_replacement(root, staged, target)
+                install.replace(target)
         payload["status"] = "committed"
         _write_upgrade_journal(root, transaction, payload)
     except BaseException as forward_error:
@@ -1847,11 +2047,20 @@ def upgrade_portable_skills(
             staged_adapters = staged_root / "adapters"
             staged_bootstrap = staged_root / "bootstrap"
             for name in current_names:
+                canonical_target = root / ".skills" / name
                 shutil.copytree(
                     source / name,
                     staged_canonical / name,
                     symlinks=False,
                     ignore=_ignore_source_artifacts,
+                )
+                os.chmod(
+                    staged_canonical / name,
+                    (
+                        stat.S_IMODE(canonical_target.lstat().st_mode)
+                        if canonical_target.exists()
+                        else 0o755
+                    ),
                 )
                 for agent_index, (agent_relative, _label) in enumerate(
                     PROJECT_AGENT_DIRS
@@ -1872,6 +2081,15 @@ def upgrade_portable_skills(
                                 canonical_relative.as_posix(),
                                 adapter_relative.parent.as_posix(),
                             ),
+                        ),
+                    )
+                    adapter_target = root / agent_relative / name
+                    os.chmod(
+                        adapter.parent,
+                        (
+                            stat.S_IMODE(adapter_target.lstat().st_mode)
+                            if adapter_target.exists()
+                            else 0o755
                         ),
                     )
 
@@ -1949,21 +2167,39 @@ def setup_portable_repo(
     target_existed = root.is_dir()
     target_is_empty = target_existed and not any(root.iterdir())
     if target_existed and not target_is_empty:
-        inventory_path = root / MANAGED_SKILLS_INVENTORY
-        if inventory_path.exists() or inventory_path.is_symlink():
-            _inventory_version, managed_names = _read_managed_skills_inventory(root)
-            _preflight_existing_portable(root, version=version, skill_names=managed_names)
-            _repair_existing_portable_repo(
+        config_path = root / ".obsidian-wiki/config.toml"
+        if not config_path.exists() and not config_path.is_symlink():
+            raise ValueError(
+                f"existing target is not a portable repository: {root}"
+            )
+        _assert_ordinary_file(root, config_path, "configuration")
+        _load_canonical_portable_config(root, version=version)
+        with _portable_skills_lock(root):
+            _recover_upgrade_transactions(
                 root,
-                source_skills=source,
-                skill_names=managed_names,
+                version=version,
+                source=source,
+                current_names=skill_names,
             )
-        else:
-            _preflight_existing_portable(root, version=version, skill_names=skill_names)
-            _validate_pre_inventory_migration(root, source, skill_names)
-            _write_managed_skills_inventory(
-                root, version=version, skill_names=skill_names
-            )
+            inventory_path = root / MANAGED_SKILLS_INVENTORY
+            if inventory_path.exists() or inventory_path.is_symlink():
+                _inventory_version, managed_names = _read_managed_skills_inventory(root)
+                _preflight_existing_portable(
+                    root, version=version, skill_names=managed_names
+                )
+                _repair_existing_portable_repo(
+                    root,
+                    source_skills=source,
+                    skill_names=managed_names,
+                )
+            else:
+                _preflight_existing_portable(
+                    root, version=version, skill_names=skill_names
+                )
+                _validate_pre_inventory_migration(root, source, skill_names)
+                _write_managed_skills_inventory(
+                    root, version=version, skill_names=skill_names
+                )
         return root
 
     root.parent.mkdir(parents=True, exist_ok=True)
