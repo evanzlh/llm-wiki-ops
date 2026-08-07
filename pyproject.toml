@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ar9av" }]
+maintainers = [{ name = "evanzlh" }]
 keywords = [
   "obsidian",
   "wiki",
@@ -40,9 +41,10 @@ ast = ["tree-sitter>=0.21", "tree-sitter-languages>=1.10"]
 graph = ["leidenalg>=0.10", "igraph>=0.11"]
 
 [project.urls]
-Homepage = "https://github.com/Ar9av/obsidian-wiki"
-Repository = "https://github.com/Ar9av/obsidian-wiki"
-Issues = "https://github.com/Ar9av/obsidian-wiki/issues"
+Homepage = "https://github.com/evanzlh/obsidian-wiki"
+Repository = "https://github.com/evanzlh/obsidian-wiki"
+Issues = "https://github.com/evanzlh/obsidian-wiki/issues"
+Upstream = "https://github.com/Ar9av/obsidian-wiki"
 
 [project.scripts]
 obsidian-wiki = "obsidian_wiki.cli:main"

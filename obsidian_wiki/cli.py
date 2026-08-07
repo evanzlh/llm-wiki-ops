@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
-from obsidian_wiki import __version__
+from obsidian_wiki import IMPLEMENTATION_ID, __version__
 
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
@@ -29,6 +29,10 @@ GLOBAL_CONFIG = GLOBAL_CONFIG_DIR / "config"
 # config). These are also installed globally for agents that only scope skills
 # per-project, so cross-project sync/query/context work everywhere.
 PORTABLE_SKILLS = ("wiki-update", "wiki-query", "wiki-context-pack")
+
+
+def version_label() -> str:
+    return f"obsidian-wiki {__version__} ({IMPLEMENTATION_ID})"
 
 
 class SchemaOptions(TypedDict):
@@ -51,8 +55,8 @@ def skills_dir() -> Path:
         if cand.is_dir():
             return cand
     raise FileNotFoundError(
-        "Could not locate bundled skills. Reinstall obsidian-wiki "
-        "(`pip install --force-reinstall obsidian-wiki`)."
+        "Could not locate bundled skills. Reinstall from a clone of "
+        "https://github.com/evanzlh/obsidian-wiki with `uv tool install --force .`."
     )
 
 
@@ -405,7 +409,7 @@ def _check_stale() -> None:
     """Warn if the installed version doesn't match when setup last ran, or if skills are missing."""
     if not GLOBAL_CONFIG.is_file():
         print(
-            f"⚠️  obsidian-wiki {__version__} is installed but setup has never been run.\n"
+            f"⚠️  {version_label()} is installed but setup has never been run.\n"
             f"   Run: obsidian-wiki setup --vault /path/to/your/vault",
             file=sys.stderr,
         )
@@ -414,7 +418,7 @@ def _check_stale() -> None:
     setup_version = _read_config_value("OBSIDIAN_WIKI_VERSION")
     if setup_version and setup_version != __version__:
         print(
-            f"⚠️  obsidian-wiki upgraded {setup_version} → {__version__} but setup hasn't been re-run.\n"
+            f"⚠️  obsidian-wiki upgraded {setup_version} → {version_label()} but setup hasn't been re-run.\n"
             f"   New skills won't be available until you run: obsidian-wiki setup",
             file=sys.stderr,
         )
@@ -554,7 +558,7 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             checks,
             name="setup-version",
             status="warn",
-            detail=f"setup ran with {setup_version}; installed package is {__version__}",
+            detail=f"setup ran with {setup_version}; installed package is {version_label()}",
             hint="run: obsidian-wiki setup",
         )
     elif config_present:
@@ -562,7 +566,7 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             checks,
             name="setup-version",
             status="pass",
-            detail=f"setup version matches installed package ({__version__})" if setup_version else "setup version not recorded",
+            detail=f"setup version matches installed package ({version_label()})" if setup_version else "setup version not recorded",
             hint="" if setup_version else "re-run setup to record install metadata",
         )
 
@@ -1548,7 +1552,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_info(args: argparse.Namespace) -> int:
     bundled = list_skills()
-    print(f"obsidian-wiki {__version__}")
+    print(version_label())
     print(f"skills:    {skills_dir()}")
     boot = bootstrap_dir()
     print(f"bootstrap: {boot if boot else '(not found)'}")
@@ -1589,7 +1593,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="obsidian-wiki",
         description="Install the LLM-Wiki agent skills into your AI coding agents.",
     )
-    p.add_argument("-V", "--version", action="version", version=f"obsidian-wiki {__version__}")
+    p.add_argument("-V", "--version", action="version", version=version_label())
     sub = p.add_subparsers(dest="command")
 
     sp = sub.add_parser("setup", help="install skills into your agents and write config (default)")
