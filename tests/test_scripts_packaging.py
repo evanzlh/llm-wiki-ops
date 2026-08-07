@@ -2,8 +2,9 @@
 
 The daily-update skill's Setup Mode references helper scripts under
 ``scripts/`` (daily-update.sh, the launchd plist, wiki-notify.sh) that are
-committed to the repo but were never force-included into the published wheel
-— the same packaging-gap class as #143 (the Stop hook), which that fix did
+committed to the repo but were never force-included into the locally built
+wheel used for source installation — the same packaging-gap class as #143
+(the Stop hook), which that fix did
 not cover. These tests pin the packaging config that force-includes
 ``scripts/`` and the skill instructions that resolve it via
 ``$OBSIDIAN_WIKI_REPO``.
@@ -60,7 +61,7 @@ class ScriptsPackagingTest(unittest.TestCase):
     def test_wheel_excludes_pycache_from_force_included_dirs(self) -> None:
         # force-include copies straight from the working tree (not a
         # VCS-filtered view), so a local scripts/__pycache__ can otherwise
-        # leak stray .pyc files into the published wheel.
+        # leak stray .pyc files into the source-install wheel.
         wheel_exclude = self.pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["exclude"]
         self.assertIn("**/__pycache__", wheel_exclude)
 

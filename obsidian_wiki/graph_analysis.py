@@ -9,8 +9,8 @@ then runs:
      ranked by how unexpected they are (inter-community edges where both
      endpoints have low cross-community degree)
 
-Optional: install `obsidian-wiki[graph]` for the real Leiden algorithm via
-`leidenalg` + `igraph`. Falls back to the greedy method automatically.
+When `leidenalg` and `igraph` are present, the real Leiden algorithm is used
+automatically. Otherwise, analysis falls back to the greedy method.
 
 Output JSON:
 {

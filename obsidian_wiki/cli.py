@@ -1,10 +1,9 @@
-"""obsidian-wiki installer CLI.
+"""Source-built CLI for installing and operating obsidian-wiki.
 
-Python port of ``setup.sh`` for the pip-installed package. The skill content
-lives inside the installed package (``obsidian_wiki/_data/skills``) instead of a
-cloned repo, so this wires the bundled skills into every supported AI agent's
-skills directory and writes ``~/.obsidian-wiki/config`` so the skills resolve
-the vault from any project.
+The locally built artifact bundles the skill content under
+``obsidian_wiki/_data/skills``. This CLI wires those skills into every supported
+AI agent's skills directory and writes ``~/.obsidian-wiki/config`` so the skills
+resolve the vault from any project.
 """
 
 from __future__ import annotations
@@ -24,6 +23,10 @@ from obsidian_wiki import IMPLEMENTATION_ID, __version__
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
 GLOBAL_CONFIG = GLOBAL_CONFIG_DIR / "config"
+SOURCE_REINSTALL_HINT = (
+    "clone https://github.com/evanzlh/obsidian-wiki, then run "
+    "`uv tool install --force .` from the clone"
+)
 
 # Skills usable from any project (no vault context needed beyond the global
 # config). These are also installed globally for agents that only scope skills
@@ -125,8 +128,8 @@ def install_skills(
 
 
 # Agents whose skills directory lives under $HOME. (path-under-home, label,
-# subset). All get every skill — pip users have no cloned repo to host
-# project-scoped skills, so everything must be globally discoverable.
+# subset). All get every skill so they remain globally discoverable from any
+# project.
 GLOBAL_AGENT_DIRS: list[tuple[str, str, tuple[str, ...] | None]] = [
     (".claude/skills", "~/.claude/skills/ (Claude Code)", None),
     (".gemini/skills", "~/.gemini/skills/ (Gemini CLI)", None),
@@ -150,7 +153,7 @@ def install_global_skills(mode: str) -> None:
 
 
 def _install_hermes_profiles(mode: str) -> None:
-    """Mirror setup.sh: install into the active and all named Hermes profiles."""
+    """Install into the active and all named Hermes profiles."""
     hermes_home = os.environ.get("HERMES_HOME")
     handled: set[Path] = set()
     if hermes_home:
@@ -502,10 +505,10 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             name="bundled-skills",
             status="pass" if bundled else "fail",
             detail=f"{len(bundled)} bundled skill(s) available",
-            hint="" if bundled else "reinstall obsidian-wiki",
+            hint="" if bundled else SOURCE_REINSTALL_HINT,
         )
     except FileNotFoundError as exc:
-        _doctor_add(checks, name="bundled-skills", status="fail", detail=str(exc), hint="reinstall obsidian-wiki")
+        _doctor_add(checks, name="bundled-skills", status="fail", detail=str(exc), hint=SOURCE_REINSTALL_HINT)
         bundled = []
 
     boot = bootstrap_dir()
@@ -514,7 +517,7 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
         name="bootstrap-assets",
         status="pass" if boot else "fail",
         detail=str(boot) if boot else "bootstrap files not found",
-        hint="" if boot else "reinstall obsidian-wiki",
+        hint="" if boot else SOURCE_REINSTALL_HINT,
     )
 
     config = _read_config()
@@ -700,9 +703,9 @@ def _maybe_configure_sync(vault_path: Path, remote_arg: str | None) -> bool:
     """Offer (or apply) GitHub sync setup for the vault.
 
     Non-interactive (`--remote` passed, or no TTY and no remote given): only
-    acts when a remote was explicitly supplied. Interactive: prompts, mirroring
-    setup.sh's flow, so pip/uv installs get the same offer shell/curl installs
-    always had (see #153).
+    acts when a remote was explicitly supplied. The interactive
+    `obsidian-wiki setup` flow prompts for the remote when sync is not already
+    configured.
     """
     from obsidian_wiki.sync import configure_sync, get_remote
 

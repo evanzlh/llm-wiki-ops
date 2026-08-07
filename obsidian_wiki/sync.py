@@ -1,9 +1,8 @@
 """GitHub sync for an Obsidian vault.
 
-Single implementation of the git-sync flow, shared by `obsidian-wiki setup` /
-`obsidian-wiki sync-setup` (pip/uv installs) and `setup.sh` (source/curl
-installs) — see issue #153. Both entrypoints call into this module instead of
-each maintaining their own copy of the git plumbing.
+The supported entry points are `obsidian-wiki setup`,
+`obsidian-wiki sync-setup`, and `obsidian-wiki sync`. They share this single
+implementation of the git-sync flow.
 
 The vault's own `git remote` is the source of truth for "is sync configured
 and where does it push" — nothing here caches the remote URL elsewhere, so

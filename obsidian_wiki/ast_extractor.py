@@ -4,8 +4,9 @@ Extracts classes, functions, and imports from source files using regex patterns
 (no LLM, no API calls). Outputs a node-link graph that wiki-ingest uses to seed
 entity pages and map dependencies before any token is spent on the LLM.
 
-Optional tree-sitter upgrade: install `obsidian-wiki[ast]` for higher-fidelity
-extraction on the same languages. Falls back to regex automatically.
+Optional tree-sitter libraries are used automatically when present for
+higher-fidelity extraction on the same languages. Extraction falls back to
+regex when they are unavailable.
 """
 
 from __future__ import annotations

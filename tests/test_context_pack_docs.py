@@ -36,12 +36,7 @@ def test_context_skill_preserves_cli_output_and_recent_default_budget() -> None:
     assert '--recent --budget 4000' not in skill
 
 
-def test_setup_sh_installs_context_pack_as_portable() -> None:
-    setup = read("setup.sh")
-    assert "wiki-update wiki-query wiki-context-pack" in setup
-
-
-def test_python_installer_lists_context_pack_as_portable() -> None:
+def test_cli_lists_context_pack_as_portable() -> None:
     cli = read("obsidian_wiki/cli.py")
     assert 'PORTABLE_SKILLS = ("wiki-update", "wiki-query", "wiki-context-pack")' in cli
 
