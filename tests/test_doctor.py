@@ -122,6 +122,103 @@ def test_doctor_strict_turns_warnings_into_nonzero_exit(tmp_path: Path) -> None:
     assert any(check["name"] == "setup-version" and check["status"] == "warn" for check in data["checks"])
 
 
+def _assert_doctor_resolution_failure(
+    proc: subprocess.CompletedProcess[str], *, forbidden_vault: Path
+) -> None:
+    assert proc.returncode == 1
+    assert proc.stderr == ""
+    report = json.loads(proc.stdout)
+    assert report["status"] == "fail"
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["vault-config"]["status"] == "fail"
+    assert "global-config" not in checks
+    assert str(forbidden_vault) not in json.dumps(report)
+
+
+def test_doctor_missing_named_vault_never_falls_back_to_global(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    global_vault = tmp_path / "global-vault"
+    _make_vault(global_vault)
+    _write_config(home, global_vault)
+
+    proc = _run(home, "doctor", "--vault", "@missing", "--json")
+
+    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
+    assert "config.missing" in proc.stdout
+
+
+def test_doctor_invalid_named_vault_never_falls_back_to_global(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    global_vault = tmp_path / "global-vault"
+    _make_vault(global_vault)
+    _write_config(home, global_vault)
+    (home / ".obsidian-wiki/config.broken").write_text(
+        'OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8"
+    )
+
+    proc = _run(home, "doctor", "--vault", "@broken", "--json")
+
+    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
+    assert "unterminated quoted value" in proc.stdout
+
+
+def test_doctor_malformed_nearest_env_never_falls_back_to_global(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    global_vault = tmp_path / "global-vault"
+    _make_vault(global_vault)
+    _write_config(home, global_vault)
+    project = tmp_path / "project"
+    nested = project / "work/nested"
+    nested.mkdir(parents=True)
+    (project / ".env").write_text(
+        'OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8"
+    )
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
+    assert str(project / ".env") in proc.stdout
+
+
+def test_doctor_malformed_global_config_reports_resolution_failure(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    forbidden_vault = tmp_path / "must-not-be-audited"
+    config = home / ".obsidian-wiki/config"
+    config.parent.mkdir(parents=True)
+    config.write_text('OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8")
+
+    proc = _run(home, "doctor", "--json")
+
+    _assert_doctor_resolution_failure(proc, forbidden_vault=forbidden_vault)
+    assert str(config) in proc.stdout
+
+
+def test_doctor_without_any_config_keeps_personal_diagnostics(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+
+    proc = _run(home, "doctor", "--json")
+
+    assert proc.returncode == 1
+    assert proc.stderr == ""
+    report = json.loads(proc.stdout)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["global-config"]["status"] == "fail"
+    assert checks["vault-config"]["status"] == "fail"
+    assert "bundled-skills" in checks
+    assert "bootstrap-assets" in checks
+    assert "agent-installs" in checks
+
+
 def test_doctor_portable_mode_ignores_global_config_and_agent_installs(
     tmp_path: Path,
 ) -> None:

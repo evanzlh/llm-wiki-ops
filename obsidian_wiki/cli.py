@@ -304,7 +304,18 @@ def resolve_vault_path(cli_vault: str | None) -> str:
     return existing
 
 
-def _resolve_runtime(vault_arg: str | None = None) -> ResolvedConfig | None:
+def _runtime_error_detail(error: ConfigError) -> str:
+    detail = str(error)
+    if "must be non-empty" in detail:
+        return f"vault not configured: {detail}"
+    return detail
+
+
+def _resolve_runtime(
+    vault_arg: str | None = None,
+    *,
+    error_sink: list[ConfigError] | None = None,
+) -> ResolvedConfig | None:
     """Resolve one CLI runtime through the shared precedence protocol."""
     try:
         return resolve_config(
@@ -315,10 +326,10 @@ def _resolve_runtime(vault_arg: str | None = None) -> ResolvedConfig | None:
             implementation=IMPLEMENTATION_ID,
         )
     except ConfigError as exc:
-        detail = str(exc)
-        if "must be non-empty" in detail:
-            detail = f"vault not configured: {detail}"
-        print(f"error: {detail}", file=sys.stderr)
+        if error_sink is not None:
+            error_sink.append(exc)
+        else:
+            print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
         return None
 
 
@@ -563,6 +574,23 @@ def _portable_doctor_error(config_path: Path, error: str) -> dict[str, object]:
     return {"status": "fail", "checks": checks}
 
 
+def _doctor_resolution_error(error: ConfigError) -> dict[str, object]:
+    checks: list[dict[str, str]] = []
+    _doctor_add(
+        checks,
+        name="vault-config",
+        status="fail",
+        detail=_runtime_error_detail(error),
+        hint="repair the selected vault configuration or pass a valid --vault",
+    )
+    return {"status": "fail", "checks": checks}
+
+
+def _is_absent_runtime_config(error: ConfigError) -> bool:
+    """Recognize the resolver's terminal no-source condition."""
+    return error.args == ("vault not configured",)
+
+
 def _validate_portable_paths(portable: PortableConfig) -> str:
     root = portable.root
     expected_config = root / ".obsidian-wiki/config.toml"
@@ -718,7 +746,9 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
 
 def run_doctor(*, vault_override: str | None = None, project_dir: str | None = None) -> dict[str, object]:
     portable_candidate = _nearest_portable_config()
-    runtime = _resolve_runtime(vault_override)
+    resolution_errors: list[ConfigError] = []
+    runtime = _resolve_runtime(vault_override, error_sink=resolution_errors)
+    resolution_error = resolution_errors[0] if resolution_errors else None
     if runtime is not None and runtime.mode == "portable" and runtime.portable is not None:
         return _run_portable_doctor(runtime.portable)
     if portable_candidate is not None and vault_override is None:
@@ -739,6 +769,11 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             portable_candidate,
             "portable configuration was discovered but did not resolve",
         )
+    if resolution_error is not None and (
+        vault_override is not None
+        or not _is_absent_runtime_config(resolution_error)
+    ):
+        return _doctor_resolution_error(resolution_error)
 
     checks: list[dict[str, str]] = []
 
