@@ -81,12 +81,15 @@ class SkillFilesTest(unittest.TestCase):
 
 
 class ZeroDependencyTest(unittest.TestCase):
-    def test_runtime_dependencies_remain_empty(self) -> None:
-        """The hand-rolled TF-IDF exists precisely so this stays true."""
+    def test_runtime_dependencies_remain_minimal(self) -> None:
+        """Portable TOML and version validation require exactly these two dependencies."""
         if tomllib is None:
             self.skipTest("tomllib unavailable")
         config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(config["project"]["dependencies"], [])
+        self.assertEqual(
+            config["project"]["dependencies"],
+            ["packaging>=24", "tomli>=2; python_version < '3.11'"],
+        )
 
     def test_session_modules_import_no_third_party_packages(self) -> None:
         import ast
