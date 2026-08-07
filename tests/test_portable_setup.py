@@ -2415,25 +2415,90 @@ def test_gitignore_uses_lf_and_escapes_literal_vault_path(
     assert b"\\#team\\ notes/\\[draft\\]\\*\\?\\!/hot.md\n" in data
 
 
-def test_rerun_replaces_hard_linked_agents_without_mutating_external_inode(
-    tmp_path: Path, tiny_skills: Path
+@pytest.mark.parametrize("operation", ["setup", "upgrade"])
+@pytest.mark.parametrize(
+    "managed_location",
+    [
+        ".skills/wiki-ingest/nested/owner.md",
+        ".skills/wiki-ingest/SKILL.md",
+        ".claude/skills/wiki-ingest/SKILL.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".obsidian-wiki/config.toml",
+        ".obsidian-wiki/managed-skills.json",
+    ],
+)
+def test_existing_portable_rejects_hardlinked_managed_targets_before_mutation(
+    operation: str,
+    managed_location: str,
+    tmp_path: Path,
+    tiny_skills: Path,
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    agents = root / "AGENTS.md"
-    agents.unlink()
-    external = tmp_path / "external-agents.md"
-    external.write_text("External owner instructions.\n", encoding="utf-8")
+    target = root / managed_location
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = target.read_bytes() if target.exists() else b"owner nested bytes\n"
+    if target.exists():
+        target.unlink()
+    external = tmp_path / "external-managed-file"
+    external.write_bytes(original)
     external_bytes = external.read_bytes()
-    os.link(external, agents)
-    assert agents.stat().st_ino == external.stat().st_ino
+    os.link(external, target)
+    assert target.stat().st_ino == external.stat().st_ino
+    before = snapshot_tree(root)
 
-    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    with pytest.raises(ValueError, match="hard link|multiple links"):
+        if operation == "setup":
+            setup_portable_repo(
+                root, version="2026.8.4", source_skills=tiny_skills
+            )
+        else:
+            upgrade_portable_skills(
+                root, version="2026.8.4", source_skills=tiny_skills
+            )
 
     assert external.read_bytes() == external_bytes
-    assert agents.stat().st_ino != external.stat().st_ino
-    assert MANAGED_START in agents.read_text(encoding="utf-8")
-    assert "External owner instructions." in agents.read_text(encoding="utf-8")
+    assert target.stat().st_ino == external.stat().st_ino
+    assert snapshot_tree(root) == before
+    assert not (root / ".obsidian-wiki/local/skill-upgrades").exists()
+
+
+@pytest.mark.parametrize("operation", ["setup", "upgrade"])
+@pytest.mark.parametrize(
+    "owner_location",
+    [
+        ".skills/team-owned/OWNER.md",
+        ".claude/skills/team-owned/OWNER.md",
+        "wiki/concepts/owner.md",
+        "sources/owner.md",
+    ],
+)
+def test_existing_portable_allows_hardlinks_in_unlisted_owner_locations(
+    operation: str,
+    owner_location: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    target = root / owner_location
+    target.parent.mkdir(parents=True, exist_ok=True)
+    external = tmp_path / "external-owner-file"
+    external.write_text("owner hardlinked bytes\n", encoding="utf-8")
+    os.link(external, target)
+    inode = external.stat().st_ino
+
+    if operation == "setup":
+        setup_portable_repo(root, version="2026.8.4", source_skills=tiny_skills)
+    else:
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert target.stat().st_ino == inode
+    assert external.stat().st_ino == inode
+    assert target.read_text(encoding="utf-8") == "owner hardlinked bytes\n"
 
 
 def test_rerun_replaces_hard_linked_gitignore_without_mutating_external_inode(

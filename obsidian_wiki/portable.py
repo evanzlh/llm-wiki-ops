@@ -188,6 +188,57 @@ def _assert_managed_tree(root: Path, tree: Path) -> None:
             raise ValueError(f"managed tree contains symlink: {descendant}")
 
 
+def _assert_single_link_ordinary_file(root: Path, path: Path, label: str) -> None:
+    """Require a managed file whose inode cannot be mutated through another path."""
+    _assert_safe_managed_path(root, path)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"portable {label} must be an ordinary file: {path}") from exc
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"portable {label} must be an ordinary file: {path}")
+    if metadata.st_nlink != 1:
+        raise ValueError(
+            f"portable {label} has multiple links (hard link): {path}"
+        )
+
+
+def _assert_single_link_managed_tree(root: Path, tree: Path, label: str) -> None:
+    """Validate one exact inventory-owned tree without scanning its siblings."""
+    _assert_safe_managed_path(root, tree)
+    try:
+        root_metadata = tree.lstat()
+    except OSError as exc:
+        raise ValueError(f"portable {label} must be an ordinary directory: {tree}") from exc
+    if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+        raise ValueError(f"portable {label} must be an ordinary directory: {tree}")
+
+    for directory, dirnames, filenames in os.walk(tree, followlinks=False):
+        current = Path(directory)
+        for name in (*dirnames, *filenames):
+            entry = current / name
+            try:
+                metadata = entry.lstat()
+            except OSError as exc:
+                raise ValueError(
+                    f"portable {label} contains an unreadable entry: {entry}"
+                ) from exc
+            mode = metadata.st_mode
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"portable {label} contains a symlink: {entry}")
+            if stat.S_ISDIR(mode):
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError(
+                    f"portable {label} contains a special filesystem entry: {entry}"
+                )
+            if metadata.st_nlink != 1:
+                raise ValueError(
+                    f"portable {label} regular file has multiple links "
+                    f"(hard link): {entry}"
+                )
+
+
 def _assert_ordinary_file(root: Path, path: Path, label: str) -> None:
     _assert_safe_managed_path(root, path)
     if not path.is_file() or path.is_symlink():
@@ -823,6 +874,8 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
     _assert_safe_managed_path(root, agents_path)
     if agents_path.exists() and not agents_path.is_file():
         raise ValueError(f"portable AGENTS.md must be an ordinary file: {agents_path}")
+    if agents_path.exists():
+        _assert_single_link_ordinary_file(root, agents_path, "AGENTS.md")
     existing = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
     plans: list[tuple[Path, str]] = [
         (agents_path, _render_bootstrap_target(root, agents_path, existing))
@@ -837,6 +890,10 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
             )
         if target.exists() and not target.is_file():
             raise ValueError(f"portable bootstrap destination collision: {target}")
+        if target.exists():
+            _assert_single_link_ordinary_file(
+                root, target, f"bootstrap target {relative}"
+            )
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
         plans.append((target, _render_bootstrap_target(root, target, current)))
     return plans
@@ -939,6 +996,7 @@ def _preflight_existing_portable(
             f"target is nonempty but not a portable repository: missing {config_path}"
         )
     _assert_ordinary_file(root, config_path, "configuration")
+    _assert_single_link_ordinary_file(root, config_path, "configuration")
     _load_canonical_portable_config(root, version=version)
 
     required_directories = (
@@ -974,12 +1032,19 @@ def _preflight_existing_portable(
         canonical = root / ".skills" / skill_name
         if canonical.exists():
             _assert_directory(root, canonical, f"canonical skill {skill_name}")
+            _assert_single_link_managed_tree(
+                root, canonical, f"canonical skill {skill_name}"
+            )
             _assert_ordinary_file(root, canonical / "SKILL.md", f"canonical skill {skill_name}")
         for agent_relative, _label in PROJECT_AGENT_DIRS:
             adapter = root / agent_relative / skill_name / "SKILL.md"
             _assert_safe_managed_path(root, adapter)
             if adapter.parent.exists() and not adapter.parent.is_dir():
                 raise ValueError(f"portable adapter directory collision: {adapter.parent}")
+            if adapter.parent.exists():
+                _assert_single_link_managed_tree(
+                    root, adapter.parent, f"adapter skill {skill_name}"
+                )
             if adapter.exists() and not adapter.is_file():
                 raise ValueError(f"portable adapter collision: {adapter}")
 
@@ -1889,7 +1954,9 @@ def _preflight_upgrade_paths(
                     f"directory: {target}"
                 )
             _assert_directory(root, target, f"managed skill directory {name}")
-            _assert_managed_tree(root, target)
+            _assert_single_link_managed_tree(
+                root, target, f"managed skill directory {name}"
+            )
 
     return _portable_bootstrap_plans(root)
 
@@ -2021,6 +2088,7 @@ def upgrade_portable_skills(
     with _portable_skills_lock(root):
         config_path = root / ".obsidian-wiki/config.toml"
         _assert_ordinary_file(root, config_path, "configuration")
+        _assert_single_link_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
         source, current_names = _discover_source_skills(source_skills)
         _recover_upgrade_transactions(
@@ -2173,6 +2241,7 @@ def setup_portable_repo(
                 f"existing target is not a portable repository: {root}"
             )
         _assert_ordinary_file(root, config_path, "configuration")
+        _assert_single_link_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
         with _portable_skills_lock(root):
             _recover_upgrade_transactions(
