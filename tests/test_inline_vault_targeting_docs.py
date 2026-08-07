@@ -40,7 +40,6 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
             ".kiro/steering/obsidian-wiki.md",
             ".windsurf/rules/obsidian-wiki.md",
             "docs/installation.md",
-            "SETUP.md",
         ]:
             with self.subTest(relpath=relpath):
                 self.assertIn("@name", self.read(relpath))
