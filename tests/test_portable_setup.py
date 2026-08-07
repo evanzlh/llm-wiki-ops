@@ -110,6 +110,139 @@ def make_skill_source(root: Path, name: str = "wiki-ingest") -> Path:
     return source
 
 
+def write_prepared_skill_upgrade_journal(
+    root: Path, source: Path, *, version: str
+) -> tuple[Path, dict[str, object]]:
+    """Create the canonical pre-swap journal state used by recovery tests."""
+    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-prepared-test"
+    old_names = tuple(
+        json.loads(
+            (root / ".obsidian-wiki/managed-skills.json").read_text(encoding="utf-8")
+        )["skills"]
+    )
+    current_names = tuple(
+        sorted(
+            path.name
+            for path in source.iterdir()
+            if path.is_dir() and (path / "SKILL.md").is_file()
+        )
+    )
+    staged_root = transaction / "staged"
+    records: list[dict[str, object]] = []
+    for name in sorted(set(old_names) | set(current_names)):
+        staged_canonical = staged_root / "canonical" / name
+        if name in current_names:
+            shutil.copytree(
+                source / name,
+                staged_canonical,
+                ignore=portable._ignore_source_artifacts,
+            )
+        records.append(
+            {
+                "backup": "",
+                "had_target": name in old_names,
+                "staged": (
+                    staged_canonical.relative_to(root).as_posix()
+                    if name in current_names
+                    else None
+                ),
+                "target": f".skills/{name}",
+            }
+        )
+        for agent_index, (agent_relative, _label) in enumerate(
+            cli.PROJECT_AGENT_DIRS
+        ):
+            staged_adapter = staged_root / "adapters" / str(agent_index) / name
+            if name in current_names:
+                skill_file = staged_adapter / "SKILL.md"
+                skill_file.parent.mkdir(parents=True)
+                target_relative = f"{agent_relative}/{name}/SKILL.md"
+                canonical_relative = f".skills/{name}/SKILL.md"
+                skill_file.write_text(
+                    portable._adapter_text(
+                        name,
+                        os.path.relpath(
+                            canonical_relative,
+                            str(Path(target_relative).parent),
+                        ).replace(os.sep, "/"),
+                    ),
+                    encoding="utf-8",
+                )
+                target_skill = root / target_relative
+                os.chmod(
+                    skill_file,
+                    stat.S_IMODE(target_skill.stat().st_mode)
+                    if target_skill.exists()
+                    else 0o644,
+                )
+            records.append(
+                {
+                    "backup": "",
+                    "had_target": name in old_names,
+                    "staged": (
+                        staged_adapter.relative_to(root).as_posix()
+                        if name in current_names
+                        else None
+                    ),
+                    "target": f"{agent_relative}/{name}",
+                }
+            )
+
+    staged_inventory = staged_root / "inventory/managed-skills.json"
+    staged_inventory.parent.mkdir(parents=True)
+    staged_inventory.write_text(
+        json.dumps(
+            {
+                "implementation": IMPLEMENTATION_ID,
+                "skills": list(current_names),
+                "skills_version": version,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(
+        staged_inventory,
+        stat.S_IMODE(
+            (root / ".obsidian-wiki/managed-skills.json").stat().st_mode
+        ),
+    )
+    records.append(
+        {
+            "backup": "",
+            "had_target": True,
+            "staged": staged_inventory.relative_to(root).as_posix(),
+            "target": ".obsidian-wiki/managed-skills.json",
+        }
+    )
+    payload: dict[str, object] = {
+        "implementation": IMPLEMENTATION_ID,
+        "replacements": records,
+        "schema_version": 1,
+        "status": "prepared",
+    }
+    rewrite_prepared_skill_upgrade_journal(root, transaction, payload)
+    return transaction, payload
+
+
+def rewrite_prepared_skill_upgrade_journal(
+    root: Path, transaction: Path, payload: dict[str, object]
+) -> None:
+    records = payload["replacements"]
+    assert isinstance(records, list)
+    transaction_relative = transaction.relative_to(root).as_posix()
+    for index, record in enumerate(records):
+        assert isinstance(record, dict)
+        record["backup"] = f"{transaction_relative}/backups/{index}"
+    transaction.mkdir(parents=True, exist_ok=True)
+    (transaction / "journal.json").write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path) -> None:
     home = tmp_path / "home"
     work = tmp_path / "work"
@@ -1174,14 +1307,18 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
     agents.write_text(agents.read_text() + "\nOwner sentence.\n", encoding="utf-8")
     before = snapshot_tree(root)
 
-    original_replace = Path.replace
+    original_copy2 = shutil.copy2
 
-    def fail_inventory(source: Path, target: Path) -> Path:
+    def fail_inventory(
+        source: Path, target: Path, *, follow_symlinks: bool = True
+    ) -> str:
         if "/staged/inventory/managed-skills.json" in str(source):
             raise OSError("simulated inventory commit failure")
-        return original_replace(source, target)
+        return original_copy2(
+            source, target, follow_symlinks=follow_symlinks
+        )
 
-    monkeypatch.setattr(Path, "replace", fail_inventory)
+    monkeypatch.setattr(shutil, "copy2", fail_inventory)
 
     with pytest.raises(OSError, match="simulated inventory commit"):
         upgrade_portable_skills(
@@ -1445,65 +1582,35 @@ def test_upgrade_recovery_cannot_claim_unlisted_owner_skill(
     owner.mkdir(parents=True)
     (owner / "OWNER.txt").write_text("owner bytes\n", encoding="utf-8")
 
-    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-malicious-owner"
-    staged_owner = transaction / "staged/owner"
-    staged_owner.mkdir(parents=True)
-    (staged_owner / "OWNER.txt").write_text(
-        "owner bytes\n" if had_target else "transaction bytes\n",
-        encoding="utf-8",
+    transaction, payload = write_prepared_skill_upgrade_journal(
+        root, tiny_skills, version="2026.8.4"
     )
-    attacker_backup = transaction / "backups/0"
+    staged_owner = (
+        transaction / "staged/canonical/team-owned"
+        if target_kind == "canonical"
+        else transaction / "staged/adapters/0/team-owned"
+    )
+    staged_owner.mkdir(parents=True)
+    (staged_owner / "OWNER.txt").write_text("owner bytes\n", encoding="utf-8")
+    records = payload["replacements"]
+    assert isinstance(records, list)
+    inventory_record = records.pop()
+    owner_record: dict[str, object] = {
+        "backup": "",
+        "had_target": had_target,
+        "staged": (
+            None if had_target else staged_owner.relative_to(root).as_posix()
+        ),
+        "target": target_relative,
+    }
+    records.extend((owner_record, inventory_record))
+    rewrite_prepared_skill_upgrade_journal(root, transaction, payload)
+    attacker_backup = root / str(owner_record["backup"])
     if had_target:
         attacker_backup.mkdir(parents=True)
         (attacker_backup / "ATTACKER.txt").write_text(
             "attacker bytes\n", encoding="utf-8"
         )
-
-    staged_inventory = transaction / "staged/inventory"
-    staged_inventory.parent.mkdir(parents=True, exist_ok=True)
-    old_payload = json.loads(
-        (root / ".obsidian-wiki/managed-skills.json").read_text(encoding="utf-8")
-    )
-    if not had_target:
-        old_payload["skills"] = sorted([*old_payload["skills"], "team-owned"])
-    staged_inventory.write_text(
-        json.dumps(old_payload, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    transaction_relative = transaction.relative_to(root).as_posix()
-    journal = transaction / "journal.json"
-    journal.write_text(
-        json.dumps(
-            {
-                "implementation": IMPLEMENTATION_ID,
-                "replacements": [
-                    {
-                        "backup": f"{transaction_relative}/backups/0",
-                        "had_target": had_target,
-                        "staged": (
-                            None
-                            if had_target
-                            else f"{transaction_relative}/staged/owner"
-                        ),
-                        "target": target_relative,
-                    },
-                    {
-                        "backup": f"{transaction_relative}/backups/1",
-                        "had_target": True,
-                        "staged": f"{transaction_relative}/staged/inventory",
-                        "target": ".obsidian-wiki/managed-skills.json",
-                    },
-                ],
-                "schema_version": 1,
-                "status": "prepared",
-            },
-            sort_keys=True,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     before = snapshot_tree(root)
 
     with pytest.raises(
@@ -1517,6 +1624,123 @@ def test_upgrade_recovery_cannot_claim_unlisted_owner_skill(
     assert snapshot_tree(root) == before
     assert (owner / "OWNER.txt").read_text(encoding="utf-8") == "owner bytes\n"
     assert not (owner / "ATTACKER.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "corruption", ["missing-adapter", "extra-canonical", "wrong-staged-layout"]
+)
+def test_upgrade_recovery_rejects_noncanonical_skill_record_plan_without_writes(
+    corruption: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    new_skill = tiny_skills / "wiki-new"
+    new_skill.mkdir()
+    (new_skill / "SKILL.md").write_text("# wiki-new\n", encoding="utf-8")
+    transaction, payload = write_prepared_skill_upgrade_journal(
+        root, tiny_skills, version="2026.8.4"
+    )
+    records = payload["replacements"]
+    assert isinstance(records, list)
+    inventory_record = records.pop()
+
+    if corruption == "missing-adapter":
+        records[:] = [
+            record
+            for record in records
+            if not (
+                isinstance(record, dict)
+                and record["target"] == ".claude/skills/wiki-new"
+            )
+        ]
+    elif corruption == "extra-canonical":
+        staged_extra = transaction / "staged/canonical/team-owned"
+        staged_extra.mkdir(parents=True)
+        (staged_extra / "SKILL.md").write_text("# team-owned\n", encoding="utf-8")
+        records.append(
+            {
+                "backup": "",
+                "had_target": False,
+                "staged": staged_extra.relative_to(root).as_posix(),
+                "target": ".skills/team-owned",
+            }
+        )
+    else:
+        record = next(
+            record
+            for record in records
+            if isinstance(record, dict) and record["target"] == ".skills/wiki-new"
+        )
+        original_staged = root / str(record["staged"])
+        forged_staged = transaction / "staged/forged/wiki-new"
+        forged_staged.parent.mkdir(parents=True)
+        original_staged.replace(forged_staged)
+        record["staged"] = forged_staged.relative_to(root).as_posix()
+
+    records.append(inventory_record)
+    rewrite_prepared_skill_upgrade_journal(root, transaction, payload)
+    before = snapshot_tree(root)
+
+    with pytest.raises(
+        (ValueError, OSError),
+        match="plan|record|missing|unexpected|staged|recovery",
+    ):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("target_kind", ["canonical", "adapter"])
+@pytest.mark.parametrize("tampering", ["content", "mode"])
+def test_upgrade_recovery_rejects_new_target_matching_staged_but_not_source(
+    target_kind: str,
+    tampering: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    new_skill = tiny_skills / "wiki-new"
+    new_skill.mkdir()
+    (new_skill / "SKILL.md").write_text("# wiki-new\n", encoding="utf-8")
+    transaction, _payload = write_prepared_skill_upgrade_journal(
+        root, tiny_skills, version="2026.8.4"
+    )
+    if target_kind == "canonical":
+        staged = transaction / "staged/canonical/wiki-new"
+        target = root / ".skills/wiki-new"
+    else:
+        staged = transaction / "staged/adapters/0/wiki-new"
+        target = root / ".claude/skills/wiki-new"
+    shutil.copytree(staged, target, copy_function=shutil.copy2)
+    staged_skill = staged / "SKILL.md"
+    target_skill = target / "SKILL.md"
+    if tampering == "content":
+        staged_skill.write_text("# attacker-controlled\n", encoding="utf-8")
+        target_skill.write_text("# attacker-controlled\n", encoding="utf-8")
+    else:
+        os.chmod(staged_skill, 0o600)
+        os.chmod(target_skill, 0o600)
+    before = snapshot_tree(root)
+    before_modes = (
+        stat.S_IMODE(staged_skill.stat().st_mode),
+        stat.S_IMODE(target_skill.stat().st_mode),
+    )
+
+    with pytest.raises(
+        (ValueError, OSError), match="source|trusted|content|mode|recovery"
+    ):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+    assert (
+        stat.S_IMODE(staged_skill.stat().st_mode),
+        stat.S_IMODE(target_skill.stat().st_mode),
+    ) == before_modes
 
 
 def test_recovery_removes_proven_new_skill_targets_created_before_inventory_commit(

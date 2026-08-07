@@ -1294,6 +1294,45 @@ def _replacement_snapshot(
     return tuple(snapshot)
 
 
+def _source_replacement_snapshot(
+    path: Path,
+) -> tuple[tuple[str, str, int, bytes], ...]:
+    """Return the exact canonical tree that source staging will copy."""
+    _validate_source_tree(path)
+    snapshot: list[tuple[str, str, int, bytes]] = []
+
+    def visit(current: Path, relative: PurePosixPath) -> None:
+        metadata = current.lstat()
+        relative_name = "" if relative == PurePosixPath(".") else relative.as_posix()
+        if stat.S_ISDIR(metadata.st_mode):
+            snapshot.append(
+                (
+                    relative_name,
+                    "directory",
+                    stat.S_IMODE(metadata.st_mode),
+                    b"",
+                )
+            )
+            for child in sorted(current.iterdir(), key=lambda entry: entry.name):
+                if child.is_dir() and child.name in _SOURCE_IGNORED_DIRS:
+                    continue
+                if child.is_file() and _source_file_is_ignored(child.name):
+                    continue
+                visit(child, relative / child.name)
+            return
+        snapshot.append(
+            (
+                relative_name,
+                "file",
+                stat.S_IMODE(metadata.st_mode),
+                current.read_bytes(),
+            )
+        )
+
+    visit(path, PurePosixPath("."))
+    return tuple(snapshot)
+
+
 def _copy_staged_replacement(root: Path, staged: Path, target: Path) -> None:
     """Install a new target while retaining staged content as crash proof."""
     expected = _replacement_snapshot(root, staged)
@@ -1311,9 +1350,13 @@ def _copy_staged_replacement(root: Path, staged: Path, target: Path) -> None:
 
 def _authorize_upgrade_recovery(
     root: Path,
+    transaction: Path,
     records: list[tuple[Path, Path, Path | None, bool]],
     *,
     rollback: bool,
+    version: str,
+    source: Path,
+    current_names: tuple[str, ...],
 ) -> set[Path]:
     inventory_target, inventory_backup, inventory_staged, inventory_had_target = (
         records[-1]
@@ -1324,15 +1367,14 @@ def _authorize_upgrade_recovery(
         raise ValueError(
             "portable upgrade journal inventory mapping must replace an existing inventory"
         )
+    expected_inventory_staged = transaction / "staged/inventory/managed-skills.json"
+    if inventory_staged != expected_inventory_staged:
+        raise ValueError(
+            "portable upgrade recovery inventory has an unexpected staged layout"
+        )
 
     if inventory_backup.exists():
         old_inventory = inventory_backup
-        target_exists = inventory_target.exists()
-        staged_exists = inventory_staged.exists()
-        if target_exists == staged_exists:
-            raise ValueError(
-                "portable upgrade journal has an inconsistent swapped inventory state"
-            )
     else:
         old_inventory = inventory_target
         if not old_inventory.exists():
@@ -1343,6 +1385,112 @@ def _authorize_upgrade_recovery(
         root, old_inventory
     )
     old_skills = set(old_names)
+    current_skills = set(current_names)
+    expected_inventory = (
+        (
+            "",
+            "file",
+            stat.S_IMODE(old_inventory.lstat().st_mode),
+            _inventory_text(version, current_names).encode("utf-8"),
+        ),
+    )
+    if _replacement_snapshot(root, inventory_staged) != expected_inventory:
+        raise ValueError(
+            "portable upgrade recovery staged inventory does not match the trusted bundle"
+        )
+    if inventory_backup.exists() and inventory_target.exists():
+        if _replacement_snapshot(root, inventory_target) != expected_inventory:
+            raise ValueError(
+                "portable upgrade recovery installed inventory does not match the trusted bundle"
+            )
+    elif not rollback and inventory_backup.exists():
+        raise ValueError(
+            "portable committed upgrade recovery is missing its installed inventory"
+        )
+
+    expected_skill_records: dict[Path, tuple[Path | None, bool, str, int | None]] = {}
+    for name in sorted(old_skills | current_skills):
+        expected_skill_records[root / ".skills" / name] = (
+            transaction / "staged/canonical" / name
+            if name in current_skills
+            else None,
+            name in old_skills,
+            name,
+            None,
+        )
+        for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+            expected_skill_records[root / agent_relative / name] = (
+                transaction / "staged/adapters" / str(agent_index) / name
+                if name in current_skills
+                else None,
+                name in old_skills,
+                name,
+                agent_index,
+            )
+    actual_skill_records = {
+        target: (staged, had_target)
+        for target, _backup, staged, had_target in records[:-1]
+        if _journal_skill_name(root, target) is not None
+    }
+    if set(actual_skill_records) != set(expected_skill_records):
+        missing = sorted(
+            _repo_relative_path(root, target)
+            for target in set(expected_skill_records) - set(actual_skill_records)
+        )
+        unexpected = sorted(
+            _repo_relative_path(root, target)
+            for target in set(actual_skill_records) - set(expected_skill_records)
+        )
+        raise ValueError(
+            "portable upgrade recovery skill record plan is incomplete or unexpected; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+    for target, (expected_staged, expected_had_target, name, agent_index) in (
+        expected_skill_records.items()
+    ):
+        staged, had_target = actual_skill_records[target]
+        if staged != expected_staged or had_target != expected_had_target:
+            raise ValueError(
+                "portable upgrade recovery skill record has an unexpected staged layout "
+                f"or ownership flag: {target}"
+            )
+        if had_target or staged is None:
+            continue
+        staged_snapshot = _replacement_snapshot(root, staged)
+        if agent_index is None:
+            trusted_snapshot = _source_replacement_snapshot(source / name)
+            if staged_snapshot != trusted_snapshot:
+                raise ValueError(
+                    "portable upgrade recovery canonical content or mode does not match "
+                    f"the trusted source bundle: {target}"
+                )
+        else:
+            agent_relative = PROJECT_AGENT_DIRS[agent_index][0]
+            adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
+            canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+            trusted_adapter = _adapter_text(
+                name,
+                posixpath.relpath(
+                    canonical_relative.as_posix(),
+                    adapter_relative.parent.as_posix(),
+                ),
+            ).encode("utf-8")
+            if (
+                len(staged_snapshot) != 2
+                or staged_snapshot[0][0:2] != ("", "directory")
+                or staged_snapshot[1] != (
+                    "SKILL.md",
+                    "file",
+                    0o644,
+                    trusted_adapter,
+                )
+            ):
+                raise ValueError(
+                    "portable upgrade recovery adapter content or mode does not match "
+                    f"the trusted generated adapter: {target}"
+                )
+
     removable_new_targets: set[Path] = set()
 
     for target, backup, staged, had_target in records[:-1]:
@@ -1423,7 +1571,13 @@ def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
         pass
 
 
-def _recover_upgrade_transactions(root: Path) -> None:
+def _recover_upgrade_transactions(
+    root: Path,
+    *,
+    version: str,
+    source: Path,
+    current_names: tuple[str, ...],
+) -> None:
     transactions = root / _UPGRADE_TRANSACTIONS
     _assert_safe_managed_path(root, transactions)
     if not transactions.exists():
@@ -1432,7 +1586,13 @@ def _recover_upgrade_transactions(root: Path) -> None:
     for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
         payload, records = _load_upgrade_journal(root, transaction)
         removable_new_targets = _authorize_upgrade_recovery(
-            root, records, rollback=payload["status"] == "prepared"
+            root,
+            transaction,
+            records,
+            rollback=payload["status"] == "prepared",
+            version=version,
+            source=source,
+            current_names=current_names,
         )
         if payload["status"] == "committed":
             _cleanup_upgrade_transaction(root, transaction)
@@ -1528,7 +1688,9 @@ def _apply_journaled_upgrade(
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if had_target:
+                if target == root / MANAGED_SKILLS_INVENTORY:
+                    _copy_staged_replacement(root, staged, target)
+                elif had_target:
                     staged.replace(target)
                 else:
                     created_targets.add(target)
@@ -1575,9 +1737,14 @@ def upgrade_portable_skills(
         config_path = root / ".obsidian-wiki/config.toml"
         _assert_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
-        _recover_upgrade_transactions(root)
-        _previous_version, previous_names = _read_managed_skills_inventory(root)
         source, current_names = _discover_source_skills(source_skills)
+        _recover_upgrade_transactions(
+            root,
+            version=version,
+            source=source,
+            current_names=current_names,
+        )
+        _previous_version, previous_names = _read_managed_skills_inventory(root)
         bootstrap_plans = _preflight_upgrade_paths(
             root,
             previous_names=previous_names,
