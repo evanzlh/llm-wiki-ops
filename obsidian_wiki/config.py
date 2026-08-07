@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Literal
@@ -15,6 +16,13 @@ from packaging.version import InvalidVersion, Version
 
 class ConfigError(ValueError):
     pass
+
+
+_PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
+_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_VAULT_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:export\s+)?OBSIDIAN_VAULT_PATH\s*=", re.MULTILINE
+)
 
 
 PORTABLE_SETTING_KEYS = frozenset(
@@ -207,12 +215,18 @@ def _safe_resolve(path: Path) -> Path:
         return path.absolute()
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
+def _read_legacy_text(path: Path) -> str:
     config_path = Path(path)
     try:
-        text = config_path.read_text(encoding="utf-8")
+        return config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{config_path}: invalid legacy configuration: {exc}") from exc
+
+
+def _read_env_file(path: Path, *, text: str | None = None) -> dict[str, str]:
+    config_path = Path(path)
+    if text is None:
+        text = _read_legacy_text(config_path)
 
     values: dict[str, str] = {}
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -226,8 +240,11 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
         key, raw_value = assignment.split("=", 1)
         key = key.strip()
-        if not key or any(character.isspace() for character in key):
-            continue
+        if _ENV_KEY_RE.fullmatch(key) is None:
+            raise ConfigError(
+                f"{config_path}:{line_number}: invalid environment key {key!r}; "
+                "expected [A-Za-z_][A-Za-z0-9_]*"
+            )
 
         raw_value = raw_value.strip()
         if raw_value.startswith(("'", '"')):
@@ -281,6 +298,17 @@ def _ancestors(path: Path) -> Iterator[Path]:
 
 
 def _vault_path(raw: str, *, relative_to: Path, home: Path) -> Path:
+    native_value = Path(raw)
+    windows_value = PureWindowsPath(raw)
+    if windows_value.drive and not windows_value.is_absolute():
+        raise ConfigError("Windows drive-relative vault paths are not supported")
+    if (windows_value.drive or windows_value.root) and not (
+        native_value.drive or native_value.root
+    ):
+        raise ConfigError(
+            "Windows-style absolute vault paths are not supported on this platform"
+        )
+
     if raw == "~":
         candidate = home
     elif raw.startswith("~/"):
@@ -307,7 +335,10 @@ def _resolved_legacy(
     if not raw_vault.strip():
         raise ConfigError(f"{config_path}: OBSIDIAN_VAULT_PATH must be non-empty")
 
-    vault = _vault_path(raw_vault, relative_to=config_path.parent, home=home)
+    try:
+        vault = _vault_path(raw_vault, relative_to=config_path.parent, home=home)
+    except ConfigError as exc:
+        raise ConfigError(f"{config_path}: {exc}") from exc
     runtime_values = dict(parsed)
     runtime_values["OBSIDIAN_VAULT_PATH"] = str(vault)
     return ResolvedConfig(
@@ -332,11 +363,13 @@ def resolve_config(
     if vault_arg is not None:
         if vault_arg.startswith("@"):
             name = vault_arg[1:]
-            if not name:
-                raise ConfigError("named vault must not be empty")
+            if _PROFILE_NAME_RE.fullmatch(name) is None:
+                raise ConfigError("named vault must match [A-Za-z0-9_-]+")
             named_path = home_dir / ".obsidian-wiki" / f"config.{name}"
             return _resolved_legacy(named_path, "named", home=home_dir)
 
+        if not vault_arg.strip():
+            raise ConfigError("explicit vault path must be non-empty")
         vault = _vault_path(vault_arg, relative_to=current_dir, home=home_dir)
         return ResolvedConfig(
             mode="explicit",
@@ -367,14 +400,21 @@ def resolve_config(
                 portable=portable,
             )
 
+    try:
+        current_dir.relative_to(home_dir)
+        cwd_is_inside_home = True
+    except ValueError:
+        cwd_is_inside_home = False
+
     for ancestor in _ancestors(current_dir):
         env_path = ancestor / ".env"
-        if not env_path.exists():
-            continue
-        values = _read_env_file(env_path)
-        if "OBSIDIAN_VAULT_PATH" not in values:
-            continue
-        return _resolved_legacy(env_path, "env", home=home_dir, values=values)
+        if env_path.exists():
+            text = _read_legacy_text(env_path)
+            if _VAULT_ASSIGNMENT_RE.search(text) is not None:
+                values = _read_env_file(env_path, text=text)
+                return _resolved_legacy(env_path, "env", home=home_dir, values=values)
+        if cwd_is_inside_home and ancestor == home_dir:
+            break
 
     global_path = home_dir / ".obsidian-wiki" / "config"
     if global_path.exists():

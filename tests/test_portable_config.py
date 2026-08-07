@@ -348,15 +348,230 @@ def test_empty_global_config_reports_its_path(tmp_path: Path) -> None:
     assert str(global_path.resolve()) in str(exc_info.value)
 
 
-def test_empty_named_vault_name_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="named vault"):
+@pytest.mark.parametrize(
+    "vault_arg",
+    [
+        "@",
+        "@../outside",
+        "@x/../../../outside",
+        "@x\\outside",
+        "@work profile",
+        "@.",
+        "@work%2Foutside",
+    ],
+)
+def test_invalid_named_vault_cannot_read_outside_profile(
+    tmp_path: Path, vault_arg: str
+) -> None:
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    write_legacy(outside, tmp_path / "escaped-vault")
+
+    with pytest.raises(ConfigError) as exc_info:
         resolve_config(
-            vault_arg="@",
+            vault_arg=vault_arg,
+            cwd=tmp_path,
+            home=home,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+    message = str(exc_info.value)
+    assert "[A-Za-z0-9_-]+" in message
+    assert str(outside) not in message
+
+
+def test_env_walk_stops_at_supplied_home_before_using_global_config(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cwd = home / "projects" / "wiki"
+    cwd.mkdir(parents=True)
+    write_legacy(tmp_path / ".env", tmp_path / "parent-vault")
+    global_path = home / ".obsidian-wiki" / "config"
+    write_legacy(global_path, tmp_path / "global-vault")
+
+    resolved = resolve_config(
+        cwd=cwd,
+        home=home,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+
+    assert resolved.mode == "global"
+    assert resolved.source == str(global_path.resolve())
+    assert resolved.vault == (tmp_path / "global-vault").resolve()
+
+
+def test_env_walk_reaches_filesystem_root_for_cwd_outside_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    outside_root = tmp_path / "external"
+    cwd = outside_root / "project" / "nested"
+    cwd.mkdir(parents=True)
+    env_path = outside_root / ".env"
+    write_legacy(env_path, Path("outside-wiki"))
+
+    resolved = resolve_config(
+        cwd=cwd,
+        home=home,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+
+    assert resolved.mode == "env"
+    assert resolved.source == str(env_path.resolve())
+    assert resolved.vault == (outside_root / "outside-wiki").resolve()
+
+
+def test_irrelevant_malformed_env_is_skipped_for_valid_parent(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "project"
+    cwd = root / "nested"
+    cwd.mkdir(parents=True)
+    (cwd / ".env").write_text(
+        '# OBSIDIAN_VAULT_PATH="commented-out"\nOTHER="unterminated\n',
+        encoding="utf-8",
+    )
+    parent_env = root / ".env"
+    write_legacy(parent_env, Path("valid-wiki"))
+
+    resolved = resolve_config(
+        cwd=cwd,
+        home=home,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+
+    assert resolved.mode == "env"
+    assert resolved.source == str(parent_env.resolve())
+    assert resolved.vault == (root / "valid-wiki").resolve()
+
+
+def test_malformed_target_vault_assignment_fails_with_path_and_line(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    env_path = cwd / ".env"
+    env_path.write_text(
+        '  export OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8"
+    )
+    write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "global-vault")
+
+    with pytest.raises(ConfigError) as exc_info:
+        resolve_config(
+            cwd=cwd,
+            home=home,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+    message = str(exc_info.value)
+    assert f"{env_path.resolve()}:1" in message
+    assert "unterminated" in message
+
+
+@pytest.mark.parametrize("vault_arg", ["", " ", "\t\n"])
+def test_empty_explicit_vault_is_rejected(tmp_path: Path, vault_arg: str) -> None:
+    with pytest.raises(ConfigError, match="explicit vault path must be non-empty"):
+        resolve_config(
+            vault_arg=vault_arg,
             cwd=tmp_path,
             home=tmp_path / "home",
             installed_version="2026.8",
             implementation=IMPLEMENTATION_ID,
         )
+
+
+def test_explicit_vault_path_may_contain_spaces(tmp_path: Path) -> None:
+    resolved = resolve_config(
+        vault_arg="team wiki",
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+
+    assert resolved.vault == (tmp_path / "team wiki").resolve()
+
+
+@pytest.mark.parametrize(
+    ("mode", "invalid_key"),
+    [("env", "BAD-KEY"), ("named", "9BAD"), ("global", ".BAD")],
+)
+def test_selected_legacy_config_rejects_invalid_environment_keys(
+    tmp_path: Path, mode: str, invalid_key: str
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    if mode == "env":
+        config_path = cwd / ".env"
+        vault_arg = None
+    elif mode == "named":
+        config_path = home / ".obsidian-wiki" / "config.work"
+        vault_arg = "@work"
+    else:
+        config_path = home / ".obsidian-wiki" / "config"
+        vault_arg = None
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        f'OBSIDIAN_VAULT_PATH="{tmp_path / "wiki"}"\n{invalid_key}=value\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        resolve_config(
+            vault_arg=vault_arg,
+            cwd=cwd,
+            home=home,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+    message = str(exc_info.value)
+    assert f"{config_path.resolve()}:2" in message
+    assert "[A-Za-z_][A-Za-z0-9_]*" in message
+
+
+@pytest.mark.parametrize("vault_arg", [r"C:\vault", "C:/vault", "C:vault"])
+def test_windows_vault_paths_are_not_relative_names_on_non_windows(
+    tmp_path: Path, vault_arg: str
+) -> None:
+    if Path("C:/vault").is_absolute():
+        pytest.skip("Windows drive paths have native semantics on this platform")
+
+    with pytest.raises(ConfigError, match="Windows"):
+        resolve_config(
+            vault_arg=vault_arg,
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
+@pytest.mark.parametrize("vault_value", [r"C:\vault", "C:/vault", "C:vault"])
+def test_legacy_windows_vault_path_error_includes_config_path(
+    tmp_path: Path, vault_value: str
+) -> None:
+    if Path("C:/vault").is_absolute():
+        pytest.skip("Windows drive paths have native semantics on this platform")
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    global_path = home / ".obsidian-wiki" / "config"
+    global_path.parent.mkdir(parents=True)
+    global_path.write_text(
+        f'OBSIDIAN_VAULT_PATH="{vault_value}"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        resolve_config(
+            cwd=cwd,
+            home=home,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+    message = str(exc_info.value)
+    assert str(global_path.resolve()) in message
+    assert "Windows" in message
 
 
 def test_global_config_parses_legacy_syntax_and_preserves_other_values(tmp_path: Path) -> None:
