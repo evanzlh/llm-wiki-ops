@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 try:
     import tomllib
@@ -198,3 +198,185 @@ def load_portable_config(
         UnicodeDecodeError,
     ) as exc:
         raise ConfigError(f"{config_path}: invalid portable configuration: {exc}") from exc
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return path.absolute()
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    config_path = Path(path)
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"{config_path}: invalid legacy configuration: {exc}") from exc
+
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        assignment = line.strip()
+        if not assignment or assignment.startswith("#"):
+            continue
+        if assignment.startswith("export") and assignment[6:7].isspace():
+            assignment = assignment[6:].lstrip()
+        if "=" not in assignment:
+            continue
+
+        key, raw_value = assignment.split("=", 1)
+        key = key.strip()
+        if not key or any(character.isspace() for character in key):
+            continue
+
+        raw_value = raw_value.strip()
+        if raw_value.startswith(("'", '"')):
+            quote = raw_value[0]
+            closing_index: int | None = None
+            escaped = False
+            for index, character in enumerate(raw_value[1:], start=1):
+                if character == quote and not escaped:
+                    closing_index = index
+                    break
+                if character == "\\" and not escaped:
+                    escaped = True
+                else:
+                    escaped = False
+            if closing_index is None:
+                raise ConfigError(
+                    f"{config_path}:{line_number}: unterminated quoted value"
+                )
+            trailing = raw_value[closing_index + 1 :].strip()
+            if trailing and not trailing.startswith("#"):
+                raise ConfigError(
+                    f"{config_path}:{line_number}: unexpected text after quoted value"
+                )
+            value = raw_value[1:closing_index]
+        else:
+            comment_index = next(
+                (
+                    index
+                    for index, character in enumerate(raw_value)
+                    if character == "#" and (index == 0 or raw_value[index - 1].isspace())
+                ),
+                None,
+            )
+            value = (
+                raw_value[:comment_index].rstrip()
+                if comment_index is not None
+                else raw_value
+            )
+        values[key] = value
+    return values
+
+
+def _ancestors(path: Path) -> Iterator[Path]:
+    current = _safe_resolve(Path(path))
+    while True:
+        yield current
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
+def _vault_path(raw: str, *, relative_to: Path, home: Path) -> Path:
+    if raw == "~":
+        candidate = home
+    elif raw.startswith("~/"):
+        candidate = home / raw[2:]
+    else:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = relative_to / candidate
+    return _safe_resolve(candidate)
+
+
+def _resolved_legacy(
+    path: Path,
+    mode: Literal["named", "env", "global"],
+    *,
+    home: Path,
+    values: dict[str, str] | None = None,
+) -> ResolvedConfig:
+    config_path = _safe_resolve(Path(path))
+    parsed = _read_env_file(config_path) if values is None else values
+    if "OBSIDIAN_VAULT_PATH" not in parsed:
+        raise ConfigError(f"{config_path}: OBSIDIAN_VAULT_PATH is missing")
+    raw_vault = parsed["OBSIDIAN_VAULT_PATH"]
+    if not raw_vault.strip():
+        raise ConfigError(f"{config_path}: OBSIDIAN_VAULT_PATH must be non-empty")
+
+    vault = _vault_path(raw_vault, relative_to=config_path.parent, home=home)
+    runtime_values = dict(parsed)
+    runtime_values["OBSIDIAN_VAULT_PATH"] = str(vault)
+    return ResolvedConfig(
+        mode=mode,
+        source=str(config_path),
+        vault=vault,
+        values=runtime_values,
+    )
+
+
+def resolve_config(
+    vault_arg: str | None = None,
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    installed_version: str,
+    implementation: str,
+) -> ResolvedConfig:
+    current_dir = _safe_resolve(Path.cwd() if cwd is None else Path(cwd))
+    home_dir = _safe_resolve(Path.home() if home is None else Path(home))
+
+    if vault_arg is not None:
+        if vault_arg.startswith("@"):
+            name = vault_arg[1:]
+            if not name:
+                raise ConfigError("named vault must not be empty")
+            named_path = home_dir / ".obsidian-wiki" / f"config.{name}"
+            return _resolved_legacy(named_path, "named", home=home_dir)
+
+        vault = _vault_path(vault_arg, relative_to=current_dir, home=home_dir)
+        return ResolvedConfig(
+            mode="explicit",
+            source=vault_arg,
+            vault=vault,
+            values={"OBSIDIAN_VAULT_PATH": str(vault)},
+        )
+
+    for ancestor in _ancestors(current_dir):
+        portable_path = ancestor / ".obsidian-wiki" / "config.toml"
+        if portable_path.exists():
+            portable = load_portable_config(
+                portable_path,
+                installed_version=installed_version,
+                implementation=implementation,
+            )
+            values = {
+                "OBSIDIAN_VAULT_PATH": str(portable.vault),
+                "OBSIDIAN_SOURCES_DIR": ",".join(str(source) for source in portable.sources),
+                "OBSIDIAN_WIKI_REPO": str(portable.root),
+            }
+            values.update(portable.settings)
+            return ResolvedConfig(
+                mode="portable",
+                source=str(portable.path),
+                vault=portable.vault,
+                values=values,
+                portable=portable,
+            )
+
+    for ancestor in _ancestors(current_dir):
+        env_path = ancestor / ".env"
+        if not env_path.exists():
+            continue
+        values = _read_env_file(env_path)
+        if "OBSIDIAN_VAULT_PATH" not in values:
+            continue
+        return _resolved_legacy(env_path, "env", home=home_dir, values=values)
+
+    global_path = home_dir / ".obsidian-wiki" / "config"
+    if global_path.exists():
+        return _resolved_legacy(global_path, "global", home=home_dir)
+    raise ConfigError("vault not configured")
