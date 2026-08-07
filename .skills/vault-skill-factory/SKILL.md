@@ -104,7 +104,7 @@ one-line-install convention) — still **not** an install, just a manifest.
 
 ## Step 4: Optionally lean on skill-creator
 
-`skill-creator` ships reusable scripts (`$OBSIDIAN_WIKI_REPO/.skills/skill-creator/scripts/`):
+`skill-creator` ships reusable scripts (`$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/`):
 - `improve_description.py` — tighten the generated `description` for better triggering.
 - `package_skill.py` — bundle the skill dir into a distributable archive.
 - `quick_validate.py` — sanity-check the skill's structure.

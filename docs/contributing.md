@@ -6,8 +6,12 @@ This is early. The skills work, but there's room to make the brain smarter: bett
 
 1. Create a folder in `.skills/your-skill-name/`
 2. Add a `SKILL.md` with YAML frontmatter (`name`, `description`) and markdown instructions
-3. Re-run `obsidian-wiki setup` to refresh personal-mode agent directories, or create a disposable portable repository with `obsidian-wiki setup --portable <path>`
-4. Test by saying something to your agent that matches the description
+3. From the framework clone, rebuild the non-editable installed CLI so the updated `.skills/` tree is bundled:
+   ```bash
+   uv tool install --force .
+   ```
+4. Run `obsidian-wiki setup` to refresh personal-mode agent directories, or create a disposable portable repository with `obsidian-wiki setup --portable <path>`
+5. Test by saying something to your agent that matches the description
 
 The `description` is load-bearing — it's the only thing an agent sees when deciding whether your skill is relevant. Write it as a list of the phrases a user would actually say, and state what the skill is *not* for when it's easily confused with a neighbour.
 

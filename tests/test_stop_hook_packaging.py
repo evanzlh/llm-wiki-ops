@@ -64,6 +64,10 @@ class WikiSetupSkillTest(unittest.TestCase):
         self.assertNotIn(".claude/hooks/wiki-stop-capture.sh", self.skill)
         self.assertNotIn("PYTHONPATH=", self.skill)
 
+    def test_hook_command_quotes_paths_with_spaces(self) -> None:
+        self.assertIn('"command": "bash \\"<HOOK_PATH>\\""', self.skill)
+        self.assertNotIn('"command": "bash <HOOK_PATH>"', self.skill)
+
     def test_setup_creates_manifest(self) -> None:
         # Secondary fix: doctor requires .manifest.json among core vault files.
         self.assertIn(".manifest.json", self.skill)

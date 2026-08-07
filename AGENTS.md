@@ -15,7 +15,7 @@ Resolve config using the Config Resolution Protocol in `llm-wiki/SKILL.md`:
 2. **Global config** — if no local `.env` is found, read `~/.obsidian-wiki/config`.
 3. **Prompt setup** — if neither exists, tell the user to run `wiki-setup`.
 
-The resolved config sets `OBSIDIAN_VAULT_PATH` (where the wiki lives). It may also set `OBSIDIAN_WIKI_REPO` (where this repo is cloned) and other optional variables.
+The resolved config sets `OBSIDIAN_VAULT_PATH` (where the wiki lives). It may also set `OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root) and other optional variables.
 
 ### Targeting a specific vault
 

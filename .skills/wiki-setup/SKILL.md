@@ -243,7 +243,7 @@ inconclusive sessions are skipped automatically.
         "hooks": [
           {
             "type": "command",
-            "command": "bash <HOOK_PATH>"
+            "command": "bash \"<HOOK_PATH>\""
           }
         ]
       }
@@ -251,6 +251,10 @@ inconclusive sessions are skipped automatically.
   }
 }
 ```
+
+   Replace only the `<HOOK_PATH>` placeholder with the resolved absolute path.
+   Keep the escaped double quotes around it so paths containing spaces remain a
+   single shell argument and the settings file remains valid JSON.
 
    If `~/.claude/settings.json` already exists and has a `hooks.Stop` array, **append** the new
    entry rather than replacing — don't clobber existing hooks.
