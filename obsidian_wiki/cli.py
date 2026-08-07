@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
@@ -174,15 +175,6 @@ def _install_hermes_profiles(mode: str) -> None:
 
 
 # ── Project-local install (opt-in) ───────────────────────────────────────────
-PROJECT_AGENT_DIRS = [
-    (".claude/skills", "Claude Code"),
-    (".cursor/skills", "Cursor"),
-    (".windsurf/skills", "Windsurf"),
-    (".agents/skills", "OpenCode / generic"),
-    (".pi/skills", "Pi"),
-    (".kiro/skills", "Kiro"),
-]
-
 # (bootstrap-relative source path, destination relative to project dir).
 # The source path is resolved against bootstrap_dir() for a wheel, or mapped to
 # the repo layout for a source checkout (see _resolve_bootstrap_src).
@@ -742,6 +734,27 @@ def _maybe_configure_sync(vault_path: Path, remote_arg: str | None) -> bool:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    if args.portable is not None:
+        conflicts = (
+            args.vault is not None
+            or args.project is not None
+            or args.project_only
+            or args.copy
+            or args.remote is not None
+        )
+        if conflicts:
+            print(
+                "error: --portable cannot be combined with --vault, --project, "
+                "--project-only, --copy, or --remote",
+                file=sys.stderr,
+            )
+            return 2
+        target = Path(args.portable).expanduser().resolve()
+        setup_portable_repo(target, version=__version__, source_skills=skills_dir())
+        print(f"Portable repository scaffolded at {target}")
+        print(f"Open {target / 'wiki'} in Obsidian")
+        return 0
+
     mode = "copy" if args.copy else "symlink"
     print("\n╔══════════════════════════════════════════════════╗")
     print("║         obsidian-wiki — Agent Setup              ║")
@@ -1917,6 +1930,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_setup_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument(
+        "--portable",
+        nargs="?",
+        const=".",
+        default=None,
+        metavar="DIR",
+        help="create a clone-ready portable knowledge repository in DIR",
+    )
     sp.add_argument("--vault", metavar="PATH", help="absolute path to your Obsidian vault")
     sp.add_argument(
         "--project",
