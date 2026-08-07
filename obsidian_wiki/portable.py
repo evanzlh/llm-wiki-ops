@@ -11,6 +11,7 @@ import json
 import os
 import posixpath
 import shutil
+import stat
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Iterable
@@ -196,35 +197,61 @@ def _source_file_is_ignored(name: str) -> bool:
     )
 
 
+def _source_entry_kind(path: Path, *, missing_ok: bool = False) -> str | None:
+    """Classify a source entry without following links."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise
+    except OSError as exc:
+        raise ValueError(f"cannot inspect canonical skill source entry {path}: {exc}") from exc
+    mode = metadata.st_mode
+    if stat.S_ISLNK(mode):
+        raise ValueError(f"canonical skill source contains symlink: {path}")
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        if metadata.st_nlink > 1:
+            raise ValueError(
+                f"canonical skill source regular file has multiple links (hard link): {path}"
+            )
+        return "file"
+    raise ValueError(f"canonical skill source entry must be an ordinary file or directory: {path}")
+
+
 def _validate_source_tree(skill: Path) -> None:
+    if _source_entry_kind(skill) != "directory":
+        raise ValueError(f"canonical skill source must be a directory: {skill}")
     for directory, dirnames, filenames in os.walk(skill, followlinks=False):
         current = Path(directory)
         for name in (*dirnames, *filenames):
-            candidate = current / name
-            if candidate.is_symlink():
-                raise ValueError(f"canonical skill source contains symlink: {candidate}")
+            _source_entry_kind(current / name)
 
 
 def _discover_source_skills(source_skills: Path) -> tuple[Path, tuple[str, ...]]:
     source = _absolute_no_resolve(Path(source_skills).expanduser())
-    if source.is_symlink():
-        raise ValueError(f"canonical skills source must not be a symlink: {source}")
-    if not source.is_dir():
-        raise FileNotFoundError(f"canonical skills directory not found: {source}")
+    try:
+        source_kind = _source_entry_kind(source)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"canonical skills directory not found: {source}") from exc
+    if source_kind != "directory":
+        raise ValueError(f"canonical skills source must be an ordinary directory: {source}")
 
     names: list[str] = []
     for entry in sorted(source.iterdir(), key=lambda item: item.name):
-        if entry.is_symlink():
-            raise ValueError(f"canonical skills source contains top-level symlink: {entry}")
+        kind = _source_entry_kind(entry)
         if entry.name in _SOURCE_IGNORED_DIRS:
             continue
-        if not entry.is_dir():
+        if kind != "directory":
             continue
         skill_file = entry / "SKILL.md"
-        if skill_file.is_symlink():
-            raise ValueError(f"canonical skill SKILL.md must not be a symlink: {skill_file}")
-        if not skill_file.is_file():
+        skill_kind = _source_entry_kind(skill_file, missing_ok=True)
+        if skill_kind is None:
             continue
+        if skill_kind != "file":
+            raise ValueError(f"canonical skill SKILL.md must be an ordinary file: {skill_file}")
         _validate_source_tree(entry)
         names.append(entry.name)
     return source, tuple(names)
@@ -236,6 +263,42 @@ def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
         for name in names
         if name in _SOURCE_IGNORED_DIRS or _source_file_is_ignored(name)
     }
+
+
+def _atomic_replace_text(path: Path, text: str, *, root: Path) -> None:
+    """Atomically replace *path* without truncating its existing inode."""
+    _assert_safe_managed_path(root, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_managed_path(root, path)
+
+    descriptor = -1
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.obsidian-wiki-",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        _assert_safe_managed_path(root, temporary)
+        os.fchmod(descriptor, 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _assert_safe_managed_path(root, path)
+        _assert_safe_managed_path(root, temporary)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _write_text_if_changed(path: Path, text: str, *, root: Path) -> None:
@@ -250,7 +313,7 @@ def _write_text_if_changed(path: Path, text: str, *, root: Path) -> None:
             pass
     elif path.exists():
         raise IsADirectoryError(f"expected a file, found directory: {path}")
-    path.write_text(text, encoding="utf-8")
+    _atomic_replace_text(path, text, root=root)
 
 
 def _write_text_if_missing(path: Path, text: str, *, root: Path) -> None:
@@ -258,8 +321,7 @@ def _write_text_if_missing(path: Path, text: str, *, root: Path) -> None:
     _assert_safe_managed_path(root, path)
     if path.exists() or path.is_symlink():
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    _atomic_replace_text(path, text, root=root)
 
 
 def compatible_cli_spec(version: str) -> str:

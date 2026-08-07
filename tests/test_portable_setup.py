@@ -842,3 +842,89 @@ def test_gitignore_uses_lf_and_escapes_literal_vault_path(
     data = (root / ".gitignore").read_bytes()
     assert b"\r" not in data
     assert b"\\#team\\ notes/\\[draft\\]\\*\\?\\!/hot.md\n" in data
+
+
+def test_rerun_replaces_hard_linked_agents_without_mutating_external_inode(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    agents = root / "AGENTS.md"
+    agents.unlink()
+    external = tmp_path / "external-agents.md"
+    external.write_text("External owner instructions.\n", encoding="utf-8")
+    external_bytes = external.read_bytes()
+    os.link(external, agents)
+    assert agents.stat().st_ino == external.stat().st_ino
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert external.read_bytes() == external_bytes
+    assert agents.stat().st_ino != external.stat().st_ino
+    assert MANAGED_START in agents.read_text(encoding="utf-8")
+    assert "External owner instructions." in agents.read_text(encoding="utf-8")
+
+
+def test_rerun_replaces_hard_linked_gitignore_without_mutating_external_inode(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    gitignore = root / ".gitignore"
+    gitignore.unlink()
+    external = tmp_path / "external-ignore"
+    external.write_text("owner-cache/\n", encoding="utf-8")
+    external_bytes = external.read_bytes()
+    os.link(external, gitignore)
+    assert gitignore.stat().st_ino == external.stat().st_ino
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert external.read_bytes() == external_bytes
+    assert gitignore.stat().st_ino != external.stat().st_ino
+    lines = gitignore.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "owner-cache/"
+    assert "wiki/hot.md" in lines
+
+
+@pytest.mark.parametrize("hard_link_location", ["nested", "skill-file"])
+def test_source_skill_hard_links_are_rejected_before_target_creation(
+    hard_link_location: str, tmp_path: Path
+) -> None:
+    source = make_skill_source(tmp_path)
+    external = tmp_path / "external-source"
+    external.write_text("external source bytes\n", encoding="utf-8")
+    external_bytes = external.read_bytes()
+    if hard_link_location == "nested":
+        os.link(external, source / "wiki-ingest/external.txt")
+    else:
+        skill_file = source / "wiki-ingest/SKILL.md"
+        skill_file.unlink()
+        os.link(external, skill_file)
+    target = tmp_path / "repo"
+
+    with pytest.raises(ValueError, match="hard link|multiple links"):
+        setup_portable_repo(target, version="2026.8.3", source_skills=source)
+
+    assert external.read_bytes() == external_bytes
+    assert not target.exists()
+    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
+
+
+def test_source_skill_fifo_is_rejected_before_target_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = make_skill_source(tmp_path)
+    os.mkfifo(source / "wiki-ingest/input.pipe")
+    target = tmp_path / "repo"
+
+    def fail_if_copy_reached(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("copy reached before source validation")
+
+    monkeypatch.setattr(portable.shutil, "copytree", fail_if_copy_reached)
+
+    with pytest.raises(ValueError, match="ordinary|regular"):
+        setup_portable_repo(target, version="2026.8.3", source_skills=source)
+
+    assert not target.exists()
+    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
