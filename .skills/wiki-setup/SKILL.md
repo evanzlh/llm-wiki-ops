@@ -12,6 +12,38 @@ description: >
 
 You are setting up a new Obsidian wiki vault (or repairing an existing one).
 
+## Choose the setup mode
+
+Use the canonical Config Resolution Protocol in `llm-wiki/SKILL.md` when
+repairing an existing setup: explicit `@name`, nearest ancestor
+`.obsidian-wiki/config.toml`, then `.env`, personal global config, and setup
+guidance. Do not replace a discovered portable repository with personal
+configuration.
+
+### Portable Repository mode
+
+For a Git-native, clone-ready, multi-contributor knowledge repository, use the
+installed CLI rather than hand-writing `.env`:
+
+```bash
+obsidian-wiki setup --portable ./team-knowledge
+cd ./team-knowledge
+obsidian-wiki doctor
+```
+
+Portable setup writes repository-relative `.obsidian-wiki/config.toml`, the
+vault, canonical tracked skills, regular Markdown agent adapters, and bootstrap
+files inside the target repository. It **does not write `~/.obsidian-wiki/config`**
+or global agent skill directories. Do not add a
+repository `.venv`, vendor the CLI, or commit an absolute
+`OBSIDIAN_WIKI_REPO`; each contributor installs the CLI separately with `uv`.
+
+### Personal mode
+
+For one person's machine-wide vault and globally discoverable agent skills,
+continue with the `.env`/global-config workflow below or run
+`obsidian-wiki setup --vault /absolute/path/to/vault`.
+
 ## Step 1: Create .env
 
 If `.env` doesn't exist, create it from `.env.example`. Ask the user for:

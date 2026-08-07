@@ -1,6 +1,8 @@
 # Obsidian Wiki — Agent Context
 
-A **skill-based framework** for building and maintaining an Obsidian knowledge base. No scripts or dependencies — everything is markdown instructions that you execute directly.
+A **skill-based framework** for building and maintaining an Obsidian knowledge
+base. Agents execute Markdown skills directly; the installed Python CLI handles
+deterministic setup, validation, and repository maintenance.
 
 ## README Translation Parity
 
@@ -8,14 +10,31 @@ A **skill-based framework** for building and maintaining an Obsidian knowledge b
 
 ## Configuration
 
-Resolve config using the Config Resolution Protocol in `llm-wiki/SKILL.md`:
+Resolve config using the Config Resolution Protocol in `llm-wiki/SKILL.md`, in
+this exact order:
 
-0. **Inline vault override (`@name`)** — if the request contains an `@<name>` token, resolve `~/.obsidian-wiki/config.<name>` directly, overriding the steps below. See "Targeting a specific vault" right after this list.
-1. **Walk up from CWD** — look for a `.env` file in the current directory, then each parent, up to `$HOME`. Stop at the first `.env` that contains `OBSIDIAN_VAULT_PATH`.
-2. **Global config** — if no local `.env` is found, read `~/.obsidian-wiki/config`.
-3. **Prompt setup** — if neither exists, tell the user to run `wiki-setup`.
+0. **Inline vault override (`@name`) — explicit `@name`** — resolve
+   `~/.obsidian-wiki/config.<name>` directly for this invocation only. If it is
+   missing or invalid, do **not** silently fall back to the default.
+1. **nearest ancestor `.obsidian-wiki/config.toml`** — walk up from CWD. This
+   tracked file selects Portable Repository mode and is authoritative; if it is
+   invalid, fail instead of falling back.
+2. **nearest ancestor `.env` containing `OBSIDIAN_VAULT_PATH`** — walk up from
+   CWD to `$HOME`.
+3. **`~/.obsidian-wiki/config`** — use the personal global config.
+4. **setup guidance** — if none exists, tell the user to run `wiki-setup`.
 
-The resolved config sets `OBSIDIAN_VAULT_PATH` (where the wiki lives). It may also set `OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root) and other optional variables.
+In Portable Repository mode, resolve `[paths]` relative to the repository root.
+Only files below the configured `sources` paths are authoritative source
+material. Keep runtime absolute paths in memory: never synthesize or commit an
+absolute `OBSIDIAN_WIKI_REPO`. After any mode resolves the vault, read
+`<vault>/AGENTS.md` if it exists; its owner conventions override framework
+defaults for the rest of the session.
+
+The resolved config sets `OBSIDIAN_VAULT_PATH` (where the wiki lives). Personal
+setup may also set `OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root).
+Portable resolution exposes its repository root only as a runtime value; do not
+persist computed machine paths in portable repository files.
 
 ### Targeting a specific vault
 

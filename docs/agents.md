@@ -4,6 +4,12 @@ Works with **any AI coding agent that can read files**. First install the CLI th
 
 Each agent has its own convention for discovering skills. Personal setup connects the CLI's bundled skills to agent-wide locations. Portable setup writes tracked repository-local skills and bootstrap files so collaborators get the same instructions from the knowledge repository.
 
+Portable agent adapters are regular Markdown files containing
+repository-relative references to the canonical `.skills/` copy. They are not
+symlinks, require no link privileges, and remain valid wherever the repository
+is cloned. The Config Resolution Protocol in `AGENTS.md` gives tracked
+`.obsidian-wiki/config.toml` precedence over personal `.env` and global config.
+
 ## Matrix
 
 | Agent | Bootstrap | Skills Directory | Slash Commands |
@@ -40,6 +46,11 @@ obsidian-wiki setup --portable ./team-knowledge
 ```
 
 The first command configures personal, agent-wide discovery on the current machine. The second creates a clone-ready repository without writing global config or global agent directories. The agent-specific notes below describe what the CLI wires.
+
+Each collaborator installs the CLI independently from a framework clone with
+`uv tool install .`; the knowledge repository itself does not contain `.venv`
+or a CLI runtime. Linux and macOS are the first-release CLI support boundary,
+while committed adapters and configuration use platform-neutral relative paths.
 
 <details>
 <summary><b>Claude Code</b></summary>

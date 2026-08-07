@@ -2,18 +2,73 @@
 
 ## How config is resolved
 
-Skills resolve the vault path in this order:
+Skills and portable-aware CLI commands resolve the vault in this order:
 
-0. **Inline vault override (`@name`)** — an `@<name>` token anywhere in a request resolves `~/.obsidian-wiki/config.<name>` directly, overriding everything below, **for that request only**.
-1. **Walk up from CWD** — look for a `.env` in the current directory, then each parent, up to `$HOME`. Stop at the first one containing `OBSIDIAN_VAULT_PATH`.
-2. **Global config** — `~/.obsidian-wiki/config`.
-3. **Prompt setup** — if neither exists, you'll be told to run setup.
+0. **Explicit `@name`** — resolve `~/.obsidian-wiki/config.<name>` for that
+   request only.
+1. **Nearest ancestor `.obsidian-wiki/config.toml`** — walking up from CWD;
+   its presence selects Portable Repository mode.
+2. **Nearest ancestor `.env` containing `OBSIDIAN_VAULT_PATH`** — walking up
+   from CWD to `$HOME`.
+3. **`~/.obsidian-wiki/config`** — the personal global config.
+4. **Setup guidance** — if no source exists, run setup.
+
+Every discovered source is authoritative. A missing named profile or invalid
+portable, `.env`, or global config fails closed instead of falling through to a
+different vault.
 
 After resolving, skills also read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists. That's where you put owner-specific conventions — domain vocabulary, ingest preferences, writing style, project scoping — which override framework defaults for every skill.
 
 Both `~/.obsidian-wiki/config` and `.env` use the same `KEY=value` format. Start from [`.env.example`](../.env.example).
 
-The deterministic `lint`, `trust-record`, and `trust-check` commands use the same vault-scoped resolution: an explicit path uses no unrelated config, `@name` reads only `~/.obsidian-wiki/config.<name>`, otherwise the nearest CWD `.env` wins before global config. Schema settings are read from that same resolved config only, so one vault's lifecycle extensions cannot leak into another vault.
+The deterministic `query`, `context-pack`, `lint`, `trust-record`,
+`trust-check`, `sync`, `sync-setup`, and `doctor` commands use this same
+resolution. An explicit filesystem path uses no unrelated config. Schema
+settings come only from the resolved source, so one vault's extensions cannot
+leak into another vault.
+
+## Portable Repository configuration
+
+Portable repositories track this schema at `.obsidian-wiki/config.toml`:
+
+```toml
+schema_version = 1
+implementation = "evanzlh/obsidian-wiki"
+requires_cli = ">=2026.8,<2026.9"
+
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+
+[settings]
+OBSIDIAN_LINK_FORMAT = "wikilink"
+```
+
+All `[paths]` values are repository-relative, use forward slashes, and must
+remain inside the repository after resolving existing components. The vault
+and source paths must not overlap. `implementation` prevents a repository for
+another fork from being opened silently; `requires_cli` is a PEP 440 version
+constraint checked before use. Machine-specific settings and absolute paths
+are rejected.
+
+Configured `sources` paths define the only authoritative source roots for
+portable ingest. `local_state` is ignored runtime state and may be absent in a
+fresh clone. The CLI exposes computed absolute values such as
+`OBSIDIAN_WIKI_REPO` only at runtime; agents must not write them into committed
+files. Portable setup does not create or consult an extra repository `.env`.
+
+The tracked `.obsidian-wiki/managed-skills.json` is the ownership boundary for
+framework-managed skill directories. After installing a newer CLI, refresh the
+repository copy with:
+
+```bash
+obsidian-wiki repo upgrade-skills
+```
+
+The command preserves unlisted owner skills and text outside managed bootstrap
+markers.
 
 ## Core
 

@@ -14,12 +14,15 @@ Running `obsidian-wiki` with no subcommand defaults to `setup`.
 | Command | What it does |
 |---|---|
 | `setup` | Install skills into your agents and write `~/.obsidian-wiki/config` |
+| `setup --portable DIR` | Create or validate a clone-ready portable knowledge repository |
 | `info` | Show install paths, version, and resolved config |
 | `list` | List the bundled skills |
 | `doctor` | Health-check config, vault shape, bootstrap assets, and installed skills |
+| `repo upgrade-skills` | Transactionally refresh tracked framework-managed skills and adapters |
 
 ```bash
 obsidian-wiki setup --vault ~/brain
+obsidian-wiki setup --portable ./team-knowledge
 obsidian-wiki setup --project .        # also install project-local skills + bootstrap files
 obsidian-wiki setup --project-only     # skip the global install (use with --project)
 obsidian-wiki setup --copy             # copy skill files instead of symlinking
@@ -28,7 +31,17 @@ obsidian-wiki setup --remote https://github.com/you/my-wiki.git   # configure sy
 obsidian-wiki doctor --json --pretty
 obsidian-wiki doctor --vault /other/vault --project .
 obsidian-wiki doctor --strict          # exit non-zero on warnings too
+
+cd ./team-knowledge
+obsidian-wiki repo upgrade-skills      # run after installing a newer CLI
 ```
+
+Portable setup writes only inside `DIR`: repository-relative TOML, vault
+scaffolding, canonical skills, regular Markdown adapters, and bootstrap files.
+It does not write global config or global agent directories. The repository
+does not contain `.venv` or a vendored CLI; contributors install the CLI with
+`uv tool install .` from their own framework clone. Linux and macOS are the
+first-release CLI support boundary.
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
 
@@ -51,7 +64,11 @@ obsidian-wiki lint --allow-lifecycle active --allow-relationship-type synthesize
   --required-trust-field updated --schema-source /path/to/vault/AGENTS.md
 ```
 
-Lint resolves its vault and schema together: explicit path (no config inheritance), positional `@name`, nearest CWD `.env`, then global config. CLI schema flags extend/replace that resolved vault's settings and are recorded in the JSON `schema` block.
+Lint resolves its vault and schema together: explicit path (no config
+inheritance), positional `@name`, nearest ancestor
+`.obsidian-wiki/config.toml`, nearest CWD `.env`, then global config. CLI schema
+flags extend/replace that resolved vault's settings and are recorded in the
+JSON `schema` block.
 
 ## Context packs
 

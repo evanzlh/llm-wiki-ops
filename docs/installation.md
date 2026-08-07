@@ -14,6 +14,11 @@ uv tool install .
 
 The installed CLI carries the skills, bootstrap files, and hook assets that setup needs. It does not depend on the clone remaining at the same path.
 
+Install it as a user/system uv tool, not inside the knowledge repository. Each
+contributor performs this framework-clone installation on their own machine. A
+portable knowledge repository does not contain `.venv`, a vendored CLI package,
+or another runtime copy.
+
 ## Verify
 
 ```bash
@@ -43,6 +48,10 @@ obsidian-wiki doctor
 
 Open `team-knowledge/wiki/` as the Obsidian vault. The generated repository uses repository-relative configuration and does not write personal global config or global agent directories.
 
+The first-release CLI support boundary is Linux and macOS. The committed
+representation stays platform-neutral: agent adapters are regular Markdown
+files rather than symlinks and require no link privileges.
+
 ## Use an existing portable repository
 
 After cloning a portable knowledge repository, work from anywhere inside it. The CLI discovers `.obsidian-wiki/config.toml` while walking up to the repository root:
@@ -54,6 +63,14 @@ obsidian-wiki query "what decisions shaped this project?"
 ```
 
 Repository-local skills and bootstrap files are tracked with the knowledge repository. See [Agent Compatibility](agents.md) for how each agent discovers them and [Configuration](configuration.md) for portable precedence.
+
+After installing a newer framework CLI, refresh only the managed repository
+skills and adapters, review the diff, and commit it on a branch:
+
+```bash
+obsidian-wiki repo upgrade-skills
+git status --short
+```
 
 ## Personal mode
 

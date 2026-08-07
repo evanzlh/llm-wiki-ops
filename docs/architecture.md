@@ -2,7 +2,10 @@
 
 The wiki is the artifact. The agent is the maintainer. Obsidian is the viewer.
 
-No scripts run your knowledge pipeline — the skills are markdown files that tell an AI agent *how* to operate on your vault. The agent uses the same read/write/search tools it already has.
+No scripts run the semantic knowledge pipeline — the skills are Markdown files
+that tell an AI agent *how* to operate on the vault. The installed CLI handles
+deterministic setup, config resolution, validation, and transactional
+repository maintenance.
 
 ## The four stages
 
@@ -30,12 +33,38 @@ A `.manifest.json` tracks every source that's been ingested — path, timestamps
 
 ## The loop
 
-1. Agent resolves the vault path (`@name` → `.env` → `~/.obsidian-wiki/config`)
+1. Agent resolves the vault path (`@name` → nearest
+   `.obsidian-wiki/config.toml` → nearest matching `.env` → global config)
 2. Agent reads `.manifest.json` to know what's already been done
 3. Agent reads the relevant skill for instructions
 4. Agent uses its built-in tools to do the work
 5. Agent updates `.manifest.json`, `index.md`, `log.md`, and `hot.md`
 6. Output is standard Obsidian-compatible markdown with frontmatter and `[[wikilinks]]`
+
+## Portable repository layer
+
+Portable Repository mode keeps sources, compiled vault, canonical skills, and
+agent discovery in one Git repository:
+
+```text
+knowledge-repo/
+├── .obsidian-wiki/config.toml
+├── .obsidian-wiki/managed-skills.json
+├── sources/
+├── wiki/
+├── .skills/
+├── AGENTS.md
+└── .claude/skills/, .cursor/skills/, ...
+```
+
+TOML paths resolve from the repository root. Canonical skills are tracked once
+under `.skills/`; per-agent adapters are regular Markdown files with
+repository-relative references, not symlinks. The knowledge repository does
+not contain `.venv` or a CLI runtime—each contributor installs the CLI from a
+framework clone with `uv tool install .`. `obsidian-wiki repo upgrade-skills`
+refreshes only inventory-owned framework content and preserves owner files.
+Linux and macOS are the first-release CLI support boundary, but no OS-specific
+absolute path is committed.
 
 ## Vault structure
 

@@ -36,9 +36,10 @@ The installed CLI does not depend on the clone remaining in place. To upgrade, p
 obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
+obsidian-wiki repo upgrade-skills  # after installing a newer framework CLI
 ```
 
-Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, run `obsidian-wiki doctor`, and use the repository-local skills from their preferred agent.
+Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, install the CLI as a uv tool from their own framework clone, run `obsidian-wiki doctor`, and use the tracked repository-local skills from their preferred agent. The knowledge repository contains no `.venv` or vendored CLI.
 
 ## Personal mode
 

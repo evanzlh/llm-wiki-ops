@@ -36,9 +36,10 @@ uv tool install .
 obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
+obsidian-wiki repo upgrade-skills  # 安装新版框架 CLI 后运行
 ```
 
-在 Obsidian 中将 `team-knowledge/wiki/` 作为 Vault 打开。协作者 clone 知识库仓库、运行 `obsidian-wiki doctor`，然后通过自己偏好的 Agent 使用仓库内 Skills。
+在 Obsidian 中将 `team-knowledge/wiki/` 作为 Vault 打开。每位协作者都从自己的框架 clone 用 uv tool 安装 CLI；clone 知识库仓库后运行 `obsidian-wiki doctor`，再通过偏好的 Agent 使用受版本管理的仓库内 Skills。知识库仓库不包含 `.venv` 或内置 CLI 副本。
 
 ## 个人模式
 
