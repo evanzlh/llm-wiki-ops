@@ -274,3 +274,8 @@ Pages can carry a `visibility/` tag marking their intended reach. This is **enti
 **Filtered mode** is opt-in, triggered by phrases like "public only", "user-facing answer", "no internal content", or "as a user would see it" in a query. Default mode shows everything.
 
 `visibility/` tags are **system tags** — they don't count toward the 5-tag limit and are listed separately from domain/type tags in the taxonomy.
+# Manifest mode
+
+Personal vaults continue to use manifest v1. Portable repositories select
+manifest v2 automatically from `.obsidian-wiki/config.toml`; do not run the
+legacy `scripts/manifest.py` maintenance commands against a v2 repository.

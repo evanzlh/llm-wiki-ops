@@ -186,3 +186,8 @@ obsidian-wiki ast-extract ./src --pretty
 ```
 
 Most commands accept `--json` and/or `--pretty` for machine-readable output.
+# Portable repository validation
+
+From any directory inside a portable repository, run `obsidian-wiki check`.
+Use `--json` (and optionally `--pretty`) for CI. The command is read-only and
+returns non-zero when deterministic repository checks find errors.

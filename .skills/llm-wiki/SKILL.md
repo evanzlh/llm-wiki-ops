@@ -626,3 +626,8 @@ For details on specific operations, see the companion skills:
 - **wiki-query** — Answer questions against the wiki
 - **wiki-lint** — Audit and maintain wiki health
 - **wiki-setup** — Initialize a new vault
+## Portable manifest v2
+
+When the resolved config is portable, use `obsidian-wiki cache-check` and
+`cache-update`; they write sharded manifest v2 entries with repository-relative
+Source IDs. Never edit `wiki/.manifest.json` as a v1 source collection.

@@ -190,3 +190,9 @@ obsidian-wiki/
 The two supported setup modes are described in [Installation](installation.md): personal mode connects bundled skills to agent-wide discovery paths, while Portable Repository mode writes tracked repository-local integrations.
 
 For the full pattern — three-layer architecture, page templates, project organization — read [`.skills/llm-wiki/SKILL.md`](../.skills/llm-wiki/SKILL.md).
+# Portable manifest v2
+
+Portable repositories keep the marker at `wiki/.manifest.json` and one
+canonical JSON shard per source below `wiki/.manifest/sources/`. Source IDs are
+repository-relative POSIX paths, so clones remain location-independent and
+parallel edits merge without rewriting a central manifest.

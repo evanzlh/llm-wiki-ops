@@ -562,3 +562,5 @@ After ingesting, verify:
 ## Reference
 
 Read `references/ingest-prompts.md` for the LLM prompt templates used during extraction.
+Portable repositories use manifest v2 automatically. Record source IDs through
+the CLI cache commands; keep source and page paths repository-relative.

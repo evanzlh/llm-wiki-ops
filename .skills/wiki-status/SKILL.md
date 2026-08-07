@@ -476,3 +476,5 @@ Record one of:
 - `QMD skipped: QMD_WIKI_COLLECTION unset`
 - `QMD skipped: qmd CLI unavailable`
 - `QMD failed: <short error summary>`
+For a portable repository, `obsidian-wiki check --json` is the deterministic
+manifest and repository health check; it does not invoke an LLM.
