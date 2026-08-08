@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import operations
 from obsidian_wiki.operations import (
     OperationChange,
     OperationError,
@@ -92,3 +94,57 @@ def test_render_operation_rejects_unsafe_listed_paths(listed_path: str) -> None:
 
     with pytest.raises(OperationError, match="page path"):
         render_operation(change)
+
+
+def test_directory_swap_cannot_write_operation_outside_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    change = OperationChange("tx-1", "2026-08-07T07:30:00Z", (), (), (), ())
+    original = operations._open_operation_parent
+
+    def open_then_swap(root: Path, parts: tuple[str, ...]) -> int:
+        descriptor = original(root, parts)
+        month = vault / "journal/operations/2026/08"
+        moved = month.with_name("08-moved")
+        month.rename(moved)
+        month.symlink_to(external, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(operations, "_open_operation_parent", open_then_swap)
+
+    with pytest.raises(OperationError, match="changed"):
+        write_operation(vault, change, suffix="a81f")
+
+    assert not (external / "20260807T073000Z-a81f.md").exists()
+    assert not (
+        vault / "journal/operations/2026/08-moved/20260807T073000Z-a81f.md"
+    ).exists()
+
+
+@pytest.mark.parametrize("failure_call", [1, 2])
+def test_sync_failure_removes_owned_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_call: int
+) -> None:
+    change = OperationChange("tx-1", "2026-08-07T07:30:00Z", (), (), (), ())
+    target = operation_path(tmp_path, change, suffix="a81f")
+    target.parent.mkdir(parents=True)
+    original = os.fsync
+    calls = 0
+
+    def fail_selected_sync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OSError("simulated sync failure")
+        original(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_sync)
+
+    with pytest.raises(OperationError, match="write"):
+        write_operation(tmp_path, change, suffix="a81f")
+
+    assert not target.exists()

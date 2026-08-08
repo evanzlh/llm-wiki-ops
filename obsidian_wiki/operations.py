@@ -46,6 +46,11 @@ _FRONTMATTER_FIELDS = frozenset(
         "completed_at",
     }
 )
+_SUPPORTS_DIR_FD = all(
+    function in os.supports_dir_fd
+    for function in (os.mkdir, os.open, os.stat, os.unlink)
+)
+_FileIdentity = tuple[int, int]
 
 
 def _timestamp(value: str) -> datetime:
@@ -220,7 +225,7 @@ def _fsync_directory(path: Path) -> None:
         raise OperationError("cannot sync operation directory") from exc
 
 
-def _ensure_directory(path: Path, root: Path) -> None:
+def _ensure_directory(path: Path, root: Path) -> tuple[tuple[Path, _FileIdentity], ...]:
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
@@ -228,6 +233,9 @@ def _ensure_directory(path: Path, root: Path) -> None:
     current = root
     if not _ordinary_directory(current):
         raise OperationError("operation vault must be an ordinary directory")
+    identities: list[tuple[Path, _FileIdentity]] = []
+    root_metadata = current.lstat()
+    identities.append((current, (root_metadata.st_dev, root_metadata.st_ino)))
     for part in relative.parts:
         current = current / part
         if not current.exists() and not current.is_symlink():
@@ -238,6 +246,158 @@ def _ensure_directory(path: Path, root: Path) -> None:
                 raise OperationError("cannot create operation directory") from exc
         if not _ordinary_directory(current):
             raise OperationError("operation directory must not be a symlink")
+        metadata = current.lstat()
+        identities.append((current, (metadata.st_dev, metadata.st_ino)))
+    return tuple(identities)
+
+
+def _verify_directory_identities(
+    identities: tuple[tuple[Path, _FileIdentity], ...],
+) -> None:
+    for path, expected in identities:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise OperationError("operation directory changed during write") from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+            or (metadata.st_dev, metadata.st_ino) != expected
+        ):
+            raise OperationError("operation directory changed during write")
+
+
+def _open_directory_at(parent_fd: int | None, path: str | Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        if parent_fd is None:
+            descriptor = os.open(path, flags)
+        else:
+            descriptor = os.open(path, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise OperationError("operation directory is unsafe or unreadable") from exc
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise OperationError("operation directory must be ordinary")
+    return descriptor
+
+
+def _open_operation_parent(vault: Path, relative_parts: tuple[str, ...]) -> int:
+    descriptor = _open_directory_at(None, vault)
+    try:
+        for part in relative_parts:
+            try:
+                os.mkdir(part, mode=0o755, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise OperationError("cannot create operation directory") from exc
+            else:
+                os.fsync(descriptor)
+            child = _open_directory_at(descriptor, part)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short operation write")
+        view = view[written:]
+
+
+def _cleanup_owned_at(parent_fd: int, name: str, identity: _FileIdentity) -> None:
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) == identity:
+            os.unlink(name, dir_fd=parent_fd)
+            try:
+                os.fsync(parent_fd)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _write_exclusive_at(parent_fd: int, name: str, data: bytes) -> _FileIdentity:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, 0o644, dir_fd=parent_fd)
+    identity: _FileIdentity | None = None
+    try:
+        metadata = os.fstat(descriptor)
+        identity = (metadata.st_dev, metadata.st_ino)
+        _write_all(descriptor, data)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.fsync(parent_fd)
+        return identity
+    except BaseException:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if identity is not None:
+            _cleanup_owned_at(parent_fd, name, identity)
+        raise
+
+
+def _cleanup_owned_path(
+    target: Path,
+    identity: _FileIdentity,
+) -> None:
+    try:
+        current = target.lstat()
+        if (current.st_dev, current.st_ino) == identity:
+            target.unlink()
+            try:
+                _fsync_directory(target.parent)
+            except OperationError:
+                pass
+    except (OSError, OperationError):
+        pass
+
+
+def _write_exclusive_path(target: Path, data: bytes, vault: Path) -> None:
+    directory_identities = _ensure_directory(target.parent, vault)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(target, flags, 0o644)
+    identity: _FileIdentity | None = None
+    try:
+        metadata = os.fstat(descriptor)
+        identity = (metadata.st_dev, metadata.st_ino)
+        _verify_directory_identities(directory_identities)
+        _write_all(descriptor, data)
+        os.fsync(descriptor)
+        _verify_directory_identities(directory_identities)
+        os.close(descriptor)
+        descriptor = -1
+        _fsync_directory(target.parent)
+        _verify_directory_identities(directory_identities)
+        current = target.lstat()
+        if (current.st_dev, current.st_ino) != identity:
+            raise OperationError("operation target changed during write")
+    except BaseException:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if identity is not None:
+            _cleanup_owned_path(target, identity)
+        raise
 
 
 def _read_operation_text(path: Path) -> str:
@@ -302,19 +462,35 @@ def write_operation(
 ) -> Path:
     """Create one immutable operation page, retrying filename collisions."""
     vault = Path(vault)
-    text = render_operation(change)
+    data = render_operation(change).encode("utf-8")
     candidate_suffix = suffix
     for _attempt in range(128):
         resolved_suffix = candidate_suffix or secrets.token_hex(4)
         candidate_suffix = None
         target = operation_path(vault, change, suffix=resolved_suffix)
-        _ensure_directory(target.parent, vault)
         try:
-            with target.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            _fsync_directory(target.parent)
+            if _SUPPORTS_DIR_FD:
+                relative_parent = target.parent.relative_to(vault)
+                parent_fd = _open_operation_parent(vault, relative_parent.parts)
+                try:
+                    identity = _write_exclusive_at(parent_fd, target.name, data)
+                    try:
+                        current = target.lstat()
+                    except OSError as exc:
+                        _cleanup_owned_at(parent_fd, target.name, identity)
+                        raise OperationError(
+                            "operation directory changed during write"
+                        ) from exc
+                    if (current.st_dev, current.st_ino) != identity:
+                        _cleanup_owned_at(parent_fd, target.name, identity)
+                        raise OperationError("operation target changed during write")
+                finally:
+                    try:
+                        os.close(parent_fd)
+                    except OSError:
+                        pass
+            else:
+                _write_exclusive_path(target, data, vault)
         except FileExistsError:
             continue
         except OSError as exc:
