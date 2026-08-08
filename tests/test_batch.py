@@ -264,6 +264,35 @@ class TestPlanBatches:
         with pytest.raises(ManifestError, match="outside the configured source root"):
             plan_batches(outside, config.vault, portable=config)
 
+    def test_portable_no_cache_still_rejects_out_of_config_source(
+        self, portable_repo
+    ):
+        root, config = portable_repo
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "a.md").write_text("a", encoding="utf-8")
+
+        with pytest.raises(ManifestError, match="outside the configured source root"):
+            plan_batches(
+                outside,
+                config.vault,
+                skip_unchanged=False,
+                portable=config,
+            )
+
+    def test_portable_no_cache_still_validates_manifest_marker(self, portable_repo):
+        root, config = portable_repo
+        (root / "sources" / "a.md").write_text("a", encoding="utf-8")
+        (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(ManifestError, match="invalid manifest v2 marker"):
+            plan_batches(
+                config.sources[0],
+                config.vault,
+                skip_unchanged=False,
+                portable=config,
+            )
+
     def test_legacy_cache_error_keeps_permissive_fallback(
         self, source_dir, vault, monkeypatch
     ):
@@ -403,7 +432,7 @@ class TestBatchPlanCLI:
         assert proc.returncode == 1
         assert "implementation" in proc.stderr
 
-    def _run_portable(self, root, config, source_dir):
+    def _run_portable(self, root, config, source_dir, *extra):
         home = root / "home"
         home.mkdir()
         env = os.environ.copy()
@@ -416,6 +445,7 @@ class TestBatchPlanCLI:
                 "batch-plan",
                 str(config.vault),
                 str(source_dir),
+                *extra,
             ],
             capture_output=True,
             text=True,
@@ -444,4 +474,31 @@ class TestBatchPlanCLI:
 
         assert proc.returncode == 1
         assert "outside the configured source root" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_no_cache_out_of_config_portable_source_exits_concisely(
+        self, portable_repo
+    ):
+        root, config = portable_repo
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "a.md").write_text("a", encoding="utf-8")
+
+        proc = self._run_portable(root, config, outside, "--no-cache")
+
+        assert proc.returncode == 1
+        assert "outside the configured source root" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_no_cache_corrupted_portable_manifest_exits_concisely(
+        self, portable_repo
+    ):
+        root, config = portable_repo
+        (root / "sources" / "a.md").write_text("a", encoding="utf-8")
+        (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+        proc = self._run_portable(root, config, config.sources[0], "--no-cache")
+
+        assert proc.returncode == 1
+        assert "invalid manifest v2 marker" in proc.stderr
         assert "Traceback" not in proc.stderr

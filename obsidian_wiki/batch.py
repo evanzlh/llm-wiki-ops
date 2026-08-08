@@ -239,6 +239,23 @@ def _make_batches(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _validate_portable_source_dir(
+    source_dir: Path,
+    portable: PortableConfig,
+) -> None:
+    from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
+
+    store = ShardedManifest(portable)
+    try:
+        source_dir.resolve(strict=False).relative_to(
+            store.source_root.resolve(strict=False)
+        )
+    except ValueError as exc:
+        raise ManifestError(
+            "source directory is outside the configured source root"
+        ) from exc
+
+
 def plan_batches(
     source_dir: Path,
     vault: Path,
@@ -250,6 +267,8 @@ def plan_batches(
     portable: PortableConfig | None = None,
 ) -> dict[str, Any]:
     """Discover sources, filter unchanged, and split into batches."""
+    if portable is not None:
+        _validate_portable_source_dir(source_dir, portable)
     all_files = discover_sources(source_dir, vault=vault, include_code=include_code)
 
     skipped_binary = 0  # files already excluded by _classify
