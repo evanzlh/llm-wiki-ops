@@ -53,6 +53,13 @@ class _OperationChange:
     removed: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _Candidate:
+    relative: str
+    path: Path
+    data: bytes
+
+
 _TRANSACTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _HASH_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _STATUSES = frozenset({"active", "promoting", "failed", "complete", "restored"})
@@ -61,6 +68,7 @@ _METADATA_FIELDS = frozenset(
         "completed_at",
         "created",
         "operation_path",
+        "operation_paths",
         "postimages",
         "preimages",
         "removed",
@@ -129,10 +137,16 @@ def validate_candidate_page(
 ) -> tuple[str, ...]:
     """Validate candidate bytes and return their canonical portable Source IDs."""
     TransactionManager._require_ordinary_file(candidate_path, "candidate page")
+    data = TransactionManager._read_single_link_bytes(candidate_path, "candidate page")
+    return _validate_candidate_bytes(data, transaction_source_ids)
+
+
+def _validate_candidate_bytes(
+    data: bytes,
+    transaction_source_ids: tuple[str, ...],
+) -> tuple[str, ...]:
     try:
-        text = TransactionManager._read_single_link_bytes(
-            candidate_path, "candidate page"
-        ).decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise TransactionError("candidate page must be UTF-8 text") from exc
     try:
@@ -220,6 +234,7 @@ class TransactionManager:
                 "completed_at": None,
                 "created": [],
                 "operation_path": None,
+                "operation_paths": [],
                 "postimages": {},
                 "preimages": preimages,
                 "removed": [],
@@ -277,6 +292,15 @@ class TransactionManager:
         candidate_vault = workspace / "wiki"
         self._require_ordinary_directory(candidate_vault, "candidate vault")
         self._require_ordinary_directory(workspace / "snapshots", "snapshot directory")
+        candidate_names = self._candidate_path_names(candidate_vault)
+        self._validate_metadata_semantics(
+            workspace=workspace,
+            payload=payload,
+            status=status,
+            source_ids=source_ids,
+            deletions=deletions,
+            candidate_names=candidate_names,
+        )
         return TransactionRecord(
             transaction_id=transaction_id,
             status=status,
@@ -315,6 +339,10 @@ class TransactionManager:
 
     def abort(self, transaction_id: str) -> None:
         record = self.load(transaction_id)
+        if record.status == "promoting":
+            raise TransactionError(
+                "promoting transaction retains recovery snapshots; use restore"
+            )
         if record.status in {"complete", "restored"}:
             raise TransactionError(
                 f"transaction status {record.status!r} is retained; use discard"
@@ -415,12 +443,15 @@ class TransactionManager:
 
     def restore(self, transaction_id: str) -> None:
         record = self.load(transaction_id)
-        if record.status not in {"failed", "complete", "restored"}:
+        if record.status not in {"promoting", "failed", "complete", "restored"}:
             raise TransactionError(
                 f"cannot restore {record.status} transaction {transaction_id}"
             )
-        self._acquire_lock(transaction_id, record.started_at)
-        lock_identity = self._require_owned_lock(transaction_id)
+        if self.lock_path.exists() or self.lock_path.is_symlink():
+            lock_identity = self._require_owned_lock(transaction_id)
+        else:
+            self._acquire_lock(transaction_id, record.started_at)
+            lock_identity = self._require_owned_lock(transaction_id)
         try:
             if record.status == "restored":
                 return
@@ -484,11 +515,15 @@ class TransactionManager:
         payload = self._read_metadata_payload(record.workspace)
         snapshot_index: dict[str, str | None] = {}
         operation_relative: str | None = None
+        operation_affected: set[str] = set()
         operation_before: dict[str, str] | None = None
         operation_before_index: dict[str, str] = {}
+        writer_before: dict[str, str] | None = None
+        writer_before_index: dict[str, str | None] = {}
+        writer_rollback: dict[str, str | None] = {}
         try:
             candidates = self._enumerate_candidates(record)
-            candidate_names = tuple(relative for relative, _path in candidates)
+            candidate_names = tuple(candidate.relative for candidate in candidates)
             overlap = sorted(set(candidate_names) & set(record.deletions))
             if overlap:
                 raise TransactionError(
@@ -521,6 +556,7 @@ class TransactionManager:
                     "completed_at": resolved_completed_at,
                     "created": list(created),
                     "operation_path": None,
+                    "operation_paths": [],
                     "postimages": {},
                     "removed": list(removed),
                     "snapshot_index": snapshot_index,
@@ -530,8 +566,8 @@ class TransactionManager:
             )
             self._write_metadata(record.workspace, payload)
 
-            for relative, candidate in candidates:
-                self._promote_candidate(candidate, self._vault_path(relative))
+            for candidate in candidates:
+                self._promote_candidate(candidate, self._vault_path(candidate.relative))
             for relative in record.deletions:
                 self._delete_vault_target(relative)
 
@@ -552,6 +588,9 @@ class TransactionManager:
                 updated=updated,
                 removed=removed,
             )
+            writer_before, writer_before_index = self._snapshot_writer_guard(
+                record, snapshot_index
+            )
             operation_before, operation_before_index = self._snapshot_operation_tree(
                 record
             )
@@ -571,11 +610,24 @@ class TransactionManager:
             }
             if added != {operation_relative} or modified_or_removed:
                 snapshot_index.update(operation_rollback)
+                operation_affected.update(operation_rollback)
                 raise TransactionError(
                     "operation writer must create exactly one new operation page "
                     "without modifying or removing existing operation pages"
                 )
+            writer_after = self._writer_guard_state(allow_unsafe=True)
+            writer_rollback = self._writer_guard_diff(
+                writer_before,
+                writer_after,
+                writer_before_index,
+            )
+            if writer_rollback:
+                raise TransactionError(
+                    "unauthorized operation writer side effect outside "
+                    "journal/operations"
+                )
             snapshot_index[operation_relative] = None
+            operation_affected.add(operation_relative)
 
             postimage_paths = sorted(set(affected) | {operation_relative})
             postimages = {
@@ -585,6 +637,7 @@ class TransactionManager:
             payload.update(
                 {
                     "operation_path": operation_relative,
+                    "operation_paths": sorted(operation_affected),
                     "postimages": postimages,
                     "snapshot_index": dict(sorted(snapshot_index.items())),
                     "status": "complete",
@@ -616,17 +669,35 @@ class TransactionManager:
             if operation_before is not None:
                 try:
                     operation_after = self._operation_tree_state(allow_unsafe=True)
-                    snapshot_index.update(
-                        self._operation_tree_diff(
-                            operation_before,
-                            operation_after,
-                            operation_before_index,
-                        )
+                    operation_diff = self._operation_tree_diff(
+                        operation_before,
+                        operation_after,
+                        operation_before_index,
                     )
+                    snapshot_index.update(operation_diff)
+                    operation_affected.update(operation_diff)
                 except (OSError, TransactionError) as rollback_exc:
                     rollback_errors.append(
                         f"operation cleanup discovery failed: {rollback_exc}"
                     )
+            if writer_before is not None:
+                try:
+                    writer_after = self._writer_guard_state(allow_unsafe=True)
+                    writer_rollback.update(
+                        self._writer_guard_diff(
+                            writer_before,
+                            writer_after,
+                            writer_before_index,
+                        )
+                    )
+                except (OSError, TransactionError) as rollback_exc:
+                    rollback_errors.append(
+                        f"writer cleanup discovery failed: {rollback_exc}"
+                    )
+            try:
+                self._restore_snapshot_index(record, writer_rollback)
+            except (OSError, TransactionError) as rollback_exc:
+                rollback_errors.append(f"writer restore failed: {rollback_exc}")
             try:
                 self._restore_snapshot_index(record, snapshot_index)
             except (OSError, TransactionError) as rollback_exc:
@@ -634,6 +705,7 @@ class TransactionManager:
             payload.update(
                 {
                     "operation_path": operation_relative,
+                    "operation_paths": sorted(operation_affected),
                     "postimages": {},
                     "snapshot_index": dict(sorted(snapshot_index.items())),
                     "status": "failed",
@@ -675,8 +747,8 @@ class TransactionManager:
 
     def _enumerate_candidates(
         self, record: TransactionRecord
-    ) -> tuple[tuple[str, Path], ...]:
-        candidates: list[tuple[str, Path]] = []
+    ) -> tuple[_Candidate, ...]:
+        candidates: list[_Candidate] = []
         for directory, dirnames, filenames in os.walk(
             record.candidate_vault, topdown=True, followlinks=False
         ):
@@ -689,17 +761,38 @@ class TransactionManager:
                 candidate = current / name
                 relative = candidate.relative_to(record.candidate_vault).as_posix()
                 validate_candidate_path(record.candidate_vault, relative)
-                validate_candidate_page(candidate, record.source_ids)
-                candidates.append((relative, candidate))
-        return tuple(sorted(candidates, key=lambda item: item[0]))
+                data = self._read_single_link_bytes(candidate, "candidate page")
+                _validate_candidate_bytes(data, record.source_ids)
+                candidates.append(
+                    _Candidate(relative=relative, path=candidate, data=data)
+                )
+        return tuple(sorted(candidates, key=lambda item: item.relative))
+
+    def _candidate_path_names(self, candidate_vault: Path) -> tuple[str, ...]:
+        names: list[str] = []
+        for directory, dirnames, filenames in os.walk(
+            candidate_vault, topdown=True, followlinks=False
+        ):
+            current = Path(directory)
+            self._require_ordinary_directory(current, "candidate directory")
+            for name in sorted(dirnames):
+                self._require_ordinary_directory(current / name, "candidate directory")
+            dirnames[:] = sorted(dirnames)
+            for name in sorted(filenames):
+                candidate = current / name
+                relative = candidate.relative_to(candidate_vault).as_posix()
+                validate_candidate_path(candidate_vault, relative)
+                self._require_ordinary_file(candidate, "candidate page")
+                names.append(relative)
+        return tuple(sorted(names))
 
     def _affected_preimage_paths(
         self,
         record: TransactionRecord,
-        candidates: tuple[tuple[str, Path], ...],
+        candidates: tuple[_Candidate, ...],
     ) -> tuple[str, ...]:
         manifest = ShardedManifest(self.config)
-        affected = {relative for relative, _candidate in candidates}
+        affected = {candidate.relative for candidate in candidates}
         affected.update(record.deletions)
         for source_id in record.source_ids:
             shard = manifest.entry_path(source_id)
@@ -796,6 +889,7 @@ class TransactionManager:
                 "completed_at": None,
                 "created": [],
                 "operation_path": None,
+                "operation_paths": [],
                 "postimages": {},
                 "removed": [],
                 "snapshot_index": {},
@@ -858,9 +952,8 @@ class TransactionManager:
             data = self._read_single_link_bytes(snapshot, "transaction snapshot")
             self._replace_vault_bytes(target, data)
 
-    def _promote_candidate(self, candidate: Path, target: Path) -> None:
-        data = self._read_single_link_bytes(candidate, "candidate page")
-        self._replace_vault_bytes(target, data)
+    def _promote_candidate(self, candidate: _Candidate, target: Path) -> None:
+        self._replace_vault_bytes(target, candidate.data)
 
     def _replace_vault_bytes(self, target: Path, data: bytes) -> None:
         self._require_contained(
@@ -993,6 +1086,101 @@ class TransactionManager:
             self._write_atomic_bytes(snapshot, data)
             index[relative] = snapshot_relative.as_posix()
         return state, index
+
+    def _snapshot_writer_guard(
+        self,
+        record: TransactionRecord,
+        reusable_index: dict[str, str | None],
+    ) -> tuple[dict[str, str], dict[str, str | None]]:
+        state = self._writer_guard_state()
+        index: dict[str, str | None] = {}
+        originals = record.workspace / "snapshots" / "originals"
+        for relative in sorted(state):
+            if relative in reusable_index:
+                index[relative] = reusable_index[relative]
+                continue
+            snapshot_relative = (
+                PurePosixPath("originals") / ".writer-guard" / PurePosixPath(relative)
+            )
+            snapshot = record.workspace / "snapshots" / snapshot_relative
+            self._ensure_contained_directory(snapshot.parent, originals)
+            data = self._read_single_link_bytes(
+                self._vault_path(relative), "writer guard target"
+            )
+            self._write_atomic_bytes(snapshot, data)
+            index[relative] = snapshot_relative.as_posix()
+        return state, dict(sorted(index.items()))
+
+    @staticmethod
+    def _writer_guard_diff(
+        before: dict[str, str],
+        after: dict[str, str | None],
+        before_index: dict[str, str | None],
+    ) -> dict[str, str | None]:
+        changed = {
+            relative: before_index[relative]
+            for relative, content_hash in before.items()
+            if after.get(relative) != content_hash
+        }
+        changed.update({relative: None for relative in set(after) - set(before)})
+        return dict(sorted(changed.items()))
+
+    def _writer_guard_state(
+        self, *, allow_unsafe: bool = False
+    ) -> dict[str, str | None]:
+        self._require_ordinary_directory(self.config.vault, "portable vault")
+        excluded_local: Path | None = None
+        try:
+            excluded_local = self.local_state.relative_to(self.config.vault)
+        except ValueError:
+            pass
+
+        result: dict[str, str | None] = {}
+        for directory, dirnames, filenames in os.walk(
+            self.config.vault, topdown=True, followlinks=False
+        ):
+            current = Path(directory)
+            self._require_ordinary_directory(current, "vault directory")
+            relative_directory = current.relative_to(self.config.vault)
+            kept_directories: list[str] = []
+            for name in sorted(dirnames):
+                relative = relative_directory / name
+                if relative.parts and relative.parts[0] == ".obsidian":
+                    continue
+                if relative.parts[:2] == ("journal", "operations"):
+                    continue
+                if excluded_local is not None and (
+                    relative == excluded_local or excluded_local in relative.parents
+                ):
+                    continue
+                child = current / name
+                self._require_ordinary_directory(child, "vault directory")
+                kept_directories.append(name)
+            dirnames[:] = kept_directories
+
+            for name in sorted(filenames):
+                relative = relative_directory / name
+                relative_key = relative.as_posix()
+                if relative_key == "hot.md":
+                    continue
+                if relative.parts and relative.parts[0] == ".obsidian":
+                    continue
+                if relative.parts[:2] == ("journal", "operations"):
+                    continue
+                if excluded_local is not None and (
+                    relative == excluded_local or excluded_local in relative.parents
+                ):
+                    continue
+                target = current / name
+                try:
+                    result[relative_key] = self._hash_single_link_file(
+                        target, "writer guard target"
+                    )
+                except TransactionError:
+                    if not allow_unsafe:
+                        raise
+                    result[relative_key] = None
+        return dict(sorted(result.items()))
 
     @staticmethod
     def _operation_tree_diff(
@@ -1142,10 +1330,12 @@ class TransactionManager:
         )
         if not isinstance(payload, dict) or set(payload) != _METADATA_FIELDS:
             raise TransactionError("transaction metadata has invalid fields")
-        self._validate_recovery_metadata(payload)
+        self._validate_recovery_metadata(payload, workspace)
         return payload
 
-    def _validate_recovery_metadata(self, payload: dict[str, object]) -> None:
+    def _validate_recovery_metadata(
+        self, payload: dict[str, object], workspace: Path
+    ) -> None:
         completed_at = payload.get("completed_at")
         if completed_at is not None:
             try:
@@ -1154,7 +1344,8 @@ class TransactionManager:
                 raise TransactionError("transaction completed_at is invalid") from exc
         self._load_image_map(payload.get("preimages"), "transaction preimages")
         self._load_image_map(payload.get("postimages"), "transaction postimages")
-        self._load_snapshot_index(payload.get("snapshot_index"))
+        self._load_snapshot_index(payload.get("snapshot_index"), workspace=workspace)
+        self._load_operation_paths(payload.get("operation_paths"))
         for field in ("created", "updated", "removed"):
             raw = payload.get(field)
             if not isinstance(raw, list) or any(
@@ -1180,6 +1371,117 @@ class TransactionManager:
                     "transaction operation_path must be below journal/operations"
                 )
 
+    def _validate_metadata_semantics(
+        self,
+        *,
+        workspace: Path,
+        payload: dict[str, object],
+        status: str,
+        source_ids: tuple[str, ...],
+        deletions: tuple[str, ...],
+        candidate_names: tuple[str, ...],
+    ) -> None:
+        manifest = ShardedManifest(self.config)
+        shard_paths = {
+            manifest.entry_path(source_id).relative_to(self.config.vault).as_posix()
+            for source_id in source_ids
+        }
+        base_affected = set(candidate_names) | set(deletions) | shard_paths
+        operation_paths = set(self._load_operation_paths(payload["operation_paths"]))
+        operation_path = payload["operation_path"]
+        if operation_path is not None and operation_path not in operation_paths:
+            raise TransactionError(
+                "transaction operation_path must belong to operation_paths"
+            )
+        allowed = base_affected | operation_paths
+        snapshots = self._load_snapshot_index(
+            payload["snapshot_index"], workspace=workspace
+        )
+        postimages = self._load_image_map(
+            payload["postimages"], "transaction postimages"
+        )
+        if not set(snapshots) <= allowed:
+            raise TransactionError(
+                "transaction snapshot target is outside the affected set"
+            )
+        if not set(postimages) <= allowed:
+            raise TransactionError(
+                "transaction postimages contain paths outside the affected set"
+            )
+
+        created = set(payload["created"])
+        updated = set(payload["updated"])
+        removed = set(payload["removed"])
+        if (created | updated) - set(candidate_names) or removed - set(deletions):
+            raise TransactionError(
+                "transaction change fields contain paths outside affected pages"
+            )
+
+        completed_at = payload["completed_at"]
+        if status == "active":
+            if any(
+                (
+                    completed_at is not None,
+                    bool(created or updated or removed),
+                    operation_path is not None,
+                    bool(operation_paths),
+                    bool(snapshots),
+                    bool(postimages),
+                )
+            ):
+                raise TransactionError("active transaction has invalid recovery fields")
+            return
+        if status == "promoting":
+            if (
+                completed_at is None
+                or operation_path is not None
+                or operation_paths
+                or set(snapshots) != base_affected
+                or postimages
+            ):
+                raise TransactionError(
+                    "promoting transaction has invalid recovery fields"
+                )
+            return
+        if status == "complete":
+            if (
+                completed_at is None
+                or operation_path is None
+                or operation_paths != {operation_path}
+                or set(snapshots) != allowed
+                or set(postimages) != allowed
+            ):
+                raise TransactionError(
+                    "complete transaction postimages must exactly match affected paths"
+                )
+            return
+        if status == "failed" and postimages:
+            raise TransactionError("failed transaction postimages must be empty")
+        if status == "restored" and postimages and set(postimages) != allowed:
+            raise TransactionError(
+                "restored transaction postimages must exactly match affected paths"
+            )
+
+    def _load_operation_paths(self, raw: object) -> tuple[str, ...]:
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise TransactionError("transaction operation_paths must be a string list")
+        values = tuple(raw)
+        if values != tuple(sorted(set(values))):
+            raise TransactionError(
+                "transaction operation_paths must be unique and sorted"
+            )
+        for relative in values:
+            self._validate_relative_path(relative, "transaction operation path")
+            path = PurePosixPath(relative)
+            if path.suffix != ".md" or path.parts[:2] != (
+                "journal",
+                "operations",
+            ):
+                raise TransactionError(
+                    "transaction operation path must be below journal/operations"
+                )
+        return values
+
     def _load_image_map(self, raw: object, label: str) -> dict[str, str | None]:
         if not isinstance(raw, dict):
             raise TransactionError(f"{label} must be an object")
@@ -1198,7 +1500,9 @@ class TransactionManager:
             raise TransactionError(f"{label} paths must be sorted")
         return result
 
-    def _load_snapshot_index(self, raw: object) -> dict[str, str | None]:
+    def _load_snapshot_index(
+        self, raw: object, *, workspace: Path | None = None
+    ) -> dict[str, str | None]:
         if not isinstance(raw, dict):
             raise TransactionError("transaction snapshot_index must be an object")
         result: dict[str, str | None] = {}
@@ -1213,6 +1517,17 @@ class TransactionManager:
                 if not snapshot.startswith("originals/"):
                     raise TransactionError(
                         "transaction snapshot path is outside originals"
+                    )
+                if workspace is not None:
+                    snapshot_path = workspace / "snapshots" / PurePosixPath(snapshot)
+                    self._require_contained(
+                        snapshot_path,
+                        workspace / "snapshots",
+                        "transaction snapshot path",
+                        strict_child=True,
+                    )
+                    self._require_ordinary_file(
+                        snapshot_path, "transaction snapshot backing file"
                     )
             result[relative] = snapshot
         if list(result) != sorted(result):

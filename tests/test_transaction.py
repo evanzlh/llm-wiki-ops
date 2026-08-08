@@ -638,24 +638,20 @@ def test_abort_refuses_foreign_lock_without_removing_workspace(tmp_path: Path) -
 
 @pytest.mark.parametrize("status", ["complete", "restored"])
 def test_abort_refuses_retained_transaction_statuses(
-    tmp_path: Path, status: str
+    tmp_path: Path, operation_writer, status: str
 ) -> None:
     root, config = make_config(tmp_path)
-    manager = TransactionManager(config)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
     record = manager.begin([add_source(root)], transaction_id="tx-1")
-    metadata_path = record.workspace / "metadata.json"
-    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    payload["status"] = status
-    metadata_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    manager.commit("tx-1")
+    if status == "restored":
+        manager.restore("tx-1")
 
     with pytest.raises(TransactionError, match="retain|discard|status"):
         manager.abort("tx-1")
 
     assert record.workspace.is_dir()
-    assert manager.lock_path.exists()
+    assert not manager.lock_path.exists()
 
 
 def test_abort_without_lock_only_cleans_failed_transaction(tmp_path: Path) -> None:
@@ -1639,3 +1635,282 @@ def test_a_b_transaction_can_remove_b_relationship_and_rebuild_both_shards(
     assert target.read_text(encoding="utf-8") == updated
     assert manifest.load("sources/a.md").pages == ("concepts/shared.md",)
     assert manifest.load("sources/b.md").pages == ()
+
+
+def test_restore_recovers_promoting_transaction_after_page_replace_crash(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    candidate_page(record, "concepts/b.md")
+    original_promote = manager._promote_candidate
+    crashed = False
+
+    def crash_after_first(candidate, target: Path) -> None:
+        nonlocal crashed
+        original_promote(candidate, target)
+        if not crashed:
+            crashed = True
+            raise SystemExit("simulated process crash after page replace")
+
+    monkeypatch.setattr(manager, "_promote_candidate", crash_after_first)
+
+    with pytest.raises(SystemExit, match="simulated process crash"):
+        manager.commit("tx-1")
+
+    recovering = TransactionManager(config, operation_writer=operation_writer(config))
+    assert recovering.load("tx-1").status == "promoting"
+    with pytest.raises(TransactionError, match="promoting.*restore"):
+        recovering.abort("tx-1")
+
+    recovering.restore("tx-1")
+
+    assert not (config.vault / "concepts/a.md").exists()
+    assert not (config.vault / "concepts/b.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert recovering.load("tx-1").status == "restored"
+    assert not recovering.lock_path.exists()
+
+
+def test_restore_recovers_promoting_transaction_after_manifest_replace_crash(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    source_a = add_source(root, "a.md")
+    source_b = add_source(root, "b.md")
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source_a, source_b], transaction_id="tx-1")
+    shared = PAGE.replace("  - sources/a.md\n", "  - sources/a.md\n  - sources/b.md\n")
+    candidate_page(record, "concepts/shared.md", shared)
+    original_upsert = ShardedManifest.upsert
+    calls = 0
+
+    def crash_after_first(store, source, **kwargs):
+        nonlocal calls
+        result = original_upsert(store, source, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise SystemExit("simulated process crash after manifest replace")
+        return result
+
+    monkeypatch.setattr(ShardedManifest, "upsert", crash_after_first)
+
+    with pytest.raises(SystemExit, match="simulated process crash"):
+        manager.commit("tx-1")
+
+    monkeypatch.setattr(ShardedManifest, "upsert", original_upsert)
+    manifest = ShardedManifest(config)
+    assert manifest.load("sources/a.md") is not None
+    recovering = TransactionManager(config, operation_writer=operation_writer(config))
+    assert recovering.load("tx-1").status == "promoting"
+
+    recovering.restore("tx-1")
+
+    assert not (config.vault / "concepts/shared.md").exists()
+    assert manifest.load("sources/a.md") is None
+    assert manifest.load("sources/b.md") is None
+    assert recovering.load("tx-1").status == "restored"
+    assert not recovering.lock_path.exists()
+
+
+def test_persistent_failed_status_write_leaves_promoting_recoverable(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_metadata = manager._write_metadata
+
+    def fail_failed_status(workspace: Path, payload: dict[str, object]) -> None:
+        if payload.get("status") == "failed":
+            raise OSError("persistent metadata failure")
+        original_metadata(workspace, payload)
+
+    monkeypatch.setattr(manager, "_write_metadata", fail_failed_status)
+
+    with pytest.raises(TransactionError, match="metadata failed"):
+        manager.commit("tx-1")
+
+    assert not manager.lock_path.exists()
+    recovering = TransactionManager(config, operation_writer=operation_writer(config))
+    assert recovering.load("tx-1").status == "promoting"
+    recovering.restore("tx-1")
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert recovering.load("tx-1").status == "restored"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["index.md", ".manifest.json", ".obsidian/workspace.json"],
+)
+def test_load_rejects_snapshot_targets_outside_transaction_affected_set(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload["snapshot_index"] = {relative: None}
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransactionError, match="snapshot.*(target|affected|status)"):
+        manager.load("tx-1")
+
+
+@pytest.mark.parametrize("kind", ["empty", "extra"])
+def test_load_rejects_complete_postimages_not_exactly_affected(
+    tmp_path: Path,
+    operation_writer,
+    kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    manager.commit("tx-1")
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    if kind == "empty":
+        payload["postimages"] = {}
+    else:
+        payload["postimages"]["concepts/unaffected.md"] = None
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransactionError, match="postimages.*affected"):
+        manager.load("tx-1")
+
+
+def test_load_rejects_status_cross_fields(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload["status"] = "complete"
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        TransactionError, match="complete.*(fields|completed|operation|postimages)"
+    ):
+        manager.load("tx-1")
+
+
+def test_load_rejects_symlinked_snapshot_backing_file(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Updated"))
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-1")
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    snapshot = (
+        record.workspace / "snapshots" / payload["snapshot_index"]["concepts/a.md"]
+    )
+    external = tmp_path / "external-snapshot"
+    external.write_text(PAGE, encoding="utf-8")
+    snapshot.unlink()
+    snapshot.symlink_to(external)
+
+    with pytest.raises(TransactionError, match="snapshot|symlink|single-link"):
+        manager.load("tx-1")
+
+
+@pytest.mark.parametrize("kind", ["different-bytes", "symlink"])
+def test_candidate_interposition_cannot_change_promoted_bytes(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate = candidate_page(record, "concepts/a.md")
+    original_bytes = candidate.read_bytes()
+    external = tmp_path / "swapped.md"
+    external.write_text(PAGE.replace("# A", "# Swapped"), encoding="utf-8")
+    original_promote = manager._promote_candidate
+
+    def interpose(candidate_value, target: Path) -> None:
+        path = getattr(candidate_value, "path", candidate_value)
+        path.unlink()
+        if kind == "symlink":
+            path.symlink_to(external)
+        else:
+            path.write_bytes(external.read_bytes())
+        try:
+            original_promote(candidate_value, target)
+        finally:
+            path.unlink()
+            path.write_bytes(original_bytes)
+
+    monkeypatch.setattr(manager, "_promote_candidate", interpose)
+
+    manager.commit("tx-1")
+
+    assert (config.vault / "concepts/a.md").read_bytes() == original_bytes
+    assert manager.load("tx-1").status == "complete"
+
+
+@pytest.mark.parametrize("target_kind", ["page", "manifest-marker"])
+def test_operation_writer_vault_side_effect_is_rolled_back(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    if target_kind == "page":
+        unrelated = config.vault / "references/unrelated.md"
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text(PAGE, encoding="utf-8")
+    else:
+        unrelated = config.vault / ".manifest.json"
+    original = unrelated.read_bytes()
+
+    def writer(_change):
+        unrelated.write_text("unauthorized writer side effect\n", encoding="utf-8")
+        operation = config.vault / "journal/operations/tx-1.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([source], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*unauthorized"):
+        manager.commit("tx-1")
+
+    assert unrelated.read_bytes() == original
+    assert not (config.vault / "concepts/a.md").exists()
+    assert not (config.vault / "journal/operations/tx-1.md").exists()
