@@ -217,6 +217,10 @@ class ShardedManifest:
             path = Path(raw)
             if not path.exists():
                 result["missing"].append(str(path))
+                try:
+                    selected.add(self.source_id(path))
+                except ManifestError:
+                    pass
                 continue
             source_id = self.source_id(path)
             selected.add(source_id)

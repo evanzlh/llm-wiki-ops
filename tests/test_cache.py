@@ -122,6 +122,17 @@ class TestCheckSources:
 
         assert result["new"] == ["sources/a.md"]
 
+    def test_portable_selected_deleted_source_is_missing_once(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        update_source(config.vault, source, portable=config)
+        source.unlink()
+
+        result = check_sources(config.vault, [source], portable=config)
+
+        assert result["missing"] == [str(source)]
+
     def test_new_source(self, vault, src_file):
         result = check_sources(vault, [src_file])
         assert str(src_file) in result["new"]
