@@ -28,7 +28,11 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 
 **Speed contract:** Inline only. No subagents. No QMD. No manifest/`index.md`/`log.md`/`hot.md` writes. Target: <60 seconds. Promotion to full wiki pages happens later via `/wiki-ingest`.
 
-1. **Resolve config** (Config Resolution Protocol in `llm-wiki/SKILL.md`): get `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_RAW_DIR` (default: `$OBSIDIAN_VAULT_PATH/_raw`). Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not.
+1. **Resolve config** (Config Resolution Protocol in `llm-wiki/SKILL.md`): get `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_RAW_DIR` (default: `$OBSIDIAN_VAULT_PATH/_raw`).
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, do not create or write vault `_raw/`: quick staging is Personal-mode behavior. The user must first preserve the capture as an authoritative file below a configured `sources` path; then route its promotion through `wiki-ingest` and the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. If no such source exists, stop with that guidance rather than direct-writing the repository.
+
+   In Personal mode, Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not, then continue below.
 
    Capture does not independently reinterpret validator schema inputs. When `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, or `OBSIDIAN_SCHEMA_SOURCE` is present, preserve it for the downstream lint/trust consumer: CLI values take precedence over environment/config values, which take precedence over framework defaults, and explicit blank or whitespace-only values fail closed. Omit a variable to use defaults.
 
@@ -58,6 +62,8 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 ## Correction Mode (`--correction`)
 
 Use this mode when a user or stronger authority corrects a claim derived from an immutable conversation, tool result, or other raw source. Never edit or copy the raw source. Resolve config, read the vault `AGENTS.md`, and update an existing derived page when one owns the claim; otherwise create the smallest owner-compliant derived correction page.
+
+**Portable Write Protocol branch:** After resolving config, Portable Repository mode requires the correction's immutable source to be an authoritative file below a configured `sources` path. Follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`, write the corrected page only in `candidate_vault`, and suppress the direct manifest, `log.md`, `hot.md`, snapshot, and Git steps below. If the correction cannot be represented as a transaction, stop without changing the live vault. Personal mode retains the workflow below.
 
 Record exactly one atomic claim pair. `speaker_type` is semantic and must be assessed independently of a serialized message `role` (a tool result may be serialized as `role=user`). Do not include raw transcript excerpts.
 
@@ -100,6 +106,8 @@ After writing the derived correction, link the immutable source to the created/u
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, require an actual authoritative source file and follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Create the finished note only below `candidate_vault` and suppress direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If the conversation has not been preserved as an authoritative source, stop with guidance instead of direct-writing the vault. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand existing wiki content (avoid duplicates)
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it gives context on recent activity
 

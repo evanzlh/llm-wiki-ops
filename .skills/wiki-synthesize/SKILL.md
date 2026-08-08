@@ -15,6 +15,8 @@ You are scanning the wiki for concepts that co-occur across many pages but have 
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Resolve actual authoritative source files traced from the selected pages' provenance, require those files to be below the configured `sources` paths, and pass them to `transaction begin`; never use compiled vault pages as transaction sources. Build synthesis pages only in the returned `candidate_vault`, and suppress direct manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes below. If no valid authoritative source set can be established, report the opportunity without writing. In Personal mode, retain the workflow below unchanged.
 2. Read `index.md` to get the full page inventory.
 3. Read `hot.md` if it exists — it surfaces recent activity and active threads that may already point to synthesis opportunities.
 4. Read `_meta/taxonomy.md` to understand the tag vocabulary.
@@ -68,12 +70,14 @@ Pick the top 5 candidates. If the user asked for a specific topic ("synthesize e
 
 For each top candidate, create a page in `synthesis/` using this template:
 
+In Portable Repository mode, `sources` must contain only the transaction's repository-relative Source IDs produced from the traced authoritative files used by `transaction begin`. Compiled vault page paths belong in body links and provenance discussion, never in portable candidate `sources`. In Personal mode, retain the existing convention of listing the compiled pages that support the synthesis.
+
 ```markdown
 ---
 title: <Concept A> × <Concept B>
 category: synthesis
 tags: [<shared tags>, <domain tags>]
-sources: [<all pages that link to both>]
+sources: [<Portable: transaction Source IDs; Personal: all pages that link to both>]
 created: TIMESTAMP
 updated: TIMESTAMP
 summary: "Cross-cutting synthesis of how <A> and <B> interact, with implications for <domain>."

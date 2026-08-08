@@ -35,6 +35,8 @@ If no query is given, default to **recent sessions mode**: ingest the last 5 unp
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
+
+   **Portable Write Protocol branch:** Portable writes are owned by `wiki-ingest`'s Portable Write Protocol in `llm-wiki/SKILL.md`. If resolution selected Portable Repository mode, delegate the selected authoritative session sources to that protocol and do not direct-write pages or central files here. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/.manifest.json` → know what's already ingested.
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists → warm context on recent wiki activity.
 

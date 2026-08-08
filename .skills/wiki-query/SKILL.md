@@ -19,11 +19,11 @@ You are answering questions against a compiled Obsidian wiki, not raw source doc
 
 ## This skill is READ-ONLY
 
-`wiki-query` answers questions. It MUST NOT create or modify any wiki content. The ONLY write it may perform is the single Step 6 append to `log.md`.
+`wiki-query` answers questions. It MUST NOT create or modify any compiled wiki content. The only allowed state changes are the single Personal-mode Step 6 append to `log.md` and the Portable-mode freshness gate for local ignored `hot.md` described below.
 
 Never, even when a change seems obviously helpful:
 - create or edit pages under `concepts/`, `entities/`, `skills/`, `references/`, `synthesis/`, `journal/`, or `projects/`
-- modify `index.md`, `hot.md`, `_insights.md`, or `.manifest.json`
+- modify `index.md`, `_insights.md`, or `.manifest.json`, or modify `hot.md` outside the explicit Portable freshness gate
 
 If the user's message contains a new finding, an action request ("save this", "ban X", "record that"), or anything implying a change, **do not perform it.** Answer the question, PROPOSE the change, and route the user to the right skill:
 - quick note / gotcha → `wiki-capture --quick`
@@ -38,8 +38,14 @@ If the user's message contains a new finding, an action request ("save this", "b
    guidance. This gives `OBSIDIAN_VAULT_PATH` and any QMD variables. For cross-project queries without `@name`, use this same order: never skip a
    discovered portable marker to prefer a global vault. Works from any project
    directory.
+   In Portable Repository mode, run `obsidian-wiki hot status --json` before
+   reading `hot.md`. If it reports `stale`, use the already-invalidated result
+   only as a signal: rebuild and mark a local snapshot through the Portable
+   Write Protocol in `llm-wiki/SKILL.md`, or continue without `hot.md`; never
+   treat stale content as evidence. Portable queries do not append to stable
+   `log.md`, so Step 6 is Personal-mode behavior only. This local ignored hot freshness state is derived state, not wiki content, and does not permit a compiled-page write.
 2. **Load QMD settings from the resolved config** before deciding retrieval strategy. If `QMD_WIKI_COLLECTION` is set, treat QMD as available subject only to transport/tool checks below. If it is empty or unset, say briefly why QMD is being skipped before using grep/page reads.
-3. If `$OBSIDIAN_VAULT_PATH/hot.md` exists, read it first — it gives you instant context on recent activity. If the user's question is about something ingested recently, hot.md may answer it before you even open `index.md`.
+3. If `$OBSIDIAN_VAULT_PATH/hot.md` exists and the portable freshness gate above did not report stale, read it first — it gives you instant context on recent activity. If the user's question is about something ingested recently, hot.md may answer it before you even open `index.md`.
 4. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand the wiki's scope and structure
 
 ## Visibility Filter (optional)

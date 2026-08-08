@@ -15,6 +15,8 @@ You run a lightweight maintenance pass over the wiki: check source freshness, re
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_WIKI_REPO`.
+
+   **Portable Write Protocol branch:** In Portable Repository mode, report active transactions first and use the canonical Portable Write Protocol in `llm-wiki/SKILL.md` for any knowledge-page repair. Do not directly refresh stable `index.md`/`log.md`, create legacy state inside the repository, or run pre-write/Git steps. Check local derived context with `obsidian-wiki hot status --json`, rebuilding and marking it current only as the canonical protocol permits. If a requested maintenance write cannot be represented by a transaction, report it instead of mutating the live vault. In Personal mode, retain the workflow below unchanged.
 2. **Derive vault-scoped state dir** — all runtime state is scoped to the resolved vault, not global:
    ```bash
    VAULT_ID=$(echo "$OBSIDIAN_VAULT_PATH" | md5sum 2>/dev/null | cut -c1-8 || md5 -q - <<< "$OBSIDIAN_VAULT_PATH" | cut -c1-8)

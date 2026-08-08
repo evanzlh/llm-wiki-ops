@@ -20,6 +20,8 @@ Either way, the import writes pages with correct frontmatter and wikilinks, then
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Treat the import bundle files as the actual sources, create imported pages only in the returned `candidate_vault`, declare removals explicitly, and suppress direct central-file, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists — apply any owner-specific conventions.
 
 ## Step 1: Locate and Detect Source Type

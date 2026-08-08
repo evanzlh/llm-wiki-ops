@@ -623,6 +623,61 @@ marker and can silently erase the distinction between an invalid config and a
 missing one. Follow the ordered protocol above or use the installed CLI, whose
 resolver implements it.
 
+## Portable Write Protocol
+
+After config resolution, every skill that can write must branch on the resolved
+mode **before any vault mutation**.
+
+### Portable Repository mode
+
+Use one CLI transaction for the complete logical write:
+
+1. Start it with the actual one-or-more authoritative source paths:
+   `obsidian-wiki transaction begin --source sources/a.md sources/b.md --json`.
+   Record the returned `transaction_id` and `candidate_vault`.
+2. Write new and updated knowledge pages only below `candidate_vault`, using
+   their final vault-relative paths. If a requested mutation cannot be
+   represented as candidate knowledge pages or declared deletions, stop and
+   report that it is unsupported in portable mode; never fall through to a
+   direct live-vault write.
+3. Declare each removal with
+   `obsidian-wiki transaction delete <id> concepts/obsolete.md`.
+4. Review all candidate frontmatter, links, and deletion paths. Only then run
+   `obsidian-wiki transaction commit <id> --json`.
+5. If begin or commit fails, run
+   `obsidian-wiki transaction list --json`, inspect the retained workspace and
+   status, and deliberately choose one recovery action:
+   `obsidian-wiki transaction retry <id> --json`,
+   `obsidian-wiki transaction restore <id> --json`,
+   `obsidian-wiki transaction abort <id> --json`, or
+   `obsidian-wiki transaction discard <id> --json`. Never start a replacement
+   transaction while the failed transaction's outcome is ambiguous.
+6. Never hand-edit manifest shards, manifest markers, or operation pages. The
+   transaction manager owns those files. In portable repositories,
+   **index.md and log.md are stable** collaboration surfaces and ordinary writes
+   do not update them.
+7. Treat derived session context separately: **hot.md is local and ignored**.
+   Run `obsidian-wiki hot status --json` before using it. When it reports
+   `stale`, regenerate `hot.md` from current page summaries and recent operation
+   entries (or proceed without it), then run
+   `obsidian-wiki hot mark-current --json` after the replacement is complete.
+8. Do not commit, push, or open a pull request. Transaction promotion updates
+   the working tree only; Git publication always remains an explicit human
+   action.
+
+The transaction is also the safety boundary for destructive skills. Do not
+create a pre-write Git snapshot or automatic Git commit in portable mode.
+`WIKI_STAGED_WRITES` and `_staging/` do not replace transactions there.
+
+### Personal mode
+
+**Personal mode** retains the existing direct-write workflow and its central
+manifest, `index.md`, `log.md`, and `hot.md` maintenance. Existing personal
+pre-write snapshots and optional `_staging/` review behavior also remain in
+force. Instructions elsewhere in a skill that directly edit those files or
+create a Git snapshot are personal-mode instructions unless they explicitly say
+otherwise.
+
 ### Vault-scoped state
 
 Skills that write runtime state (e.g. `daily-update`) must scope that state to the resolved vault, not to a global path. Use:

@@ -21,6 +21,8 @@ You are distilling knowledge from the current project into the user's Obsidian w
    `OBSIDIAN_LINK_FORMAT` (`wikilink` or `markdown`), and optional QMD settings.
    In portable mode, keep computed absolute repository paths in memory and
    never write them into committed files. Works from any project directory.
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, immediately follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. Pass the actual authoritative project-source paths to `transaction begin`, write the project page and related knowledge pages only below `candidate_vault`, and suppress all direct manifest/cache, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If the current project is outside the configured authoritative source roots, stop rather than inventing a Source ID or direct-writing the vault. In Personal mode, retain the workflow below unchanged.
 2. **Select the manifest protocol from the resolved mode.** Personal mode reads
    the monolithic manifest v1 project entry and preserves its absolute
    `source_cwd` plus existing vault-relative source behavior. Portable mode

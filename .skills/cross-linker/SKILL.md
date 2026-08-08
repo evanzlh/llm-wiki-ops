@@ -19,6 +19,8 @@ You are weaving the wiki's knowledge graph tighter by finding and inserting miss
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all changed pages in the returned `candidate_vault`; suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
 2. Read `index.md` to get the full inventory of pages and their one-line descriptions
 3. Skim `log.md` to see what was recently ingested (focus linking effort on new pages)
 

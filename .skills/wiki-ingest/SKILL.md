@@ -27,6 +27,8 @@ You are ingesting source documents into an Obsidian wiki. Your job is not to sum
    `OBSIDIAN_LINK_FORMAT` (default: `wikilink`), and `WIKI_STAGED_WRITES`.
    Only ingest authoritative files below the portable config's `sources`
    paths. Read only the variables you need; never echo unrelated values.
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, immediately follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`: begin with the actual authoritative source paths, write only below the returned `candidate_vault`, and commit only after review. Suppress every legacy direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git step below. In Personal mode, retain the workflow below unchanged.
 2. **Check `WIKI_STAGED_WRITES`** — if set to `true`, all new and updated category pages go to `_staging/<category>/` instead of their final location. Tell the user at the start of the ingest: "Staged writes mode is enabled — pages will land in `_staging/` for your review. Run `/wiki-stage-commit` when ready to promote."
 3. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 file, including its existing absolute and

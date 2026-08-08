@@ -30,8 +30,16 @@ new compiled knowledge pages.
 1. Resolve configuration with the Config Resolution Protocol, including an inline
    `@name` vault override, then read the target vault's `AGENTS.md` when it exists.
    Load `OBSIDIAN_LINK_FORMAT` before drafting citations.
-2. Read `hot.md` and `index.md` first. Select candidates by frontmatter and summary
-   before reading bodies.
+   In Portable Repository mode, run `obsidian-wiki hot status --json` before
+   reading `hot.md`. If it reports `stale`, rebuild and mark a local snapshot
+   through the Portable Write Protocol in `llm-wiki/SKILL.md`, or proceed
+   without `hot.md`; never use stale content as evidence. Portable narration
+   must not append stable `log.md` or directly refresh `hot.md`.
+   `--save` is unsupported in Portable Repository mode because `_readouts/` is not a
+   transaction candidate: return the completed readout in conversation and
+   explain that it was not saved; never write `_readouts/` directly.
+2. Read `index.md` first, and read `hot.md` only after the portable freshness gate
+   accepts it. Select candidates by frontmatter and summary before reading bodies.
 3. When configured, use QMD before `rg`; if QMD is absent, unconfigured, or fails,
    continue with the index and `rg` path. Treat QMD output as candidate guidance, not
    evidence: establish each claim from the allowed vault page itself.
@@ -73,7 +81,8 @@ the remaining gaps in `## Coverage`.
 
 ## Persistence
 
-Present the result by default. For `--save`, create `_readouts/` if necessary and write
+Present the result by default. The persistence instructions in this section are
+Personal-mode-only. For `--save`, create `_readouts/` if necessary and write
 `_readouts/<slug>.md` with `title`, `topic`, `voice`, `sources`, `created`, and
 `updated` frontmatter. Use a deterministic, filesystem-safe `<slug>` derived from the
 topic. Save the same completed Markdown readout that was returned in conversation.

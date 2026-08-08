@@ -14,6 +14,8 @@ You are running an autonomous research loop on a topic, synthesizing what you fi
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Use authoritative research-source files for `transaction begin`, create results only in the returned `candidate_vault`, and suppress direct manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes below. If no authoritative source path exists, stop and ask for one rather than bypassing the protocol. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand what's already in the wiki — don't re-research things the wiki covers well
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it surfaces recent context
 4. Check `$OBSIDIAN_VAULT_PATH/references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault

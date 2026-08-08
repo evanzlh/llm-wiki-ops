@@ -15,6 +15,8 @@ You are performing a destructive operation on the wiki. Always archive first, al
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and optional QMD settings such as `QMD_WIKI_COLLECTION`
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, use the canonical Portable Write Protocol in `llm-wiki/SKILL.md` as the destructive safety boundary and never create a Git snapshot or commit. Represent replacements in `candidate_vault` and removals with `transaction delete`; if archive or restore metadata cannot be represented, stop rather than mutating the live vault. In Personal mode, retain the archive, direct-write, and pre-write snapshot workflow below unchanged.
 2. Read `.manifest.json` to understand current state
 3. **Confirm the user's intent.** This skill supports three modes:
    - **Archive only** — snapshot current wiki, no rebuild

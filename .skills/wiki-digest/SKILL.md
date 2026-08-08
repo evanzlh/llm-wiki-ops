@@ -16,6 +16,8 @@ You are generating a human-readable digest of recent wiki activity: what was lea
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT`.
+
+   In Portable Repository mode, run `obsidian-wiki hot status --json` before reading `hot.md`. If it reports `stale`, rebuild and mark a local snapshot through the Portable Write Protocol in `llm-wiki/SKILL.md`, or proceed without it; never treat stale content as authoritative. Portable digest output is read-only: do not append stable `log.md`, update `index.md`, or save a journal page directly. If the user requests persistence, resolve one-or-more actual authoritative source paths from the cited pages, begin a transaction with those paths, and write a source-backed candidate journal page with the corresponding non-empty `sources` values; review the candidate and commit it through the Portable Write Protocol. If no authoritative source set can be established, return the digest in chat without saving. The `sources: []` is Personal-mode-only template behavior below. Personal mode retains the optional save and log behavior below.
 2. **Parse the period** from the user's request:
    - "daily" / "today" / "yesterday" → last 24 hours
    - "weekly" / "this week" / no argument (default) → last 7 days
@@ -23,7 +25,7 @@ You are generating a human-readable digest of recent wiki activity: what was lea
    - ISO date like "since 2026-05-01" → pages updated since that date
    - Explicit number like "last 14 days" → that many days
 3. Read `$OBSIDIAN_VAULT_PATH/log.md` — last 200 lines — for entries within the period (timestamps are ISO-8601 prefixed lines).
-4. Read `$OBSIDIAN_VAULT_PATH/hot.md` for current session context.
+4. Read `$OBSIDIAN_VAULT_PATH/hot.md` for current session context only when the portable freshness gate above did not report stale.
 5. If `$OBSIDIAN_VAULT_PATH/_insights.md` exists, read its **Anchor Pages** table — you'll use it later to identify which new pages became hubs.
 
 ## Step 1: Collect Pages Active in the Period

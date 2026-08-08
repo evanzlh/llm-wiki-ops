@@ -19,6 +19,8 @@ You are performing a health check on an Obsidian wiki. Your goal is to find and 
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` plus any `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, and `OBSIDIAN_SCHEMA_SOURCE` values.
+
+   **Portable Write Protocol branch:** Read-only lint may continue without a transaction. If resolution selected Portable Repository mode and a consolidate/fix mode will write, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before the first mutation; build repairs in `candidate_vault` and suppress direct live-page, central-file, pre-write snapshot, and Git writes below. In Personal mode, retain the workflow below unchanged.
 2. **Read owner rules** — if `$OBSIDIAN_VAULT_PATH/AGENTS.md` exists, read it before interpreting any schema. Owner rules override framework defaults.
 3. **Form the effective schema** — record the schema source locator plus effective required/optional frontmatter, lifecycle values, relationship types, and provenance markers. Framework values are defaults; preserve owner extensions and relaxed requiredness exactly. Never coerce an owner type to a framework type.
 4. Read `index.md` for the full page inventory

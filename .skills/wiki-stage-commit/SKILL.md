@@ -15,6 +15,8 @@ You are reviewing LLM-written pages that are waiting in `_staging/` for human ap
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md`. This gives `OBSIDIAN_VAULT_PATH` and `WIKI_STAGED_WRITES`.
+
+   **Portable Write Protocol branch:** In Portable Repository mode, run `obsidian-wiki transaction list --json` and review each retained transaction's status, candidate pages, and deletions. If the transaction list is empty, report that no portable writes are pending and return immediately. Commit a reviewed active transaction; retry a failed transaction only when the user chooses to continue; restore only for an explicit rollback; abort an active/failed transaction the user abandons; discard retained recovery state only after its outcome is understood. Use only the canonical Portable Write Protocol commands from `llm-wiki/SKILL.md`. Never move files directly into the live vault and never create a Git commit. `_staging/ remains personal-mode` behavior. Return immediately after the selected portable action; do not execute any numbered `_staging/`, manifest, `index.md`, `log.md`, or `hot.md` step below.
 2. If `WIKI_STAGED_WRITES` is not set or is `false`, tell the user: "Staged writes mode is not enabled. Set `WIKI_STAGED_WRITES=true` in your `.env` to use this feature." Then stop.
 3. Read the `_staging/` directory inventory.
 

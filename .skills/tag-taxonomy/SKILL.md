@@ -16,6 +16,8 @@ You are enforcing consistent tagging across the wiki by normalizing tags to a co
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all changed pages in the returned `candidate_vault`; suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/_meta/taxonomy.md` — this is the canonical tag list
 3. Read `index.md` to understand the wiki's scope
 

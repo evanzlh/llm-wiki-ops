@@ -20,6 +20,8 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 ## Before You Start
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`, `COPILOT_HISTORY_PATH` (defaults to `~/.copilot/session-state`), and `COPILOT_VSCODE_STORAGE_PATH` (VS Code `workspaceStorage`; platform-specific — ask the user if absent)
+
+   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all pages in the returned `candidate_vault`; suppress the direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If a mutation cannot be represented by candidate knowledge pages or transaction deletions, stop instead of writing live files. In Personal mode, retain the workflow below unchanged.
 2. Read `.manifest.json` at the vault root to check what's already been ingested
 3. Read `index.md` at the vault root to know what the wiki already contains
 

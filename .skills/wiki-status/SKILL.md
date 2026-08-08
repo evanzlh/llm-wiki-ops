@@ -21,6 +21,8 @@ You are computing the current state of the wiki: what's been ingested, what's ne
    `.obsidian-wiki/config.toml`, then `.env`, personal global config, and setup
    guidance. This gives `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_SOURCES_DIR`,
    `CLAUDE_HISTORY_PATH`, and `CODEX_HISTORY_PATH`.
+
+   **Portable Write Protocol branch:** In Portable Repository mode, begin every read-only report with `obsidian-wiki transaction list --json` and surface retained/failed transactions before other status. For insights or another write mode, trace the analyzed pages' provenance to actual authoritative source files below the configured `sources` paths, begin a transaction with those files, write the result as the candidate knowledge page `synthesis/wiki-insights.md`, then review and commit the candidate through the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. The legacy `_insights.md` remains Personal-mode-only. Suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes. If no authoritative source set can be established, return the analysis without writing. In Personal mode, retain the workflow below unchanged.
 2. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 ledger. Portable mode uses manifest v2: its
    `.manifest.json` is only a marker, shards are below
@@ -403,8 +405,10 @@ You'll reuse this data across all sections below.
 
 6. **Rough clusters.** Group anchor pages by dominant tag. (Simple tag intersection — just for orientation.)
 
-7. **Graph delta since last run.** Compare the current link graph to the snapshot stored in the previous `_insights.md`:
-   - Read the `<!-- GRAPH_SNAPSHOT: ... -->` line at the bottom of the previous `_insights.md` (if it exists) — it contains a compact JSON edge list
+7. **Graph delta since last run.** Select the previous snapshot by resolved mode:
+   - In Portable Repository mode, read the previous snapshot from `synthesis/wiki-insights.md` in the live vault before building its transaction candidate.
+   - In Personal mode, read the previous snapshot from `_insights.md`.
+   - In either file, read the `<!-- GRAPH_SNAPSHOT: ... -->` line at the bottom when it exists — it contains a compact JSON edge list.
    - Compute: new pages added, pages removed, new wikilinks created, wikilinks removed
    - Flag: pages that were isolated last run but now have incoming links ("newly connected: X, Y")
    - Flag: pages that lost incoming links since last run ("link target may have been renamed: A, B")
@@ -433,7 +437,25 @@ You'll reuse this data across all sections below.
 
 ### Output
 
-Write the result to `_insights.md` at the vault root. Overwrite freely — it's regenerable. At the very end, embed a compact graph snapshot as an HTML comment so the next run can diff against it.
+In Portable Repository mode, write this result and its compact graph snapshot only to the transaction candidate `synthesis/wiki-insights.md`, then review and commit as required by the portable branch above. In Personal mode, write `_insights.md` at the vault root and overwrite it freely because it is regenerable. `_insights.md` reads and writes are Personal-mode-only. At the very end of either output, embed the snapshot as an HTML comment so the next run can diff against the same mode-specific page.
+
+For the Portable candidate, prepend required transaction-compatible frontmatter. Replace the placeholder with the non-empty, repository-relative Source IDs returned for this transaction; do not use compiled vault page paths:
+
+```yaml
+---
+title: Wiki Insights
+category: synthesis
+tags: [wiki-insights, meta/graph]
+sources: [<transaction Source IDs>]
+created: TIMESTAMP
+updated: TIMESTAMP
+summary: "Current structural analysis of the portable wiki graph."
+---
+```
+
+On the first creation, set both timestamps to the current time. On later runs, preserve the existing `created` value from the live `synthesis/wiki-insights.md` and update only `updated`.
+
+The Personal `_insights.md` output does not use this transaction-only source placeholder.
 
 ```markdown
 # Wiki Insights — <TIMESTAMP>
@@ -486,7 +508,7 @@ Write the result to `_insights.md` at the vault root. Overwrite freely — it's 
 <!-- GRAPH_SNAPSHOT: {"nodes":["concepts/foo","entities/bar"],"edges":[["concepts/foo","entities/bar"]]} -->
 ```
 
-After writing the file, append to `log.md`:
+After writing the file in Personal mode, append to `log.md`. Portable mode does not append stable `log.md`:
 ```
 - [TIMESTAMP] STATUS_INSIGHTS anchors=10 bridges=N cohesion_checked=T surprising=5 questions=7 delta="+N pages +M links" tier_suggestions=N
 ```
@@ -500,7 +522,7 @@ After writing the file, append to `log.md`:
 
 - If a personal manifest v1 file doesn't exist, report everything as "new" and recommend a full ingest
 - If a portable manifest v2 marker or shard is invalid, report the `obsidian-wiki check` error; never rebuild it manually
-- This skill only reads and reports — it doesn't modify anything (except writing `_insights.md` in insights mode, which is regenerable)
+- This skill only reads and reports outside insights mode. Personal insights writes regenerable `_insights.md`; Portable insights writes the transactional `synthesis/wiki-insights.md` knowledge page.
 - The actual ingest work is done by the ingest skills (`wiki-ingest`, `claude-history-ingest`, `codex-history-ingest`)
 - Those skills are responsible for updating the manifest after they finish
 
