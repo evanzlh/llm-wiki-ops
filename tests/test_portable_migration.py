@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import cli as cli_module
 from obsidian_wiki import migration as migration_module
-from obsidian_wiki.cli import skills_dir
+from obsidian_wiki.cli import main, skills_dir
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.migration import MigrationError, analyze_migration, apply_migration
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -1351,3 +1354,309 @@ def test_apply_never_overwrites_planned_shard_appearing_during_capture(
 
     assert inserted
     assert planned.read_bytes() == competitor
+
+
+def _repository_files(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_cli_migrate_defaults_to_read_only_json_and_resolves_paths_from_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, _sources, _vault, source, _page = make_legacy_repo(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    before = _repository_files(root)
+    monkeypatch.chdir(elsewhere)
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["status"] == "ready"
+    assert payload["mode"] == "dry-run"
+    assert payload["root"] == "."
+    assert payload["vault"] == "wiki"
+    assert payload["source_root"] == "sources"
+    assert payload["source_mappings"] == [[str(source.resolve()), "sources/a.md"]]
+    assert _repository_files(root) == before
+
+
+def test_cli_migrate_human_dry_run_has_sections_and_exact_apply_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _sources, _vault, _source, _page = make_legacy_repo(tmp_path)
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    for heading in (
+        "Mappings:",
+        "Page updates:",
+        "Manifest shards:",
+        "Warnings:",
+        "Blockers:",
+    ):
+        assert heading in output
+    assert (
+        f"obsidian-wiki repo migrate --root {root} --vault wiki "
+        "--sources sources --apply"
+    ) in output
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shlex models the POSIX shell output")
+def test_cli_migrate_apply_command_quotes_shell_metacharacters_exactly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unusual_parent = tmp_path / "$USER `do-not-run` spaces"
+    unusual_parent.mkdir()
+    root, _sources, _vault, _source, _page = make_legacy_repo(unusual_parent)
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    command = output.split("Apply with:\n  ", 1)[1].strip()
+    assert result == 0
+    assert shlex.split(command) == [
+        "obsidian-wiki",
+        "repo",
+        "migrate",
+        "--root",
+        str(root),
+        "--vault",
+        "wiki",
+        "--sources",
+        "sources",
+        "--apply",
+    ]
+
+
+def test_cli_migrate_dry_run_reports_blockers_as_json_without_apply_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    external = tmp_path / "external.md"
+    external.write_text("external", encoding="utf-8")
+    manifest = json.loads((vault / ".manifest.json").read_text())
+    manifest["sources"][str(external)] = {
+        "content_hash": "sha256:external",
+        "pages_produced": [],
+    }
+    (vault / ".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload["status"] == "blocked"
+    assert "external-source" in {
+        blocker["code"] for blocker in payload["blockers"]
+    }
+    assert "apply_command" not in payload
+
+
+def test_cli_migrate_apply_refuses_blockers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    external = tmp_path / "external.md"
+    external.write_text("external", encoding="utf-8")
+    manifest = json.loads((vault / ".manifest.json").read_text())
+    only_entry = next(iter(manifest["sources"].values()))
+    manifest["sources"] = {str(external): only_entry}
+    (vault / ".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    before = _repository_files(root)
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+            "--apply",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload["status"] == "blocked"
+    assert payload["mode"] == "apply"
+    assert _repository_files(root) == before
+
+
+def test_cli_migrate_apply_reports_changes_and_never_commits(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _sources, _vault, _source, _page = make_legacy_repo(tmp_path)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Migration Test",
+            "-c",
+            "user.email=migration@example.invalid",
+            "commit",
+            "-qm",
+            "legacy baseline",
+        ],
+        check=True,
+    )
+    before_head = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    )
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+            "--apply",
+            "--json",
+            "--pretty",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    after_head = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    )
+    assert result == 0
+    assert payload["status"] == "applied"
+    assert "wiki/.manifest.json" in payload["changed_files"]
+    assert payload["removed_files"] == ["wiki/hot.md"]
+    assert payload["backup_dir"].startswith(".obsidian-wiki/local/migrations/")
+    assert "\n  \"" in captured.out
+    assert after_head == before_head
+
+
+def test_cli_migrate_apply_refuses_preimage_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, _sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    original_analyze = cli_module.analyze_migration
+
+    def analyze_then_drift(**kwargs):
+        plan = original_analyze(**kwargs)
+        (vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+        return plan
+
+    monkeypatch.setattr(cli_module, "analyze_migration", analyze_then_drift)
+
+    result = main(
+        [
+            "repo",
+            "migrate",
+            "--root",
+            str(root),
+            "--vault",
+            "wiki",
+            "--sources",
+            "sources",
+            "--apply",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload["status"] == "error"
+    assert "changed since analysis" in payload["error"]
+    assert not (root / ".obsidian-wiki/config.toml").exists()
+
+
+def test_cli_migrate_reports_already_portable_without_rewriting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _sources, _vault, _source, _page = make_legacy_repo(tmp_path)
+    base_args = [
+        "repo",
+        "migrate",
+        "--root",
+        str(root),
+        "--vault",
+        "wiki",
+        "--sources",
+        "sources",
+        "--apply",
+        "--json",
+    ]
+    assert main(base_args) == 0
+    capsys.readouterr()
+    before = _repository_files(root)
+
+    result = main(base_args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["status"] == "already-portable"
+    assert _repository_files(root) == before

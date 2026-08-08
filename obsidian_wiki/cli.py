@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -31,10 +32,16 @@ from obsidian_wiki.config import (
     load_portable_config,
     resolve_config,
 )
+from obsidian_wiki.migration import (
+    MigrationError,
+    MigrationPlan,
+    analyze_migration,
+    apply_migration,
+)
 from obsidian_wiki.portable import (
     _BOOTSTRAP_REFERENCES,
-    MANIFEST_MARKER,
     MANAGED_SKILLS_INVENTORY,
+    MANIFEST_MARKER,
     PROJECT_AGENT_DIRS,
     _adapter_text,
     _assert_directory,
@@ -1813,6 +1820,7 @@ def cmd_hot_mark_current(args: argparse.Namespace) -> int:
 
 def cmd_ast_extract(args: argparse.Namespace) -> int:
     from pathlib import Path
+
     from obsidian_wiki.ast_extractor import extract
 
     path = Path(args.path).expanduser().resolve()
@@ -2265,7 +2273,7 @@ def cmd_info(args: argparse.Namespace) -> int:
         status = "✅" if not missing else "⚠️ "
         print(f"  {status} {label}: {len(wiki_installed)}/{len(bundled_set)}", end="")
         if missing:
-            print(f"  (run: obsidian-wiki setup)", end="")
+            print("  (run: obsidian-wiki setup)", end="")
         print()
     _check_stale()
     return 0
@@ -2293,6 +2301,166 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"Upgraded {len(names)} repository skills at {root} to {__version__}")
+    return 0
+
+
+def _migration_path(root: Path, raw: str) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve(strict=False)
+
+
+def _already_portable(root: Path, vault: Path, source_root: Path) -> bool:
+    config_path = root / ".obsidian-wiki/config.toml"
+    marker_path = vault / ".manifest.json"
+    try:
+        config = load_portable_config(
+            config_path,
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (ConfigError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (
+        config.root == root
+        and config.vault == vault
+        and source_root in config.sources
+        and marker == MANIFEST_MARKER
+    )
+
+
+def _migration_apply_command(args: argparse.Namespace) -> str:
+    return shlex.join(
+        [
+            "obsidian-wiki",
+            "repo",
+            "migrate",
+            "--root",
+            args.root,
+            "--vault",
+            args.vault,
+            "--sources",
+            args.sources,
+            "--apply",
+        ]
+    )
+
+
+def _migration_payload(
+    plan: MigrationPlan, *, status: str, mode: str
+) -> dict[str, object]:
+    payload = plan.to_dict()
+    payload["status"] = status
+    payload["mode"] = mode
+    return payload
+
+
+def _print_migration_plan(plan: MigrationPlan, args: argparse.Namespace) -> None:
+    sections = (
+        (
+            "Mappings",
+            [f"{old} -> {source_id}" for old, source_id in plan.source_mappings],
+        ),
+        ("Page updates", list(plan.page_updates)),
+        ("Manifest shards", list(plan.manifest_entries)),
+        ("Warnings", list(plan.warnings)),
+        (
+            "Blockers",
+            [
+                f"[{blocker.code}] {blocker.source}: {blocker.message}"
+                for blocker in plan.blockers
+            ],
+        ),
+    )
+    for heading, lines in sections:
+        print(f"{heading}:")
+        if lines:
+            for line in lines:
+                print(f"  - {line}")
+        else:
+            print("  (none)")
+    if not plan.blockers:
+        print()
+        print("Apply with:")
+        print(f"  {_migration_apply_command(args)}")
+
+
+def cmd_repo_migrate(args: argparse.Namespace) -> int:
+    root = Path(args.root).expanduser().resolve(strict=False)
+    vault = _migration_path(root, args.vault)
+    source_root = _migration_path(root, args.sources)
+    mode = "apply" if args.apply else "dry-run"
+    plan = analyze_migration(root=root, vault=vault, source_root=source_root)
+
+    if _already_portable(root, vault, source_root):
+        if args.json:
+            payload = _migration_payload(plan, status="already-portable", mode=mode)
+            payload["source_mappings"] = []
+            payload["page_updates"] = []
+            payload["manifest_entries"] = []
+            payload["blockers"] = []
+            payload["warnings"] = []
+            print(json.dumps(payload, indent=2 if args.pretty else None))
+        else:
+            print(f"Repository at {root} is already portable; no files changed.")
+        return 0
+
+    if plan.blockers:
+        if args.json:
+            payload = _migration_payload(plan, status="blocked", mode=mode)
+            print(json.dumps(payload, indent=2 if args.pretty else None))
+        else:
+            _print_migration_plan(plan, args)
+        return 1
+
+    if not args.apply:
+        if args.json:
+            payload = _migration_payload(plan, status="ready", mode=mode)
+            payload["apply_command"] = _migration_apply_command(args)
+            print(json.dumps(payload, indent=2 if args.pretty else None))
+        else:
+            _print_migration_plan(plan, args)
+        return 0
+
+    try:
+        result = apply_migration(
+            plan,
+            installed_version=__version__,
+            source_skills=skills_dir(),
+        )
+    except MigrationError as exc:
+        if args.json:
+            payload = _migration_payload(plan, status="error", mode=mode)
+            payload["error"] = str(exc)
+            print(json.dumps(payload, indent=2 if args.pretty else None))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        backup_dir = result.backup_dir.relative_to(root).as_posix()
+    except ValueError:
+        backup_dir = str(result.backup_dir)
+    if args.json:
+        payload = _migration_payload(plan, status="applied", mode=mode)
+        payload["changed_files"] = list(result.changed_files)
+        payload["removed_files"] = list(result.removed_files)
+        payload["backup_dir"] = backup_dir
+        print(json.dumps(payload, indent=2 if args.pretty else None))
+    else:
+        print("Migration applied. No commit or push was performed.")
+        print("Changed files:")
+        for path in result.changed_files:
+            print(f"  - {path}")
+        print("Removed files:")
+        if result.removed_files:
+            for path in result.removed_files:
+                print(f"  - {path}")
+        else:
+            print("  (none)")
+        print(f"Backup: {backup_dir}")
     return 0
 
 
@@ -2354,6 +2522,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="upgrade repository-managed skills and adapters from this CLI",
     )
     rus.set_defaults(func=cmd_repo_upgrade_skills)
+
+    migrate = repo_sub.add_parser(
+        "migrate",
+        help="analyze or apply a legacy-to-portable repository migration",
+    )
+    migrate.add_argument("--root", required=True, help="migration repository root")
+    migrate.add_argument(
+        "--vault", required=True, help="vault path, resolved against --root"
+    )
+    migrate.add_argument(
+        "--sources", required=True, help="source root, resolved against --root"
+    )
+    migrate.add_argument(
+        "--apply", action="store_true", help="apply the analyzed migration plan"
+    )
+    _add_json_args(migrate)
+    migrate.set_defaults(func=cmd_repo_migrate)
 
     transaction = sub.add_parser(
         "transaction",
