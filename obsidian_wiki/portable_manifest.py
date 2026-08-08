@@ -284,7 +284,12 @@ class ShardedManifest:
             "source_id": entry.source_id,
         }
         target = self.entry_path(source_id)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._ensure_directory_tree(target.parent)
+        except OSError as exc:
+            raise ManifestError(
+                "cannot sync or durably create manifest shard directory"
+            ) from exc
         fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
         temporary_path = Path(temporary)
         try:
@@ -302,6 +307,27 @@ class ShardedManifest:
         finally:
             temporary_path.unlink(missing_ok=True)
         return entry
+
+    def _ensure_directory_tree(self, target: Path) -> None:
+        try:
+            relative = target.relative_to(self.config.vault)
+        except ValueError as exc:
+            raise ManifestError("manifest shard directory escapes vault") from exc
+        current = self.config.vault
+        self._require_directory(current)
+        for part in relative.parts:
+            child = current / part
+            if not child.exists() and not child.is_symlink():
+                child.mkdir()
+                self._fsync_directory(current)
+            self._require_directory(child)
+            current = child
+
+    @staticmethod
+    def _require_directory(path: Path) -> None:
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ManifestError("manifest shard directory must be ordinary")
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:

@@ -35,6 +35,7 @@ _SUPPORTS_DIR_FD = all(
 )
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
 _SUPPORTS_SAFE_RMTREE = bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
+_TOMBSTONE_PREFIX = ".tombstone-"
 
 
 class TransactionError(RuntimeError):
@@ -350,6 +351,8 @@ class TransactionManager:
         for path in sorted(
             self.transactions_root.iterdir(), key=lambda item: item.name
         ):
+            if path.name.startswith(_TOMBSTONE_PREFIX):
+                continue
             try:
                 metadata = path.lstat()
             except OSError as exc:
@@ -2348,7 +2351,11 @@ class TransactionManager:
             metadata = path.lstat()
         except OSError as exc:
             raise TransactionError(f"{label} is missing or unreadable: {path}") from exc
-        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or TransactionManager._is_reparse_point(metadata)
+        ):
             raise TransactionError(
                 f"{label} must be an ordinary directory, not a symlink: {path}"
             )
@@ -2400,11 +2407,16 @@ class TransactionManager:
         if (
             not stat.S_ISREG(metadata.st_mode)
             or stat.S_ISLNK(metadata.st_mode)
+            or TransactionManager._is_reparse_point(metadata)
             or metadata.st_nlink != 1
         ):
             raise TransactionError(
                 f"{label} must be a single-link ordinary file, not a symlink: {path}"
             )
+
+    @staticmethod
+    def _is_reparse_point(metadata: object) -> bool:
+        return bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
 
     @staticmethod
     def _require_contained(
@@ -2483,40 +2495,37 @@ class TransactionManager:
             ) from exc
 
     def _remove_checked_tree(self, root: Path) -> None:
+        quarantine = self._quarantine_tree(root)
         if _SUPPORTS_SAFE_RMTREE and getattr(
             shutil.rmtree, "avoids_symlink_attacks", False
         ):
-            shutil.rmtree(root)
-            return
-        self._remove_tree_path_fallback(root)
+            shutil.rmtree(quarantine)
+            self._fsync_directory(quarantine.parent)
 
-    def _remove_tree_path_fallback(self, root: Path) -> None:
+    def _quarantine_tree(self, root: Path) -> Path:
         self._require_ordinary_directory(root, "transaction removal directory")
+        self._require_ordinary_directory(root.parent, "transaction removal parent")
         before = root.lstat()
         identity = (before.st_dev, before.st_ino)
-        for child in sorted(root.iterdir(), key=lambda path: path.name):
-            metadata = child.lstat()
-            child_identity = (metadata.st_dev, metadata.st_ino)
-            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-                self._remove_tree_path_fallback(child)
-                continue
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_nlink != 1
-            ):
-                raise TransactionError(
-                    f"unsafe entry in transaction removal tree: {child}"
-                )
-            current = child.lstat()
-            if (current.st_dev, current.st_ino) != child_identity:
-                raise TransactionError(
-                    f"transaction removal entry changed before unlink: {child}"
-                )
-            child.unlink()
-        current_root = root.lstat()
-        if (current_root.st_dev, current_root.st_ino) != identity:
+        while True:
+            quarantine = root.parent / (_TOMBSTONE_PREFIX + secrets.token_hex(16))
+            if not quarantine.exists() and not quarantine.is_symlink():
+                break
+        try:
+            root.rename(quarantine)
+            moved = quarantine.lstat()
+        except OSError as exc:
             raise TransactionError(
-                f"transaction removal directory changed before removal: {root}"
+                f"cannot quarantine transaction removal tree: {root}"
+            ) from exc
+        if (
+            (moved.st_dev, moved.st_ino) != identity
+            or not stat.S_ISDIR(moved.st_mode)
+            or stat.S_ISLNK(moved.st_mode)
+            or self._is_reparse_point(moved)
+        ):
+            raise TransactionError(
+                f"transaction removal tree changed while quarantining: {root}"
             )
-        root.rmdir()
+        self._fsync_directory(root.parent)
+        return quarantine

@@ -739,6 +739,16 @@ def test_abort_uses_checked_path_fallback_when_safe_rmtree_is_unavailable(
 
     assert not record.workspace.exists()
     assert not manager.lock_path.exists()
+    tombstones = list(manager.transactions_root.glob(".tombstone-*"))
+    assert len(tombstones) == 1
+    assert (tombstones[0] / "metadata.json").is_file()
+    assert manager.list_transactions() == []
+
+
+def test_windows_reparse_attribute_is_treated_as_unsafe() -> None:
+    metadata = type("Metadata", (), {"st_file_attributes": 0x400})()
+
+    assert TransactionManager._is_reparse_point(metadata)
 
 
 def test_transaction_lifecycle_without_posix_filesystem_capabilities(
@@ -829,7 +839,9 @@ def test_abort_path_replacement_never_traverses_external_symlink(
 
     monkeypatch.setattr(manager, "_require_managed_tree", replace_after_validation)
 
-    with pytest.raises(TransactionError, match="remove transaction workspace"):
+    with pytest.raises(
+        TransactionError, match="remove transaction workspace|removal directory"
+    ):
         manager.abort("tx-1")
 
     assert marker.read_text(encoding="utf-8") == "keep"

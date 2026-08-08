@@ -125,6 +125,31 @@ def test_upsert_syncs_temporary_shard_and_parent_directory(
     assert "directory" in synced_kinds
 
 
+def test_upsert_syncs_each_new_shard_directory_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/architecture.md"
+    source.write_text("body", encoding="utf-8")
+    store = ShardedManifest(config)
+    synced: list[Path] = []
+    original_sync = store._fsync_directory
+
+    def record_sync(path: Path) -> None:
+        synced.append(path)
+        original_sync(path)
+
+    monkeypatch.setattr(store, "_fsync_directory", record_sync)
+
+    store.upsert(source)
+
+    assert config.vault in synced
+    assert config.vault / ".manifest" in synced
+    assert config.vault / ".manifest/sources" in synced
+    assert config.vault / ".manifest/sources/design" in synced
+
+
 @pytest.mark.parametrize("failure_kind", ["file", "directory"])
 def test_upsert_reports_durability_sync_failure(
     tmp_path: Path,
