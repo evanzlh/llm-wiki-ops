@@ -1,17 +1,20 @@
 """Tests for the batch planning module."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.batch import (
     _classify,
     _make_batches,
     discover_sources,
     plan_batches,
 )
+from obsidian_wiki.config import load_portable_config
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +33,38 @@ def source_dir(tmp_path):
     d = tmp_path / "sources"
     d.mkdir()
     return d
+
+
+@pytest.fixture
+def portable_repo(tmp_path):
+    root = tmp_path / "portable"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / "wiki").mkdir()
+    (root / ".skills").mkdir()
+    config_path = root / ".obsidian-wiki" / "config.toml"
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (root / "wiki" / ".manifest.json").write_text(
+        '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n',
+        encoding="utf-8",
+    )
+    config = load_portable_config(
+        config_path,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+    return root, config
 
 
 def _write(path: Path, content: str = "x", size: int | None = None) -> Path:
@@ -198,6 +233,19 @@ class TestMakeBatches:
 # ---------------------------------------------------------------------------
 
 class TestPlanBatches:
+    def test_portable_manifest_skips_unchanged_source(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        from obsidian_wiki.cache import update_source
+
+        update_source(config.vault, source, pages_produced=[], portable=config)
+
+        result = plan_batches(config.sources[0], config.vault, portable=config)
+
+        assert result["stats"]["skipped_unchanged"] == 1
+        assert result["stats"]["to_ingest"] == 0
+
     def test_returns_required_keys(self, source_dir, vault):
         _write(source_dir / "a.md")
         result = plan_batches(source_dir, vault)
@@ -287,3 +335,36 @@ class TestBatchPlanCLI:
         data = json.loads(proc.stdout)
         # 5 files with max 2 per batch → 3 batches
         assert data["stats"]["batch_count"] == 3
+
+    def test_invalid_cwd_portable_config_blocks_batch_plan(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        config.path.write_text(
+            config.path.read_text(encoding="utf-8").replace(
+                IMPLEMENTATION_ID, "wrong/implementation"
+            ),
+            encoding="utf-8",
+        )
+        home = root / "home"
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "obsidian_wiki.cli",
+                "batch-plan",
+                str(config.vault),
+                str(config.sources[0]),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.sources[0],
+            env=env,
+        )
+
+        assert proc.returncode == 1
+        assert "implementation" in proc.stderr

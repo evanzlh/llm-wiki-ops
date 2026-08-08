@@ -1,5 +1,6 @@
 """Tests for the content-hash cache module."""
 import json
+import os
 import subprocess
 import sys
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.cache import (
     check_sources,
     compute_hash,
@@ -17,6 +19,7 @@ from obsidian_wiki.cache import (
     _load_manifest,
     _manifest_path,
 )
+from obsidian_wiki.config import load_portable_config
 
 
 @pytest.fixture
@@ -40,6 +43,38 @@ def src_dir(tmp_path):
     (d / "a.py").write_text("x = 1")
     (d / "b.py").write_text("y = 2")
     return d
+
+
+@pytest.fixture
+def portable_repo(tmp_path):
+    root = tmp_path / "portable"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / "wiki").mkdir()
+    (root / ".skills").mkdir()
+    config_path = root / ".obsidian-wiki" / "config.toml"
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (root / "wiki" / ".manifest.json").write_text(
+        '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n',
+        encoding="utf-8",
+    )
+    config = load_portable_config(
+        config_path,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+    return root, config
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +113,15 @@ class TestHashing:
 # ---------------------------------------------------------------------------
 
 class TestCheckSources:
+    def test_portable_new_source_uses_source_id(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+
+        result = check_sources(config.vault, [source], portable=config)
+
+        assert result["new"] == ["sources/a.md"]
+
     def test_new_source(self, vault, src_file):
         result = check_sources(vault, [src_file])
         assert str(src_file) in result["new"]
@@ -169,6 +213,27 @@ class TestCheckSources:
 # ---------------------------------------------------------------------------
 
 class TestUpdateSource:
+    def test_portable_update_returns_bare_hash_and_marks_unchanged(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+
+        content_hash = update_source(
+            config.vault,
+            source,
+            ["concepts/a.md"],
+            portable=config,
+        )
+
+        assert content_hash == compute_hash(source)
+        assert check_sources(config.vault, [source], portable=config)["unchanged"] == [
+            "sources/a.md"
+        ]
+        shard = config.vault / ".manifest" / "sources" / "a.md.json"
+        assert json.loads(shard.read_text(encoding="utf-8"))["pages"] == [
+            "concepts/a.md"
+        ]
+
     def test_writes_manifest(self, vault, src_file):
         update_source(vault, src_file)
         assert _manifest_path(vault).exists()
@@ -248,3 +313,85 @@ class TestCacheCLI:
         assert proc.returncode == 0
         sources = _load_manifest(vault)
         assert sources[str(src_file)]["pages_produced"] == ["concepts/foo.md", "entities/bar.md"]
+
+    def test_portable_context_is_resolved_from_cwd(
+        self, portable_repo, monkeypatch, tmp_path
+    ):
+        from obsidian_wiki.cli import _portable_for_vault
+
+        root, config = portable_repo
+        monkeypatch.chdir(config.sources[0])
+        assert _portable_for_vault(config.vault) == config
+
+        other_vault = root / "other-vault"
+        other_vault.mkdir()
+        assert _portable_for_vault(other_vault) is None
+
+        monkeypatch.chdir(tmp_path)
+        assert _portable_for_vault(config.vault) is None
+
+    def test_invalid_cwd_portable_config_blocks_cache_update(self, portable_repo):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        config.path.write_text(
+            config.path.read_text(encoding="utf-8").replace(
+                IMPLEMENTATION_ID, "wrong/implementation"
+            ),
+            encoding="utf-8",
+        )
+        marker = (config.vault / ".manifest.json").read_text(encoding="utf-8")
+        home = root / "home"
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "obsidian_wiki.cli",
+                "cache-update",
+                str(config.vault),
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.sources[0],
+            env=env,
+        )
+
+        assert proc.returncode == 1
+        assert "implementation" in proc.stderr
+        assert (config.vault / ".manifest.json").read_text(encoding="utf-8") == marker
+        assert not (config.vault / ".manifest").exists()
+
+    def test_cache_update_without_portable_config_keeps_v1(self, tmp_path):
+        cwd = tmp_path / "work"
+        home = tmp_path / "home"
+        vault = tmp_path / "vault"
+        source = tmp_path / "source.md"
+        cwd.mkdir()
+        home.mkdir()
+        vault.mkdir()
+        source.write_text("source", encoding="utf-8")
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "obsidian_wiki.cli",
+                "cache-update",
+                str(vault),
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            env=env,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert str(source) in json.loads((vault / ".manifest.json").read_text())["sources"]

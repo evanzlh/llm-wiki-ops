@@ -222,11 +222,11 @@ class ShardedManifest:
             selected.add(source_id)
             entry = tracked.get(source_id)
             if entry is None:
-                result["new"].append(str(path))
+                result["new"].append(source_id)
             elif entry.content_hash != f"sha256:{compute_hash(path)}":
-                result["modified"].append(str(path))
+                result["modified"].append(source_id)
             else:
-                result["unchanged"].append(str(path))
+                result["unchanged"].append(source_id)
         for source_id in sorted(set(tracked) - selected):
             source = self.source_path(source_id)
             if not source.exists():

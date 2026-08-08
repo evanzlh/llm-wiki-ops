@@ -147,6 +147,21 @@ class ManifestNormalizeRelativeKeyTest(unittest.TestCase):
         keys = self._keys_after_normalize(self.tmp.name)
         self.assertEqual(keys, [canon])
 
+    def test_normalize_refuses_manifest_v2_without_rewriting_marker(self) -> None:
+        marker = (
+            '{"schema_version":2,"storage":"sharded",'
+            '"entries":".manifest/sources"}\n'
+        )
+        self.manifest.write_text(marker, encoding="utf-8")
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            rc = manifest.main(["normalize", str(self.vault)])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("manifest v2 is managed by obsidian-wiki", stderr.getvalue())
+        self.assertEqual(self.manifest.read_text(encoding="utf-8"), marker)
+
 
 if __name__ == "__main__":
     unittest.main()

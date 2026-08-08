@@ -340,17 +340,23 @@ def _resolve_runtime(
         return None
 
 
-def _portable_for_vault(vault: Path):
-    """Return the portable config owning *vault*, if one is discoverable."""
+def _portable_for_vault(vault: Path) -> PortableConfig | None:
+    """Return the CWD portable config when it owns the supplied vault."""
     try:
         runtime = resolve_config(
             None,
-            cwd=vault,
+            cwd=Path.cwd(),
             home=HOME,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
     except ConfigError:
+        current = Path.cwd().resolve(strict=False)
+        if any(
+            (ancestor / ".obsidian-wiki" / "config.toml").exists()
+            for ancestor in (current, *current.parents)
+        ):
+            raise
         return None
     return runtime.portable if runtime.mode == "portable" and runtime.vault == vault else None
 
@@ -1208,7 +1214,11 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     from obsidian_wiki.batch import plan_batches
     source_dir = Path(args.source_dir).expanduser().resolve()
     vault = Path(args.vault).expanduser().resolve()
-    portable = _portable_for_vault(vault)
+    try:
+        portable = _portable_for_vault(vault)
+    except ConfigError as exc:
+        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+        return 1
     if not source_dir.is_dir():
         print(f"error: source directory not found: {source_dir}", file=sys.stderr)
         return 1
@@ -1386,7 +1396,12 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import check_sources
     vault = Path(args.vault).expanduser().resolve()
     sources = [Path(p).expanduser().resolve() for p in args.sources]
-    result = check_sources(vault, sources, portable=_portable_for_vault(vault))
+    try:
+        portable = _portable_for_vault(vault)
+    except ConfigError as exc:
+        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+        return 1
+    result = check_sources(vault, sources, portable=portable)
     if args.pretty:
         print(json.dumps(result, indent=2))
     else:
@@ -1399,7 +1414,12 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
     source = Path(args.source).expanduser().resolve()
     pages = args.pages or []
-    h = update_source(vault, source, pages_produced=pages, portable=_portable_for_vault(vault))
+    try:
+        portable = _portable_for_vault(vault)
+    except ConfigError as exc:
+        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+        return 1
+    h = update_source(vault, source, pages_produced=pages, portable=portable)
     print(json.dumps({"path": str(source), "content_hash": h}))
     return 0
 

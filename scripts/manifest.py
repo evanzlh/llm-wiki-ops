@@ -51,7 +51,7 @@ def reject_portable_manifest(vault: str) -> int:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return 0
-    if isinstance(data, dict) and data.get("schema_version") == 2 and data.get("storage") == "sharded":
+    if isinstance(data, dict) and data.get("schema_version") == 2:
         print("error: manifest v2 is managed by obsidian-wiki", file=sys.stderr)
         return 1
     return 0

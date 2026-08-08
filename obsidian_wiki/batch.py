@@ -39,6 +39,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from obsidian_wiki.config import PortableConfig
+
 # ---------------------------------------------------------------------------
 # File classification
 # ---------------------------------------------------------------------------
@@ -174,15 +176,26 @@ def _filter_unchanged(
     files: list[dict],
     vault: Path,
     *,
-    portable=None,
+    portable: PortableConfig | None = None,
 ) -> tuple[list[dict], int]:
     """Remove files whose hash matches the manifest. Returns (to_ingest, skipped_count)."""
     try:
-        from obsidian_wiki.cache import check_sources, compute_hash
+        from obsidian_wiki.cache import check_sources
+
         paths = [Path(f["path"]) for f in files]
         result = check_sources(vault, paths, portable=portable)
         unchanged_set = set(result["unchanged"])
-        to_ingest = [f for f in files if f["path"] not in unchanged_set]
+        if portable is None:
+            to_ingest = [f for f in files if f["path"] not in unchanged_set]
+        else:
+            from obsidian_wiki.portable_manifest import ShardedManifest
+
+            store = ShardedManifest(portable)
+            to_ingest = [
+                f
+                for f in files
+                if store.source_id(Path(f["path"])) not in unchanged_set
+            ]
         return to_ingest, len(unchanged_set)
     except Exception:
         return files, 0
@@ -232,7 +245,7 @@ def plan_batches(
     max_batch_files: int = 20,
     skip_unchanged: bool = True,
     include_code: bool = False,
-    portable=None,
+    portable: PortableConfig | None = None,
 ) -> dict[str, Any]:
     """Discover sources, filter unchanged, and split into batches."""
     all_files = discover_sources(source_dir, vault=vault, include_code=include_code)

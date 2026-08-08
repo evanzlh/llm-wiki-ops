@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, TypedDict
 
+from obsidian_wiki.config import PortableConfig
+
 
 class SourceEntry(TypedDict, total=False):
     content_hash: str
@@ -180,14 +182,21 @@ def compute_hash(path: Path) -> str:
     return sha256_file(path)
 
 
-def check_sources(vault: Path, source_paths: list[Path], *, portable=None) -> CheckResult:
+def check_sources(
+    vault: Path,
+    source_paths: list[Path],
+    *,
+    portable: PortableConfig | None = None,
+) -> CheckResult:
     """Classify each source as new / modified / unchanged vs. the manifest.
 
     Also reports manifest entries whose source file no longer exists on disk.
     Handles both manifest shapes and compares hashes prefix-insensitively.
     """
     if portable is not None:
-        return portable.status_for(source_paths)
+        from obsidian_wiki.portable_manifest import ShardedManifest
+
+        return ShardedManifest(portable).status_for(source_paths)
     entries = list(_iter_entries(_load_manifest(vault)))
     result: CheckResult = {"new": [], "modified": [], "unchanged": [], "missing": []}
 
@@ -227,9 +236,9 @@ def check_sources(vault: Path, source_paths: list[Path], *, portable=None) -> Ch
 def update_source(
     vault: Path,
     source_path: Path,
-    *,
     pages_produced: list[str] | None = None,
-    portable=None,
+    *,
+    portable: PortableConfig | None = None,
 ) -> str:
     """Record the current hash of *source_path* in the manifest. Returns the hash.
 
@@ -238,7 +247,13 @@ def update_source(
     (dict or list), duplicate-path entries, and any skill-written fields.
     """
     if portable is not None:
-        return portable.upsert(source_path, pages=pages_produced or [])
+        from obsidian_wiki.portable_manifest import ShardedManifest
+
+        entry = ShardedManifest(portable).upsert(
+            source_path,
+            pages=pages_produced or [],
+        )
+        return entry.content_hash.removeprefix("sha256:")
     manifest = _load_raw(vault)
     sources = manifest.get("sources")
     current_hash = compute_hash(source_path)
