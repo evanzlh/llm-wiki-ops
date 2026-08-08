@@ -13,24 +13,50 @@ class Frontmatter:
     lists: dict[str, tuple[str, ...]]
 
 
+def _starts_quote(value: str, index: int) -> bool:
+    return index == 0 or value[index - 1].isspace() or value[index - 1] in "[,"
+
+
 def _strip_comment(value: str) -> str:
     quote: str | None = None
     escaped = False
     for index, char in enumerate(value):
-        if char in "'\"" and not escaped:
-            quote = None if quote == char else (char if quote is None else quote)
-        if char == "#" and quote is None and (index == 0 or value[index - 1].isspace()):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "'\"" and _starts_quote(value, index):
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
             return value[:index].rstrip()
-        escaped = char == "\\" and not escaped
+    if quote is not None:
+        raise FrontmatterError("unterminated quote in frontmatter value")
     return value.strip()
 
 
 def _scalar(value: str) -> str:
     value = _strip_comment(value).strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        return value[1:-1]
-    if value.startswith(("'", '"')):
+    if not value:
+        return value
+    if value[0] in "'\"":
+        quote = value[0]
+        escaped = False
+        for index, char in enumerate(value[1:], start=1):
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                if index != len(value) - 1:
+                    raise FrontmatterError("malformed quoted frontmatter scalar")
+                return value[1:-1]
         raise FrontmatterError("malformed quoted frontmatter scalar")
+    if value[-1] in "'\"":
+        raise FrontmatterError("unmatched quote in frontmatter scalar")
     return value
 
 
@@ -43,10 +69,21 @@ def _inline_list(value: str) -> tuple[str, ...]:
     items: list[str] = []
     current: list[str] = []
     quote: str | None = None
-    for char in body:
-        if char in "'\"":
-            quote = None if quote == char else (char if quote is None else quote)
-        if char == "," and quote is None:
+    escaped = False
+    for index, char in enumerate(body):
+        if quote is not None:
+            current.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "'\"" and _starts_quote(body, index):
+            quote = char
+            current.append(char)
+        elif char == ",":
             item = _scalar("".join(current))
             if not item:
                 raise FrontmatterError("empty item in frontmatter list")
@@ -76,7 +113,7 @@ def parse_frontmatter(text: str) -> Frontmatter:
     index = 1
     while index < closing:
         line = lines[index]
-        if not line.strip():
+        if not line.strip() or line.lstrip().startswith("#"):
             index += 1
             continue
         if line[0].isspace() or ":" not in line:
@@ -89,12 +126,15 @@ def parse_frontmatter(text: str) -> Frontmatter:
         if raw == "":
             values: list[str] = []
             index += 1
-            while index < closing and lines[index].strip():
+            while index < closing:
                 item_line = lines[index]
-                if not item_line.startswith("  - "):
-                    if item_line[0].isspace():
-                        raise FrontmatterError(f"malformed frontmatter list for {key}")
+                if not item_line.strip() or item_line.lstrip().startswith("#"):
+                    index += 1
+                    continue
+                if not item_line[0].isspace():
                     break
+                if not item_line.startswith("  - "):
+                    raise FrontmatterError(f"malformed frontmatter list for {key}")
                 item = _scalar(item_line[4:])
                 if not item:
                     raise FrontmatterError(f"empty item in frontmatter list for {key}")
