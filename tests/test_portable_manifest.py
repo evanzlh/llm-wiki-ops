@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
 
@@ -100,6 +102,52 @@ def test_upsert_writes_one_canonical_shard(tmp_path: Path) -> None:
     assert store.entry_path(entry.source_id).read_text(encoding="utf-8").endswith("\n")
 
 
+def test_upsert_syncs_temporary_shard_and_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/architecture.md"
+    source.write_text("body", encoding="utf-8")
+    original_fsync = portable_manifest_module.os.fsync
+    synced_kinds: list[str] = []
+
+    def record_sync(descriptor: int) -> None:
+        mode = os.fstat(descriptor).st_mode
+        synced_kinds.append("directory" if stat.S_ISDIR(mode) else "file")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(portable_manifest_module.os, "fsync", record_sync)
+
+    ShardedManifest(config).upsert(source)
+
+    assert "file" in synced_kinds
+    assert "directory" in synced_kinds
+
+
+@pytest.mark.parametrize("failure_kind", ["file", "directory"])
+def test_upsert_reports_durability_sync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/architecture.md"
+    source.write_text("body", encoding="utf-8")
+    original_fsync = portable_manifest_module.os.fsync
+
+    def fail_selected_sync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_kind == "directory") == is_directory:
+            raise OSError(f"{failure_kind} sync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(portable_manifest_module.os, "fsync", fail_selected_sync)
+
+    with pytest.raises(ManifestError, match="sync|write manifest shard"):
+        ShardedManifest(config).upsert(source)
+
+
 def test_unrelated_sources_use_unrelated_shards(tmp_path: Path) -> None:
     root, config = make_repo(tmp_path)
     first = root / "sources" / "a.md"
@@ -110,7 +158,10 @@ def test_unrelated_sources_use_unrelated_shards(tmp_path: Path) -> None:
     store.upsert(first, pages=["concepts/a.md"], compiled_at="2026-08-07T00:00:00Z")
     store.upsert(second, pages=["concepts/b.md"], compiled_at="2026-08-07T00:00:01Z")
     assert store.entry_path("sources/a.md") != store.entry_path("sources/b.md")
-    assert [entry.source_id for entry in store.iter_entries()] == ["sources/a.md", "sources/b.md"]
+    assert [entry.source_id for entry in store.iter_entries()] == [
+        "sources/a.md",
+        "sources/b.md",
+    ]
 
 
 def test_status_uses_hash_not_mtime(tmp_path: Path) -> None:

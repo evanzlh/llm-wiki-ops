@@ -12,6 +12,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from obsidian_wiki.cache import compute_hash
 from obsidian_wiki.config import PortableConfig
 
+_SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
+
 
 class ManifestError(ValueError):
     pass
@@ -61,7 +63,11 @@ class ShardedManifest:
 
     def _repo_relative(self, path: Path, label: str) -> str:
         try:
-            return path.resolve(strict=False).relative_to(self.config.root.resolve()).as_posix()
+            return (
+                path.resolve(strict=False)
+                .relative_to(self.config.root.resolve())
+                .as_posix()
+            )
         except ValueError as exc:
             raise ManifestError(f"{label} escapes the repository") from exc
 
@@ -74,12 +80,13 @@ class ShardedManifest:
         except ValueError as exc:
             raise ManifestError("source is outside the configured source root") from exc
         if not relative.parts:
-            raise ManifestError("source must be a file below the configured source root")
+            raise ManifestError(
+                "source must be a file below the configured source root"
+            )
         return f"{self._repo_relative(self.source_root, 'source root')}/{relative.as_posix()}"
 
     def source_path(self, source_id: str) -> Path:
         self._validate_source_id(source_id)
-        prefix = self._repo_relative(self.source_root, "source root")
         return self.config.root / PurePosixPath(source_id)
 
     def _validate_source_id(self, source_id: str) -> None:
@@ -99,7 +106,9 @@ class ShardedManifest:
         ):
             raise ManifestError(f"invalid Source ID: {source_id!r}")
         if not source_id.startswith(prefix + "/"):
-            raise ManifestError(f"Source ID is outside the configured source root: {source_id}")
+            raise ManifestError(
+                f"Source ID is outside the configured source root: {source_id}"
+            )
 
     def entry_path(self, source_id: str) -> Path:
         self._validate_source_id(source_id)
@@ -107,9 +116,13 @@ class ShardedManifest:
         relative = PurePosixPath(source_id).relative_to(PurePosixPath(prefix))
         candidate = self.entries_root / relative.parent / f"{relative.name}.json"
         try:
-            candidate.resolve(strict=False).relative_to(self.entries_root.resolve(strict=False))
+            candidate.resolve(strict=False).relative_to(
+                self.entries_root.resolve(strict=False)
+            )
         except ValueError as exc:
-            raise ManifestError(f"Source ID escapes the manifest shard root: {source_id}") from exc
+            raise ManifestError(
+                f"Source ID escapes the manifest shard root: {source_id}"
+            ) from exc
         return candidate
 
     def load(self, source_id: str) -> ManifestEntry | None:
@@ -136,15 +149,20 @@ class ShardedManifest:
         if set(payload) != expected or payload.get("source_id") != source_id:
             raise ManifestError("manifest shard has invalid fields or source_id")
         content_hash = payload.get("content_hash")
-        if not isinstance(content_hash, str) or re.fullmatch(
-            r"sha256:[0-9a-f]{64}", content_hash
-        ) is None:
-            raise ManifestError("manifest shard content_hash must be sha256 lowercase hex")
+        if (
+            not isinstance(content_hash, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", content_hash) is None
+        ):
+            raise ManifestError(
+                "manifest shard content_hash must be sha256 lowercase hex"
+            )
         compiled_at = payload.get("compiled_at")
         if not isinstance(compiled_at, str):
             raise ManifestError("manifest shard compiled_at must be a string")
         pages = payload.get("pages")
-        if not isinstance(pages, list) or any(not isinstance(page, str) for page in pages):
+        if not isinstance(pages, list) or any(
+            not isinstance(page, str) for page in pages
+        ):
             raise ManifestError("manifest pages must be a string list")
         canonical_pages = self._normalize_pages(pages, self.config.vault)
         if tuple(pages) != canonical_pages:
@@ -165,8 +183,12 @@ class ShardedManifest:
             root_metadata = self.entries_root.lstat()
         except OSError as exc:
             raise ManifestError("manifest shard root is unreadable") from exc
-        if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
-            raise ManifestError("manifest shard root must be an ordinary directory, not a symlink")
+        if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(
+            root_metadata.st_mode
+        ):
+            raise ManifestError(
+                "manifest shard root must be an ordinary directory, not a symlink"
+            )
         entries: list[ManifestEntry] = []
         seen: set[str] = set()
         shard_paths: list[Path] = []
@@ -179,7 +201,9 @@ class ShardedManifest:
                 try:
                     metadata = child.lstat()
                 except OSError as exc:
-                    raise ManifestError("manifest shard directory is unreadable") from exc
+                    raise ManifestError(
+                        "manifest shard directory is unreadable"
+                    ) from exc
                 if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
                     raise ManifestError(
                         "manifest shard directory must be an ordinary directory"
@@ -262,17 +286,38 @@ class ShardedManifest:
         target = self.entry_path(source_id)
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-        os.close(fd)
         temporary_path = Path(temporary)
         try:
-            temporary_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+                    + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
             temporary_path.replace(target)
+            self._fsync_directory(target.parent)
+        except OSError as exc:
+            raise ManifestError("cannot durably write manifest shard") from exc
         finally:
             temporary_path.unlink(missing_ok=True)
         return entry
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        if not _SUPPORTS_DIRECTORY_FSYNC:
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("manifest shard parent is not a directory")
+            os.fsync(descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @staticmethod
     def _validate_source_file(source_path: Path) -> None:
@@ -296,13 +341,18 @@ class ShardedManifest:
         if self.source_root.exists():
             for path in self.source_root.rglob("*"):
                 relative = path.relative_to(self.source_root)
-                if any(part.startswith(".") for part in relative.parts) or path.name == ".gitkeep":
+                if (
+                    any(part.startswith(".") for part in relative.parts)
+                    or path.name == ".gitkeep"
+                ):
                     continue
                 try:
                     metadata = path.lstat()
                 except OSError as exc:
                     raise ManifestError("source cannot be inspected") from exc
-                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(
+                    metadata.st_mode
+                ):
                     continue
                 self._validate_source_file(path)
                 current[self.source_id(path)] = path

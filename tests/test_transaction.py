@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki import transaction as transaction_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -726,7 +727,7 @@ def test_abort_refuses_symlink_inside_workspace_without_touching_target(
     assert manager.lock_path.exists()
 
 
-def test_abort_fails_closed_when_safe_rmtree_is_unavailable(
+def test_abort_uses_checked_path_fallback_when_safe_rmtree_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, config = make_config(tmp_path)
@@ -734,11 +735,70 @@ def test_abort_fails_closed_when_safe_rmtree_is_unavailable(
     record = manager.begin([add_source(root)], transaction_id="tx-1")
     monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
 
-    with pytest.raises(TransactionError, match="symlink-safe|safe recursive"):
-        manager.abort("tx-1")
+    manager.abort("tx-1")
 
-    assert record.workspace.is_dir()
-    assert manager.lock_path.is_file()
+    assert not record.workspace.exists()
+    assert not manager.lock_path.exists()
+
+
+def test_transaction_lifecycle_without_posix_filesystem_capabilities(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    deleted = config.vault / "concepts/deleted.md"
+    deleted.write_text(PAGE, encoding="utf-8")
+    monkeypatch.setattr(transaction_module, "_SUPPORTS_DIR_FD", False, raising=False)
+    monkeypatch.setattr(
+        transaction_module, "_SUPPORTS_DIRECTORY_FSYNC", False, raising=False
+    )
+    monkeypatch.setattr(
+        transaction_module, "_SUPPORTS_SAFE_RMTREE", False, raising=False
+    )
+    monkeypatch.setattr(portable_manifest_module, "_SUPPORTS_DIRECTORY_FSYNC", False)
+    original_open = transaction_module.os.open
+    original_stat = transaction_module.os.stat
+    original_unlink = transaction_module.os.unlink
+    original_fsync = transaction_module.os.fsync
+
+    def reject_dir_fd_open(*args, **kwargs):
+        if kwargs.get("dir_fd") is not None:
+            raise NotImplementedError("dir_fd unavailable")
+        return original_open(*args, **kwargs)
+
+    def reject_dir_fd_stat(*args, **kwargs):
+        if kwargs.get("dir_fd") is not None:
+            raise NotImplementedError("dir_fd unavailable")
+        return original_stat(*args, **kwargs)
+
+    def reject_dir_fd_unlink(*args, **kwargs):
+        if kwargs.get("dir_fd") is not None:
+            raise NotImplementedError("dir_fd unavailable")
+        return original_unlink(*args, **kwargs)
+
+    def reject_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory fsync unavailable")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(transaction_module.os, "open", reject_dir_fd_open)
+    monkeypatch.setattr(transaction_module.os, "stat", reject_dir_fd_stat)
+    monkeypatch.setattr(transaction_module.os, "unlink", reject_dir_fd_unlink)
+    monkeypatch.setattr(transaction_module.os, "fsync", reject_directory_fsync)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    manager.mark_delete("tx-1", "concepts/deleted.md")
+
+    manager.commit("tx-1")
+    manager.restore("tx-1")
+    manager.discard("tx-1")
+
+    assert deleted.read_text(encoding="utf-8") == PAGE
+    assert not (config.vault / "concepts/a.md").exists()
+    assert not record.workspace.exists()
+    assert not manager.lock_path.exists()
 
 
 @pytest.mark.skipif(

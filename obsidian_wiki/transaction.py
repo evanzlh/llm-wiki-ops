@@ -30,6 +30,12 @@ try:
 except ImportError:  # pragma: no cover - exercised on POSIX
     _msvcrt = None
 
+_SUPPORTS_DIR_FD = all(
+    function in os.supports_dir_fd for function in (os.open, os.stat, os.unlink)
+)
+_SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
+_SUPPORTS_SAFE_RMTREE = bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
+
 
 class TransactionError(RuntimeError):
     pass
@@ -1064,12 +1070,8 @@ class TransactionManager:
             originals, snapshots, "snapshot originals", strict_child=True
         )
         self._require_managed_tree(originals)
-        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
-            raise TransactionError(
-                "symlink-safe recursive removal is unavailable on this platform"
-            )
         try:
-            shutil.rmtree(originals)
+            self._remove_checked_tree(originals)
             self._fsync_directory(snapshots)
         except OSError as exc:
             raise TransactionError("cannot clear transaction snapshots") from exc
@@ -1472,12 +1474,19 @@ class TransactionManager:
     @staticmethod
     def _read_single_link_bytes(path: Path, label: str) -> bytes:
         TransactionManager._require_ordinary_file(path, label)
-        directory_fd = TransactionManager._open_directory(path.parent, label)
+        directory_fd = (
+            TransactionManager._open_directory(path.parent, label)
+            if _SUPPORTS_DIR_FD
+            else None
+        )
         descriptor: int | None = None
         try:
             flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+            if directory_fd is None:
+                descriptor = os.open(path, flags)
+            else:
+                descriptor = os.open(path.name, flags, dir_fd=directory_fd)
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise TransactionError(
@@ -1504,7 +1513,10 @@ class TransactionManager:
                 after.st_nlink,
             ):
                 raise TransactionError(f"{label} changed while being read: {path}")
-            current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if directory_fd is None:
+                current = path.lstat()
+            else:
+                current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
             if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
                 raise TransactionError(f"{label} inode changed while being read")
             return b"".join(chunks)
@@ -1515,7 +1527,8 @@ class TransactionManager:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-            os.close(directory_fd)
+            if directory_fd is not None:
+                os.close(directory_fd)
 
     def _read_metadata_payload(self, workspace: Path) -> dict[str, object]:
         payload = self._read_json_file(
@@ -2077,6 +2090,9 @@ class TransactionManager:
                 f"transaction lock belongs to {lock['transaction_id']}, "
                 f"not {transaction_id}"
             )
+        if not _SUPPORTS_DIR_FD:
+            self._unlink_lock_path_fallback(identity)
+            return
         directory_fd = self._open_directory(self.local_state, "local state")
         try:
             current = os.stat(
@@ -2094,6 +2110,12 @@ class TransactionManager:
             os.close(directory_fd)
 
     def _cleanup_created_lock(self, identity: _FileIdentity) -> None:
+        if not _SUPPORTS_DIR_FD:
+            try:
+                self._unlink_lock_path_fallback(identity)
+            except TransactionError:
+                pass
+            return
         try:
             directory_fd = self._open_directory(self.local_state, "local state")
         except TransactionError:
@@ -2112,6 +2134,40 @@ class TransactionManager:
             pass
         finally:
             os.close(directory_fd)
+
+    def _unlink_lock_path_fallback(self, identity: _FileIdentity) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(self.lock_path, flags)
+            opened = os.fstat(descriptor)
+            current = self.lock_path.lstat()
+            if (
+                (opened.st_dev, opened.st_ino) != identity
+                or (current.st_dev, current.st_ino) != identity
+                or not stat.S_ISREG(current.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or current.st_nlink != 1
+            ):
+                raise TransactionError("transaction lock inode changed before unlink")
+        except TransactionError:
+            raise
+        except OSError as exc:
+            raise TransactionError("cannot remove owned transaction lock") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        try:
+            current = self.lock_path.lstat()
+            if (current.st_dev, current.st_ino) != identity:
+                raise TransactionError("transaction lock inode changed before unlink")
+            self.lock_path.unlink()
+            self._fsync_directory(self.local_state)
+        except TransactionError:
+            raise
+        except OSError as exc:
+            raise TransactionError("cannot remove owned transaction lock") from exc
 
     def _write_metadata(self, workspace: Path, payload: dict[str, object]) -> None:
         self._write_json_atomic(workspace / "metadata.json", payload)
@@ -2187,13 +2243,20 @@ class TransactionManager:
         *,
         max_bytes: int | None = None,
     ) -> tuple[object, _FileIdentity]:
-        directory_fd = TransactionManager._open_directory(path.parent, label)
+        directory_fd = (
+            TransactionManager._open_directory(path.parent, label)
+            if _SUPPORTS_DIR_FD
+            else None
+        )
         descriptor: int | None = None
         try:
             flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+                if directory_fd is None:
+                    descriptor = os.open(path, flags)
+                else:
+                    descriptor = os.open(path.name, flags, dir_fd=directory_fd)
             except OSError as exc:
                 raise TransactionError(
                     f"{label} must be a single-link ordinary file, "
@@ -2240,7 +2303,10 @@ class TransactionManager:
                 after.st_nlink,
             ):
                 raise TransactionError(f"{label} changed while being read")
-            current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if directory_fd is None:
+                current = path.lstat()
+            else:
+                current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
             if (current.st_dev, current.st_ino) != identity:
                 raise TransactionError(f"{label} inode changed while being read")
             return json.loads(data.decode("utf-8")), identity
@@ -2251,7 +2317,8 @@ class TransactionManager:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-            os.close(directory_fd)
+            if directory_fd is not None:
+                os.close(directory_fd)
 
     def _ensure_directory(self, path: Path) -> None:
         self._require_contained(path, self.config.root, "local transaction directory")
@@ -2309,6 +2376,9 @@ class TransactionManager:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
+        if not _SUPPORTS_DIRECTORY_FSYNC:
+            TransactionManager._require_ordinary_directory(path, "transaction")
+            return
         descriptor = TransactionManager._open_directory(path, "transaction")
         try:
             os.fsync(descriptor)
@@ -2403,15 +2473,50 @@ class TransactionManager:
         expected = self._workspace_path(workspace.name)
         if workspace != expected or workspace.parent != self.transactions_root:
             raise TransactionError("refusing to remove an unsafe transaction workspace")
-        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
-            raise TransactionError(
-                "symlink-safe recursive removal is unavailable on this platform"
-            )
         self._require_managed_tree(workspace)
         try:
-            shutil.rmtree(workspace)
+            self._remove_checked_tree(workspace)
             self._fsync_directory(self.transactions_root)
         except OSError as exc:
             raise TransactionError(
                 f"cannot remove transaction workspace: {workspace}"
             ) from exc
+
+    def _remove_checked_tree(self, root: Path) -> None:
+        if _SUPPORTS_SAFE_RMTREE and getattr(
+            shutil.rmtree, "avoids_symlink_attacks", False
+        ):
+            shutil.rmtree(root)
+            return
+        self._remove_tree_path_fallback(root)
+
+    def _remove_tree_path_fallback(self, root: Path) -> None:
+        self._require_ordinary_directory(root, "transaction removal directory")
+        before = root.lstat()
+        identity = (before.st_dev, before.st_ino)
+        for child in sorted(root.iterdir(), key=lambda path: path.name):
+            metadata = child.lstat()
+            child_identity = (metadata.st_dev, metadata.st_ino)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                self._remove_tree_path_fallback(child)
+                continue
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise TransactionError(
+                    f"unsafe entry in transaction removal tree: {child}"
+                )
+            current = child.lstat()
+            if (current.st_dev, current.st_ino) != child_identity:
+                raise TransactionError(
+                    f"transaction removal entry changed before unlink: {child}"
+                )
+            child.unlink()
+        current_root = root.lstat()
+        if (current_root.st_dev, current_root.st_ino) != identity:
+            raise TransactionError(
+                f"transaction removal directory changed before removal: {root}"
+            )
+        root.rmdir()
