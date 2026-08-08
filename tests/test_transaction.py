@@ -1050,7 +1050,7 @@ def test_retry_refuses_live_target_change_and_foreign_lock(
     target = config.vault / "concepts/a.md"
     target.write_text("foreign output", encoding="utf-8")
 
-    with pytest.raises(TransactionError, match="changed after transaction began"):
+    with pytest.raises(TransactionError, match="residual.*changed"):
         manager.retry("tx-1")
     assert target.read_text(encoding="utf-8") == "foreign output"
 
@@ -2228,6 +2228,34 @@ def test_failed_recovery_rejects_drift_at_persisted_mutation_conflict(
     assert manager.load("tx-1").status == "failed"
 
 
+def test_failed_restore_rejects_deleted_rollback_exclusion(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, record, target, concurrent = _prepare_failed_page_conflict(
+        tmp_path,
+        operation_writer,
+        monkeypatch,
+        concurrent_heading="# Concurrent",
+    )
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload["rollback_exclusions"] = {}
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    metadata_before = metadata.read_bytes()
+
+    with pytest.raises(TransactionError, match="residual.*changed"):
+        manager.restore("tx-1")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert metadata.read_bytes() == metadata_before
+    assert manager.load("tx-1").status == "failed"
+
+
 @pytest.mark.parametrize("target_kind", ["page", "manifest-marker"])
 def test_operation_writer_vault_side_effect_is_rolled_back(
     tmp_path: Path,
@@ -2520,9 +2548,11 @@ def _prepare_failed_writer_residual(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     return manager, record, extra
 
 
-def test_retry_preflight_preserves_residual_when_base_target_drifted(
+@pytest.mark.parametrize("action", ["retry", "restore"])
+def test_failed_recovery_preflight_preserves_unrecorded_base_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    action: str,
 ) -> None:
     manager, record, extra = _prepare_failed_writer_residual(tmp_path, monkeypatch)
     target = manager.config.vault / "concepts/a.md"
@@ -2532,8 +2562,8 @@ def test_retry_preflight_preserves_residual_when_base_target_drifted(
     metadata = record.workspace / "metadata.json"
     metadata_before = metadata.read_bytes()
 
-    with pytest.raises(TransactionError, match="changed after transaction began"):
-        manager.retry("tx-1")
+    with pytest.raises(TransactionError, match="residual.*changed"):
+        getattr(manager, action)("tx-1")
 
     assert target.read_text(encoding="utf-8") == later
     assert extra.read_bytes() == extra_before
@@ -2561,6 +2591,142 @@ def test_retry_rejects_deleted_residual_metadata_key_without_cleanup(
 
     assert extra.read_text(encoding="utf-8") == later
     assert metadata.read_bytes() == metadata_before
+
+
+@pytest.mark.parametrize("action", ["retry", "restore"])
+def test_failed_recovery_resumes_after_partial_residual_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    extras = [
+        config.vault / "references/writer-a.md",
+        config.vault / "references/writer-b.md",
+    ]
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            for extra in extras:
+                extra.parent.mkdir(parents=True, exist_ok=True)
+                extra.write_text(f"residual {extra.name}\n", encoding="utf-8")
+            raise OSError("writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    failed_initial_cleanup = False
+
+    def fail_initial_cleanup(record_value, index):
+        nonlocal failed_initial_cleanup
+        if not failed_initial_cleanup and all(
+            extra.relative_to(config.vault).as_posix() in index for extra in extras
+        ):
+            failed_initial_cleanup = True
+            raise TransactionError("initial cleanup failed")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", fail_initial_cleanup)
+    with pytest.raises(TransactionError, match="writer restore failed"):
+        manager.commit("tx-1")
+    assert failed_initial_cleanup
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+    metadata = record.workspace / "metadata.json"
+    metadata_before = metadata.read_bytes()
+    interrupted = False
+
+    def interrupt_after_first_cleanup(record_value, index):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and len(
+                set(index)
+                & {extra.relative_to(config.vault).as_posix() for extra in extras}
+            )
+            == 2
+        ):
+            interrupted = True
+            first = extras[0].relative_to(config.vault).as_posix()
+            original_restore(record_value, {first: index[first]})
+            raise TransactionError("transient cleanup failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(
+        manager, "_restore_snapshot_index", interrupt_after_first_cleanup
+    )
+    with pytest.raises(TransactionError, match="transient cleanup failure"):
+        getattr(manager, action)("tx-1")
+
+    assert interrupted
+    assert not extras[0].exists()
+    assert extras[1].exists()
+    assert metadata.read_bytes() == metadata_before
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    getattr(manager, action)("tx-1")
+
+    assert not extras[0].exists()
+    assert not extras[1].exists()
+    expected_status = "complete" if action == "retry" else "restored"
+    assert manager.load("tx-1").status == expected_status
+
+
+def test_failed_restore_recovers_recorded_partial_base_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+
+    def writer(_change):
+        raise OSError("writer failed")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate = PAGE.replace("# A", "# Candidate")
+    candidate_page(record, "concepts/a.md", candidate)
+    original_restore = manager._restore_snapshot_index
+    interrupted = False
+
+    def leave_page_unrestored(record_value, index):
+        nonlocal interrupted
+        if not interrupted and "concepts/a.md" in index:
+            interrupted = True
+            original_restore(
+                record_value,
+                {
+                    relative: stored
+                    for relative, stored in index.items()
+                    if relative != "concepts/a.md"
+                },
+            )
+            raise TransactionError("partial base rollback")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", leave_page_unrestored)
+    with pytest.raises(TransactionError, match="restore failed.*partial base rollback"):
+        manager.commit("tx-1")
+    assert interrupted
+    assert target.read_text(encoding="utf-8") == candidate
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["residual_postimages"].get("concepts/a.md") == (
+        manager._current_vault_hash("concepts/a.md")
+    )
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    manager.restore("tx-1")
+
+    assert target.read_text(encoding="utf-8") == PAGE
+    assert manager.load("tx-1").status == "restored"
 
 
 def test_unknown_failed_residual_state_is_persisted_and_recovery_refuses(

@@ -478,13 +478,20 @@ class TransactionManager:
                         "discard is required"
                     )
                 cleanup = self._persisted_writer_cleanup(
+                    record,
                     payload,
                     snapshot_index,
                     base_affected=affected,
                     rollback_exclusions=set(rollback_exclusions),
                 )
-                self._verify_failed_residual_postimages(payload, cleanup)
-                self._verify_preimages(record, affected)
+                self._verify_failed_residual_postimages(
+                    record,
+                    payload,
+                    cleanup,
+                    base_affected=affected,
+                    rollback_exclusions=set(rollback_exclusions),
+                )
+                self._verify_preimages(record, affected - set(cleanup))
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
@@ -561,12 +568,19 @@ class TransactionManager:
                             "discard is required"
                         )
                     cleanup = self._persisted_writer_cleanup(
+                        record,
                         payload,
                         snapshot_index,
                         base_affected=base_affected,
                         rollback_exclusions=set(rollback_exclusions),
                     )
-                    self._verify_failed_residual_postimages(payload, cleanup)
+                    self._verify_failed_residual_postimages(
+                        record,
+                        payload,
+                        cleanup,
+                        base_affected=base_affected,
+                        rollback_exclusions=set(rollback_exclusions),
+                    )
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
@@ -889,9 +903,11 @@ class TransactionManager:
                 rollback_errors.append(f"restore failed: {rollback_exc}")
             try:
                 residual_postimages = self._failed_residual_postimages(
+                    record,
                     writer_before,
                     operation_before,
                     base_affected=set(affected),
+                    rollback_exclusions=rollback_exclusion_paths,
                 )
             except (OSError, TransactionError) as rollback_exc:
                 residual_postimages = None
@@ -1245,6 +1261,7 @@ class TransactionManager:
         resolved_cleanup = cleanup
         if resolved_cleanup is None:
             resolved_cleanup = self._persisted_writer_cleanup(
+                record,
                 payload,
                 snapshot_index,
                 base_affected=base_affected,
@@ -1254,63 +1271,74 @@ class TransactionManager:
 
     def _persisted_writer_cleanup(
         self,
+        record: TransactionRecord,
         payload: dict[str, object],
         snapshot_index: dict[str, str | None],
         *,
         base_affected: set[str],
         rollback_exclusions: set[str],
     ) -> dict[str, str | None]:
-        if not payload["writer_prepared"]:
-            return {}
-        excluded = base_affected | rollback_exclusions
-        writer_before = {
-            relative: content_hash
-            for relative, content_hash in self._load_writer_guard(
-                payload["writer_guard"]
-            ).items()
-            if relative not in excluded
-        }
-        operation_before = {
-            relative: content_hash
-            for relative, content_hash in self._load_operation_guard(
-                payload["operation_guard"]
-            ).items()
-            if relative not in rollback_exclusions
-        }
-        writer_after = {
-            relative: content_hash
-            for relative, content_hash in self._writer_guard_state(
-                allow_unsafe=True
-            ).items()
-            if relative not in excluded
-        }
-        operation_after = {
-            relative: content_hash
-            for relative, content_hash in self._operation_tree_state(
-                allow_unsafe=True
-            ).items()
-            if relative not in rollback_exclusions
-        }
-        cleanup = self._writer_guard_diff(
-            writer_before,
-            writer_after,
-            {relative: snapshot_index[relative] for relative in writer_before},
-        )
-        cleanup.update(
-            self._operation_tree_diff(
-                operation_before,
-                operation_after,
-                {relative: snapshot_index[relative] for relative in operation_before},
+        cleanup: dict[str, str | None] = {}
+        if payload["writer_prepared"]:
+            excluded = base_affected | rollback_exclusions
+            writer_before = {
+                relative: content_hash
+                for relative, content_hash in self._load_writer_guard(
+                    payload["writer_guard"]
+                ).items()
+                if relative not in excluded
+            }
+            operation_before = {
+                relative: content_hash
+                for relative, content_hash in self._load_operation_guard(
+                    payload["operation_guard"]
+                ).items()
+                if relative not in rollback_exclusions
+            }
+            writer_after = {
+                relative: content_hash
+                for relative, content_hash in self._writer_guard_state(
+                    allow_unsafe=True
+                ).items()
+                if relative not in excluded
+            }
+            operation_after = {
+                relative: content_hash
+                for relative, content_hash in self._operation_tree_state(
+                    allow_unsafe=True
+                ).items()
+                if relative not in rollback_exclusions
+            }
+            cleanup.update(
+                self._writer_guard_diff(
+                    writer_before,
+                    writer_after,
+                    {relative: snapshot_index[relative] for relative in writer_before},
+                )
             )
-        )
+            cleanup.update(
+                self._operation_tree_diff(
+                    operation_before,
+                    operation_after,
+                    {
+                        relative: snapshot_index[relative]
+                        for relative in operation_before
+                    },
+                )
+            )
+        for relative in sorted(base_affected - rollback_exclusions):
+            if self._current_vault_hash(relative) != record.preimages.get(relative):
+                cleanup[relative] = snapshot_index[relative]
         return dict(sorted(cleanup.items()))
 
     def _failed_residual_postimages(
         self,
+        record: TransactionRecord,
         writer_before: dict[str, str] | None,
         operation_before: dict[str, str] | None,
         *,
         base_affected: set[str],
+        rollback_exclusions: set[str],
     ) -> dict[str, str | None]:
         residual: dict[str, str | None] = {}
         if writer_before is not None:
@@ -1333,12 +1361,20 @@ class TransactionManager:
             changed.update(set(operation_after) - set(operation_before))
             for relative in changed:
                 residual[relative] = self._current_vault_hash(relative)
+        for relative in sorted(base_affected - rollback_exclusions):
+            current = self._current_vault_hash(relative)
+            if current != record.preimages.get(relative):
+                residual[relative] = current
         return dict(sorted(residual.items()))
 
     def _verify_failed_residual_postimages(
         self,
+        record: TransactionRecord,
         payload: dict[str, object],
         cleanup: dict[str, str | None],
+        *,
+        base_affected: set[str],
+        rollback_exclusions: set[str],
     ) -> None:
         residuals = self._load_residual_postimages(payload["residual_postimages"])
         if residuals is None:
@@ -1354,10 +1390,50 @@ class TransactionManager:
                     "failed transaction residual changed after lock release: "
                     + relative
                 ) from exc
-        if dict(sorted(actual.items())) != residuals:
+        unrecorded = set(actual) - set(residuals)
+        if unrecorded:
             raise TransactionError(
                 "failed transaction residual set or content changed after lock release"
             )
+        for relative, current in actual.items():
+            if current != residuals[relative]:
+                raise TransactionError(
+                    "failed transaction residual set or content changed after lock release"
+                )
+        baselines = {
+            relative: record.preimages.get(relative)
+            for relative in base_affected - rollback_exclusions
+        }
+        baselines.update(
+            {
+                relative: content_hash
+                for relative, content_hash in self._load_writer_guard(
+                    payload["writer_guard"]
+                ).items()
+                if relative not in base_affected | rollback_exclusions
+            }
+        )
+        baselines.update(
+            {
+                relative: content_hash
+                for relative, content_hash in self._load_operation_guard(
+                    payload["operation_guard"]
+                ).items()
+                if relative not in rollback_exclusions
+            }
+        )
+        for relative in set(residuals) - set(actual):
+            try:
+                current = self._current_vault_hash(relative)
+            except TransactionError as exc:
+                raise TransactionError(
+                    "failed transaction residual changed after lock release: "
+                    + relative
+                ) from exc
+            if current != baselines.get(relative):
+                raise TransactionError(
+                    "failed transaction residual set or content changed after lock release"
+                )
 
     def _verify_rollback_exclusions(
         self, payload: dict[str, object]
@@ -1922,20 +1998,21 @@ class TransactionManager:
             raise TransactionError(
                 "transaction rollback exclusions are outside the affected set"
             )
-        if residual_postimages is not None:
-            if set(residual_postimages) & base_affected:
-                raise TransactionError(
-                    "transaction residual postimages overlap the affected set"
-                )
-            if rollback_exclusions is not None and set(residual_postimages) & set(
-                rollback_exclusions
-            ):
-                raise TransactionError(
-                    "transaction residual postimages overlap rollback exclusions"
-                )
-        if not writer_prepared and residual_postimages not in ({},):
+        if (
+            residual_postimages is not None
+            and rollback_exclusions is not None
+            and set(residual_postimages) & set(rollback_exclusions)
+        ):
             raise TransactionError(
-                "unprepared transaction cannot contain unknown writer residuals"
+                "transaction residual postimages overlap rollback exclusions"
+            )
+        if (
+            not writer_prepared
+            and residual_postimages is not None
+            and not set(residual_postimages) <= base_affected
+        ):
+            raise TransactionError(
+                "unprepared transaction residuals must belong to affected paths"
             )
         expected_snapshot_hashes = {
             relative: preimages.get(relative) for relative in base_affected
