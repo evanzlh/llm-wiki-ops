@@ -242,6 +242,49 @@ def test_concurrent_hot_replacement_is_not_invalidated(
     assert hot.read_text(encoding="utf-8") == "new hot\n"
 
 
+def test_replacement_during_bound_invalidation_is_restored(
+    config_fixture: PortableConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not local_state_module._SUPPORTS_BOUND_DIRECTORIES:
+        pytest.skip("bound directory descriptors are unavailable")
+    config = config_fixture
+    hot = config.vault / "hot.md"
+    hot.write_text("old hot\n", encoding="utf-8")
+    mark_hot_current(config)
+    page = config.vault / "concepts" / "changed.md"
+    page.parent.mkdir()
+    page.write_text("authoritative change\n", encoding="utf-8")
+    real_rename = local_state_module.os.rename
+    replaced = False
+
+    def replace_before_rename(
+        source: str,
+        target: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal replaced
+        if source == "hot.md" and not replaced:
+            replacement = config.vault / ".new-hot.tmp"
+            replacement.write_text("new hot\n", encoding="utf-8")
+            replacement.replace(hot)
+            replaced = True
+        real_rename(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(local_state_module.os, "rename", replace_before_rename)
+
+    status = hot_status(config, invalidate=True)
+
+    assert status["stale"] is True
+    assert hot.read_text(encoding="utf-8") == "new hot\n"
+
+
 def test_sidecar_write_stays_bound_to_opened_local_directory(
     config_fixture: PortableConfig,
     tmp_path: Path,

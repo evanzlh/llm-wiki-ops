@@ -53,6 +53,109 @@ def _identity(metadata: os.stat_result) -> _FileIdentity:
     return metadata.st_dev, metadata.st_ino
 
 
+def _close_windows_handles(handles: list[int]) -> None:
+    if not handles:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    for handle in reversed(handles):
+        close_handle(handle)
+
+
+def _open_windows_directory_handle(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    share_read_write = 0x00000001 | 0x00000002
+    open_existing = 3
+    backup_semantics = 0x02000000
+    open_reparse_point = 0x00200000
+    handle = create_file(
+        str(path),
+        0,
+        share_read_write,
+        None,
+        open_existing,
+        backup_semantics | open_reparse_point,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    handle_value = handle.value if hasattr(handle, "value") else handle
+    if handle_value == invalid:
+        error = ctypes.get_last_error()
+        raise LocalStateError(
+            f"cannot guard Windows directory against replacement: {path} ({error})"
+        )
+    try:
+        _require_ordinary_directory(path, "guarded Windows directory")
+    except BaseException:
+        _close_windows_handles([int(handle_value)])
+        raise
+    return int(handle_value)
+
+
+def _windows_directory_guard(
+    root: Path, paths: tuple[Path, ...], *, create: bool = False
+) -> list[int]:
+    """Hold no-delete-share handles so Windows ancestors cannot be swapped."""
+
+    if os.name != "nt":
+        raise LocalStateError("Windows directory guards are unavailable")
+    root = Path(os.path.abspath(root))
+    guarded: dict[str, int] = {}
+    handles: list[int] = []
+    try:
+        for target in paths:
+            relative = _contained_relative(root, target, "guarded directory")
+            anchor = Path(root.anchor)
+            chain: list[Path] = [anchor]
+            current = anchor
+            for part in root.parts[1:]:
+                current = current / part
+                chain.append(current)
+            for part in relative.parts:
+                current = current / part
+                chain.append(current)
+            for directory in chain:
+                key = os.path.normcase(os.path.abspath(directory))
+                if key in guarded:
+                    continue
+                if (
+                    create
+                    and _relative_if_below(directory, root) is not None
+                    and not directory.exists()
+                    and not directory.is_symlink()
+                ):
+                    try:
+                        directory.mkdir()
+                    except FileExistsError:
+                        pass
+                handle = _open_windows_directory_handle(directory)
+                guarded[key] = handle
+                handles.append(handle)
+        return handles
+    except BaseException:
+        _close_windows_handles(handles)
+        raise
+
+
 def _contained_relative(root: Path, path: Path, label: str) -> PurePosixPath:
     root = root.resolve(strict=False)
     try:
@@ -156,6 +259,10 @@ def _ensure_local_state(config: PortableConfig) -> Path:
         descriptor = _open_bound_directory(root, config.local_state, create=True)
         os.close(descriptor)
         return config.local_state
+    if os.name == "nt":
+        handles = _windows_directory_guard(root, (config.local_state,), create=True)
+        _close_windows_handles(handles)
+        return config.local_state
     current = root
     for part in relative.parts:
         current = current / part
@@ -194,9 +301,13 @@ def _ensure_local_state(config: PortableConfig) -> Path:
 def _open_ordinary_file(
     path: Path, label: str, *, root: Path | None
 ) -> tuple[int, os.stat_result]:
+    windows_handles: list[int] = []
+    if root is not None and not _SUPPORTS_BOUND_DIRECTORIES and os.name == "nt":
+        windows_handles = _windows_directory_guard(root, (path.parent,))
     try:
         lexical = path.lstat()
     except OSError as exc:
+        _close_windows_handles(windows_handles)
         raise LocalStateError(
             f"{label} must be a readable ordinary file: {path}"
         ) from exc
@@ -206,6 +317,7 @@ def _open_ordinary_file(
         or _is_reparse(lexical)
         or lexical.st_nlink != 1
     ):
+        _close_windows_handles(windows_handles)
         raise LocalStateError(f"{label} must be a single-link ordinary file: {path}")
 
     flags = os.O_RDONLY
@@ -221,6 +333,7 @@ def _open_ordinary_file(
         else:
             descriptor = os.open(path, flags)
     except OSError as exc:
+        _close_windows_handles(windows_handles)
         raise LocalStateError(
             f"{label} must be a readable ordinary file: {path}"
         ) from exc
@@ -235,7 +348,9 @@ def _open_ordinary_file(
         or _identity(opened) != _identity(lexical)
     ):
         os.close(descriptor)
+        _close_windows_handles(windows_handles)
         raise LocalStateError(f"{label} changed while it was being opened: {path}")
+    _close_windows_handles(windows_handles)
     return descriptor, opened
 
 
@@ -487,10 +602,13 @@ def _hot_metadata(config: PortableConfig) -> os.stat_result | None:
     hot = config.vault / _HOT_NAME
     _contained_relative(config.root, hot, "hot.md")
     vault_fd: int | None = None
+    windows_handles: list[int] = []
     try:
         if _SUPPORTS_BOUND_DIRECTORIES:
             vault_fd = _open_bound_directory(config.root, config.vault)
             return os.stat(_HOT_NAME, dir_fd=vault_fd, follow_symlinks=False)
+        if os.name == "nt":
+            windows_handles = _windows_directory_guard(config.root, (config.vault,))
         metadata = hot.lstat()
         if _is_reparse(metadata):
             raise LocalStateError(f"hot.md must not be a reparse point: {hot}")
@@ -502,6 +620,7 @@ def _hot_metadata(config: PortableConfig) -> os.stat_result | None:
     finally:
         if vault_fd is not None:
             os.close(vault_fd)
+        _close_windows_handles(windows_handles)
 
 
 def _write_all(descriptor: int, data: bytes) -> None:
@@ -517,20 +636,75 @@ def _invalidated_name() -> str:
     return ".hot-invalidated-" + secrets.token_hex(16) + ".tmp"
 
 
-def _restore_mismatched_hot(vault_fd: int, local_fd: int, tombstone: str) -> None:
-    if os.link not in os.supports_dir_fd:
-        return
+def _restore_mismatched_hot_at(vault_fd: int, local_fd: int, tombstone: str) -> None:
+    source = -1
+    target = -1
     try:
-        os.link(
+        source = os.open(
             tombstone,
-            _HOT_NAME,
-            src_dir_fd=local_fd,
-            dst_dir_fd=vault_fd,
-            follow_symlinks=False,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=local_fd,
         )
+        source_metadata = os.fstat(source)
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise LocalStateError(
+                "non-file hot.md replacement was preserved in local state"
+            )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            target = os.open(_HOT_NAME, flags, 0o600, dir_fd=vault_fd)
+        except FileExistsError:
+            return
+        while True:
+            chunk = os.read(source, 1024 * 1024)
+            if not chunk:
+                break
+            _write_all(target, chunk)
+        os.fsync(target)
         os.fsync(vault_fd)
-    except OSError:
-        pass
+    except OSError as exc:
+        raise LocalStateError(
+            "hot.md replacement could not be restored from local quarantine"
+        ) from exc
+    finally:
+        if source >= 0:
+            os.close(source)
+        if target >= 0:
+            os.close(target)
+
+
+def _restore_mismatched_hot_path(tombstone: Path, hot: Path) -> None:
+    source = -1
+    target = -1
+    try:
+        source = os.open(tombstone, os.O_RDONLY)
+        if not stat.S_ISREG(os.fstat(source).st_mode):
+            raise LocalStateError(
+                "non-file hot.md replacement was preserved in local state"
+            )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        try:
+            target = os.open(hot, flags, 0o600)
+        except FileExistsError:
+            return
+        while True:
+            chunk = os.read(source, 1024 * 1024)
+            if not chunk:
+                break
+            _write_all(target, chunk)
+        os.fsync(target)
+    except OSError as exc:
+        raise LocalStateError(
+            "hot.md replacement could not be restored from local quarantine"
+        ) from exc
+    finally:
+        if source >= 0:
+            os.close(source)
+        if target >= 0:
+            os.close(target)
 
 
 def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
@@ -567,10 +741,9 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
                 raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
             moved = os.stat(tombstone, dir_fd=local_fd, follow_symlinks=False)
             if _identity(moved) != expected:
-                _restore_mismatched_hot(vault_fd, local_fd, tombstone)
-                raise LocalStateError(
-                    "hot.md changed during invalidation; replacement was preserved"
-                )
+                _restore_mismatched_hot_at(vault_fd, local_fd, tombstone)
+                os.fsync(local_fd)
+                return
             os.fsync(vault_fd)
             os.fsync(local_fd)
             _verify_directory_identities(vault_identities)
@@ -581,27 +754,34 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
             if local_fd is not None:
                 os.close(local_fd)
 
-    vault_identities = _directory_identities(config.root, config.vault)
-    local_identities = _directory_identities(config.root, config.local_state)
-    metadata = _hot_metadata(config)
-    if metadata is None or _identity(metadata) != expected:
-        return
-    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
-        raise LocalStateError(f"hot.md must be a file or symlink: {hot}")
-    target = config.local_state / tombstone
-    _verify_directory_identities(vault_identities)
-    _verify_directory_identities(local_identities)
-    try:
-        hot.replace(target)
-    except OSError as exc:
-        raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
-    moved = target.lstat()
-    if _identity(moved) != expected:
+    if os.name != "nt":
         raise LocalStateError(
-            "hot.md changed during invalidation; replacement was preserved"
+            "safe hot invalidation requires directory-relative filesystem operations"
         )
-    _verify_directory_identities(vault_identities)
-    _verify_directory_identities(local_identities)
+    handles = _windows_directory_guard(config.root, (config.vault, config.local_state))
+    try:
+        vault_identities = _directory_identities(config.root, config.vault)
+        local_identities = _directory_identities(config.root, config.local_state)
+        metadata = _hot_metadata(config)
+        if metadata is None or _identity(metadata) != expected:
+            return
+        if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+            raise LocalStateError(f"hot.md must be a file or symlink: {hot}")
+        target = config.local_state / tombstone
+        _verify_directory_identities(vault_identities)
+        _verify_directory_identities(local_identities)
+        try:
+            hot.replace(target)
+        except OSError as exc:
+            raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
+        moved = target.lstat()
+        if _identity(moved) != expected:
+            _restore_mismatched_hot_path(target, hot)
+            return
+        _verify_directory_identities(vault_identities)
+        _verify_directory_identities(local_identities)
+    finally:
+        _close_windows_handles(handles)
 
 
 def hot_status(
@@ -716,7 +896,16 @@ def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
                 os.close(descriptor)
             os.close(directory)
 
-    identities = _directory_identities(config.root, local_state)
+    if os.name != "nt":
+        raise LocalStateError(
+            "safe sidecar writes require directory-relative filesystem operations"
+        )
+    handles = _windows_directory_guard(config.root, (local_state,))
+    try:
+        identities = _directory_identities(config.root, local_state)
+    except BaseException:
+        _close_windows_handles(handles)
+        raise
     descriptor = -1
     temporary_name = ""
     temporary_identity: _FileIdentity | None = None
@@ -748,6 +937,7 @@ def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        _close_windows_handles(handles)
 
 
 def mark_hot_current(config: PortableConfig) -> None:
