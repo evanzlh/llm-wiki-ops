@@ -68,6 +68,10 @@ def test_source_id_rejects_absolute_and_traversal_strings(tmp_path: Path) -> Non
         "sources\\file.md",
         "sources/../../file.md",
         "../sources/file.md",
+        "sources",
+        "sources/./file.md",
+        "sources//file.md",
+        "sources/file.md/",
     ):
         with pytest.raises(ManifestError, match="Source ID"):
             store.entry_path(source_id)
@@ -132,3 +136,107 @@ def test_status_reports_uncompiled_and_orphaned(tmp_path: Path) -> None:
     status = store.status()
     assert status["new"] == ["sources/new.md"]
     assert status["missing"] == ["sources/tracked.md"]
+
+
+def _write_shard(root: Path, payload: object, name: str = "a.md.json") -> Path:
+    path = root / "wiki" / ".manifest" / "sources" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return path
+
+
+def _valid_shard() -> dict[str, object]:
+    return {
+        "compiled_at": "2026-08-07T00:00:00Z",
+        "content_hash": "sha256:" + "0" * 64,
+        "pages": ["concepts/a.md"],
+        "source_id": "sources/a.md",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("content_hash", "0" * 64),
+        ("content_hash", "sha256:" + "A" * 64),
+        ("content_hash", "sha256:short"),
+        ("compiled_at", 123),
+    ],
+)
+def test_load_rejects_malformed_scalar_fields(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    root, config = make_repo(tmp_path)
+    payload = _valid_shard()
+    payload[field] = value
+    _write_shard(root, payload)
+
+    with pytest.raises(ManifestError, match=field):
+        ShardedManifest(config).iter_entries()
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        ["concepts/../a.md"],
+        ["/concepts/a.md"],
+        ["C:/concepts/a.md"],
+        ["concepts\\a.md"],
+        ["concepts/a.md", "concepts/a.md"],
+        ["references/b.md", "concepts/a.md"],
+        ["."],
+    ],
+)
+def test_load_rejects_unsafe_or_noncanonical_pages(
+    tmp_path: Path, pages: list[str]
+) -> None:
+    root, config = make_repo(tmp_path)
+    payload = _valid_shard()
+    payload["pages"] = pages
+    _write_shard(root, payload)
+
+    with pytest.raises(ManifestError, match="pages|page path"):
+        ShardedManifest(config).iter_entries()
+
+
+def test_iter_rejects_source_id_that_does_not_match_shard_path(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    payload = _valid_shard()
+    payload["source_id"] = "sources/other.md"
+    _write_shard(root, payload)
+
+    with pytest.raises(ManifestError, match="source_id|Source ID|fields"):
+        ShardedManifest(config).iter_entries()
+
+
+def test_iter_rejects_symlinked_shards(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    external = tmp_path / "external.json"
+    external.write_text(json.dumps(_valid_shard()), encoding="utf-8")
+    shard = root / "wiki/.manifest/sources/a.md.json"
+    shard.parent.mkdir(parents=True, exist_ok=True)
+    shard.symlink_to(external)
+
+    with pytest.raises(ManifestError, match="ordinary file"):
+        ShardedManifest(config).iter_entries()
+
+
+def test_iter_rejects_nonordinary_or_unexpected_shard_entries(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    unexpected = root / "wiki/.manifest/sources/a.md.json"
+    unexpected.mkdir(parents=True)
+
+    with pytest.raises(ManifestError, match="ordinary file|manifest shard"):
+        ShardedManifest(config).iter_entries()
+
+
+def test_iter_rejects_symlinked_shard_root(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    entries_root = root / "wiki/.manifest/sources"
+    external = tmp_path / "external-shards"
+    external.mkdir()
+    entries_root.parent.mkdir(parents=True, exist_ok=True)
+    entries_root.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(ManifestError, match="ordinary directory|symlink"):
+        ShardedManifest(config).iter_entries()

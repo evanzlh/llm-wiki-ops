@@ -13,7 +13,9 @@ import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import list_skills, skills_dir
+from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable import setup_portable_repo
+from obsidian_wiki.portable_manifest import ShardedManifest
 
 
 def _run(
@@ -304,6 +306,29 @@ def test_doctor_portable_mode_does_not_require_global_config(tmp_path: Path) -> 
         check["name"] not in {"global-config", "agent-installs"}
         for check in report["checks"]
     )
+
+
+def test_doctor_portable_mode_reports_exact_v2_shard_count(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    first = root / "sources/first.md"
+    second = root / "sources/second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(first, compiled_at="2026-08-08T00:00:00Z")
+    store.upsert(second, compiled_at="2026-08-08T00:00:01Z")
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    detail = _portable_check(proc, "portable-paths")["detail"]
+    assert "manifest shards=2" in detail
 
 
 def test_doctor_fresh_portable_clone_allows_lazy_paths_without_mutation(

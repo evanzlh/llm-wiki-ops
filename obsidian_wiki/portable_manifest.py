@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from obsidian_wiki.cache import compute_hash
 from obsidian_wiki.config import PortableConfig
@@ -35,15 +37,21 @@ class ShardedManifest:
 
     def _validate_marker(self) -> None:
         try:
+            metadata = self.marker_path.lstat()
+        except OSError as exc:
+            raise ManifestError("invalid manifest v2 marker") from exc
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ManifestError("manifest v2 marker must be an ordinary file")
+        try:
             payload = json.loads(self.marker_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ManifestError(f"{self.marker_path}: invalid manifest v2 marker: {exc}") from exc
+            raise ManifestError(f"invalid manifest v2 marker: {exc}") from exc
         if payload != {
             "entries": ".manifest/sources",
             "schema_version": 2,
             "storage": "sharded",
         }:
-            raise ManifestError(f"{self.marker_path}: invalid manifest v2 marker")
+            raise ManifestError("invalid manifest v2 marker")
 
     def _repo_relative(self, path: Path, label: str) -> str:
         try:
@@ -72,10 +80,19 @@ class ShardedManifest:
         if not isinstance(source_id, str) or not source_id or "\\" in source_id:
             raise ManifestError(f"invalid Source ID: {source_id!r}")
         path = PurePosixPath(source_id)
+        windows_path = PureWindowsPath(source_id)
         prefix = self._repo_relative(self.source_root, "source root")
-        if path.is_absolute() or ".." in path.parts or "." in path.parts:
+        if (
+            path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in path.parts
+            or "." in path.parts
+            or path.as_posix() != source_id
+            or source_id == prefix
+        ):
             raise ManifestError(f"invalid Source ID: {source_id!r}")
-        if source_id != prefix and not source_id.startswith(prefix + "/"):
+        if not source_id.startswith(prefix + "/"):
             raise ManifestError(f"Source ID is outside the configured source root: {source_id}")
 
     def entry_path(self, source_id: str) -> Path:
@@ -91,37 +108,89 @@ class ShardedManifest:
 
     def load(self, source_id: str) -> ManifestEntry | None:
         path = self.entry_path(source_id)
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             return None
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise ManifestError("manifest shard is unreadable") from exc
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ManifestError("manifest shard must be an ordinary file")
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ManifestError(f"{path}: invalid manifest shard: {exc}") from exc
+            raise ManifestError(f"invalid manifest shard: {exc}") from exc
         if not isinstance(payload, dict):
-            raise ManifestError(f"{path}: manifest shard must be an object")
+            raise ManifestError("manifest shard must be an object")
         expected = {"compiled_at", "content_hash", "pages", "source_id"}
         if set(payload) != expected or payload.get("source_id") != source_id:
-            raise ManifestError(f"{path}: manifest shard has invalid fields")
+            raise ManifestError("manifest shard has invalid fields or source_id")
+        content_hash = payload.get("content_hash")
+        if not isinstance(content_hash, str) or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", content_hash
+        ) is None:
+            raise ManifestError("manifest shard content_hash must be sha256 lowercase hex")
+        compiled_at = payload.get("compiled_at")
+        if not isinstance(compiled_at, str):
+            raise ManifestError("manifest shard compiled_at must be a string")
         pages = payload.get("pages")
         if not isinstance(pages, list) or any(not isinstance(page, str) for page in pages):
-            raise ManifestError(f"{path}: manifest pages must be a string list")
+            raise ManifestError("manifest pages must be a string list")
+        canonical_pages = self._normalize_pages(pages, self.config.vault)
+        if tuple(pages) != canonical_pages:
+            raise ManifestError(
+                "manifest pages must be safe, normalized, unique, and sorted"
+            )
         return ManifestEntry(
             source_id=source_id,
-            content_hash=str(payload["content_hash"]),
-            pages=tuple(pages),
-            compiled_at=str(payload["compiled_at"]),
+            content_hash=content_hash,
+            pages=canonical_pages,
+            compiled_at=compiled_at,
         )
 
     def iter_entries(self) -> list[ManifestEntry]:
-        if not self.entries_root.exists():
+        if not self.entries_root.exists() and not self.entries_root.is_symlink():
             return []
+        try:
+            root_metadata = self.entries_root.lstat()
+        except OSError as exc:
+            raise ManifestError("manifest shard root is unreadable") from exc
+        if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+            raise ManifestError("manifest shard root must be an ordinary directory, not a symlink")
         entries: list[ManifestEntry] = []
         seen: set[str] = set()
-        for path in sorted(self.entries_root.rglob("*.json")):
-            if not path.is_file() or path.is_symlink():
-                raise ManifestError(f"{path}: manifest shard must be an ordinary file")
+        shard_paths: list[Path] = []
+        for directory, dirnames, filenames in os.walk(
+            self.entries_root, followlinks=False
+        ):
+            current = Path(directory)
+            for name in sorted(dirnames):
+                child = current / name
+                try:
+                    metadata = child.lstat()
+                except OSError as exc:
+                    raise ManifestError("manifest shard directory is unreadable") from exc
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise ManifestError(
+                        "manifest shard directory must be an ordinary directory"
+                    )
+                if name.endswith(".json"):
+                    raise ManifestError("manifest shard must be an ordinary file")
+            for name in sorted(filenames):
+                path = current / name
+                try:
+                    metadata = path.lstat()
+                except OSError as exc:
+                    raise ManifestError("manifest shard is unreadable") from exc
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise ManifestError("manifest shard must be an ordinary file")
+                if not name.endswith(".json"):
+                    raise ManifestError("manifest shard file must use the .json suffix")
+                shard_paths.append(path)
+        for path in sorted(shard_paths):
             relative = path.relative_to(self.entries_root)
-            source_id = f"{self._repo_relative(self.source_root, 'source root')}/{relative.with_suffix('').as_posix()}"
+            source_prefix = self._repo_relative(self.source_root, "source root")
+            source_id = f"{source_prefix}/{relative.with_suffix('').as_posix()}"
             if source_id in seen:
                 raise ManifestError(f"duplicate manifest Source ID: {source_id}")
             seen.add(source_id)
@@ -136,10 +205,17 @@ class ShardedManifest:
         values: set[str] = set()
         for page in pages or []:
             path = PurePosixPath(page)
-            if path.is_absolute() or ".." in path.parts or "\\" in page:
+            windows_path = PureWindowsPath(page)
+            if (
+                path.is_absolute()
+                or windows_path.is_absolute()
+                or windows_path.drive
+                or ".." in path.parts
+                or "\\" in page
+            ):
                 raise ManifestError(f"invalid manifest page path: {page!r}")
             normalized = path.as_posix()
-            if normalized in ("", "."):
+            if normalized in ("", ".") or normalized != page:
                 raise ManifestError(f"invalid manifest page path: {page!r}")
             values.add(normalized)
         return tuple(sorted(values))
@@ -159,7 +235,8 @@ class ShardedManifest:
             source_id=source_id,
             content_hash=f"sha256:{compute_hash(source_path)}",
             pages=self._normalize_pages(pages, self.config.vault),
-            compiled_at=compiled_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            compiled_at=compiled_at
+            or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
         payload = {
             "compiled_at": entry.compiled_at,

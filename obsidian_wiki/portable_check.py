@@ -1,13 +1,36 @@
 """Read-only deterministic validation for portable repositories."""
 from __future__ import annotations
 
+import json
+import os
+import posixpath
+import stat
 import subprocess
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
+from . import IMPLEMENTATION_ID, __version__
+from .cache import compute_hash
+from .config import ConfigError, PortableConfig, load_portable_config
 from .frontmatter import FrontmatterError, parse_frontmatter
-from .portable_manifest import ManifestError, ShardedManifest
+from .lint import lint_vault
+from .portable import (
+    MANAGED_END,
+    MANAGED_SKILLS_INVENTORY,
+    MANAGED_START,
+    PROJECT_AGENT_DIRS,
+    _adapter_text,
+    _BOOTSTRAP_REFERENCES,
+    _bootstrap_body,
+    _INDEX,
+    _LOG,
+    _PORTABLE_AGENT_INSTRUCTIONS,
+)
+from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
 
 
 @dataclass(frozen=True)
@@ -18,67 +41,711 @@ class CheckIssue:
     severity: Literal["warning", "error"] = "error"
 
 
+_REQUIRED_FIELDS = {"title", "category", "tags", "sources", "created", "updated"}
+_KNOWLEDGE_CATEGORIES = (
+    "concepts",
+    "entities",
+    "skills",
+    "references",
+    "synthesis",
+    "journal",
+    "projects",
+)
+_LFS_SIGNATURE = b"version https://git-lfs.github.com/spec/v1"
+
+
 def _rel(root: Path, path: Path) -> str:
+    """Return one lexical repository-relative path without following symlinks."""
+    root_absolute = Path(os.path.abspath(os.fspath(root)))
+    path_absolute = Path(os.path.abspath(os.fspath(path)))
     try:
-        return path.relative_to(root).as_posix()
+        relative = path_absolute.relative_to(root_absolute)
     except ValueError:
         return "."
+    value = relative.as_posix()
+    return value if value else "."
 
 
-def check_portable_repo(config) -> dict[str, object]:
+def _scrub(root: Path, message: object) -> str:
+    """Remove clone-specific absolute roots from diagnostics."""
+    text = str(message)
+    candidates = {
+        str(root),
+        str(Path(os.path.abspath(os.fspath(root)))),
+        str(root.resolve(strict=False)),
+    }
+    for candidate in sorted(candidates, key=len, reverse=True):
+        if candidate:
+            text = text.replace(candidate, ".")
+    return text
+
+
+def _ordinary_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+
+
+def _ordinary_directory(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+
+
+def _has_symlink_component(root: Path, path: Path) -> bool:
+    try:
+        relative = Path(os.path.abspath(os.fspath(path))).relative_to(
+            Path(os.path.abspath(os.fspath(root)))
+        )
+    except ValueError:
+        return True
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _safe_page_path(config: PortableConfig, page_name: str) -> Path | None:
+    posix = PurePosixPath(page_name)
+    windows = PureWindowsPath(page_name)
+    if (
+        not page_name
+        or page_name == "."
+        or "\\" in page_name
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or ".." in posix.parts
+        or posix.as_posix() != page_name
+    ):
+        return None
+    candidate = config.vault.joinpath(*posix.parts)
+    try:
+        candidate.resolve(strict=False).relative_to(config.vault.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate
+
+
+def _report(issues: list[CheckIssue]) -> dict[str, object]:
+    issues.sort(key=lambda item: (item.severity, item.code, item.path, item.message))
+    errors = sum(issue.severity == "error" for issue in issues)
+    warnings = sum(issue.severity == "warning" for issue in issues)
+    return {
+        "status": "fail" if errors else ("warn" if warnings else "pass"),
+        "errors": errors,
+        "warnings": warnings,
+        "issues": [asdict(issue) for issue in issues],
+    }
+
+
+def _reload_config(config: PortableConfig, issues: list[CheckIssue]) -> PortableConfig | None:
     root = config.root
-    issues: list[CheckIssue] = []
+    config_path = root / ".obsidian-wiki/config.toml"
+    if (
+        not _ordinary_file(config_path)
+        or _has_symlink_component(root, config_path)
+        or config.path != config_path
+    ):
+        issues.append(
+            CheckIssue(
+                "config-invalid",
+                ".obsidian-wiki/config.toml",
+                "portable configuration must be an ordinary contained file",
+            )
+        )
+        return None
+    try:
+        loaded = load_portable_config(
+            config_path,
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+    except ConfigError as exc:
+        issues.append(
+            CheckIssue(
+                "config-invalid",
+                ".obsidian-wiki/config.toml",
+                _scrub(root, exc),
+            )
+        )
+        return None
+    if loaded.root != root or loaded.path != config_path:
+        issues.append(
+            CheckIssue(
+                "config-invalid",
+                ".obsidian-wiki/config.toml",
+                "portable configuration escapes the repository",
+            )
+        )
+        return None
+    for label, path in (
+        ("vault", loaded.vault),
+        ("skills", loaded.skills),
+        ("local state", loaded.local_state),
+        *(("source", source) for source in loaded.sources),
+    ):
+        try:
+            path.relative_to(root)
+        except ValueError:
+            issues.append(
+                CheckIssue(
+                    "config-invalid",
+                    ".obsidian-wiki/config.toml",
+                    f"configured {label} path escapes the repository",
+                )
+            )
+            return None
+    return loaded
+
+
+def _load_manifest(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> tuple[ShardedManifest | None, list[ManifestEntry]]:
     try:
         store = ShardedManifest(config)
         entries = store.iter_entries()
     except ManifestError as exc:
-        issues.append(CheckIssue("manifest-invalid", ".manifest.json", str(exc)))
-        entries = []
-        store = None
-    if store:
-        status = store.status()
-        for code, paths in (("source-new", status["new"]), ("source-stale", status["modified"]), ("source-orphaned", status["missing"])):
-            for path in paths:
-                issues.append(CheckIssue(code, path, f"manifest source is {code[7:]}"))
-        for entry in entries:
-            for page_name in entry.pages:
-                page = config.vault / page_name
-                if not page.is_file() or page.is_symlink():
-                    issues.append(CheckIssue("manifest-page-missing", page_name, "manifest page does not exist"))
-        for source in config.sources:
-            if source.exists():
-                for path in source.rglob("*"):
-                    if path.is_file() and path.read_text(encoding="utf-8", errors="ignore").startswith("version https://git-lfs.github.com/spec/v1"):
-                        issues.append(CheckIssue("unsupported-git-lfs-pointer", _rel(root, path), "Git LFS pointer is not source content"))
-    required = {"title", "category", "tags", "sources", "created", "updated"}
-    categories = {"concepts", "entities", "skills", "references", "synthesis", "journal", "projects"}
-    for page in config.vault.rglob("*.md"):
-        rel = page.relative_to(config.vault)
-        if not rel.parts or rel.parts[0] not in categories or (rel.parts[0] == "journal" and len(rel.parts) > 1 and rel.parts[1] == "operations"):
+        issues.append(
+            CheckIssue(
+                "manifest-invalid",
+                _rel(config.root, config.vault / ".manifest.json"),
+                _scrub(config.root, exc),
+            )
+        )
+        return None, []
+    return store, entries
+
+
+def _source_files(store: ShardedManifest) -> dict[str, Path]:
+    current: dict[str, Path] = {}
+    if not _ordinary_directory(store.source_root):
+        return current
+    for path in sorted(store.source_root.rglob("*")):
+        if not _ordinary_file(path) or _has_symlink_component(store.source_root, path):
+            continue
+        relative = path.relative_to(store.source_root)
+        if any(part.startswith(".") for part in relative.parts) or path.name == ".gitkeep":
+            continue
+        current[store.source_id(path)] = path
+    return current
+
+
+def _is_lfs_pointer(path: Path) -> bool:
+    try:
+        with path.open("rb") as source:
+            return source.read(len(_LFS_SIGNATURE)) == _LFS_SIGNATURE
+    except OSError:
+        return False
+
+
+def _check_sources(
+    store: ShardedManifest,
+    entries: list[ManifestEntry],
+    issues: list[CheckIssue],
+) -> None:
+    tracked = {entry.source_id: entry for entry in entries}
+    current = _source_files(store)
+    for source_id, path in sorted(current.items()):
+        entry = tracked.get(source_id)
+        lfs_pointer = _is_lfs_pointer(path)
+        if lfs_pointer:
+            issues.append(
+                CheckIssue(
+                    "unsupported-git-lfs-pointer",
+                    source_id,
+                    "Git LFS pointer is not authoritative source content",
+                )
+            )
+            continue
+        if entry is None:
+            issues.append(
+                CheckIssue("source-new", source_id, "source is not present in the manifest")
+            )
             continue
         try:
-            fm = parse_frontmatter(page.read_text(encoding="utf-8"))
-        except (OSError, FrontmatterError) as exc:
-            issues.append(CheckIssue("frontmatter-invalid", _rel(root, page), str(exc)))
+            current_hash = f"sha256:{compute_hash(path)}"
+        except OSError as exc:
+            issues.append(
+                CheckIssue("source-invalid", source_id, _scrub(store.config.root, exc))
+            )
             continue
-        missing = sorted(required - set(fm.scalars) - set(fm.lists))
+        if entry.content_hash != current_hash:
+            issues.append(
+                CheckIssue("source-stale", source_id, "source content differs from the manifest")
+            )
+    for source_id in sorted(set(tracked) - set(current)):
+        issues.append(
+            CheckIssue("source-orphaned", source_id, "manifest source does not exist")
+        )
+
+
+def _knowledge_pages(config: PortableConfig) -> list[Path]:
+    pages: list[Path] = []
+    for category in _KNOWLEDGE_CATEGORIES:
+        category_root = config.vault / category
+        if not _ordinary_directory(category_root):
+            continue
+        for page in sorted(category_root.rglob("*.md")):
+            relative = page.relative_to(config.vault)
+            if relative.parts[:2] == ("journal", "operations"):
+                continue
+            pages.append(page)
+    return sorted(set(pages))
+
+
+def _source_is_absolute(source_id: str) -> bool:
+    posix = PurePosixPath(source_id)
+    windows = PureWindowsPath(source_id)
+    return posix.is_absolute() or windows.is_absolute() or bool(windows.drive)
+
+
+def _check_pages(
+    config: PortableConfig,
+    store: ShardedManifest | None,
+    entries: list[ManifestEntry],
+    issues: list[CheckIssue],
+) -> None:
+    entries_by_id = {entry.source_id: entry for entry in entries}
+    page_sources: dict[str, tuple[str, ...]] = {}
+
+    for page in _knowledge_pages(config):
+        repo_path = _rel(config.root, page)
+        vault_path = page.relative_to(config.vault).as_posix()
+        if not _ordinary_file(page) or _has_symlink_component(config.vault, page):
+            issues.append(
+                CheckIssue(
+                    "knowledge-page-invalid",
+                    repo_path,
+                    "knowledge page must be an ordinary contained file",
+                )
+            )
+            continue
+        try:
+            parsed = parse_frontmatter(page.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, FrontmatterError) as exc:
+            issues.append(
+                CheckIssue("frontmatter-invalid", repo_path, _scrub(config.root, exc))
+            )
+            continue
+        fields = set(parsed.scalars) | set(parsed.lists)
+        missing = sorted(_REQUIRED_FIELDS - fields)
         if missing:
-            issues.append(CheckIssue("frontmatter-missing", _rel(root, page), "missing: " + ", ".join(missing)))
-        for source in fm.lists.get("sources", ()):
-            if Path(source).is_absolute():
-                issues.append(CheckIssue("absolute-page-source", _rel(root, page), "page source must be repository-relative"))
-    try:
-        proc = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, text=False, timeout=10)
-        if proc.returncode == 0:
-            tracked = proc.stdout.decode().split("\0")
-            for path in tracked:
-                if path == "wiki/hot.md" or path.startswith(".obsidian-wiki/local/") or "/.locks/" in path or "/.snapshots/" in path or "/.transactions/" in path:
-                    issues.append(CheckIssue("tracked-local-state", path, "mutable local state must not be tracked"))
+            issues.append(
+                CheckIssue(
+                    "frontmatter-missing",
+                    repo_path,
+                    "missing: " + ", ".join(missing),
+                )
+            )
+        if "sources" in parsed.scalars:
+            issues.append(
+                CheckIssue(
+                    "frontmatter-invalid",
+                    repo_path,
+                    "sources must be a list of portable Source IDs",
+                )
+            )
+            sources: tuple[str, ...] = ()
         else:
-            issues.append(CheckIssue("git-unavailable", ".", "Git worktree is unavailable", "warning"))
-    except OSError:
-        issues.append(CheckIssue("git-unavailable", ".", "Git is unavailable", "warning"))
-    issues.sort(key=lambda x: (x.severity, x.code, x.path, x.message))
-    errors = sum(i.severity == "error" for i in issues)
-    warnings = sum(i.severity == "warning" for i in issues)
-    return {"status": "fail" if errors else ("warn" if warnings else "pass"), "errors": errors, "warnings": warnings, "issues": [asdict(i) for i in issues]}
+            sources = parsed.lists.get("sources", ())
+        page_sources[vault_path] = sources
+        if store is None:
+            continue
+        for source_id in sources:
+            if _source_is_absolute(source_id):
+                issues.append(
+                    CheckIssue(
+                        "absolute-page-source",
+                        repo_path,
+                        "page source must be repository-relative",
+                    )
+                )
+                continue
+            try:
+                store.source_path(source_id)
+            except ManifestError:
+                prefix = _rel(config.root, store.source_root)
+                code = (
+                    "page-source-outside-root"
+                    if source_id != prefix and not source_id.startswith(prefix + "/")
+                    else "page-source-invalid"
+                )
+                issues.append(
+                    CheckIssue(
+                        code,
+                        repo_path,
+                        f"invalid portable Source ID: {source_id}",
+                    )
+                )
+                continue
+            entry = entries_by_id.get(source_id)
+            if entry is None:
+                issues.append(
+                    CheckIssue(
+                        "page-source-unknown",
+                        repo_path,
+                        f"page source has no manifest entry: {source_id}",
+                    )
+                )
+            elif vault_path not in entry.pages:
+                issues.append(
+                    CheckIssue(
+                        "page-manifest-edge-missing",
+                        repo_path,
+                        f"manifest entry does not list this page: {source_id}",
+                    )
+                )
+
+    for entry in entries:
+        for page_name in entry.pages:
+            page = _safe_page_path(config, page_name)
+            repo_path = (
+                _rel(config.root, config.vault / page_name)
+                if page is not None
+                else _rel(config.root, config.vault)
+            )
+            if page is None:
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-invalid",
+                        repo_path,
+                        f"unsafe manifest page path: {page_name}",
+                    )
+                )
+                continue
+            if not page.exists() and not page.is_symlink():
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-missing",
+                        repo_path,
+                        "manifest page does not exist",
+                    )
+                )
+                continue
+            if not _ordinary_file(page) or _has_symlink_component(config.vault, page):
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-invalid",
+                        repo_path,
+                        "manifest page must be an ordinary contained file",
+                    )
+                )
+                continue
+            if entry.source_id not in page_sources.get(page_name, ()):
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-source-missing",
+                        repo_path,
+                        f"page does not list manifest source: {entry.source_id}",
+                    )
+                )
+
+
+def _lint_path(config: PortableConfig, page: str) -> str:
+    return _rel(config.root, config.vault / PurePosixPath(page))
+
+
+def _operation_finding(finding: object) -> bool:
+    if not isinstance(finding, dict):
+        return False
+    page = finding.get("page")
+    return isinstance(page, str) and (
+        page == "journal/operations" or page.startswith("journal/operations/")
+    )
+
+
+def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    try:
+        report = lint_vault(
+            config.vault,
+            require_trust_ledger=False,
+            strict_trust=False,
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        issues.append(CheckIssue("lint-invalid", ".", _scrub(config.root, exc)))
+        return
+    findings = report.get("findings", {})
+    if not isinstance(findings, dict):
+        issues.append(CheckIssue("lint-invalid", ".", "lint returned invalid findings"))
+        return
+    for finding in findings.get("broken_links", []):
+        if _operation_finding(finding) or not isinstance(finding, dict):
+            continue
+        page = finding.get("page", ".")
+        target = finding.get("target", "")
+        path = _lint_path(config, page) if isinstance(page, str) else "."
+        issues.append(
+            CheckIssue("lint-broken-link", path, f"broken link target: {target}")
+        )
+    for finding in findings.get("missing_frontmatter", []):
+        if _operation_finding(finding) or not isinstance(finding, dict):
+            continue
+        page = finding.get("page", ".")
+        missing = finding.get("missing", [])
+        path = _lint_path(config, page) if isinstance(page, str) else "."
+        detail = ", ".join(str(item) for item in missing)
+        issues.append(
+            CheckIssue("lint-missing-frontmatter", path, f"missing: {detail}")
+        )
+    for finding in findings.get("trust_metadata_errors", []):
+        if _operation_finding(finding) or not isinstance(finding, dict):
+            continue
+        page = finding.get("page", ".")
+        detail = finding.get("issue", "invalid trust metadata")
+        path = _lint_path(config, page) if isinstance(page, str) else "."
+        issues.append(
+            CheckIssue(
+                "lint-trust-metadata", path, _scrub(config.root, detail)
+            )
+        )
+
+
+def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(config.root), "ls-files", "-z"],
+            capture_output=True,
+            text=False,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("not a Git worktree")
+        tracked = result.stdout.decode("utf-8").split("\0")
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, UnicodeDecodeError):
+        issues.append(
+            CheckIssue(
+                "git-unavailable",
+                ".",
+                "Git is unavailable or the repository is not a worktree",
+                "warning",
+            )
+        )
+        return
+    hot = _rel(config.root, config.vault / "hot.md")
+    local = _rel(config.root, config.local_state)
+    canonical_local = ".obsidian-wiki/local"
+    for path in sorted(item for item in tracked if item):
+        parts = PurePosixPath(path).parts
+        if (
+            path == hot
+            or path == local
+            or path.startswith(local + "/")
+            or path == canonical_local
+            or path.startswith(canonical_local + "/")
+            or any(part in {".locks", ".snapshots", ".transactions"} for part in parts)
+        ):
+            issues.append(
+                CheckIssue(
+                    "tracked-local-state",
+                    path,
+                    "mutable local state must not be tracked",
+                )
+            )
+
+
+def _canonical_skill_names(config: PortableConfig) -> tuple[str, ...]:
+    if not _ordinary_directory(config.skills) or _has_symlink_component(
+        config.root, config.skills
+    ):
+        raise ValueError("canonical skills path must be an ordinary directory")
+    names: list[str] = []
+    for child in sorted(config.skills.iterdir(), key=lambda item: item.name):
+        if not _ordinary_directory(child) or child.is_symlink():
+            if (child / "SKILL.md").exists():
+                raise ValueError(f"canonical skill directory is unsafe: {child.name}")
+            continue
+        skill_file = child / "SKILL.md"
+        if skill_file.exists() or skill_file.is_symlink():
+            if not _ordinary_file(skill_file) or _has_symlink_component(
+                config.skills, skill_file
+            ):
+                raise ValueError(f"canonical SKILL.md is unsafe: {child.name}")
+            names.append(child.name)
+    return tuple(names)
+
+
+def _inventory_names(
+    config: PortableConfig, canonical_names: tuple[str, ...]
+) -> tuple[str, ...]:
+    path = config.root / MANAGED_SKILLS_INVENTORY
+    if not _ordinary_file(path) or _has_symlink_component(config.root, path):
+        raise ValueError("managed-skills.json must be an ordinary contained file")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"managed-skills.json is invalid: {exc}") from exc
+    expected_fields = {"implementation", "skills", "skills_version"}
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise ValueError("managed-skills.json has invalid fields")
+    if payload["implementation"] != IMPLEMENTATION_ID:
+        raise ValueError("managed-skills.json has the wrong implementation")
+    raw_version = payload["skills_version"]
+    if not isinstance(raw_version, str):
+        raise ValueError("managed-skills.json skills_version must be a valid version")
+    try:
+        skills_version = Version(raw_version)
+        required = SpecifierSet(config.requires_cli)
+    except (InvalidVersion, InvalidSpecifier) as exc:
+        raise ValueError("managed-skills.json has an invalid version") from exc
+    if not required.contains(skills_version, prereleases=True):
+        raise ValueError(
+            "managed-skills.json skills_version is not accepted by requires_cli"
+        )
+    skills = payload["skills"]
+    if (
+        not isinstance(skills, list)
+        or any(not isinstance(name, str) for name in skills)
+        or skills != sorted(set(skills))
+    ):
+        raise ValueError("managed-skills.json skills must be unique sorted strings")
+    if tuple(skills) != canonical_names:
+        raise ValueError("managed-skills.json names do not match canonical skills")
+    return tuple(skills)
+
+
+def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    try:
+        canonical_names = _canonical_skill_names(config)
+        names = _inventory_names(config, canonical_names)
+    except ValueError as exc:
+        issues.append(
+            CheckIssue(
+                "managed-skills-invalid",
+                MANAGED_SKILLS_INVENTORY,
+                _scrub(config.root, exc),
+            )
+        )
+        try:
+            names = _canonical_skill_names(config)
+        except ValueError:
+            names = ()
+    for name in names:
+        for agent_relative, _label in PROJECT_AGENT_DIRS:
+            adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
+            adapter = config.root.joinpath(*adapter_relative.parts)
+            issue_path = adapter_relative.as_posix()
+            if not _ordinary_file(adapter) or _has_symlink_component(config.root, adapter):
+                issues.append(
+                    CheckIssue(
+                        "managed-adapter-invalid",
+                        issue_path,
+                        "managed adapter must be an ordinary relative adapter",
+                    )
+                )
+                continue
+            canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+            relative_target = posixpath.relpath(
+                canonical_relative.as_posix(), adapter_relative.parent.as_posix()
+            )
+            expected = _adapter_text(name, relative_target)
+            try:
+                actual = adapter.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                actual = ""
+            if actual != expected:
+                issues.append(
+                    CheckIssue(
+                        "managed-adapter-invalid",
+                        issue_path,
+                        "managed adapter content is stale or not relative",
+                    )
+                )
+
+
+def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    targets: list[tuple[str, str]] = [
+        ("AGENTS.md", _PORTABLE_AGENT_INSTRUCTIONS),
+        *(
+            (relative, _bootstrap_body(reference))
+            for relative, reference in _BOOTSTRAP_REFERENCES.items()
+        ),
+    ]
+    for relative, expected_body in targets:
+        path = config.root / relative
+        if not _ordinary_file(path) or _has_symlink_component(config.root, path):
+            issues.append(
+                CheckIssue(
+                    "managed-bootstrap-invalid",
+                    relative,
+                    "managed bootstrap must be an ordinary contained file",
+                )
+            )
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        if text.count(MANAGED_START) != 1 or text.count(MANAGED_END) != 1:
+            issues.append(
+                CheckIssue(
+                    "managed-bootstrap-invalid",
+                    relative,
+                    "managed bootstrap must contain exactly one marker pair",
+                )
+            )
+            continue
+        start = text.index(MANAGED_START)
+        end = text.index(MANAGED_END)
+        if end < start:
+            issues.append(
+                CheckIssue(
+                    "managed-bootstrap-invalid",
+                    relative,
+                    "managed bootstrap marker order is invalid",
+                )
+            )
+            continue
+        managed = text[start + len(MANAGED_START) : end]
+        expected = "\n" + expected_body.rstrip() + "\n"
+        if managed != expected:
+            issues.append(
+                CheckIssue(
+                    "managed-bootstrap-invalid",
+                    relative,
+                    "managed bootstrap region is stale",
+                )
+            )
+
+
+def _check_stable_views(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    for name, expected in (("index.md", _INDEX), ("log.md", _LOG)):
+        path = config.vault / name
+        try:
+            actual = path.read_text(encoding="utf-8") if _ordinary_file(path) else None
+        except (OSError, UnicodeDecodeError):
+            actual = None
+        if actual != expected or _has_symlink_component(config.vault, path):
+            issues.append(
+                CheckIssue(
+                    "stable-view-modified",
+                    _rel(config.root, path),
+                    "portable stable view differs from its canonical template",
+                )
+            )
+
+
+def check_portable_repo(config: PortableConfig) -> dict[str, object]:
+    """Validate a portable repository deterministically without writing to it."""
+    issues: list[CheckIssue] = []
+    loaded = _reload_config(config, issues)
+    if loaded is None:
+        return _report(issues)
+
+    store, entries = _load_manifest(loaded, issues)
+    if store is not None:
+        _check_sources(store, entries, issues)
+    _check_pages(loaded, store, entries, issues)
+    _check_lint(loaded, issues)
+    _check_git(loaded, issues)
+    _check_managed_skills(loaded, issues)
+    _check_bootstrap(loaded, issues)
+    _check_stable_views(loaded, issues)
+    return _report(issues)

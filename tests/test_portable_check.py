@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
+from obsidian_wiki import IMPLEMENTATION_ID, __version__
+from obsidian_wiki.cli import skills_dir
+from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
+from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
+from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
+from obsidian_wiki.portable_manifest import ShardedManifest
 
 
 def test_parse_block_sources_and_required_fields() -> None:
@@ -211,3 +223,491 @@ def test_missing_closing_delimiters_are_rejected() -> None:
 def test_missing_frontmatter_is_rejected() -> None:
     with pytest.raises(FrontmatterError, match="frontmatter"):
         parse_frontmatter("# No metadata\n")
+
+
+def valid_repo(tmp_path: Path, name: str = "knowledge"):
+    root = tmp_path / name
+    setup_portable_repo(root, version=__version__, source_skills=skills_dir())
+    config_path = root / ".obsidian-wiki/config.toml"
+    config = load_portable_config(
+        config_path,
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    source = root / "sources/a.md"
+    source.write_text("authoritative source", encoding="utf-8")
+    page = root / "wiki/concepts/a.md"
+    page.write_text(
+        """---
+title: A
+category: concepts
+tags:
+  - example
+sources:
+  - sources/a.md
+created: 2026-08-07
+updated: 2026-08-07
+summary: A compiled example.
+---
+# A
+""",
+        encoding="utf-8",
+    )
+    store = ShardedManifest(config)
+    store.upsert(
+        source,
+        pages=["concepts/a.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    subprocess.run(
+        ["git", "init", "-q", str(root)], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", "."], check=True, capture_output=True
+    )
+    return root, config, source, page, store.entry_path("sources/a.md")
+
+
+def issue_codes(report: dict[str, object]) -> set[str]:
+    return {issue["code"] for issue in report["issues"]}
+
+
+def issues_with_code(report: dict[str, object], code: str) -> list[dict[str, str]]:
+    return [issue for issue in report["issues"] if issue["code"] == code]
+
+
+def test_check_issue_contract_is_exact() -> None:
+    issue = CheckIssue("example", ".", "message", "warning")
+    assert (issue.code, issue.path, issue.message, issue.severity) == (
+        "example",
+        ".",
+        "message",
+        "warning",
+    )
+
+
+def test_valid_portable_repo_passes(tmp_path: Path) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+
+    assert check_portable_repo(config) == {
+        "status": "pass",
+        "errors": 0,
+        "warnings": 0,
+        "issues": [],
+    }
+
+
+def test_check_is_read_only(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+
+    def snapshot() -> tuple[tuple[str, str, bytes | str], ...]:
+        result: list[tuple[str, str, bytes | str]] = []
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root)
+            if relative.parts[0] == ".git":
+                continue
+            if path.is_symlink():
+                result.append((relative.as_posix(), "symlink", os.readlink(path)))
+            elif path.is_file():
+                result.append((relative.as_posix(), "file", path.read_bytes()))
+            elif path.is_dir():
+                result.append((relative.as_posix(), "directory", b""))
+        return tuple(result)
+
+    before = snapshot()
+    check_portable_repo(config)
+    assert snapshot() == before
+
+
+def test_changed_source_is_an_error(tmp_path: Path) -> None:
+    _, config, source, _, _ = valid_repo(tmp_path)
+    source.write_text("changed", encoding="utf-8")
+
+    assert "source-stale" in issue_codes(check_portable_repo(config))
+
+
+def test_new_and_orphaned_sources_are_errors(tmp_path: Path) -> None:
+    root, config, source, _, _ = valid_repo(tmp_path)
+    (root / "sources/new.md").write_text("new", encoding="utf-8")
+    source.unlink()
+
+    codes = issue_codes(check_portable_repo(config))
+    assert {"source-new", "source-orphaned"} <= codes
+
+
+def test_git_lfs_pointer_replaces_stale_source_error(tmp_path: Path) -> None:
+    _, config, source, _, _ = valid_repo(tmp_path)
+    source.write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:0123456789abcdef\n"
+        "size 42\n",
+        encoding="utf-8",
+    )
+
+    report = check_portable_repo(config)
+    assert "unsupported-git-lfs-pointer" in issue_codes(report)
+    assert "source-stale" not in issue_codes(report)
+
+
+def test_absolute_page_source_is_an_error(tmp_path: Path) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace("sources/a.md", "/tmp/a.md"),
+        encoding="utf-8",
+    )
+
+    assert "absolute-page-source" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize(
+    ("source_id", "expected"),
+    [
+        ("other/a.md", "page-source-outside-root"),
+        ("sources/missing.md", "page-source-unknown"),
+    ],
+)
+def test_page_sources_must_be_known_ids_below_configured_root(
+    tmp_path: Path, source_id: str, expected: str
+) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace("sources/a.md", source_id),
+        encoding="utf-8",
+    )
+
+    assert expected in issue_codes(check_portable_repo(config))
+
+
+def test_missing_manifest_page_is_an_error(tmp_path: Path) -> None:
+    _, config, _, _, entry_path = valid_repo(tmp_path)
+    entry_path.write_text(
+        entry_path.read_text(encoding="utf-8").replace(
+            "concepts/a.md", "concepts/missing.md"
+        ),
+        encoding="utf-8",
+    )
+
+    assert "manifest-page-missing" in issue_codes(check_portable_repo(config))
+
+
+def test_manifest_to_page_edge_must_be_declared_by_page(tmp_path: Path) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "sources:\n  - sources/a.md", "sources: []"
+        ),
+        encoding="utf-8",
+    )
+
+    assert "manifest-page-source-missing" in issue_codes(check_portable_repo(config))
+
+
+def test_page_to_manifest_edge_must_be_declared_by_shard(tmp_path: Path) -> None:
+    _, config, _, _, entry_path = valid_repo(tmp_path)
+    payload = json.loads(entry_path.read_text(encoding="utf-8"))
+    payload["pages"] = []
+    entry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert "page-manifest-edge-missing" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["concepts", "entities", "skills", "references", "synthesis", "journal", "projects"],
+)
+def test_knowledge_pages_require_all_six_fields(tmp_path: Path, category: str) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    page = root / "wiki" / category / "incomplete.md"
+    page.write_text("---\ntitle: Incomplete\n---\n", encoding="utf-8")
+
+    assert "frontmatter-missing" in issue_codes(check_portable_repo(config))
+
+
+def test_operation_journal_is_filtered_from_page_and_lint_validation(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    operation = root / "wiki/journal/operations/removed.md"
+    operation.write_text("# Removed\n\n[[No longer present]]\n", encoding="utf-8")
+
+    report = check_portable_repo(config)
+    assert not any(
+        issue["path"] == "wiki/journal/operations/removed.md"
+        for issue in report["issues"]
+    )
+
+
+def test_fail_level_lint_findings_become_errors(tmp_path: Path) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8") + "\n[[Missing target]]\n", encoding="utf-8")
+
+    report = check_portable_repo(config)
+    assert issues_with_code(report, "lint-broken-link") == [
+        {
+            "code": "lint-broken-link",
+            "path": "wiki/concepts/a.md",
+            "message": "broken link target: missing-target",
+            "severity": "error",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "stale",
+        "absolute",
+        "symlink",
+    ],
+)
+def test_managed_adapters_are_exact_relative_ordinary_files(
+    tmp_path: Path, mutation: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
+    if mutation == "missing":
+        adapter.unlink()
+    elif mutation == "stale":
+        adapter.write_text("# wrong target\n", encoding="utf-8")
+    elif mutation == "absolute":
+        adapter.write_text("Read `/tmp/.skills/wiki-ingest/SKILL.md`\n", encoding="utf-8")
+    else:
+        adapter.unlink()
+        adapter.symlink_to(root / ".skills/wiki-ingest/SKILL.md")
+
+    assert "managed-adapter-invalid" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize("field", ["implementation", "skills_version", "skills"])
+def test_managed_inventory_validates_implementation_version_and_names(
+    tmp_path: Path, field: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    payload = json.loads(inventory.read_text(encoding="utf-8"))
+    if field == "implementation":
+        payload[field] = "wrong/implementation"
+    elif field == "skills_version":
+        payload[field] = "not a version"
+    else:
+        payload[field] = payload[field][1:]
+    inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert "managed-skills-invalid" in issue_codes(check_portable_repo(config))
+
+
+def test_managed_inventory_version_must_satisfy_repository_range(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    payload = json.loads(inventory.read_text(encoding="utf-8"))
+    payload["skills_version"] = "1.0.0"
+    inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert "managed-skills-invalid" in issue_codes(check_portable_repo(config))
+
+
+def test_bootstrap_owner_text_outside_managed_region_is_allowed(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    bootstrap = root / "AGENTS.md"
+    bootstrap.write_text(
+        "Owner preface\n" + bootstrap.read_text(encoding="utf-8") + "Owner epilogue\n",
+        encoding="utf-8",
+    )
+
+    assert check_portable_repo(config)["status"] == "pass"
+
+
+@pytest.mark.parametrize("mutation", ["duplicate-start", "missing-end", "stale"])
+def test_bootstrap_managed_region_must_be_well_formed_and_current(
+    tmp_path: Path, mutation: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    bootstrap = root / "CLAUDE.md"
+    text = bootstrap.read_text(encoding="utf-8")
+    if mutation == "duplicate-start":
+        text = text.replace(MANAGED_START, MANAGED_START + "\n" + MANAGED_START)
+    elif mutation == "missing-end":
+        text = text.replace(MANAGED_END, "")
+    else:
+        text = text.replace("Read and follow `AGENTS.md`", "Read stale instructions")
+    bootstrap.write_text(text, encoding="utf-8")
+
+    assert "managed-bootstrap-invalid" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize("name", ["index.md", "log.md"])
+def test_stable_views_must_match_portable_templates(tmp_path: Path, name: str) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    (root / "wiki" / name).write_text("# Hand-maintained list\n", encoding="utf-8")
+
+    assert "stable-view-modified" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "wiki/hot.md",
+        ".obsidian-wiki/local/cache.json",
+        "wiki/.locks/write.lock",
+        "wiki/.snapshots/one.json",
+        "wiki/.transactions/one.json",
+    ],
+)
+def test_mutable_local_state_must_not_be_tracked(tmp_path: Path, relative: str) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("local", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-f", relative],
+        check=True,
+        capture_output=True,
+    )
+
+    assert "tracked-local-state" in issue_codes(check_portable_repo(config))
+
+
+def test_fixed_local_state_is_rejected_when_configured_local_path_changes(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    config_path = root / ".obsidian-wiki/config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'local_state = ".obsidian-wiki/local"',
+            'local_state = ".obsidian-wiki/runtime"',
+        ),
+        encoding="utf-8",
+    )
+    local = root / ".obsidian-wiki/local/cache.json"
+    local.write_text("local", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "-f", ".obsidian-wiki/local/cache.json"],
+        check=True,
+        capture_output=True,
+    )
+
+    assert "tracked-local-state" in issue_codes(check_portable_repo(config))
+
+
+def test_malformed_marker_and_config_are_reported_without_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    (root / "wiki/.manifest.json").write_text("{}\n", encoding="utf-8")
+    report = check_portable_repo(config)
+
+    assert "manifest-invalid" in issue_codes(report)
+    assert str(root) not in json.dumps(report)
+
+    config_path = root / ".obsidian-wiki/config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            f'implementation = "{IMPLEMENTATION_ID}"',
+            'implementation = "wrong/implementation"',
+        ),
+        encoding="utf-8",
+    )
+    report = check_portable_repo(config)
+    assert "config-invalid" in issue_codes(report)
+    assert str(root) not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("content_hash", "sha256:bad"),
+        ("compiled_at", 123),
+        ("pages", ["concepts/../a.md"]),
+        ("pages", ["concepts/a.md", "concepts/a.md"]),
+        ("pages", ["references/b.md", "concepts/a.md"]),
+    ],
+)
+def test_malformed_shards_fail_closed(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    _, config, _, _, entry_path = valid_repo(tmp_path)
+    payload = json.loads(entry_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    entry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert "manifest-invalid" in issue_codes(check_portable_repo(config))
+
+
+def test_reports_are_clone_independent(tmp_path: Path) -> None:
+    first_root, first_config, _, _, first_entry = valid_repo(tmp_path, "first")
+    second_root, second_config, _, _, second_entry = valid_repo(tmp_path, "second")
+    for entry in (first_entry, second_entry):
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        payload["content_hash"] = "invalid"
+        entry.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    first = check_portable_repo(first_config)
+    second = check_portable_repo(second_config)
+    assert first == second
+    serialized = json.dumps(first)
+    assert str(first_root) not in serialized
+    assert str(second_root) not in serialized
+
+
+def _run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_cli_check_json_from_nested_source_is_nonzero_when_stale(tmp_path: Path) -> None:
+    root, _, source, _, _ = valid_repo(tmp_path)
+    nested = root / "sources/nested"
+    nested.mkdir()
+    source.write_text("changed", encoding="utf-8")
+
+    proc = _run_cli(tmp_path / "home", nested, "check", "--json", "--pretty")
+
+    assert proc.returncode == 1
+    report = json.loads(proc.stdout)
+    assert "source-stale" in issue_codes(report)
+
+
+def test_cli_check_wrong_implementation_never_falls_back_to_global(
+    tmp_path: Path,
+) -> None:
+    root, _, _, _, _ = valid_repo(tmp_path)
+    config = root / ".obsidian-wiki/config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            IMPLEMENTATION_ID, "wrong/implementation"
+        ),
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    global_vault = tmp_path / "global-vault"
+    global_vault.mkdir()
+    global_config = home / ".obsidian-wiki/config"
+    global_config.parent.mkdir(parents=True)
+    global_config.write_text(
+        f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
+    )
+
+    proc = _run_cli(home, root / "sources", "check", "--json")
+
+    assert proc.returncode == 1
+    assert "implementation" in proc.stderr
+    assert str(global_vault) not in proc.stdout + proc.stderr
+
+
+def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+
+    proc = _run_cli(home, project, "check", "--json")
+
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert proc.stderr.strip() == "error: check requires a portable repository"

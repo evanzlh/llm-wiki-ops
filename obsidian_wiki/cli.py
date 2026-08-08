@@ -33,6 +33,7 @@ from obsidian_wiki.config import (
 )
 from obsidian_wiki.portable import (
     _BOOTSTRAP_REFERENCES,
+    MANIFEST_MARKER,
     MANAGED_SKILLS_INVENTORY,
     PROJECT_AGENT_DIRS,
     _adapter_text,
@@ -703,11 +704,30 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
         manifest = json.loads(core_files[-1].read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"portable manifest is invalid: {exc}") from exc
-    if not isinstance(manifest, dict):
-        raise ValueError("portable manifest must contain a JSON object")
+    if manifest != MANIFEST_MARKER:
+        raise ValueError("portable manifest must be the canonical v2 sharded marker")
+    entries_root = portable.vault / ".manifest/sources"
+    shard_count = 0
+    if entries_root.exists() or entries_root.is_symlink():
+        _assert_directory(portable.root, entries_root, "manifest shard root")
+        for directory, dirnames, filenames in os.walk(entries_root, followlinks=False):
+            current = Path(directory)
+            for name in (*dirnames, *filenames):
+                entry = current / name
+                metadata = entry.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise ValueError(f"portable manifest shard tree contains a symlink: {entry}")
+            for name in filenames:
+                path = current / name
+                if not name.endswith(".json") or not stat.S_ISREG(path.lstat().st_mode):
+                    raise ValueError(
+                        "portable manifest shard must be an ordinary JSON file: "
+                        f"{path}"
+                    )
+                shard_count += 1
     return (
         f"vault={portable.vault}; sources={len(portable.sources)}; "
-        "core files and fixed bootstrap files are valid"
+        f"manifest shards={shard_count}; core files and fixed bootstrap files are valid"
     )
 
 
@@ -1441,8 +1461,17 @@ def cmd_cache_hash(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    runtime = _resolve_runtime()
+    portable_candidate = _nearest_portable_config()
+    resolution_errors: list[ConfigError] = []
+    runtime = _resolve_runtime(error_sink=resolution_errors)
     if runtime is None:
+        if portable_candidate is not None and resolution_errors:
+            print(
+                f"error: {_runtime_error_detail(resolution_errors[0])}",
+                file=sys.stderr,
+            )
+        else:
+            print("error: check requires a portable repository", file=sys.stderr)
         return 1
     if runtime.portable is None:
         print("error: check requires a portable repository", file=sys.stderr)
@@ -2324,7 +2353,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # Warn about stale installs on every command except `setup` (which fixes it)
     # and `info` (which calls _check_stale itself with richer output).
-    if getattr(args, "command", None) not in ("setup", "repo", "info", "doctor", None):
+    if getattr(args, "command", None) not in (
+        "setup",
+        "repo",
+        "info",
+        "doctor",
+        "check",
+        None,
+    ):
         _check_stale()
     try:
         return args.func(args)
