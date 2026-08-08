@@ -83,14 +83,29 @@ def _open_windows_directory_handle(path: Path) -> int:
         wintypes.HANDLE,
     ]
     create_file.restype = wintypes.HANDLE
-    share_read_write = 0x00000001 | 0x00000002
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("last_access_time", wintypes.FILETIME),
+            ("last_write_time", wintypes.FILETIME),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    share_read = 0x00000001
     open_existing = 3
     backup_semantics = 0x02000000
     open_reparse_point = 0x00200000
     handle = create_file(
         str(path),
         0,
-        share_read_write,
+        share_read,
         None,
         open_existing,
         backup_semantics | open_reparse_point,
@@ -102,6 +117,28 @@ def _open_windows_directory_handle(path: Path) -> int:
         error = ctypes.get_last_error()
         raise LocalStateError(
             f"cannot guard Windows directory against replacement: {path} ({error})"
+        )
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    get_information.restype = wintypes.BOOL
+    information = ByHandleFileInformation()
+    if not get_information(handle, ctypes.byref(information)):
+        error = ctypes.get_last_error()
+        _close_windows_handles([int(handle_value)])
+        raise LocalStateError(
+            f"cannot inspect guarded Windows directory: {path} ({error})"
+        )
+    directory_attribute = 0x00000010
+    reparse_attribute = 0x00000400
+    if not information.file_attributes & directory_attribute or (
+        information.file_attributes & reparse_attribute
+    ):
+        _close_windows_handles([int(handle_value)])
+        raise LocalStateError(
+            f"guarded Windows path must be an ordinary directory: {path}"
         )
     try:
         _require_ordinary_directory(path, "guarded Windows directory")
@@ -694,6 +731,16 @@ def _restore_mismatched_hot_path(
     source = -1
     target = -1
     try:
+        lexical = tombstone.lstat()
+        if (
+            not stat.S_ISREG(lexical.st_mode)
+            or stat.S_ISLNK(lexical.st_mode)
+            or _is_reparse(lexical)
+            or _identity(lexical) != expected
+        ):
+            raise LocalStateError(
+                "unsafe hot.md replacement was preserved in local state"
+            )
         source = os.open(tombstone, os.O_RDONLY)
         source_metadata = os.fstat(source)
         if (
@@ -734,6 +781,10 @@ def _restore_mismatched_hot_path(
 
 def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
     hot = config.vault / _HOT_NAME
+    if not _SUPPORTS_BOUND_DIRECTORIES and os.name != "nt":
+        raise LocalStateError(
+            "safe hot invalidation requires directory-relative filesystem operations"
+        )
     _ensure_local_state(config)
     tombstone = _invalidated_name()
     if _SUPPORTS_BOUND_DIRECTORIES:
@@ -781,10 +832,6 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
             if local_fd is not None:
                 os.close(local_fd)
 
-    if os.name != "nt":
-        raise LocalStateError(
-            "safe hot invalidation requires directory-relative filesystem operations"
-        )
     handles = _windows_directory_guard(config.root, (config.vault, config.local_state))
     try:
         vault_identities = _directory_identities(config.root, config.vault)
@@ -866,6 +913,10 @@ def _canonical_sidecar(payload: dict[str, str]) -> bytes:
 
 
 def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
+    if not _SUPPORTS_BOUND_DIRECTORIES and os.name != "nt":
+        raise LocalStateError(
+            "safe sidecar writes require directory-relative filesystem operations"
+        )
     local_state = _ensure_local_state(config)
     sidecar = local_state / _SIDECAR_NAME
     data = _canonical_sidecar(payload)
@@ -923,10 +974,6 @@ def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
                 os.close(descriptor)
             os.close(directory)
 
-    if os.name != "nt":
-        raise LocalStateError(
-            "safe sidecar writes require directory-relative filesystem operations"
-        )
     handles = _windows_directory_guard(config.root, (local_state,))
     try:
         identities = _directory_identities(config.root, local_state)
