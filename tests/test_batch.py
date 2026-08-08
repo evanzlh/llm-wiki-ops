@@ -447,6 +447,62 @@ class TestBatchPlanCLI:
         assert proc.returncode == 1
         assert "implementation" in proc.stderr
 
+    def test_v2_batch_plan_requires_portable_cwd_without_mutation(
+        self, portable_repo, tmp_path
+    ):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        from obsidian_wiki.cache import update_source
+
+        update_source(config.vault, source, portable=config)
+        before = {
+            path.relative_to(config.vault).as_posix(): path.read_bytes()
+            for path in sorted(config.vault.rglob("*"))
+            if path.is_file()
+            and (
+                path == config.vault / ".manifest.json"
+                or config.vault / ".manifest" in path.parents
+            )
+        }
+        outside = tmp_path / "outside"
+        home = tmp_path / "home"
+        outside.mkdir()
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "obsidian_wiki.cli",
+                "batch-plan",
+                str(config.vault),
+                str(config.sources[0]),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=outside,
+            env=env,
+        )
+
+        assert proc.returncode == 1
+        assert proc.stderr.strip().endswith(
+            "error: manifest v2 is portable-only; "
+            "run this command inside the portable repository"
+        )
+        assert "Traceback" not in proc.stderr
+        assert {
+            path.relative_to(config.vault).as_posix(): path.read_bytes()
+            for path in sorted(config.vault.rglob("*"))
+            if path.is_file()
+            and (
+                path == config.vault / ".manifest.json"
+                or config.vault / ".manifest" in path.parents
+            )
+        } == before
+
     def _run_portable(self, root, config, source_dir, *extra):
         home = root / "home"
         home.mkdir()

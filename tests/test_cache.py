@@ -291,6 +291,18 @@ class TestCacheCLI:
             capture_output=True, text=True,
         )
 
+    def _run_from(self, cwd: Path, home: Path, *args: str):
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        return subprocess.run(
+            [sys.executable, "-m", "obsidian_wiki.cli", *args],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            env=env,
+        )
+
     def test_cache_hash_file(self, src_file):
         proc = self._run("cache-hash", str(src_file))
         assert proc.returncode == 0
@@ -376,6 +388,71 @@ class TestCacheCLI:
         assert "implementation" in proc.stderr
         assert (config.vault / ".manifest.json").read_text(encoding="utf-8") == marker
         assert not (config.vault / ".manifest").exists()
+
+    @pytest.mark.parametrize("command", ["cache-check", "cache-update"])
+    def test_v2_cache_commands_require_portable_cwd_without_mutation(
+        self, portable_repo, tmp_path, command
+    ):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        update_source(config.vault, source, portable=config)
+        before = {
+            path.relative_to(config.vault).as_posix(): path.read_bytes()
+            for path in sorted(config.vault.rglob("*"))
+            if path.is_file()
+            and (
+                path == config.vault / ".manifest.json"
+                or config.vault / ".manifest" in path.parents
+            )
+        }
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        proc = self._run_from(
+            outside,
+            tmp_path / "home",
+            command,
+            str(config.vault),
+            str(source),
+        )
+
+        assert proc.returncode == 1
+        assert proc.stderr.strip().endswith(
+            "error: manifest v2 is portable-only; "
+            "run this command inside the portable repository"
+        )
+        assert "Traceback" not in proc.stderr
+        assert {
+            path.relative_to(config.vault).as_posix(): path.read_bytes()
+            for path in sorted(config.vault.rglob("*"))
+            if path.is_file()
+            and (
+                path == config.vault / ".manifest.json"
+                or config.vault / ".manifest" in path.parents
+            )
+        } == before
+
+    @pytest.mark.parametrize("command", ["cache-check", "cache-update"])
+    def test_portable_manifest_errors_exit_concisely(
+        self, portable_repo, tmp_path, command
+    ):
+        root, config = portable_repo
+        source = root / "sources" / "a.md"
+        source.write_text("a", encoding="utf-8")
+        (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+        proc = self._run_from(
+            config.sources[0],
+            tmp_path / "home",
+            command,
+            str(config.vault),
+            str(source),
+        )
+
+        assert proc.returncode == 1
+        assert "invalid manifest v2 marker" in proc.stderr
+        assert "Traceback" not in proc.stderr
 
     def test_cache_update_without_portable_config_keeps_v1(self, tmp_path):
         cwd = tmp_path / "work"

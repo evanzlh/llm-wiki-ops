@@ -362,6 +362,29 @@ def _portable_for_vault(vault: Path) -> PortableConfig | None:
     return runtime.portable if runtime.mode == "portable" and runtime.vault == vault else None
 
 
+def _manifest_context_for_vault(vault: Path) -> PortableConfig | None:
+    """Resolve cache context, refusing to treat an unresolved v2 marker as v1."""
+    portable = _portable_for_vault(vault)
+    if portable is not None:
+        return portable
+    try:
+        marker = json.loads((vault / ".manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        isinstance(marker, dict)
+        and marker.get("schema_version") == 2
+        and marker.get("storage") == "sharded"
+    ):
+        from obsidian_wiki.portable_manifest import ManifestError
+
+        raise ManifestError(
+            "manifest v2 is portable-only; "
+            "run this command inside the portable repository"
+        )
+    return None
+
+
 def _resolved_vault(runtime: ResolvedConfig) -> Path | None:
     if not runtime.vault.is_dir():
         print(f"error: vault not found: {runtime.vault}", file=sys.stderr)
@@ -1251,7 +1274,7 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     source_dir = Path(args.source_dir).expanduser().resolve()
     vault = Path(args.vault).expanduser().resolve()
     try:
-        portable = _portable_for_vault(vault)
+        portable = _manifest_context_for_vault(vault)
     except ConfigError as exc:
         print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
         return 1
@@ -1437,7 +1460,7 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
     vault = Path(args.vault).expanduser().resolve()
     sources = [Path(p).expanduser().resolve() for p in args.sources]
     try:
-        portable = _portable_for_vault(vault)
+        portable = _manifest_context_for_vault(vault)
     except ConfigError as exc:
         print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
         return 1
@@ -1455,7 +1478,7 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
     source = Path(args.source).expanduser().resolve()
     pages = args.pages or []
     try:
-        portable = _portable_for_vault(vault)
+        portable = _manifest_context_for_vault(vault)
     except ConfigError as exc:
         print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
         return 1
@@ -2356,6 +2379,8 @@ def _add_setup_args(sp: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from obsidian_wiki.portable_manifest import ManifestError
+
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     # No subcommand → default to `setup` (the common case).
@@ -2378,7 +2403,7 @@ def main(argv: list[str] | None = None) -> int:
         _check_stale()
     try:
         return args.func(args)
-    except (FileNotFoundError, RuntimeError) as exc:
+    except (FileNotFoundError, RuntimeError, ManifestError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
