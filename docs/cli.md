@@ -47,6 +47,84 @@ first-release CLI support boundary.
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
 
+## Portable transactions and local hot state
+
+These commands resolve the nearest Portable Repository config from the current
+directory. They fail outside portable mode and never invoke `git add`,
+`commit`, `push`, or pull-request APIs.
+
+| Command | What it does |
+|---|---|
+| `transaction begin --source PATH [PATH ...]` | Lock the repository, resolve actual authoritative sources, record preimages, and return a local `candidate_vault`. |
+| `transaction list` | List active and retained recovery transactions, including workspace and status. |
+| `transaction delete ID PAGE` | Declare removal of one safe vault-relative knowledge page. |
+| `transaction commit ID` | Validate and promote a reviewed active transaction. |
+| `transaction retry ID` | Retry a retained failed transaction after rechecking preimages. |
+| `transaction restore ID` | Restore recorded originals for interrupted `promoting`, failed, or completed work without overwriting later postimage drift. |
+| `transaction abort ID` | Abandon active or failed staged work and release its lock. |
+| `transaction discard ID` | Remove retained failed, completed, or restored recovery state after review. |
+| `hot status` | Report freshness and invalidate only stale local `hot.md`. |
+| `hot mark-current` | Record an agent-written `hot.md` against the current authoritative fingerprint. |
+
+A normal write looks like this:
+
+```bash
+obsidian-wiki transaction begin --source sources/design.md --json --pretty
+# Write final vault-relative pages only below the returned candidate_vault.
+obsidian-wiki transaction delete <id> concepts/obsolete.md --json
+obsidian-wiki transaction commit <id> --json --pretty
+```
+
+`begin --source` accepts one or more repository-relative paths or filesystem
+paths that resolve to ordinary files below the configured source root. The
+JSON result includes `transaction_id`, `candidate_vault`, `snapshots`,
+`source_ids`, and `status`. Candidate pages must use a supported knowledge
+category, required frontmatter, and a non-empty `sources` list drawn only from
+that transaction. Reserved central files and `journal/operations/**` cannot be
+agent candidates.
+
+Commit checks only affected output preimages. A dirty source worktree and
+unrelated edits are allowed. If an affected page or manifest shard drifted,
+commit fails without silently overwriting it and retains the workspace. Inspect
+it with `transaction list --json`, then deliberately `retry`, `restore`,
+`abort`, or `discard` according to its status. A completed transaction remains
+available for restore until discarded.
+
+Use the status/action matrix rather than guessing after a failure:
+
+| Status | Valid next action |
+|---|---|
+| `active` | Continue candidate review, declare deletions, then `commit`; or `abort`. |
+| `promoting` | An interrupted promotion; run `restore`. Do not retry, abort, or discard it. |
+| `failed` | Inspect retained state, then deliberately `retry`, `restore`, `abort`, or `discard`. |
+| `complete` | Keep for recovery, `restore` while postimages still match, or `discard`. |
+| `restored` | A second `restore` is a no-op; `discard` removes retained recovery state. |
+
+Every successful commit writes one immutable operation page last:
+
+```text
+<vault>/journal/operations/YYYY/MM/YYYYMMDDTHHMMSSZ-<random-hex>.md
+```
+
+It records Source IDs and the created, updated, and removed page paths.
+Ordinary portable transactions do not rewrite `<vault>/index.md`, `<vault>/log.md`,
+or `<vault>/hot.md`. Built-in status/query paths inspect pages, manifest shards,
+and operation entries directly, so `index.md` and `log.md` remain stable merge
+surfaces.
+
+Before a skill uses local semantic context, it runs:
+
+```bash
+obsidian-wiki hot status --json
+# If stale: regenerate ignored <vault>/hot.md from current pages and operations.
+obsidian-wiki hot mark-current --json
+```
+
+The fingerprint covers authoritative knowledge, manifest state, operations,
+and the current branch or detached HEAD. `hot status` deletes stale `hot.md`
+only; it never invents semantic content. Git diff and pull-request review are
+the portable content boundary, and publishing remains an explicit human step.
+
 ## Querying & linting
 
 | Command | What it does |
@@ -144,6 +222,11 @@ obsidian-wiki sync-setup https://github.com/you/my-wiki.git
 ```
 
 See [Configuration → Syncing your vault to GitHub](configuration.md#syncing-your-vault-to-github).
+
+These sync commands are for Personal-mode vault repositories. Portable
+repositories use the transaction commands above and a human-controlled branch
+and pull-request workflow. Do not run `sync` or `sync-setup` for a Portable
+Repository; transaction and hot-state commands never commit or push.
 
 ## Trust ledger
 

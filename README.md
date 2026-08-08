@@ -15,7 +15,7 @@ This fork focuses on Git-native, multi-contributor knowledge bases: sources and 
 - Portable Repository mode with repository-relative configuration
 - Tracked repository-local skills and multi-agent bootstrap files
 - Stable repository-relative Source IDs and sharded manifest state
-- Transactional writes, merge-friendly operation logs, and rebuildable hot state
+- Recoverable local transactions, immutable operation pages, and rebuildable local hot state
 - Deterministic, LLM-free validation for any CI platform
 
 ## Install
@@ -41,6 +41,8 @@ obsidian-wiki repo upgrade-skills  # after installing a newer framework CLI
 ```
 
 Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, install the CLI as a uv tool from their own framework clone, run `obsidian-wiki doctor`, and use the tracked repository-local skills from their preferred agent. The knowledge repository contains no `.venv` or vendored CLI.
+
+Portable agents stage writes in ignored local transaction workspaces and promote reviewed candidates into the working tree. Ordinary writes leave `wiki/index.md` and `wiki/log.md` stable, keep `wiki/hot.md` local and ignored, and append an immutable operation page. Transaction commands do not commit or push; review the Git diff and publish through your normal branch and pull-request workflow. See [Architecture](docs/architecture.md#portable-write-lifecycle) and the [CLI transaction reference](docs/cli.md#portable-transactions-and-local-hot-state).
 
 ## Personal mode
 

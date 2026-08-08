@@ -70,6 +70,33 @@ obsidian-wiki repo upgrade-skills
 The command preserves unlisted owner skills and text outside managed bootstrap
 markers.
 
+### Portable tracked and ignored state
+
+Portable setup establishes this repository boundary:
+
+| State | Git | Repository paths | Rule |
+|---|---|---|---|
+| Authoritative sources | Tracked | configured `sources/**` | The only durable ingest inputs and the origin of repository-relative Source IDs. |
+| Compiled knowledge | Tracked | `<vault>/{concepts,entities,skills,references,synthesis,projects}/**`, plus `<vault>/journal/**` except `<vault>/journal/operations/**` | Agents promote these pages through transactions; humans review their Git diff. |
+| Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
+| Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
+| Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration and agent behavior. |
+| Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
+| Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
+| Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |
+
+An edited or dirty source worktree is expected during compilation. Transaction
+promotion does not require a globally clean repository: it checks preimages
+only for affected output pages and manifest shards. If one of those targets
+changed after `transaction begin`, promotion fails and retains recovery state;
+unrelated source or output edits do not block it.
+
+Do not override the ignored paths with `git add -f`. Portable changes stop in
+the working tree. Review `git diff`, run `obsidian-wiki check`, and use the
+repository's normal branch and pull-request workflow; the portable transaction
+and hot-state commands never commit or push those changes.
+
 ## Manifest mode selected by configuration
 
 Personal `.env` and global configurations keep manifest v1: one monolithic
@@ -132,9 +159,13 @@ Local git repo clones work in `OBSIDIAN_SOURCES_DIR` (public or private, any hos
 
 ## Staged writes & trust
 
+`WIKI_STAGED_WRITES` and `_staging/` are Personal-mode features. Portable
+configuration does not accept this setting; Portable writes use ignored local
+transactions and `candidate_vault` review instead.
+
 | Variable | What it does | Default |
 |---|---|---|
-| `WIKI_STAGED_WRITES` | When `true`, LLM-written pages land in `_staging/` for human review instead of the live vault. Promote them with `/wiki-stage-commit` | *(unset — direct writes)* |
+| `WIKI_STAGED_WRITES` | Personal mode only: when `true`, LLM-written pages land in `_staging/` for human review instead of the live vault. Promote them with `/wiki-stage-commit` | *(unset — direct writes)* |
 | `OBSIDIAN_TRUST_STRICT` | When `1`, `obsidian-wiki lint` treats missing trust fields, ledger errors, stale reviews, and score mismatches as failures rather than warnings. Same as `lint --strict-trust` | *(unset)* |
 | `OBSIDIAN_ALLOWED_LIFECYCLES` | Comma-separated lifecycle extensions for this resolved vault | *(framework defaults only)* |
 | `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES` | Comma-separated relationship-type extensions for this resolved vault | *(framework defaults only)* |
@@ -145,7 +176,7 @@ Schema resolution precedence is CLI flags > resolved environment/config values >
 
 The four schema variables are `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, and `OBSIDIAN_SCHEMA_SOURCE`. When any is present, its value and every comma-separated entry must be non-empty after trimming whitespace. Empty values, repeated commas, and trailing commas fail closed with exit 1; remove the variable entirely to use framework defaults. The distributable `.env.example` documents safe commented examples for all four.
 
-Staged pages aren't visible in Obsidian's graph until promoted. `wiki-status` lists pending staged writes first when this mode is on — the work is done, it just needs your eyes. The `_staging/` directory is created at setup even when the mode is off.
+Staged pages aren't visible in Obsidian's graph until promoted. `wiki-status` lists pending staged writes first when this mode is on — the work is done, it just needs your eyes. Personal setup creates `_staging/` even when the mode is off; Portable setup deliberately does not.
 
 ## Vault Skill Factory
 
@@ -220,7 +251,7 @@ Both degrade gracefully: with the collection names unset, they skip the QMD step
 
 ## `_raw/` staging directory
 
-`_raw/` is a staging area inside your vault for unprocessed captures — rough notes, clipboard pastes, quick voice-memo transcripts. Drop files there and the next `wiki-ingest` run promotes them to proper wiki pages and removes the originals, so nothing is processed twice.
+In Personal mode, `_raw/` is a staging area inside your vault for unprocessed captures — rough notes, clipboard pastes, quick voice-memo transcripts. Drop files there and the next `wiki-ingest` run promotes them to proper wiki pages and removes the originals, so nothing is processed twice.
 
 The fastest way to feed it during a live coding session:
 
@@ -237,6 +268,12 @@ To promote everything waiting there:
 ```
 
 The directory is created automatically by `wiki-setup`. The path is configurable via `OBSIDIAN_RAW_DIR`.
+
+Portable setup reserves `wiki/_raw/`, but it is neither an authoritative source
+root nor a valid transaction candidate category. Portable quick capture
+therefore fails closed instead of writing it directly: preserve the material
+under a configured `sources` path, then run `wiki-ingest` so the resulting
+knowledge page is promoted through a transaction.
 
 ### Browser capture extension
 
@@ -256,6 +293,13 @@ awk -F= '/^OBSIDIAN_VAULT_PATH=/{print $2 "/_raw"; exit}' "$(git rev-parse --sho
 ## Syncing your vault to GitHub
 
 Your vault is a directory of plain markdown files — push it to a private GitHub repo and you get version history, backup, and cross-device sync for free. The source-installed CLI offers this during personal setup and exposes the same implementation later through `obsidian-wiki sync-setup`.
+
+This section applies to Personal-mode vault repositories. A Portable
+Repository already has an enclosing Git workflow: use local transactions for
+knowledge writes, inspect `git diff`, and let a human commit/push a branch and
+open the pull request. Do not use the Personal-mode `sync` or `sync-setup`
+commands for a Portable Repository; transaction and hot-state commands never
+commit or push.
 
 **What setup does:**
 

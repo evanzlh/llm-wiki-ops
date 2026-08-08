@@ -52,6 +52,32 @@ Each collaborator installs the CLI independently from a framework clone with
 or a CLI runtime. Linux and macOS are the first-release CLI support boundary,
 while committed adapters and configuration use platform-neutral relative paths.
 
+## Portable agent write protocol
+
+Repository-local skills resolve `.obsidian-wiki/config.toml` before personal
+configuration and branch immediately on Portable Repository mode. A write
+agent starts one CLI transaction with the actual authoritative source files,
+writes final vault-relative pages only inside the returned `candidate_vault`,
+declares deletions through the CLI, reviews the candidate, and commits the
+transaction. It never edits live knowledge pages, manifest shards, or operation
+pages by hand.
+
+An edited source worktree is expected and does not block the agent. Promotion
+checks begin-time preimages only for affected live output pages and manifest
+shards. If one drifted, the transaction is retained: the agent reports it and
+uses an explicit retry, restore, abort, or discard action instead of creating a
+replacement transaction with an ambiguous outcome.
+
+Portable `index.md` and `log.md` are stable collaboration surfaces. Agents do
+not update them for ordinary writes; built-in query/status behavior reads pages,
+shards, and immutable `journal/operations/**` entries. `hot.md` is ignored local
+derived state: agents run `obsidian-wiki hot status --json`, rebuild it only
+when stale, and finish with `obsidian-wiki hot mark-current --json`.
+
+Agents stop after updating the working tree. They do not commit, push, or open
+a pull request for portable knowledge changes. Humans review the Git diff and
+use the repository's branch/PR policy as the content approval boundary.
+
 <details>
 <summary><b>Claude Code</b></summary>
 

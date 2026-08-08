@@ -17,7 +17,7 @@ Slash commands (`/skill-name`) work in Claude Code, Cursor, Windsurf, and most C
 | Skill | What it does | Slash command |
 |---|---|---|
 | `wiki-ingest` | The catch-all. Distills documents, PDFs, chat exports, logs, transcripts, images, and URLs into wiki pages | `/wiki-ingest` |
-| `wiki-capture` | Save the current conversation as a wiki note; `--quick` stages findings to `_raw/` in under 60 seconds | `/wiki-capture` |
+| `wiki-capture` | Save the current conversation as a wiki note; in Personal mode, `--quick` stages findings to `_raw/` in under 60 seconds | `/wiki-capture` |
 | `wiki-update` | Sync the current project's knowledge into the vault — works from any repo | `/wiki-update` |
 | `wiki-research` | Autonomous multi-round web research, filed straight into the vault | `/wiki-research [topic]` |
 | `wiki-history-ingest` | Unified router for agent history ingest | `/wiki-history-ingest <agent>` |
@@ -60,8 +60,8 @@ These two build a retrieval index over your raw agent sessions. They write a sid
 | `cross-linker` | Auto-discover unlinked mentions and weave them into the graph with `[[wikilinks]]` | `/cross-linker` |
 | `tag-taxonomy` | Enforce a consistent tag vocabulary across every page | `/tag-taxonomy` |
 | `wiki-synthesize` | Discover and fill synthesis gaps across concepts | `/wiki-synthesize` |
-| `wiki-stage-commit` | Review and promote staged pages when `WIKI_STAGED_WRITES=true` | `/wiki-stage-commit` |
-| `wiki-rebuild` | Archive the vault, rebuild from scratch, or restore a previous archive | `/wiki-rebuild` |
+| `wiki-stage-commit` | Personal mode only: review and promote staged pages when `WIKI_STAGED_WRITES=true`; Portable mode reviews CLI transactions | `/wiki-stage-commit` |
+| `wiki-rebuild` | Personal mode: archive, rebuild, or restore; Portable mode: transaction-backed replacement/deletion without `_archives/` | `/wiki-rebuild` |
 
 ## Seeing & moving the brain
 

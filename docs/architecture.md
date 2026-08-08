@@ -41,7 +41,10 @@ agent computes the delta and only processes what's new or changed.
 2. Agent reads the mode-appropriate manifest state to know what's already been done
 3. Agent reads the relevant skill for instructions
 4. Agent uses its built-in tools to do the work
-5. Agent updates manifest state, `index.md`, `log.md`, and `hot.md`
+5. Personal mode updates the monolithic manifest, `index.md`, `log.md`, and
+   `hot.md`; Portable Repository mode promotes candidate pages through a local
+   transaction, updates only affected manifest shards, and records one
+   immutable operation page
 6. Output is standard Obsidian-compatible markdown with frontmatter and `[[wikilinks]]`
 
 ## Portable repository layer
@@ -68,6 +71,66 @@ framework clone with `uv tool install .`. `obsidian-wiki repo upgrade-skills`
 refreshes only inventory-owned framework content and preserves owner files.
 Linux and macOS are the first-release CLI support boundary, but no OS-specific
 absolute path is committed.
+
+### Authoritative, collaborative, and local state
+
+Portable repositories use this tracked/ignored boundary:
+
+| State | Git | Repository paths | Rule |
+|---|---|---|---|
+| Authoritative sources | Tracked | configured `sources/**` | The only durable ingest inputs and the origin of repository-relative Source IDs. |
+| Compiled knowledge | Tracked | `<vault>/{concepts,entities,skills,references,synthesis,projects}/**`, plus `<vault>/journal/**` except `<vault>/journal/operations/**` | Agents promote these pages through transactions; humans review their Git diff. |
+| Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
+| Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
+| Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration and agent behavior. |
+| Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
+| Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
+| Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |
+
+### Portable write lifecycle
+
+An agent begins one transaction with one or more actual authoritative source
+paths. The CLI resolves them to Source IDs, acquires the repository write lock,
+records preimages, and returns a local `candidate_vault`. The agent writes only
+final vault-relative knowledge paths there and declares removals separately.
+
+On commit, the CLI validates candidate paths, required frontmatter, and
+transaction-scoped `sources`; verifies that affected live output targets still
+match their begin-time preimages; snapshots those targets; promotes pages and
+deletions; rebuilds affected manifest relationships; and writes the operation
+page last. A dirty source worktree is normal and allowed. Unrelated edits are
+also allowed: only preimage drift in an affected output page or manifest shard
+blocks promotion.
+
+Completed operations use this collision-resistant path:
+
+```text
+<vault>/journal/operations/YYYY/MM/YYYYMMDDTHHMMSSZ-<random-hex>.md
+```
+
+The operation frontmatter records the transaction ID, completion time, and
+Source IDs; its body lists created, updated, and removed pages. Operation pages
+are immutable and are not supplied by the agent.
+
+Transactions are retained for deliberate recovery. `retry` re-runs a failed
+promotion only while targets still match its preimages. An interrupted process
+may leave status `promoting`; its only recovery action is `restore`. `restore`
+replays the recorded original/absent state and, for a completed transaction,
+first requires all affected files to match its postimages so it cannot
+overwrite later work. `abort` abandons active or failed staged work; `discard`
+removes retained failed/completed/restored recovery state only after the
+outcome is understood. None of these operations invokes Git.
+
+`hot.md` has a separate local freshness protocol. Its sidecar fingerprints
+knowledge pages, manifest state, operation entries, and the current Git branch
+or detached HEAD. `obsidian-wiki hot status --json` removes only stale
+`hot.md`; an agent may then rebuild the semantic snapshot from current pages
+and recent operations and finish with `obsidian-wiki hot mark-current --json`.
+
+The transaction CLI changes the working tree but never commits or pushes
+portable changes. Git diff and pull-request review are the content boundary;
+branch publication and merging are explicit human actions.
 
 ## Manifest protocols
 
@@ -139,18 +202,18 @@ deletion, never editing marker or shard JSON fields.
 
 ```
 $OBSIDIAN_VAULT_PATH/
-├── index.md                # Master index — every page, always current
-├── log.md                  # Chronological activity log
-├── hot.md                  # ~500-word semantic snapshot of recent activity
+├── index.md                # Personal: maintained index; Portable: stable query surface
+├── log.md                  # Personal: activity log; Portable: stable query surface
+├── hot.md                  # Personal: maintained cache; Portable: ignored local cache
 ├── .manifest.json          # Personal v1 ledger or portable v2 marker
 ├── _meta/
 │   ├── taxonomy.md         # Controlled tag vocabulary
 │   └── *.base              # Obsidian Bases dashboard definitions
-├── _insights.md            # Graph analysis: hubs, bridges, dead ends
-├── _raw/                   # Staging — drop rough notes, next ingest promotes them
-├── _staging/               # Review queue when WIKI_STAGED_WRITES=true
-├── _archives/              # Timestamped snapshots for rebuild/restore
-├── _readouts/              # Narrative readouts from wiki-narrate
+├── _insights.md            # Personal-only graph analysis output
+├── _raw/                   # Personal-only capture staging; reserved in Portable mode
+├── _staging/               # Personal-only review queue when WIKI_STAGED_WRITES=true
+├── _archives/              # Personal-only timestamped rebuild/restore snapshots
+├── _readouts/              # Personal-only saved wiki-narrate readouts
 ├── concepts/               # Abstract ideas, patterns, mental models
 ├── entities/               # Concrete things — people, tools, libraries, companies
 ├── skills/                 # How-to knowledge, techniques, procedures
@@ -165,12 +228,17 @@ Knowledge that's project-specific goes under `projects/`. Knowledge that's gener
 
 Every page carries required frontmatter: `title`, `category`, `tags`, `sources`, `created`, `updated`.
 
-`hot.md` deserves a mention — it's a running semantic snapshot every write skill updates, so the next session picks up where the last one left off without crawling the whole vault.
+In Personal mode, write skills maintain `hot.md` as before. In Portable
+Repository mode it is ignored, freshness-checked local derived state; tracked
+operation entries and page summaries are the durable replacement for its
+collaboration role.
 
 ## Core principles
 
 - **Compile, don't retrieve.** The wiki is pre-compiled knowledge. Update existing pages — don't append or duplicate.
-- **Track everything.** `.manifest.json` after ingesting; `index.md`, `log.md`, and `hot.md` after any write.
+- **Track durable state.** Personal mode maintains its central files. Portable
+  mode tracks sources, knowledge pages, manifest shards, and immutable
+  operations while keeping transactions and `hot.md` local.
 - **Connect with `[[wikilinks]]`.** This is what makes it a knowledge graph rather than a folder of files.
 - **Frontmatter is required.** Every page, every time.
 - **Single source of truth.** Visibility tags shape how content surfaces — they never duplicate or separate it.
@@ -183,7 +251,11 @@ The [original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519
 
 - **Project-based organization.** Knowledge is filed under projects when project-specific, globally when not. Both cross-referenced. Ten codebases, ten spaces in the vault.
 
-- **Archive and rebuild.** When the wiki drifts too far from its sources, archive the whole thing (timestamped snapshot, nothing lost) and rebuild. Or restore any previous archive.
+- **Archive and rebuild.** Personal mode can archive the whole vault, rebuild,
+  or restore a previous `_archives/` snapshot. Portable mode does not write
+  `_archives/`; it rebuilds representable knowledge through transaction-backed
+  candidate replacements and declared deletions, retaining local recovery
+  snapshots until the transaction is discarded.
 
 - **Multi-agent ingest.** Documents, PDFs, Claude Code history, Codex sessions, Hermes memories, OpenClaw `MEMORY.md`, Pi sessions, Copilot CLI history, Windsurf data, ChatGPT exports, Slack logs, meeting transcripts, raw text. Dedicated skills for each agent, plus a catch-all for arbitrary exports.
 
@@ -203,7 +275,7 @@ The [original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519
 
 - **Multimodal sources.** Screenshots, whiteboard photos, slide captures, and diagrams ingest like text — visible text transcribed verbatim, interpreted content tagged as inferred.
 
-- **Wiki insights.** `wiki-status` can analyze the shape of the vault itself: top hubs, bridge pages (nodes whose removal would partition the graph), tag cluster cohesion, scored surprising connections, a graph delta since last run, and questions the structure is uniquely positioned to answer. Output goes to `_insights.md`.
+- **Wiki insights.** `wiki-status` can analyze the shape of the vault itself: top hubs, bridge pages (nodes whose removal would partition the graph), tag cluster cohesion, scored surprising connections, a graph delta since last run, and questions the structure is uniquely positioned to answer. Personal mode writes `_insights.md`; Portable mode promotes `synthesis/wiki-insights.md` through a transaction.
 
 - **Graph export and import.** `wiki-export` turns the wikilink graph into `graph.json`, `graph.graphml` (Gephi/yEd), `cypher.txt` (Neo4j), a self-contained interactive `graph.html`, or an OKF bundle. `wiki-import` reads any of it back.
 
@@ -211,7 +283,7 @@ The [original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519
 
 - **Session brain.** A topic graph over your raw agent session history, so you can find the session where something happened. See [Session Brain](session-brain.md).
 
-- **Staged writes.** Set `WIKI_STAGED_WRITES=true` and LLM-written pages queue in `_staging/` for review before landing in the live vault.
+- **Staged writes.** In Personal mode, set `WIKI_STAGED_WRITES=true` and LLM-written pages queue in `_staging/` for review. Portable mode uses ignored transaction candidates instead.
 
 ## Open Knowledge Format
 
