@@ -106,23 +106,22 @@ def test_directory_swap_cannot_write_operation_outside_vault(
     change = OperationChange("tx-1", "2026-08-07T07:30:00Z", (), (), (), ())
     original = operations._open_operation_parent
 
-    def open_then_swap(root: Path, parts: tuple[str, ...]) -> int:
-        descriptor = original(root, parts)
+    def open_then_swap(
+        root: Path, parts: tuple[str, ...]
+    ) -> tuple[int, tuple[tuple[Path, tuple[int, int]], ...]]:
+        descriptor, identities = original(root, parts)
         month = vault / "journal/operations/2026/08"
-        moved = month.with_name("08-moved")
+        moved = external / "08"
         month.rename(moved)
-        month.symlink_to(external, target_is_directory=True)
-        return descriptor
+        month.symlink_to(moved, target_is_directory=True)
+        return descriptor, identities
 
     monkeypatch.setattr(operations, "_open_operation_parent", open_then_swap)
 
     with pytest.raises(OperationError, match="changed"):
         write_operation(vault, change, suffix="a81f")
 
-    assert not (external / "20260807T073000Z-a81f.md").exists()
-    assert not (
-        vault / "journal/operations/2026/08-moved/20260807T073000Z-a81f.md"
-    ).exists()
+    assert not (external / "08/20260807T073000Z-a81f.md").exists()
 
 
 @pytest.mark.parametrize("failure_call", [1, 2])
@@ -148,3 +147,46 @@ def test_sync_failure_removes_owned_operation(
         write_operation(tmp_path, change, suffix="a81f")
 
     assert not target.exists()
+
+
+def test_owned_cleanup_never_deletes_a_concurrent_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preferred = tmp_path / "operation.md"
+    preferred.write_bytes(b"owned")
+    metadata = preferred.stat()
+    identity = (metadata.st_dev, metadata.st_ino)
+    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    original_stat = os.stat
+    swapped = False
+
+    def swap_after_stat(path, *args, **kwargs):
+        nonlocal swapped
+        result = original_stat(path, *args, **kwargs)
+        if path == preferred.name and kwargs.get("dir_fd") == parent_fd and not swapped:
+            swapped = True
+            os.rename(
+                preferred.name,
+                "owned-alias.md",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            collision_fd = os.open(
+                preferred.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o644,
+                dir_fd=parent_fd,
+            )
+            os.write(collision_fd, b"collision")
+            os.close(collision_fd)
+        return result
+
+    monkeypatch.setattr(operations.os, "stat", swap_after_stat)
+    try:
+        operations._cleanup_owned_at(parent_fd, preferred.name, identity)
+    finally:
+        os.close(parent_fd)
+
+    assert preferred.read_bytes() == b"collision"
+    assert not (tmp_path / "owned-alias.md").exists()
+    assert list(tmp_path.glob(".operation-cleanup-*")) == []

@@ -48,7 +48,7 @@ _FRONTMATTER_FIELDS = frozenset(
 )
 _SUPPORTS_DIR_FD = all(
     function in os.supports_dir_fd
-    for function in (os.mkdir, os.open, os.stat, os.unlink)
+    for function in (os.mkdir, os.open, os.rename, os.stat, os.unlink)
 )
 _FileIdentity = tuple[int, int]
 
@@ -285,8 +285,15 @@ def _open_directory_at(parent_fd: int | None, path: str | Path) -> int:
     return descriptor
 
 
-def _open_operation_parent(vault: Path, relative_parts: tuple[str, ...]) -> int:
+def _open_operation_parent(
+    vault: Path, relative_parts: tuple[str, ...]
+) -> tuple[int, tuple[tuple[Path, _FileIdentity], ...]]:
     descriptor = _open_directory_at(None, vault)
+    root_metadata = os.fstat(descriptor)
+    current = vault
+    identities: list[tuple[Path, _FileIdentity]] = [
+        (current, (root_metadata.st_dev, root_metadata.st_ino))
+    ]
     try:
         for part in relative_parts:
             try:
@@ -300,7 +307,10 @@ def _open_operation_parent(vault: Path, relative_parts: tuple[str, ...]) -> int:
             child = _open_directory_at(descriptor, part)
             os.close(descriptor)
             descriptor = child
-        return descriptor
+            current = current / part
+            child_metadata = os.fstat(descriptor)
+            identities.append((current, (child_metadata.st_dev, child_metadata.st_ino)))
+        return descriptor, tuple(identities)
     except BaseException:
         os.close(descriptor)
         raise
@@ -315,17 +325,60 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _cleanup_owned_at(parent_fd: int, name: str, identity: _FileIdentity) -> None:
+def _restore_quarantine_at(parent_fd: int, quarantine: str, original: str) -> None:
     try:
-        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (current.st_dev, current.st_ino) == identity:
-            os.unlink(name, dir_fd=parent_fd)
-            try:
-                os.fsync(parent_fd)
-            except OSError:
-                pass
+        os.stat(original, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            os.rename(
+                quarantine,
+                original,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+        except OSError:
+            pass
     except OSError:
         pass
+
+
+def _cleanup_owned_at(parent_fd: int, name: str, identity: _FileIdentity) -> None:
+    for _attempt in range(3):
+        try:
+            names = sorted(os.listdir(parent_fd))
+        except OSError:
+            return
+        candidates = [name, *(item for item in names if item != name)]
+        for candidate in candidates:
+            try:
+                current = os.stat(candidate, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if (current.st_dev, current.st_ino) != identity:
+                continue
+            quarantine = ".operation-cleanup-" + secrets.token_hex(16)
+            try:
+                os.rename(
+                    candidate,
+                    quarantine,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                moved = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if (moved.st_dev, moved.st_ino) != identity:
+                _restore_quarantine_at(parent_fd, quarantine, candidate)
+                continue
+            try:
+                os.unlink(quarantine, dir_fd=parent_fd)
+                try:
+                    os.fsync(parent_fd)
+                except OSError:
+                    pass
+            except OSError:
+                pass
+            return
 
 
 def _write_exclusive_at(parent_fd: int, name: str, data: bytes) -> _FileIdentity:
@@ -357,16 +410,41 @@ def _cleanup_owned_path(
     target: Path,
     identity: _FileIdentity,
 ) -> None:
-    try:
-        current = target.lstat()
-        if (current.st_dev, current.st_ino) == identity:
-            target.unlink()
+    parent = target.parent
+    for _attempt in range(3):
+        try:
+            candidates = sorted(parent.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return
+        for candidate in candidates:
             try:
-                _fsync_directory(target.parent)
-            except OperationError:
+                current = candidate.lstat()
+            except OSError:
+                continue
+            if (current.st_dev, current.st_ino) != identity:
+                continue
+            quarantine = parent / (".operation-cleanup-" + secrets.token_hex(16))
+            try:
+                candidate.rename(quarantine)
+                moved = quarantine.lstat()
+            except OSError:
+                continue
+            if (moved.st_dev, moved.st_ino) != identity:
+                if not candidate.exists() and not candidate.is_symlink():
+                    try:
+                        quarantine.rename(candidate)
+                    except OSError:
+                        pass
+                continue
+            try:
+                quarantine.unlink()
+                try:
+                    _fsync_directory(parent)
+                except OperationError:
+                    pass
+            except OSError:
                 pass
-    except (OSError, OperationError):
-        pass
+            return
 
 
 def _write_exclusive_path(target: Path, data: bytes, vault: Path) -> None:
@@ -471,12 +549,15 @@ def write_operation(
         try:
             if _SUPPORTS_DIR_FD:
                 relative_parent = target.parent.relative_to(vault)
-                parent_fd = _open_operation_parent(vault, relative_parent.parts)
+                parent_fd, directory_identities = _open_operation_parent(
+                    vault, relative_parent.parts
+                )
                 try:
                     identity = _write_exclusive_at(parent_fd, target.name, data)
                     try:
+                        _verify_directory_identities(directory_identities)
                         current = target.lstat()
-                    except OSError as exc:
+                    except (OSError, OperationError) as exc:
                         _cleanup_owned_at(parent_fd, target.name, identity)
                         raise OperationError(
                             "operation directory changed during write"
