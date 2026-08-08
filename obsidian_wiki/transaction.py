@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -8,6 +9,8 @@ import secrets
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -16,6 +19,16 @@ from typing import Callable
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
 from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    _fcntl = None
+
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - exercised on POSIX
+    _msvcrt = None
 
 
 class TransactionError(RuntimeError):
@@ -67,6 +80,7 @@ _METADATA_FIELDS = frozenset(
     {
         "completed_at",
         "created",
+        "operation_guard",
         "operation_path",
         "operation_paths",
         "postimages",
@@ -78,6 +92,8 @@ _METADATA_FIELDS = frozenset(
         "status",
         "transaction_id",
         "updated",
+        "writer_guard",
+        "writer_prepared",
     }
 )
 _LOCK_FIELDS = frozenset({"started_at", "transaction_id"})
@@ -187,6 +203,7 @@ class TransactionManager:
         self.local_state = config.local_state
         self.transactions_root = self.local_state / "transactions"
         self.lock_path = self.local_state / "write.lock"
+        self.action_lock_path = self.local_state / "action.lock"
         self.operation_writer = operation_writer or self._missing_operation_writer
         self._require_contained(self.local_state, self.config.root, "local state")
 
@@ -233,6 +250,7 @@ class TransactionManager:
             payload = {
                 "completed_at": None,
                 "created": [],
+                "operation_guard": {},
                 "operation_path": None,
                 "operation_paths": [],
                 "postimages": {},
@@ -244,6 +262,8 @@ class TransactionManager:
                 "status": "active",
                 "transaction_id": resolved_id,
                 "updated": [],
+                "writer_guard": {},
+                "writer_prepared": False,
             }
             self._write_metadata(workspace, payload)
             return self.load(resolved_id)
@@ -298,6 +318,7 @@ class TransactionManager:
             payload=payload,
             status=status,
             source_ids=source_ids,
+            preimages=preimages,
             deletions=deletions,
             candidate_names=candidate_names,
         )
@@ -338,34 +359,35 @@ class TransactionManager:
         return records
 
     def abort(self, transaction_id: str) -> None:
-        record = self.load(transaction_id)
-        if record.status == "promoting":
-            raise TransactionError(
-                "promoting transaction retains recovery snapshots; use restore"
-            )
-        if record.status in {"complete", "restored"}:
-            raise TransactionError(
-                f"transaction status {record.status!r} is retained; use discard"
-            )
-
-        lock_exists = self.lock_path.exists() or self.lock_path.is_symlink()
-        lock_identity: _FileIdentity | None = None
-        if lock_exists:
-            lock, lock_identity = self._read_lock()
-            owner = lock["transaction_id"]
-            if owner != transaction_id:
+        with self._action_lock():
+            record = self.load(transaction_id)
+            if record.status == "promoting":
                 raise TransactionError(
-                    f"transaction lock belongs to {owner}, not {transaction_id}"
+                    "promoting transaction retains recovery snapshots; use restore"
                 )
-        elif record.status != "failed":
-            raise TransactionError(
-                f"cannot abort {record.status} transaction {transaction_id} "
-                "without its lock"
-            )
+            if record.status in {"complete", "restored"}:
+                raise TransactionError(
+                    f"transaction status {record.status!r} is retained; use discard"
+                )
 
-        self._remove_workspace(record.workspace)
-        if lock_exists:
-            self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
+            lock_exists = self.lock_path.exists() or self.lock_path.is_symlink()
+            lock_identity: _FileIdentity | None = None
+            if lock_exists:
+                lock, lock_identity = self._read_lock()
+                owner = lock["transaction_id"]
+                if owner != transaction_id:
+                    raise TransactionError(
+                        f"transaction lock belongs to {owner}, not {transaction_id}"
+                    )
+            elif record.status != "failed":
+                raise TransactionError(
+                    f"cannot abort {record.status} transaction {transaction_id} "
+                    "without its lock"
+                )
+
+            self._remove_workspace(record.workspace)
+            if lock_exists:
+                self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
 
     def mark_delete(self, transaction_id: str, relative_path: str) -> None:
         record = self.load(transaction_id)
@@ -391,18 +413,19 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
-        record = self.load(transaction_id)
-        if record.status != "active":
-            raise TransactionError(
-                f"only an active transaction can commit, not {record.status}"
+        with self._action_lock():
+            record = self.load(transaction_id)
+            if record.status != "active":
+                raise TransactionError(
+                    f"only an active transaction can commit, not {record.status}"
+                )
+            lock_identity = self._require_owned_lock(transaction_id)
+            return self._commit_record(
+                record,
+                completed_at=completed_at,
+                lock_identity=lock_identity,
+                release_pre_snapshot_failure=False,
             )
-        lock_identity = self._require_owned_lock(transaction_id)
-        return self._commit_record(
-            record,
-            completed_at=completed_at,
-            lock_identity=lock_identity,
-            release_pre_snapshot_failure=False,
-        )
 
     def retry(
         self,
@@ -410,96 +433,129 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
-        record = self.load(transaction_id)
-        if record.status != "failed":
-            raise TransactionError(
-                f"only a failed transaction can retry, not {record.status}"
-            )
-        self._acquire_lock(transaction_id, record.started_at)
-        lock_identity = self._require_owned_lock(transaction_id)
-        try:
-            candidates = self._enumerate_candidates(record)
-            affected = set(self._affected_preimage_paths(record, candidates))
-            payload = self._read_metadata_payload(record.workspace)
-            affected.update(self._load_snapshot_index(payload["snapshot_index"]))
-            self._verify_preimages(record, affected)
-            self._clear_snapshot_state(record)
+        with self._action_lock():
             record = self.load(transaction_id)
-            return self._commit_record(
-                record,
-                completed_at=completed_at,
-                lock_identity=lock_identity,
-                release_pre_snapshot_failure=True,
-            )
-        except Exception:
+            if record.status != "failed":
+                raise TransactionError(
+                    f"only a failed transaction can retry, not {record.status}"
+                )
+            self._acquire_lock(transaction_id, record.started_at)
+            lock_identity = self._require_owned_lock(transaction_id)
+            try:
+                candidates = self._enumerate_candidates(record)
+                affected = set(self._affected_preimage_paths(record, candidates))
+                payload = self._read_metadata_payload(record.workspace)
+                affected.update(self._load_snapshot_index(payload["snapshot_index"]))
+                self._verify_preimages(record, affected)
+                self._clear_snapshot_state(record)
+                record = self.load(transaction_id)
+                return self._commit_record(
+                    record,
+                    completed_at=completed_at,
+                    lock_identity=lock_identity,
+                    release_pre_snapshot_failure=True,
+                )
+            except Exception:
+                if self.lock_path.exists() or self.lock_path.is_symlink():
+                    try:
+                        self._unlink_owned_lock(
+                            transaction_id, expected_identity=lock_identity
+                        )
+                    except TransactionError:
+                        pass
+                raise
+
+    def restore(self, transaction_id: str) -> None:
+        with self._action_lock():
+            record = self.load(transaction_id)
+            if record.status not in {"promoting", "failed", "complete", "restored"}:
+                raise TransactionError(
+                    f"cannot restore {record.status} transaction {transaction_id}"
+                )
             if self.lock_path.exists() or self.lock_path.is_symlink():
-                try:
+                lock_identity = self._require_owned_lock(transaction_id)
+            else:
+                self._acquire_lock(transaction_id, record.started_at)
+                lock_identity = self._require_owned_lock(transaction_id)
+            try:
+                if record.status == "restored":
+                    return
+                payload = self._read_metadata_payload(record.workspace)
+                postimages = self._load_image_map(
+                    payload["postimages"], "transaction postimages"
+                )
+                if record.status == "complete":
+                    for relative, expected in postimages.items():
+                        try:
+                            current = self._current_vault_hash(relative)
+                        except TransactionError as exc:
+                            raise TransactionError(
+                                "transaction output changed after transaction completed: "
+                                + relative
+                            ) from exc
+                        if current != expected:
+                            raise TransactionError(
+                                "transaction output changed after transaction completed: "
+                                + relative
+                            )
+                snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
+                if payload["writer_prepared"]:
+                    writer_before = self._load_writer_guard(payload["writer_guard"])
+                    operation_before = self._load_operation_guard(
+                        payload["operation_guard"]
+                    )
+                    writer_cleanup = self._writer_guard_diff(
+                        writer_before,
+                        self._writer_guard_state(allow_unsafe=True),
+                        {
+                            relative: snapshot_index[relative]
+                            for relative in writer_before
+                        },
+                    )
+                    writer_cleanup.update(
+                        self._operation_tree_diff(
+                            operation_before,
+                            self._operation_tree_state(allow_unsafe=True),
+                            {
+                                relative: snapshot_index[relative]
+                                for relative in operation_before
+                            },
+                        )
+                    )
+                    self._restore_snapshot_index(record, writer_cleanup)
+                self._restore_snapshot_index(record, snapshot_index)
+                payload["status"] = "restored"
+                self._write_metadata(record.workspace, payload)
+            finally:
+                if self.lock_path.exists() or self.lock_path.is_symlink():
                     self._unlink_owned_lock(
                         transaction_id, expected_identity=lock_identity
                     )
-                except TransactionError:
-                    pass
-            raise
-
-    def restore(self, transaction_id: str) -> None:
-        record = self.load(transaction_id)
-        if record.status not in {"promoting", "failed", "complete", "restored"}:
-            raise TransactionError(
-                f"cannot restore {record.status} transaction {transaction_id}"
-            )
-        if self.lock_path.exists() or self.lock_path.is_symlink():
-            lock_identity = self._require_owned_lock(transaction_id)
-        else:
-            self._acquire_lock(transaction_id, record.started_at)
-            lock_identity = self._require_owned_lock(transaction_id)
-        try:
-            if record.status == "restored":
-                return
-            payload = self._read_metadata_payload(record.workspace)
-            postimages = self._load_image_map(
-                payload["postimages"], "transaction postimages"
-            )
-            if record.status == "complete":
-                for relative, expected in postimages.items():
-                    try:
-                        current = self._current_vault_hash(relative)
-                    except TransactionError as exc:
-                        raise TransactionError(
-                            "transaction output changed after transaction completed: "
-                            + relative
-                        ) from exc
-                    if current != expected:
-                        raise TransactionError(
-                            f"transaction output changed after transaction completed: {relative}"
-                        )
-            snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
-            self._restore_snapshot_index(record, snapshot_index)
-            payload["status"] = "restored"
-            self._write_metadata(record.workspace, payload)
-        finally:
-            if self.lock_path.exists() or self.lock_path.is_symlink():
-                self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
 
     def discard(self, transaction_id: str) -> None:
-        workspace = self._workspace_path(transaction_id)
-        if not workspace.exists() and not workspace.is_symlink():
-            return
-        record = self.load(transaction_id)
-        if record.status not in {"failed", "complete", "restored"}:
-            raise TransactionError(
-                f"cannot discard {record.status} transaction; active or promoting work is retained"
-            )
-        self._acquire_lock(transaction_id, record.started_at)
-        lock_identity = self._require_owned_lock(transaction_id)
-        removed = False
-        try:
-            self._remove_workspace(record.workspace)
-            removed = True
-        finally:
-            if self.lock_path.exists() or self.lock_path.is_symlink():
-                self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
-        if not removed:
-            raise TransactionError(f"cannot discard transaction {transaction_id}")
+        with self._action_lock():
+            workspace = self._workspace_path(transaction_id)
+            if not workspace.exists() and not workspace.is_symlink():
+                return
+            record = self.load(transaction_id)
+            if record.status not in {"failed", "complete", "restored"}:
+                raise TransactionError(
+                    f"cannot discard {record.status} transaction; "
+                    "active or promoting work is retained"
+                )
+            self._acquire_lock(transaction_id, record.started_at)
+            lock_identity = self._require_owned_lock(transaction_id)
+            removed = False
+            try:
+                self._remove_workspace(record.workspace)
+                removed = True
+            finally:
+                if self.lock_path.exists() or self.lock_path.is_symlink():
+                    self._unlink_owned_lock(
+                        transaction_id, expected_identity=lock_identity
+                    )
+            if not removed:
+                raise TransactionError(f"cannot discard transaction {transaction_id}")
 
     def _commit_record(
         self,
@@ -555,6 +611,7 @@ class TransactionManager:
                 {
                     "completed_at": resolved_completed_at,
                     "created": list(created),
+                    "operation_guard": {},
                     "operation_path": None,
                     "operation_paths": [],
                     "postimages": {},
@@ -562,6 +619,8 @@ class TransactionManager:
                     "snapshot_index": snapshot_index,
                     "status": "promoting",
                     "updated": list(updated),
+                    "writer_guard": {},
+                    "writer_prepared": False,
                 }
             )
             self._write_metadata(record.workspace, payload)
@@ -594,6 +653,17 @@ class TransactionManager:
             operation_before, operation_before_index = self._snapshot_operation_tree(
                 record
             )
+            snapshot_index.update(writer_before_index)
+            snapshot_index.update(operation_before_index)
+            payload.update(
+                {
+                    "operation_guard": operation_before,
+                    "snapshot_index": dict(sorted(snapshot_index.items())),
+                    "writer_guard": writer_before,
+                    "writer_prepared": True,
+                }
+            )
+            self._write_metadata(record.workspace, payload)
             operation_path = Path(self.operation_writer(change))
             operation_relative = self._validate_operation_result(operation_path)
             operation_after = self._operation_tree_state(allow_unsafe=True)
@@ -634,16 +704,23 @@ class TransactionManager:
                 relative: self._current_vault_hash(relative)
                 for relative in postimage_paths
             }
-            payload.update(
+            complete_payload = dict(payload)
+            complete_payload.update(
                 {
+                    "operation_guard": {},
                     "operation_path": operation_relative,
                     "operation_paths": sorted(operation_affected),
                     "postimages": postimages,
-                    "snapshot_index": dict(sorted(snapshot_index.items())),
+                    "snapshot_index": {
+                        relative: snapshot_index[relative]
+                        for relative in postimage_paths
+                    },
                     "status": "complete",
+                    "writer_guard": {},
+                    "writer_prepared": False,
                 }
             )
-            self._write_metadata(record.workspace, payload)
+            self._write_metadata(record.workspace, complete_payload)
             self._unlink_owned_lock(
                 record.transaction_id, expected_identity=lock_identity
             )
@@ -726,6 +803,80 @@ class TransactionManager:
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)
             raise TransactionError(detail) from exc
+
+    @contextmanager
+    def _action_lock(self) -> Iterator[None]:
+        self._ensure_directory(self.local_state)
+        self._require_contained(
+            self.action_lock_path,
+            self.local_state,
+            "transaction action lock",
+            strict_child=True,
+        )
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self.action_lock_path, flags, 0o600)
+        except OSError as exc:
+            raise TransactionError("cannot open transaction action lock") from exc
+        locked = False
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise TransactionError(
+                    "transaction action lock must be a single-link ordinary file"
+                )
+            self._lock_action_descriptor(descriptor)
+            locked = True
+            yield
+        finally:
+            try:
+                if locked:
+                    self._unlock_action_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def _lock_action_descriptor(descriptor: int) -> None:
+        if os.name == "nt":
+            if _msvcrt is None:
+                raise TransactionError(
+                    "transaction action locking is unavailable on this platform"
+                )
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                _msvcrt.locking(descriptor, _msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise TransactionError(
+                    "another transaction action is already in progress"
+                ) from exc
+            return
+        if _fcntl is None:
+            raise TransactionError(
+                "transaction action locking is unavailable on this platform"
+            )
+        try:
+            _fcntl.flock(descriptor, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise TransactionError(
+                    "another transaction action is already in progress"
+                ) from exc
+            raise TransactionError("cannot lock transaction action file") from exc
+
+    @staticmethod
+    def _unlock_action_descriptor(descriptor: int) -> None:
+        if os.name == "nt":
+            if _msvcrt is None:  # pragma: no cover - guarded by lock acquisition
+                return
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            _msvcrt.locking(descriptor, _msvcrt.LK_UNLCK, 1)
+            return
+        if _fcntl is not None:
+            _fcntl.flock(descriptor, _fcntl.LOCK_UN)
 
     def _require_owned_lock(self, transaction_id: str) -> _FileIdentity:
         lock, identity = self._read_lock()
@@ -888,6 +1039,7 @@ class TransactionManager:
             {
                 "completed_at": None,
                 "created": [],
+                "operation_guard": {},
                 "operation_path": None,
                 "operation_paths": [],
                 "postimages": {},
@@ -895,6 +1047,8 @@ class TransactionManager:
                 "snapshot_index": {},
                 "status": "failed",
                 "updated": [],
+                "writer_guard": {},
+                "writer_prepared": False,
             }
         )
         self._write_metadata(record.workspace, payload)
@@ -1346,6 +1500,10 @@ class TransactionManager:
         self._load_image_map(payload.get("postimages"), "transaction postimages")
         self._load_snapshot_index(payload.get("snapshot_index"), workspace=workspace)
         self._load_operation_paths(payload.get("operation_paths"))
+        self._load_operation_guard(payload.get("operation_guard"))
+        self._load_writer_guard(payload.get("writer_guard"))
+        if not isinstance(payload.get("writer_prepared"), bool):
+            raise TransactionError("transaction writer_prepared must be a boolean")
         for field in ("created", "updated", "removed"):
             raw = payload.get(field)
             if not isinstance(raw, list) or any(
@@ -1378,6 +1536,7 @@ class TransactionManager:
         payload: dict[str, object],
         status: str,
         source_ids: tuple[str, ...],
+        preimages: dict[str, str | None],
         deletions: tuple[str, ...],
         candidate_names: tuple[str, ...],
     ) -> None:
@@ -1387,6 +1546,21 @@ class TransactionManager:
             for source_id in source_ids
         }
         base_affected = set(candidate_names) | set(deletions) | shard_paths
+        operation_guard = self._load_operation_guard(payload["operation_guard"])
+        writer_guard = self._load_writer_guard(payload["writer_guard"])
+        writer_prepared = payload["writer_prepared"]
+        writer_preimages: set[str] = set()
+        operation_preimages: set[str] = set()
+        for relative in preimages:
+            if PurePosixPath(relative).parts[:2] == ("journal", "operations"):
+                self._validate_operation_guard_path(relative)
+                operation_preimages.add(relative)
+            else:
+                self._validate_writer_guard_path(relative)
+                writer_preimages.add(relative)
+        expected_writer_guard = (
+            (writer_preimages - set(deletions)) | set(candidate_names) | shard_paths
+        )
         operation_paths = set(self._load_operation_paths(payload["operation_paths"]))
         operation_path = payload["operation_path"]
         if operation_path is not None and operation_path not in operation_paths:
@@ -1394,19 +1568,46 @@ class TransactionManager:
                 "transaction operation_path must belong to operation_paths"
             )
         allowed = base_affected | operation_paths
+        guard_paths = set(writer_guard) | set(operation_guard)
+        snapshot_allowed = allowed | guard_paths
         snapshots = self._load_snapshot_index(
             payload["snapshot_index"], workspace=workspace
         )
         postimages = self._load_image_map(
             payload["postimages"], "transaction postimages"
         )
-        if not set(snapshots) <= allowed:
+        if not set(snapshots) <= snapshot_allowed:
             raise TransactionError(
                 "transaction snapshot target is outside the affected set"
             )
         if not set(postimages) <= allowed:
             raise TransactionError(
                 "transaction postimages contain paths outside the affected set"
+            )
+        if writer_prepared:
+            if (
+                set(writer_guard) != expected_writer_guard
+                or set(operation_guard) != operation_preimages
+            ):
+                raise TransactionError(
+                    "persisted writer guard does not exactly match authoritative paths"
+                )
+            if set(snapshots) != snapshot_allowed:
+                raise TransactionError(
+                    "transaction snapshots do not exactly match persisted writer guard"
+                )
+            missing_backings = {
+                relative
+                for relative in guard_paths - base_affected
+                if snapshots[relative] is None
+            }
+            if missing_backings:
+                raise TransactionError(
+                    "persisted writer guard path is missing its snapshot backing"
+                )
+        elif writer_guard or operation_guard:
+            raise TransactionError(
+                "unprepared transaction cannot contain persisted writer guards"
             )
 
         created = set(payload["created"])
@@ -1427,6 +1628,7 @@ class TransactionManager:
                     bool(operation_paths),
                     bool(snapshots),
                     bool(postimages),
+                    writer_prepared,
                 )
             ):
                 raise TransactionError("active transaction has invalid recovery fields")
@@ -1436,7 +1638,7 @@ class TransactionManager:
                 completed_at is None
                 or operation_path is not None
                 or operation_paths
-                or set(snapshots) != base_affected
+                or set(snapshots) != snapshot_allowed
                 or postimages
             ):
                 raise TransactionError(
@@ -1448,6 +1650,7 @@ class TransactionManager:
                 completed_at is None
                 or operation_path is None
                 or operation_paths != {operation_path}
+                or writer_prepared
                 or set(snapshots) != allowed
                 or set(postimages) != allowed
             ):
@@ -1455,12 +1658,30 @@ class TransactionManager:
                     "complete transaction postimages must exactly match affected paths"
                 )
             return
-        if status == "failed" and postimages:
-            raise TransactionError("failed transaction postimages must be empty")
-        if status == "restored" and postimages and set(postimages) != allowed:
-            raise TransactionError(
-                "restored transaction postimages must exactly match affected paths"
-            )
+        if status == "failed":
+            if completed_at is None:
+                if any(
+                    (
+                        bool(created or updated or removed),
+                        operation_path is not None,
+                        bool(operation_paths),
+                        bool(snapshots),
+                        bool(postimages),
+                        writer_prepared,
+                    )
+                ):
+                    raise TransactionError(
+                        "failed transaction reset fields are invalid"
+                    )
+                return
+            if postimages or set(snapshots) != snapshot_allowed:
+                raise TransactionError("failed transaction recovery fields are invalid")
+            return
+        if status == "restored" and (
+            set(snapshots) != snapshot_allowed
+            or (postimages and set(postimages) != allowed)
+        ):
+            raise TransactionError("restored transaction recovery fields are invalid")
 
     def _load_operation_paths(self, raw: object) -> tuple[str, ...]:
         if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
@@ -1481,6 +1702,58 @@ class TransactionManager:
                     "transaction operation path must be below journal/operations"
                 )
         return values
+
+    def _load_writer_guard(self, raw: object) -> dict[str, str]:
+        guard = self._load_guard_hashes(raw, "transaction writer guard")
+        for relative in guard:
+            self._validate_writer_guard_path(relative)
+        return guard
+
+    def _load_operation_guard(self, raw: object) -> dict[str, str]:
+        guard = self._load_guard_hashes(raw, "transaction operation guard")
+        for relative in guard:
+            self._validate_operation_guard_path(relative)
+        return guard
+
+    def _load_guard_hashes(self, raw: object, label: str) -> dict[str, str]:
+        loaded = self._load_image_map(raw, label)
+        if any(content_hash is None for content_hash in loaded.values()):
+            raise TransactionError(f"{label} hashes cannot be null")
+        return {
+            relative: content_hash
+            for relative, content_hash in loaded.items()
+            if content_hash is not None
+        }
+
+    def _validate_writer_guard_path(self, relative: str) -> None:
+        self._validate_relative_path(relative, "transaction writer guard path")
+        path = PurePosixPath(relative)
+        if (
+            relative == "hot.md"
+            or path.parts[0] == ".obsidian"
+            or path.parts[:2] == ("journal", "operations")
+        ):
+            raise TransactionError(
+                "transaction writer guard path is outside the authoritative vault"
+            )
+        try:
+            excluded_local = self.local_state.relative_to(self.config.vault)
+        except ValueError:
+            excluded_local = None
+        if excluded_local is not None and (
+            path == excluded_local or excluded_local in path.parents
+        ):
+            raise TransactionError(
+                "transaction writer guard path is outside the authoritative vault"
+            )
+
+    def _validate_operation_guard_path(self, relative: str) -> None:
+        self._validate_relative_path(relative, "transaction operation guard path")
+        path = PurePosixPath(relative)
+        if len(path.parts) < 3 or path.parts[:2] != ("journal", "operations"):
+            raise TransactionError(
+                "transaction operation guard path must be below journal/operations"
+            )
 
     def _load_image_map(self, raw: object, label: str) -> dict[str, str | None]:
         if not isinstance(raw, dict):

@@ -4,6 +4,9 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -101,6 +104,32 @@ def candidate_page(record, relative: str, text: str = PAGE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_transaction_module_imports_when_fcntl_is_unavailable() -> None:
+    script = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "fcntl":
+        raise ImportError("fcntl unavailable")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+sys.modules.pop("fcntl", None)
+sys.modules.pop("obsidian_wiki.transaction", None)
+import obsidian_wiki.transaction
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_begin_creates_candidate_workspace_and_lock(tmp_path: Path) -> None:
@@ -1676,6 +1705,49 @@ def test_restore_recovers_promoting_transaction_after_page_replace_crash(
     assert not recovering.lock_path.exists()
 
 
+def test_restore_refuses_while_same_transaction_commit_is_still_running(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    commit_errors: list[TransactionError] = []
+
+    def writer(change):
+        writer_entered.set()
+        if not release_writer.wait(timeout=5):
+            raise RuntimeError("test timed out waiting to release operation writer")
+        path = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# operation\n", encoding="utf-8")
+        return path
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    def commit() -> None:
+        try:
+            manager.commit("tx-1")
+        except TransactionError as exc:
+            commit_errors.append(exc)
+
+    commit_thread = threading.Thread(target=commit)
+    commit_thread.start()
+    assert writer_entered.wait(timeout=5)
+    recovering = TransactionManager(config, operation_writer=writer)
+    try:
+        with pytest.raises(TransactionError, match="action.*progress|in progress"):
+            recovering.restore("tx-1")
+    finally:
+        release_writer.set()
+        commit_thread.join(timeout=5)
+
+    assert not commit_thread.is_alive()
+    assert commit_errors == []
+    assert manager.load("tx-1").status == "complete"
+
+
 def test_restore_recovers_promoting_transaction_after_manifest_replace_crash(
     tmp_path: Path,
     operation_writer,
@@ -1914,3 +1986,132 @@ def test_operation_writer_vault_side_effect_is_rolled_back(
     assert unrelated.read_bytes() == original
     assert not (config.vault / "concepts/a.md").exists()
     assert not (config.vault / "journal/operations/tx-1.md").exists()
+
+
+def test_restore_uses_persisted_writer_guard_after_writer_crash(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    modified = config.vault / "references/modified.md"
+    removed = config.vault / "references/removed.md"
+    modified.parent.mkdir(parents=True)
+    modified.write_text(PAGE, encoding="utf-8")
+    removed.write_text(PAGE.replace("# A", "# Removed"), encoding="utf-8")
+    original_modified = modified.read_bytes()
+    original_removed = removed.read_bytes()
+    extra = config.vault / "references/extra.md"
+    operation = config.vault / "journal/operations/tx-1.md"
+
+    def writer(_change):
+        modified.write_text("writer corruption\n", encoding="utf-8")
+        removed.unlink()
+        extra.write_text("writer addition\n", encoding="utf-8")
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# partial operation\n", encoding="utf-8")
+        raise SystemExit("simulated writer crash")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(SystemExit, match="simulated writer crash"):
+        manager.commit("tx-1")
+
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["status"] == "promoting"
+    assert payload["writer_prepared"] is True
+    assert payload["writer_guard"]["references/modified.md"].startswith("sha256:")
+    assert payload["writer_guard"]["references/removed.md"].startswith("sha256:")
+    for relative in ("references/modified.md", "references/removed.md"):
+        backing = payload["snapshot_index"][relative]
+        assert backing is not None
+        assert (record.workspace / "snapshots" / backing).is_file()
+
+    recovering = TransactionManager(config, operation_writer=writer)
+    recovering.restore("tx-1")
+
+    assert modified.read_bytes() == original_modified
+    assert removed.read_bytes() == original_removed
+    assert not extra.exists()
+    assert not operation.exists()
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert recovering.load("tx-1").status == "restored"
+
+
+def test_restore_retries_persisted_writer_guard_after_cleanup_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    unrelated = config.vault / "references/unrelated.md"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text(PAGE, encoding="utf-8")
+    original = unrelated.read_bytes()
+    operation = config.vault / "journal/operations/tx-1.md"
+
+    def writer(_change):
+        unrelated.write_text("writer corruption\n", encoding="utf-8")
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# partial operation\n", encoding="utf-8")
+        raise OSError("writer failed")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    cleanup_started = False
+
+    def crash_during_cleanup(record_value, index):
+        nonlocal cleanup_started
+        if not cleanup_started and index:
+            cleanup_started = True
+            relative = min(index)
+            original_restore(record_value, {relative: index[relative]})
+            raise SystemExit("simulated cleanup crash")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", crash_during_cleanup)
+
+    with pytest.raises(SystemExit, match="simulated cleanup crash"):
+        manager.commit("tx-1")
+    assert cleanup_started
+
+    recovering = TransactionManager(config, operation_writer=writer)
+    recovering.restore("tx-1")
+
+    assert unrelated.read_bytes() == original
+    assert not operation.exists()
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert recovering.load("tx-1").status == "restored"
+
+
+def test_load_rejects_persisted_writer_guard_outside_authoritative_vault(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+
+    def writer(_change):
+        raise SystemExit("simulated writer crash")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(SystemExit, match="simulated writer crash"):
+        manager.commit("tx-1")
+
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    relative = ".obsidian/workspace.json"
+    payload["writer_guard"][relative] = "sha256:" + "0" * 64
+    payload["snapshot_index"][relative] = None
+    payload["writer_guard"] = dict(sorted(payload["writer_guard"].items()))
+    payload["snapshot_index"] = dict(sorted(payload["snapshot_index"].items()))
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransactionError, match="writer guard|authoritative|affected"):
+        manager.load("tx-1")
