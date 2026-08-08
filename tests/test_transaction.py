@@ -1524,3 +1524,118 @@ def test_retry_refuses_drift_at_prior_failed_operation_artifact(
 
     assert partial.read_text(encoding="utf-8") == "foreign artifact\n"
     assert manager.load("tx-1").status == "failed"
+
+
+def test_a_only_transaction_cannot_update_existing_a_b_page(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    source_a = add_source(root, "a.md")
+    source_b = add_source(root, "b.md")
+    shared = PAGE.replace("  - sources/a.md\n", "  - sources/a.md\n  - sources/b.md\n")
+    target = config.vault / "concepts/shared.md"
+    target.write_text(shared, encoding="utf-8")
+    manifest = ShardedManifest(config)
+    manifest.upsert(
+        source_a,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    manifest.upsert(
+        source_b,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    shard_a = manifest.entry_path("sources/a.md")
+    shard_b = manifest.entry_path("sources/b.md")
+    before_a = shard_a.read_bytes()
+    before_b = shard_b.read_bytes()
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source_a], transaction_id="tx-1")
+    candidate_page(
+        record,
+        "concepts/shared.md",
+        PAGE.replace("# A", "# Updated without B"),
+    )
+
+    with pytest.raises(TransactionError, match="existing page.*sources/b.md"):
+        manager.commit("tx-1")
+
+    assert target.read_text(encoding="utf-8") == shared
+    assert shard_a.read_bytes() == before_a
+    assert shard_b.read_bytes() == before_b
+    assert operation_writer.calls == []
+    assert manager.load("tx-1").status == "active"
+
+
+def test_a_only_transaction_cannot_delete_existing_a_b_page(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    source_a = add_source(root, "a.md")
+    source_b = add_source(root, "b.md")
+    shared = PAGE.replace("  - sources/a.md\n", "  - sources/a.md\n  - sources/b.md\n")
+    target = config.vault / "concepts/shared.md"
+    target.write_text(shared, encoding="utf-8")
+    manifest = ShardedManifest(config)
+    manifest.upsert(
+        source_a,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    manifest.upsert(
+        source_b,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    shard_a = manifest.entry_path("sources/a.md")
+    shard_b = manifest.entry_path("sources/b.md")
+    before_a = shard_a.read_bytes()
+    before_b = shard_b.read_bytes()
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    manager.begin([source_a], transaction_id="tx-1")
+    manager.mark_delete("tx-1", "concepts/shared.md")
+
+    with pytest.raises(TransactionError, match="existing page.*sources/b.md"):
+        manager.commit("tx-1")
+
+    assert target.read_text(encoding="utf-8") == shared
+    assert shard_a.read_bytes() == before_a
+    assert shard_b.read_bytes() == before_b
+    assert operation_writer.calls == []
+    assert manager.load("tx-1").status == "active"
+
+
+def test_a_b_transaction_can_remove_b_relationship_and_rebuild_both_shards(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    source_a = add_source(root, "a.md")
+    source_b = add_source(root, "b.md")
+    shared = PAGE.replace("  - sources/a.md\n", "  - sources/a.md\n  - sources/b.md\n")
+    target = config.vault / "concepts/shared.md"
+    target.write_text(shared, encoding="utf-8")
+    manifest = ShardedManifest(config)
+    manifest.upsert(
+        source_a,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    manifest.upsert(
+        source_b,
+        pages=["concepts/shared.md"],
+        compiled_at="2026-08-07T00:00:00Z",
+    )
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source_b, source_a], transaction_id="tx-1")
+    updated = PAGE.replace("# A", "# Updated without B")
+    candidate_page(record, "concepts/shared.md", updated)
+
+    manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert target.read_text(encoding="utf-8") == updated
+    assert manifest.load("sources/a.md").pages == ("concepts/shared.md",)
+    assert manifest.load("sources/b.md").pages == ()

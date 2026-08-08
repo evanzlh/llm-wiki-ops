@@ -496,6 +496,7 @@ class TransactionManager:
                 )
             affected = self._affected_preimage_paths(record, candidates)
             self._verify_preimages(record, affected)
+            self._verify_existing_page_sources(record, candidate_names)
 
             created = tuple(
                 sorted(
@@ -724,6 +725,46 @@ class TransactionManager:
             if current != expected:
                 raise TransactionError(
                     f"transaction target changed after transaction began: {relative}"
+                )
+
+    def _verify_existing_page_sources(
+        self,
+        record: TransactionRecord,
+        candidate_names: tuple[str, ...],
+    ) -> None:
+        manifest = ShardedManifest(self.config)
+        selected = set(record.source_ids)
+        affected_pages = sorted(set(candidate_names) | set(record.deletions))
+        for relative in affected_pages:
+            if record.preimages.get(relative) is None:
+                continue
+            page = self._vault_path(relative)
+            try:
+                text = self._read_single_link_bytes(page, "existing page").decode(
+                    "utf-8"
+                )
+                frontmatter = parse_frontmatter(text)
+            except (UnicodeDecodeError, FrontmatterError) as exc:
+                raise TransactionError(
+                    f"invalid existing page frontmatter: {relative}: {exc}"
+                ) from exc
+            page_sources = frontmatter.lists.get("sources")
+            if not page_sources:
+                raise TransactionError(
+                    f"existing page sources must be a non-empty list: {relative}"
+                )
+            for source_id in page_sources:
+                try:
+                    manifest.source_path(source_id)
+                except ManifestError as exc:
+                    raise TransactionError(
+                        f"invalid existing page source {source_id!r}: {relative}"
+                    ) from exc
+            missing = sorted(set(page_sources) - selected)
+            if missing:
+                raise TransactionError(
+                    f"existing page {relative} requires transaction sources: "
+                    + ", ".join(missing)
                 )
 
     def _snapshot_targets(
