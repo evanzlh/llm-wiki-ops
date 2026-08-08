@@ -183,10 +183,11 @@ def test_owned_cleanup_never_deletes_a_concurrent_collision(
 
     monkeypatch.setattr(operations.os, "stat", swap_after_stat)
     try:
-        operations._cleanup_owned_at(parent_fd, preferred.name, identity)
+        operations._cleanup_owned_at(parent_fd, preferred.name, identity, parent_fd)
     finally:
         os.close(parent_fd)
 
     assert preferred.read_bytes() == b"collision"
     assert not (tmp_path / "owned-alias.md").exists()
-    assert list(tmp_path.glob(".operation-cleanup-*")) == []
+    tombstones = list(tmp_path.glob(".operation-cleanup-*"))
+    assert any(path.read_bytes() == b"owned" for path in tombstones)

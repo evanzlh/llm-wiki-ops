@@ -213,7 +213,11 @@ class TransactionManager:
         self.lock_path = self.local_state / "write.lock"
         self.action_lock_path = self.local_state / "action.lock"
         self.operation_writer = operation_writer or (
-            lambda change: write_operation(self.config.vault, change)
+            lambda change: write_operation(
+                self.config.vault,
+                change,
+                cleanup_root=self.local_state,
+            )
         )
         self._require_contained(self.local_state, self.config.root, "local state")
 

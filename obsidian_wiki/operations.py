@@ -48,7 +48,7 @@ _FRONTMATTER_FIELDS = frozenset(
 )
 _SUPPORTS_DIR_FD = all(
     function in os.supports_dir_fd
-    for function in (os.mkdir, os.open, os.rename, os.stat, os.unlink)
+    for function in (os.link, os.mkdir, os.open, os.rename, os.stat, os.unlink)
 )
 _FileIdentity = tuple[int, int]
 
@@ -325,24 +325,25 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _restore_quarantine_at(parent_fd: int, quarantine: str, original: str) -> None:
+def _preserve_quarantine_at(parent_fd: int, quarantine: str, original: str) -> None:
     try:
-        os.stat(original, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        try:
-            os.rename(
-                quarantine,
-                original,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-        except OSError:
-            pass
+        os.link(
+            quarantine,
+            original,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
     except OSError:
         pass
 
 
-def _cleanup_owned_at(parent_fd: int, name: str, identity: _FileIdentity) -> None:
+def _cleanup_owned_at(
+    parent_fd: int,
+    name: str,
+    identity: _FileIdentity,
+    cleanup_fd: int,
+) -> None:
     for _attempt in range(3):
         try:
             names = sorted(os.listdir(parent_fd))
@@ -368,20 +369,33 @@ def _cleanup_owned_at(parent_fd: int, name: str, identity: _FileIdentity) -> Non
             except OSError:
                 continue
             if (moved.st_dev, moved.st_ino) != identity:
-                _restore_quarantine_at(parent_fd, quarantine, candidate)
+                _preserve_quarantine_at(parent_fd, quarantine, candidate)
                 continue
+            tombstone = ".operation-cleanup-" + secrets.token_hex(16) + ".tmp"
             try:
-                os.unlink(quarantine, dir_fd=parent_fd)
+                os.rename(
+                    quarantine,
+                    tombstone,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=cleanup_fd,
+                )
+                quarantined = os.stat(
+                    tombstone, dir_fd=cleanup_fd, follow_symlinks=False
+                )
+            except OSError:
+                return
+            if (quarantined.st_dev, quarantined.st_ino) == identity:
                 try:
                     os.fsync(parent_fd)
+                    os.fsync(cleanup_fd)
                 except OSError:
                     pass
-            except OSError:
-                pass
-            return
+                return
 
 
-def _write_exclusive_at(parent_fd: int, name: str, data: bytes) -> _FileIdentity:
+def _write_exclusive_at(
+    parent_fd: int, name: str, data: bytes, cleanup_fd: int
+) -> _FileIdentity:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(name, flags, 0o644, dir_fd=parent_fd)
@@ -402,13 +416,14 @@ def _write_exclusive_at(parent_fd: int, name: str, data: bytes) -> _FileIdentity
             except OSError:
                 pass
         if identity is not None:
-            _cleanup_owned_at(parent_fd, name, identity)
+            _cleanup_owned_at(parent_fd, name, identity, cleanup_fd)
         raise
 
 
 def _cleanup_owned_path(
     target: Path,
     identity: _FileIdentity,
+    cleanup_root: Path,
 ) -> None:
     parent = target.parent
     for _attempt in range(3):
@@ -432,22 +447,31 @@ def _cleanup_owned_path(
             if (moved.st_dev, moved.st_ino) != identity:
                 if not candidate.exists() and not candidate.is_symlink():
                     try:
-                        quarantine.rename(candidate)
+                        os.link(quarantine, candidate, follow_symlinks=False)
                     except OSError:
                         pass
                 continue
+            tombstone = cleanup_root / (
+                ".operation-cleanup-" + secrets.token_hex(16) + ".tmp"
+            )
             try:
-                quarantine.unlink()
+                quarantine.rename(tombstone)
+                quarantined = tombstone.lstat()
+            except OSError:
+                return
+            if (quarantined.st_dev, quarantined.st_ino) == identity:
                 try:
                     _fsync_directory(parent)
+                    if cleanup_root != parent:
+                        _fsync_directory(cleanup_root)
                 except OperationError:
                     pass
-            except OSError:
-                pass
-            return
+                return
 
 
-def _write_exclusive_path(target: Path, data: bytes, vault: Path) -> None:
+def _write_exclusive_path(
+    target: Path, data: bytes, vault: Path, cleanup_root: Path
+) -> None:
     directory_identities = _ensure_directory(target.parent, vault)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
@@ -474,7 +498,7 @@ def _write_exclusive_path(target: Path, data: bytes, vault: Path) -> None:
             except OSError:
                 pass
         if identity is not None:
-            _cleanup_owned_path(target, identity)
+            _cleanup_owned_path(target, identity, cleanup_root)
         raise
 
 
@@ -537,9 +561,12 @@ def write_operation(
     change: OperationChange,
     *,
     suffix: str | None = None,
+    cleanup_root: Path | None = None,
 ) -> Path:
     """Create one immutable operation page, retrying filename collisions."""
     vault = Path(vault)
+    resolved_cleanup_root = Path(cleanup_root) if cleanup_root is not None else vault
+    _ensure_directory(resolved_cleanup_root, resolved_cleanup_root)
     data = render_operation(change).encode("utf-8")
     candidate_suffix = suffix
     for _attempt in range(128):
@@ -552,13 +579,17 @@ def write_operation(
                 parent_fd, directory_identities = _open_operation_parent(
                     vault, relative_parent.parts
                 )
+                cleanup_fd: int | None = None
                 try:
-                    identity = _write_exclusive_at(parent_fd, target.name, data)
+                    cleanup_fd = _open_directory_at(None, resolved_cleanup_root)
+                    identity = _write_exclusive_at(
+                        parent_fd, target.name, data, cleanup_fd
+                    )
                     try:
                         _verify_directory_identities(directory_identities)
                         current = target.lstat()
                     except (OSError, OperationError) as exc:
-                        _cleanup_owned_at(parent_fd, target.name, identity)
+                        _cleanup_owned_at(parent_fd, target.name, identity, cleanup_fd)
                         raise OperationError(
                             "operation directory changed during write"
                         ) from exc
@@ -570,8 +601,13 @@ def write_operation(
                         os.close(parent_fd)
                     except OSError:
                         pass
+                    if cleanup_fd is not None:
+                        try:
+                            os.close(cleanup_fd)
+                        except OSError:
+                            pass
             else:
-                _write_exclusive_path(target, data, vault)
+                _write_exclusive_path(target, data, vault, resolved_cleanup_root)
         except FileExistsError:
             continue
         except OSError as exc:
