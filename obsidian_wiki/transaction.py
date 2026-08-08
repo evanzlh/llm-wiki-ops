@@ -18,6 +18,7 @@ from typing import Callable
 
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
+from obsidian_wiki.operations import OperationChange, write_operation
 from obsidian_wiki.portable_manifest import (
     ManifestError,
     ManifestPreconditionError,
@@ -69,16 +70,6 @@ class CommitResult:
     updated: tuple[str, ...]
     removed: tuple[str, ...]
     operation_path: str
-
-
-@dataclass(frozen=True)
-class _OperationChange:
-    transaction_id: str
-    completed_at: str
-    source_ids: tuple[str, ...]
-    created: tuple[str, ...]
-    updated: tuple[str, ...]
-    removed: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -221,12 +212,10 @@ class TransactionManager:
         self.transactions_root = self.local_state / "transactions"
         self.lock_path = self.local_state / "write.lock"
         self.action_lock_path = self.local_state / "action.lock"
-        self.operation_writer = operation_writer or self._missing_operation_writer
+        self.operation_writer = operation_writer or (
+            lambda change: write_operation(self.config.vault, change)
+        )
         self._require_contained(self.local_state, self.config.root, "local state")
-
-    @staticmethod
-    def _missing_operation_writer(_change: object) -> Path:
-        raise TransactionError("operation writer is not configured")
 
     def begin(
         self,
@@ -752,7 +741,7 @@ class TransactionManager:
                         + shard_relative
                     ) from exc
 
-            change = _OperationChange(
+            change = OperationChange(
                 transaction_id=record.transaction_id,
                 completed_at=resolved_completed_at,
                 source_ids=record.source_ids,

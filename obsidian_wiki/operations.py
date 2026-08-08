@@ -1,0 +1,466 @@
+"""Immutable operation journal pages for portable repositories."""
+
+from __future__ import annotations
+
+import os
+import re
+import secrets
+import stat
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from .frontmatter import FrontmatterError, parse_frontmatter
+
+
+class OperationError(ValueError):
+    """Raised when an operation page or operation change is invalid."""
+
+
+@dataclass(frozen=True)
+class OperationChange:
+    transaction_id: str
+    completed_at: str
+    source_ids: tuple[str, ...]
+    created: tuple[str, ...]
+    updated: tuple[str, ...]
+    removed: tuple[str, ...]
+
+
+_TRANSACTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_SUFFIX_RE = re.compile(r"[0-9a-f]{4,}")
+_FILENAME_RE = re.compile(r"(\d{8}T\d{6}Z)-([0-9a-f]{4,})\.md")
+_SAFE_SCALAR_RE = re.compile(r"[A-Za-z0-9_./:@+-]+")
+_KNOWLEDGE_CATEGORIES = frozenset(
+    {"concepts", "entities", "skills", "references", "synthesis", "journal", "projects"}
+)
+_FRONTMATTER_FIELDS = frozenset(
+    {
+        "title",
+        "category",
+        "tags",
+        "sources",
+        "created",
+        "updated",
+        "transaction_id",
+        "completed_at",
+    }
+)
+
+
+def _timestamp(value: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise OperationError(
+            "operation completed_at must be a UTC timestamp ending in Z"
+        )
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise OperationError("operation completed_at is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise OperationError("operation completed_at must be UTC")
+    return parsed
+
+
+def _safe_relative(raw: str, label: str, *, source: bool = False) -> str:
+    if not isinstance(raw, str) or not raw or "\\" in raw or "\x00" in raw:
+        raise OperationError(f"operation {label} is invalid")
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or "." in posix.parts
+        or ".." in posix.parts
+        or posix.as_posix() != raw
+    ):
+        raise OperationError(f"operation {label} must be a safe relative path")
+    if source:
+        return raw
+    if (
+        posix.suffix != ".md"
+        or not posix.parts
+        or posix.parts[0] not in _KNOWLEDGE_CATEGORIES
+        or posix.parts[:2] == ("journal", "operations")
+        or any(part.startswith(".") for part in posix.parts)
+    ):
+        raise OperationError(f"operation {label} must be a safe knowledge page path")
+    return raw
+
+
+def _canonical_change(change: OperationChange) -> OperationChange:
+    if not isinstance(change, OperationChange):
+        raise OperationError("operation change has the wrong type")
+    if _TRANSACTION_ID_RE.fullmatch(change.transaction_id) is None:
+        raise OperationError("operation transaction_id is invalid")
+    _timestamp(change.completed_at)
+    sources = tuple(
+        sorted(
+            {
+                _safe_relative(item, "source ID", source=True)
+                for item in change.source_ids
+            }
+        )
+    )
+    groups: list[tuple[str, ...]] = []
+    for label, values in (
+        ("created path", change.created),
+        ("updated path", change.updated),
+        ("removed path", change.removed),
+    ):
+        try:
+            groups.append(
+                tuple(sorted({_safe_relative(item, label) for item in values}))
+            )
+        except OperationError as exc:
+            raise OperationError(f"operation page path is invalid: {exc}") from exc
+    created, updated, removed = groups
+    if (
+        set(created) & set(updated)
+        or set(created) & set(removed)
+        or set(updated) & set(removed)
+    ):
+        raise OperationError("operation change lists must be disjoint")
+    return OperationChange(
+        transaction_id=change.transaction_id,
+        completed_at=change.completed_at,
+        source_ids=sources,
+        created=created,
+        updated=updated,
+        removed=removed,
+    )
+
+
+def _yaml_scalar(value: str) -> str:
+    if _SAFE_SCALAR_RE.fullmatch(value):
+        return value
+    if any(ord(char) < 32 for char in value):
+        raise OperationError("operation value contains a control character")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _section(title: str, pages: tuple[str, ...]) -> str:
+    if not pages:
+        return f"## {title}\n\n- None"
+    links = "\n".join(
+        f"- [[{PurePosixPath(page).with_suffix('').as_posix()}]]" for page in pages
+    )
+    return f"## {title}\n\n{links}"
+
+
+def render_operation(change: OperationChange) -> str:
+    """Render one canonical operation page without writing it."""
+    change = _canonical_change(change)
+    completed = _timestamp(change.completed_at)
+    day = completed.strftime("%Y-%m-%d")
+    source_lines = "\n".join(f"  - {_yaml_scalar(item)}" for item in change.source_ids)
+    return (
+        "---\n"
+        f"title: Operation {change.transaction_id}\n"
+        "category: journal\n"
+        "tags:\n"
+        "  - operation\n"
+        "sources:\n"
+        f"{source_lines}\n"
+        f"created: {day}\n"
+        f"updated: {day}\n"
+        f"transaction_id: {change.transaction_id}\n"
+        f"completed_at: {change.completed_at}\n"
+        "---\n"
+        f"# Operation {change.transaction_id}\n\n"
+        f"{_section('Created', change.created)}\n\n"
+        f"{_section('Updated', change.updated)}\n\n"
+        f"{_section('Removed', change.removed)}\n"
+    )
+
+
+def operation_path(vault: Path, change: OperationChange, *, suffix: str) -> Path:
+    """Return the canonical immutable path for an operation page."""
+    change = _canonical_change(change)
+    if _SUFFIX_RE.fullmatch(suffix) is None:
+        raise OperationError(
+            "operation suffix must be four or more lowercase hex characters"
+        )
+    completed = _timestamp(change.completed_at)
+    filename = completed.strftime("%Y%m%dT%H%M%SZ") + f"-{suffix}.md"
+    return (
+        Path(vault)
+        / "journal"
+        / "operations"
+        / completed.strftime("%Y")
+        / completed.strftime("%m")
+        / filename
+    )
+
+
+def _ordinary_directory(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and not bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise OperationError("cannot sync operation directory") from exc
+
+
+def _ensure_directory(path: Path, root: Path) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise OperationError("operation directory escapes the vault") from exc
+    current = root
+    if not _ordinary_directory(current):
+        raise OperationError("operation vault must be an ordinary directory")
+    for part in relative.parts:
+        current = current / part
+        if not current.exists() and not current.is_symlink():
+            try:
+                current.mkdir()
+                _fsync_directory(current.parent)
+            except OSError as exc:
+                raise OperationError("cannot create operation directory") from exc
+        if not _ordinary_directory(current):
+            raise OperationError("operation directory must not be a symlink")
+
+
+def _read_operation_text(path: Path) -> str:
+    try:
+        lexical = path.lstat()
+    except OSError as exc:
+        raise OperationError("operation page is missing") from exc
+    if (
+        not stat.S_ISREG(lexical.st_mode)
+        or stat.S_ISLNK(lexical.st_mode)
+        or bool(getattr(lexical, "st_file_attributes", 0) & 0x400)
+        or lexical.st_nlink != 1
+    ):
+        raise OperationError("operation page must be a single-link ordinary file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise OperationError("operation page is unsafe or unreadable") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (before.st_dev, before.st_ino) != (lexical.st_dev, lexical.st_ino)
+        ):
+            raise OperationError("operation page changed while being opened")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_nlink,
+        ):
+            raise OperationError("operation page changed while being read")
+    finally:
+        os.close(descriptor)
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OperationError("operation page must be UTF-8") from exc
+
+
+def write_operation(
+    vault: Path,
+    change: OperationChange,
+    *,
+    suffix: str | None = None,
+) -> Path:
+    """Create one immutable operation page, retrying filename collisions."""
+    vault = Path(vault)
+    text = render_operation(change)
+    candidate_suffix = suffix
+    for _attempt in range(128):
+        resolved_suffix = candidate_suffix or secrets.token_hex(4)
+        candidate_suffix = None
+        target = operation_path(vault, change, suffix=resolved_suffix)
+        _ensure_directory(target.parent, vault)
+        try:
+            with target.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _fsync_directory(target.parent)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise OperationError("cannot write immutable operation page") from exc
+        return target
+    raise OperationError("cannot allocate a unique operation path")
+
+
+def _frontmatter_body(text: str) -> str:
+    lines = text.splitlines()
+    try:
+        closing = next(
+            index
+            for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration as exc:
+        raise OperationError(
+            "operation frontmatter closing delimiter is missing"
+        ) from exc
+    return "\n".join(lines[closing + 1 :]).strip() + "\n"
+
+
+def _parse_sections(
+    body: str, transaction_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    expected_header = f"# Operation {transaction_id}\n\n"
+    if not body.startswith(expected_header):
+        raise OperationError("operation heading does not match transaction_id")
+    remainder = body[len(expected_header) :]
+    headings = ("Created", "Updated", "Removed")
+    groups: list[tuple[str, ...]] = []
+    for index, heading in enumerate(headings):
+        prefix = f"## {heading}\n\n"
+        if not remainder.startswith(prefix):
+            raise OperationError(f"operation {heading.lower()} section is missing")
+        remainder = remainder[len(prefix) :]
+        next_heading = (
+            f"\n\n## {headings[index + 1]}\n\n" if index + 1 < len(headings) else None
+        )
+        if next_heading is None:
+            section_text = remainder.rstrip("\n")
+            remainder = ""
+        else:
+            if next_heading not in remainder:
+                raise OperationError(
+                    f"operation {headings[index + 1].lower()} section is missing"
+                )
+            section_text, remainder = remainder.split(next_heading, 1)
+            remainder = f"## {headings[index + 1]}\n\n" + remainder
+        lines = section_text.splitlines()
+        if lines == ["- None"]:
+            groups.append(())
+            continue
+        pages: list[str] = []
+        for line in lines:
+            match = re.fullmatch(r"- \[\[([^\[\]|#]+)\]\]", line)
+            if match is None:
+                raise OperationError(f"operation {heading.lower()} entry is invalid")
+            pages.append(
+                _safe_relative(match.group(1) + ".md", f"{heading.lower()} path")
+            )
+        canonical = tuple(sorted(set(pages)))
+        if tuple(pages) != canonical:
+            raise OperationError(
+                f"operation {heading.lower()} paths must be unique and sorted"
+            )
+        groups.append(canonical)
+    if remainder:
+        raise OperationError("operation contains unexpected trailing content")
+    return groups[0], groups[1], groups[2]
+
+
+def validate_operation(path: Path, *, vault: Path | None = None) -> OperationChange:
+    """Validate one operation page and return its canonical change record."""
+    path = Path(path)
+    if vault is None:
+        parts = path.parts
+        matches = [
+            index
+            for index in range(len(parts) - 1)
+            if parts[index : index + 2] == ("journal", "operations")
+        ]
+        if len(matches) != 1:
+            raise OperationError("operation path must be below journal/operations")
+        vault = Path(*parts[: matches[0]])
+    vault = Path(vault)
+    try:
+        relative = path.relative_to(vault)
+    except ValueError as exc:
+        raise OperationError("operation path escapes the vault") from exc
+    if relative.parts[:2] != ("journal", "operations") or len(relative.parts) != 5:
+        raise OperationError("operation path must use journal/operations/YYYY/MM")
+    try:
+        parent_relative = path.parent.relative_to(vault)
+    except ValueError as exc:
+        raise OperationError("operation path escapes the vault") from exc
+    current = vault
+    if not _ordinary_directory(current):
+        raise OperationError("operation vault is unsafe")
+    for part in parent_relative.parts:
+        current = current / part
+        if not _ordinary_directory(current):
+            raise OperationError("operation page path is unsafe")
+    if path.is_symlink():
+        raise OperationError("operation page path is unsafe")
+    match = _FILENAME_RE.fullmatch(path.name)
+    if match is None:
+        raise OperationError("operation filename is invalid")
+    try:
+        text = _read_operation_text(path)
+        parsed = parse_frontmatter(text)
+    except (OperationError, FrontmatterError) as exc:
+        raise OperationError(f"operation frontmatter is invalid: {exc}") from exc
+    fields = set(parsed.scalars) | set(parsed.lists)
+    if fields != _FRONTMATTER_FIELDS:
+        raise OperationError("operation frontmatter fields are invalid")
+    if parsed.scalars.get("category") != "journal" or parsed.lists.get("tags") != (
+        "operation",
+    ):
+        raise OperationError("operation category or operation tag is invalid")
+    if "sources" in parsed.scalars:
+        raise OperationError("operation sources must be a list")
+    transaction_id = parsed.scalars.get("transaction_id", "")
+    completed_at = parsed.scalars.get("completed_at", "")
+    completed = _timestamp(completed_at)
+    if parsed.scalars.get("title") != f"Operation {transaction_id}":
+        raise OperationError("operation title does not match transaction_id")
+    day = completed.strftime("%Y-%m-%d")
+    if parsed.scalars.get("created") != day or parsed.scalars.get("updated") != day:
+        raise OperationError("operation created and updated dates are invalid")
+    if relative.parts[2:4] != (completed.strftime("%Y"), completed.strftime("%m")):
+        raise OperationError("operation directory does not match completed_at")
+    if match.group(1) != completed.strftime("%Y%m%dT%H%M%SZ"):
+        raise OperationError("operation filename timestamp does not match completed_at")
+    created, updated, removed = _parse_sections(_frontmatter_body(text), transaction_id)
+    change = _canonical_change(
+        OperationChange(
+            transaction_id=transaction_id,
+            completed_at=completed_at,
+            source_ids=parsed.lists.get("sources", ()),
+            created=created,
+            updated=updated,
+            removed=removed,
+        )
+    )
+    if render_operation(change) != text:
+        raise OperationError("operation page is not canonical")
+    return change

@@ -12,6 +12,7 @@ from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import skills_dir
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
+from obsidian_wiki.operations import OperationChange, write_operation
 from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
 from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -40,7 +41,9 @@ updated: 2026-08-07
 
 
 def test_parse_inline_sources() -> None:
-    parsed = parse_frontmatter("---\ntitle: A\nsources: [sources/a.md, sources/b.md]\n---\n")
+    parsed = parse_frontmatter(
+        "---\ntitle: A\nsources: [sources/a.md, sources/b.md]\n---\n"
+    )
     assert parsed.lists["sources"] == ("sources/a.md", "sources/b.md")
 
 
@@ -86,11 +89,11 @@ tags: ["topic#portable", 'review # notes'] # Page tags.
 
 def test_parse_double_quoted_values_decodes_supported_escapes() -> None:
     parsed = parse_frontmatter(
-        r'''---
+        r"""---
 title: "Portable \"Repository\""
 aliases: ["Portable \"Repository\", v2", "sources\\windows\\page.md"]
 ---
-'''
+"""
     )
     assert parsed.scalars["title"] == 'Portable "Repository"'
     assert parsed.lists["aliases"] == (
@@ -116,10 +119,10 @@ def test_parse_single_quoted_values_use_doubled_apostrophes() -> None:
 def test_parse_single_quoted_backslash_does_not_escape_apostrophe() -> None:
     with pytest.raises(FrontmatterError, match="quoted"):
         parse_frontmatter(
-            r'''---
+            r"""---
 aliases: ['owner\'s, notes']
 ---
-'''
+"""
         )
 
 
@@ -185,7 +188,7 @@ def test_unquoted_yaml_node_indicators_are_rejected(item: str) -> None:
 
 def test_quoted_yaml_node_indicators_remain_literal_strings() -> None:
     parsed = parse_frontmatter(
-        "---\nsources: [\"!!str /etc/passwd\", '&path /etc/passwd', \"*path\"]\n---\n"
+        '---\nsources: ["!!str /etc/passwd", \'&path /etc/passwd\', "*path"]\n---\n'
     )
     assert parsed.lists["sources"] == (
         "!!str /etc/passwd",
@@ -259,9 +262,7 @@ summary: A compiled example.
         pages=["concepts/a.md"],
         compiled_at="2026-08-07T00:00:00Z",
     )
-    subprocess.run(
-        ["git", "init", "-q", str(root)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
     subprocess.run(
         ["git", "-C", str(root), "add", "."], check=True, capture_output=True
     )
@@ -413,7 +414,15 @@ def test_page_to_manifest_edge_must_be_declared_by_shard(tmp_path: Path) -> None
 
 @pytest.mark.parametrize(
     "category",
-    ["concepts", "entities", "skills", "references", "synthesis", "journal", "projects"],
+    [
+        "concepts",
+        "entities",
+        "skills",
+        "references",
+        "synthesis",
+        "journal",
+        "projects",
+    ],
 )
 def test_knowledge_pages_require_all_six_fields(tmp_path: Path, category: str) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
@@ -423,21 +432,102 @@ def test_knowledge_pages_require_all_six_fields(tmp_path: Path, category: str) -
     assert "frontmatter-missing" in issue_codes(check_portable_repo(config))
 
 
-def test_operation_journal_is_filtered_from_page_and_lint_validation(tmp_path: Path) -> None:
+def test_valid_operation_is_checked_without_manifest_page_membership(
+    tmp_path: Path,
+) -> None:
+    _root, config, _, _, _ = valid_repo(tmp_path)
+    write_operation(
+        config.vault,
+        OperationChange(
+            transaction_id="tx-1",
+            completed_at="2026-08-07T07:30:00Z",
+            source_ids=("sources/a.md",),
+            created=("concepts/a.md",),
+            updated=(),
+            removed=(),
+        ),
+        suffix="a81f",
+    )
+
+    assert check_portable_repo(config)["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["filename", "frontmatter", "tag", "source", "listed-path"],
+)
+def test_invalid_operations_are_errors(tmp_path: Path, mutation: str) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    operation = root / "wiki/journal/operations/removed.md"
-    operation.write_text("# Removed\n\n[[No longer present]]\n", encoding="utf-8")
+    operation = write_operation(
+        config.vault,
+        OperationChange(
+            transaction_id="tx-1",
+            completed_at="2026-08-07T07:30:00Z",
+            source_ids=("sources/a.md",),
+            created=("concepts/a.md",),
+            updated=(),
+            removed=(),
+        ),
+        suffix="a81f",
+    )
+    if mutation == "filename":
+        renamed = operation.with_name("not-an-operation.md")
+        operation.rename(renamed)
+        operation = renamed
+    elif mutation == "frontmatter":
+        operation.write_text("# Missing frontmatter\n", encoding="utf-8")
+    elif mutation == "tag":
+        operation.write_text(
+            operation.read_text(encoding="utf-8").replace(
+                "  - operation", "  - example"
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "source":
+        operation.write_text(
+            operation.read_text(encoding="utf-8").replace(
+                "sources/a.md", "../outside.md"
+            ),
+            encoding="utf-8",
+        )
+    else:
+        operation.write_text(
+            operation.read_text(encoding="utf-8").replace(
+                "[[concepts/a]]", "[[../outside]]"
+            ),
+            encoding="utf-8",
+        )
 
     report = check_portable_repo(config)
-    assert not any(
-        issue["path"] == "wiki/journal/operations/removed.md"
-        for issue in report["issues"]
+
+    assert "operation-invalid" in issue_codes(report)
+    assert (
+        issues_with_code(report, "operation-invalid")[0]["path"]
+        == operation.relative_to(root).as_posix()
     )
+
+
+def test_duplicate_operation_transaction_ids_are_errors(tmp_path: Path) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    change = OperationChange(
+        transaction_id="tx-1",
+        completed_at="2026-08-07T07:30:00Z",
+        source_ids=("sources/a.md",),
+        created=("concepts/a.md",),
+        updated=(),
+        removed=(),
+    )
+    write_operation(config.vault, change, suffix="a81f")
+    write_operation(config.vault, change, suffix="b92e")
+
+    assert "operation-duplicate-transaction" in issue_codes(check_portable_repo(config))
 
 
 def test_fail_level_lint_findings_become_errors(tmp_path: Path) -> None:
     _, config, _, page, _ = valid_repo(tmp_path)
-    page.write_text(page.read_text(encoding="utf-8") + "\n[[Missing target]]\n", encoding="utf-8")
+    page.write_text(
+        page.read_text(encoding="utf-8") + "\n[[Missing target]]\n", encoding="utf-8"
+    )
 
     report = check_portable_repo(config)
     assert issues_with_code(report, "lint-broken-link") == [
@@ -469,7 +559,9 @@ def test_managed_adapters_are_exact_relative_ordinary_files(
     elif mutation == "stale":
         adapter.write_text("# wrong target\n", encoding="utf-8")
     elif mutation == "absolute":
-        adapter.write_text("Read `/tmp/.skills/wiki-ingest/SKILL.md`\n", encoding="utf-8")
+        adapter.write_text(
+            "Read `/tmp/.skills/wiki-ingest/SKILL.md`\n", encoding="utf-8"
+        )
     else:
         adapter.unlink()
         adapter.symlink_to(root / ".skills/wiki-ingest/SKILL.md")
@@ -495,7 +587,9 @@ def test_managed_inventory_validates_implementation_version_and_names(
     assert "managed-skills-invalid" in issue_codes(check_portable_repo(config))
 
 
-def test_managed_inventory_version_must_satisfy_repository_range(tmp_path: Path) -> None:
+def test_managed_inventory_version_must_satisfy_repository_range(
+    tmp_path: Path,
+) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
     inventory = root / ".obsidian-wiki/managed-skills.json"
     payload = json.loads(inventory.read_text(encoding="utf-8"))
@@ -754,7 +848,9 @@ def _run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[s
     )
 
 
-def test_cli_check_json_from_nested_source_is_nonzero_when_stale(tmp_path: Path) -> None:
+def test_cli_check_json_from_nested_source_is_nonzero_when_stale(
+    tmp_path: Path,
+) -> None:
     root, _, source, _, _ = valid_repo(tmp_path)
     nested = root / "sources/nested"
     nested.mkdir()

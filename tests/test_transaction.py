@@ -875,20 +875,20 @@ def test_commit_promotes_candidate_and_updates_manifest(
     assert manager.load("tx-1").status == "complete"
 
 
-def test_default_operation_writer_fails_and_rolls_back(tmp_path: Path) -> None:
+def test_default_operation_writer_records_operation_last(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     manager = TransactionManager(config)
     record = manager.begin([add_source(root)], transaction_id="tx-1")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(
-        TransactionError,
-        match="rolled back.*operation writer is not configured",
-    ):
-        manager.commit("tx-1")
+    result = manager.commit("tx-1", completed_at="2026-08-07T07:30:00Z")
 
-    assert not (config.vault / "concepts/a.md").exists()
-    assert manager.load("tx-1").status == "failed"
+    assert (config.vault / "concepts/a.md").is_file()
+    assert result.operation_path.startswith(
+        "journal/operations/2026/08/20260807T073000Z-"
+    )
+    assert (config.vault / result.operation_path).is_file()
+    assert manager.load("tx-1").status == "complete"
 
 
 def test_commit_refuses_target_changed_after_begin(

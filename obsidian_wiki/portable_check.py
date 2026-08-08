@@ -1,4 +1,5 @@
 """Read-only deterministic validation for portable repositories."""
+
 from __future__ import annotations
 
 import json
@@ -18,17 +19,18 @@ from .cache import compute_hash
 from .config import ConfigError, PortableConfig, load_portable_config
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .lint import lint_vault
+from .operations import OperationError, validate_operation
 from .portable import (
+    _BOOTSTRAP_REFERENCES,
+    _INDEX,
+    _LOG,
+    _PORTABLE_AGENT_INSTRUCTIONS,
     MANAGED_END,
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
     PROJECT_AGENT_DIRS,
     _adapter_text,
-    _BOOTSTRAP_REFERENCES,
     _bootstrap_body,
-    _INDEX,
-    _LOG,
-    _PORTABLE_AGENT_INSTRUCTIONS,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
 
@@ -149,7 +151,9 @@ def _report(issues: list[CheckIssue]) -> dict[str, object]:
     }
 
 
-def _reload_config(config: PortableConfig, issues: list[CheckIssue]) -> PortableConfig | None:
+def _reload_config(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> PortableConfig | None:
     root = config.root
     config_path = root / ".obsidian-wiki/config.toml"
     if (
@@ -245,7 +249,10 @@ def _source_files(
         return current, invalid
     for path in sorted(store.source_root.rglob("*")):
         relative = path.relative_to(store.source_root)
-        if any(part.startswith(".") for part in relative.parts) or path.name == ".gitkeep":
+        if (
+            any(part.startswith(".") for part in relative.parts)
+            or path.name == ".gitkeep"
+        ):
             continue
         try:
             metadata = path.lstat()
@@ -313,7 +320,9 @@ def _check_sources(
             continue
         if entry is None:
             issues.append(
-                CheckIssue("source-new", source_id, "source is not present in the manifest")
+                CheckIssue(
+                    "source-new", source_id, "source is not present in the manifest"
+                )
             )
             continue
         try:
@@ -325,7 +334,11 @@ def _check_sources(
             continue
         if entry.content_hash != current_hash:
             issues.append(
-                CheckIssue("source-stale", source_id, "source content differs from the manifest")
+                CheckIssue(
+                    "source-stale",
+                    source_id,
+                    "source content differs from the manifest",
+                )
             )
     for source_id in sorted(set(tracked) - set(current)):
         issues.append(
@@ -495,6 +508,86 @@ def _check_pages(
                 )
 
 
+def _check_operations(
+    config: PortableConfig,
+    store: ShardedManifest | None,
+    issues: list[CheckIssue],
+) -> None:
+    root = config.vault / "journal" / "operations"
+    if not root.exists() and not root.is_symlink():
+        return
+    if not _ordinary_directory(root) or _has_symlink_component(config.vault, root):
+        issues.append(
+            CheckIssue(
+                "operation-invalid",
+                _rel(config.root, root),
+                "operation journal must be an ordinary contained directory",
+            )
+        )
+        return
+
+    transactions: dict[str, str] = {}
+    for directory, dirnames, filenames in os.walk(
+        root, topdown=True, followlinks=False
+    ):
+        current = Path(directory)
+        safe_directories: list[str] = []
+        for name in sorted(dirnames):
+            child = current / name
+            if _ordinary_directory(child) and not _has_symlink_component(root, child):
+                safe_directories.append(name)
+            else:
+                issues.append(
+                    CheckIssue(
+                        "operation-invalid",
+                        _rel(config.root, child),
+                        "operation directory must be ordinary and contained",
+                    )
+                )
+        dirnames[:] = safe_directories
+        for name in sorted(filenames):
+            operation = current / name
+            issue_path = _rel(config.root, operation)
+            if (
+                operation.suffix != ".md"
+                or not _ordinary_file(operation)
+                or _has_symlink_component(root, operation)
+            ):
+                issues.append(
+                    CheckIssue(
+                        "operation-invalid",
+                        issue_path,
+                        "operation page must be a Markdown single-link ordinary file",
+                    )
+                )
+                continue
+            try:
+                change = validate_operation(operation, vault=config.vault)
+                if store is not None:
+                    for source_id in change.source_ids:
+                        store.source_path(source_id)
+            except (ManifestError, OperationError) as exc:
+                issues.append(
+                    CheckIssue(
+                        "operation-invalid",
+                        issue_path,
+                        _scrub(config.root, exc),
+                    )
+                )
+                continue
+            previous = transactions.get(change.transaction_id)
+            if previous is not None:
+                issues.append(
+                    CheckIssue(
+                        "operation-duplicate-transaction",
+                        issue_path,
+                        "duplicate transaction ID also used by " + previous,
+                    )
+                )
+            else:
+                transactions[change.transaction_id] = issue_path
+
+
 def _lint_path(config: PortableConfig, page: str) -> str:
     return _rel(config.root, config.vault / PurePosixPath(page))
 
@@ -517,8 +610,7 @@ def _lint_page_topology_is_safe(config: PortableConfig) -> bool:
     try:
         pages = config.vault.rglob("*.md")
         return all(
-            _ordinary_file(page)
-            and not _has_symlink_component(config.vault, page)
+            _ordinary_file(page) and not _has_symlink_component(config.vault, page)
             for page in pages
         )
     except (OSError, RuntimeError, ValueError):
@@ -574,9 +666,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
         detail = finding.get("issue", "invalid trust metadata")
         path = _lint_path(config, page) if isinstance(page, str) else "."
         issues.append(
-            CheckIssue(
-                "lint-trust-metadata", path, _scrub(config.root, detail)
-            )
+            CheckIssue("lint-trust-metadata", path, _scrub(config.root, detail))
         )
 
 
@@ -705,7 +795,9 @@ def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> N
             adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
             adapter = config.root.joinpath(*adapter_relative.parts)
             issue_path = adapter_relative.as_posix()
-            if not _ordinary_file(adapter) or _has_symlink_component(config.root, adapter):
+            if not _ordinary_file(adapter) or _has_symlink_component(
+                config.root, adapter
+            ):
                 issues.append(
                     CheckIssue(
                         "managed-adapter-invalid",
@@ -816,6 +908,7 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     if store is not None:
         _check_sources(store, entries, issues)
     _check_pages(loaded, store, entries, issues)
+    _check_operations(loaded, store, issues)
     _check_lint(loaded, issues)
     _check_git(loaded, issues)
     _check_managed_skills(loaded, issues)
