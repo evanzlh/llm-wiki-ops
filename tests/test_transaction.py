@@ -1523,7 +1523,7 @@ def test_operation_writer_extra_page_then_return_rolls_back_all_new_pages(
     assert not (config.vault / "concepts/a.md").exists()
 
 
-def test_retry_refuses_drift_at_prior_failed_operation_artifact(
+def test_retry_cleans_drift_at_prior_failed_operation_artifact(
     tmp_path: Path,
     operation_writer,
 ) -> None:
@@ -1544,11 +1544,10 @@ def test_retry_refuses_drift_at_prior_failed_operation_artifact(
     partial.write_text("foreign artifact\n", encoding="utf-8")
     manager.operation_writer = operation_writer(config)
 
-    with pytest.raises(TransactionError, match="changed after transaction began"):
-        manager.retry("tx-1")
+    manager.retry("tx-1")
 
-    assert partial.read_text(encoding="utf-8") == "foreign artifact\n"
-    assert manager.load("tx-1").status == "failed"
+    assert not partial.exists()
+    assert manager.load("tx-1").status == "complete"
 
 
 def test_a_only_transaction_cannot_update_existing_a_b_page(
@@ -1745,6 +1744,49 @@ def test_restore_refuses_while_same_transaction_commit_is_still_running(
 
     assert not commit_thread.is_alive()
     assert commit_errors == []
+    assert manager.load("tx-1").status == "complete"
+
+
+def test_mark_delete_refuses_while_same_transaction_commit_is_running(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    commit_errors: list[TransactionError] = []
+
+    def writer(change):
+        writer_entered.set()
+        if not release_writer.wait(timeout=5):
+            raise RuntimeError("test timed out waiting to release operation writer")
+        path = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# operation\n", encoding="utf-8")
+        return path
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    def commit() -> None:
+        try:
+            manager.commit("tx-1")
+        except TransactionError as exc:
+            commit_errors.append(exc)
+
+    commit_thread = threading.Thread(target=commit)
+    commit_thread.start()
+    assert writer_entered.wait(timeout=5)
+    try:
+        with pytest.raises(TransactionError, match="action.*progress|in progress"):
+            TransactionManager(config).mark_delete("tx-1", "concepts/delete.md")
+    finally:
+        release_writer.set()
+        commit_thread.join(timeout=5)
+
+    assert not commit_thread.is_alive()
+    assert commit_errors == []
+    assert json.loads((record.workspace / "deletions.json").read_text()) == []
     assert manager.load("tx-1").status == "complete"
 
 
@@ -2115,3 +2157,150 @@ def test_load_rejects_persisted_writer_guard_outside_authoritative_vault(
 
     with pytest.raises(TransactionError, match="writer guard|authoritative|affected"):
         manager.load("tx-1")
+
+
+def test_writer_guard_preserves_unrelated_changes_made_after_begin(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    removed = config.vault / "references/removed-before-writer.md"
+    removed.parent.mkdir(parents=True)
+    removed.write_text(PAGE, encoding="utf-8")
+
+    def writer(_change):
+        raise SystemExit("simulated writer crash")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    removed.unlink()
+    added = config.vault / "references/added-before-writer.md"
+    added.write_text(PAGE.replace("# A", "# Added"), encoding="utf-8")
+    added_bytes = added.read_bytes()
+
+    with pytest.raises(SystemExit, match="simulated writer crash"):
+        manager.commit("tx-1")
+
+    recovering = TransactionManager(config, operation_writer=writer)
+    assert recovering.load("tx-1").status == "promoting"
+    recovering.restore("tx-1")
+
+    assert added.read_bytes() == added_bytes
+    assert not removed.exists()
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+
+
+def test_retry_cleans_persisted_writer_additions_before_new_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    extra = config.vault / "references/writer-extra.md"
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            extra.write_text("writer addition\n", encoding="utf-8")
+            raise OSError("first writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    cleanup_failed = False
+
+    def fail_writer_cleanup(record_value, index):
+        nonlocal cleanup_failed
+        if not cleanup_failed and "references/writer-extra.md" in index:
+            cleanup_failed = True
+            raise TransactionError("simulated writer cleanup failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", fail_writer_cleanup)
+    with pytest.raises(TransactionError, match="writer restore failed"):
+        manager.commit("tx-1")
+    assert cleanup_failed
+    assert extra.exists()
+    assert manager.load("tx-1").status == "failed"
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+    manager.retry("tx-1")
+
+    assert not extra.exists()
+    assert manager.load("tx-1").status == "complete"
+
+
+@pytest.mark.parametrize("snapshot_kind", ["base", "writer", "operation"])
+def test_load_rejects_snapshot_backing_with_wrong_content_hash(
+    tmp_path: Path,
+    snapshot_kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    if snapshot_kind == "base":
+        target = config.vault / "concepts/a.md"
+        target.write_text(PAGE, encoding="utf-8")
+    elif snapshot_kind == "writer":
+        target = config.vault / "references/unrelated.md"
+        target.parent.mkdir(parents=True)
+        target.write_text(PAGE, encoding="utf-8")
+    else:
+        target = config.vault / "journal/operations/existing.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# existing operation\n", encoding="utf-8")
+
+    def writer(_change):
+        raise SystemExit("simulated writer crash")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    if snapshot_kind == "base":
+        candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Updated"))
+    else:
+        candidate_page(record, "concepts/a.md")
+    with pytest.raises(SystemExit, match="simulated writer crash"):
+        manager.commit("tx-1")
+
+    relative = target.relative_to(config.vault).as_posix()
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    backing = payload["snapshot_index"][relative]
+    assert backing is not None
+    (record.workspace / "snapshots" / backing).write_text(
+        "tampered snapshot backing\n", encoding="utf-8"
+    )
+
+    with pytest.raises(TransactionError, match="snapshot.*hash|backing.*hash"):
+        manager.load("tx-1")
+
+
+def test_snapshot_rejects_target_changed_after_preimage_verification(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    interposed = PAGE.replace("# A", "# Interposed")
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Updated"))
+    original_verify = manager._verify_preimages
+
+    def verify_then_interpose(record_value, affected):
+        original_verify(record_value, affected)
+        target.write_text(interposed, encoding="utf-8")
+
+    monkeypatch.setattr(manager, "_verify_preimages", verify_then_interpose)
+
+    with pytest.raises(TransactionError, match="changed.*began|preimage"):
+        manager.commit("tx-1")
+
+    assert target.read_text(encoding="utf-8") == interposed

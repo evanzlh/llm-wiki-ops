@@ -390,22 +390,23 @@ class TransactionManager:
                 self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
 
     def mark_delete(self, transaction_id: str, relative_path: str) -> None:
-        record = self.load(transaction_id)
-        if record.status != "active":
-            raise TransactionError(
-                f"cannot mark a deletion on {record.status} transaction"
-            )
-        self._require_owned_lock(transaction_id)
-        relative = self._validate_output_path(relative_path, "transaction deletion")
-        if relative in record.deletions:
-            raise TransactionError(f"duplicate transaction deletion: {relative}")
-        candidate = record.candidate_vault / relative
-        if candidate.exists() or candidate.is_symlink():
-            raise TransactionError(
-                f"transaction deletion conflicts with candidate page: {relative}"
-            )
-        deletions = sorted((*record.deletions, relative))
-        self._write_json_atomic(record.workspace / "deletions.json", deletions)
+        with self._action_lock():
+            record = self.load(transaction_id)
+            if record.status != "active":
+                raise TransactionError(
+                    f"cannot mark a deletion on {record.status} transaction"
+                )
+            self._require_owned_lock(transaction_id)
+            relative = self._validate_output_path(relative_path, "transaction deletion")
+            if relative in record.deletions:
+                raise TransactionError(f"duplicate transaction deletion: {relative}")
+            candidate = record.candidate_vault / relative
+            if candidate.exists() or candidate.is_symlink():
+                raise TransactionError(
+                    f"transaction deletion conflicts with candidate page: {relative}"
+                )
+            deletions = sorted((*record.deletions, relative))
+            self._write_json_atomic(record.workspace / "deletions.json", deletions)
 
     def commit(
         self,
@@ -445,7 +446,13 @@ class TransactionManager:
                 candidates = self._enumerate_candidates(record)
                 affected = set(self._affected_preimage_paths(record, candidates))
                 payload = self._read_metadata_payload(record.workspace)
-                affected.update(self._load_snapshot_index(payload["snapshot_index"]))
+                snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
+                self._restore_persisted_writer_guard(
+                    record,
+                    payload,
+                    snapshot_index,
+                    base_affected=affected,
+                )
                 self._verify_preimages(record, affected)
                 self._clear_snapshot_state(record)
                 record = self.load(transaction_id)
@@ -499,30 +506,14 @@ class TransactionManager:
                                 + relative
                             )
                 snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
-                if payload["writer_prepared"]:
-                    writer_before = self._load_writer_guard(payload["writer_guard"])
-                    operation_before = self._load_operation_guard(
-                        payload["operation_guard"]
-                    )
-                    writer_cleanup = self._writer_guard_diff(
-                        writer_before,
-                        self._writer_guard_state(allow_unsafe=True),
-                        {
-                            relative: snapshot_index[relative]
-                            for relative in writer_before
-                        },
-                    )
-                    writer_cleanup.update(
-                        self._operation_tree_diff(
-                            operation_before,
-                            self._operation_tree_state(allow_unsafe=True),
-                            {
-                                relative: snapshot_index[relative]
-                                for relative in operation_before
-                            },
-                        )
-                    )
-                    self._restore_snapshot_index(record, writer_cleanup)
+                candidates = self._enumerate_candidates(record)
+                base_affected = set(self._affected_preimage_paths(record, candidates))
+                self._restore_persisted_writer_guard(
+                    record,
+                    payload,
+                    snapshot_index,
+                    base_affected=base_affected,
+                )
                 self._restore_snapshot_index(record, snapshot_index)
                 payload["status"] = "restored"
                 self._write_metadata(record.workspace, payload)
@@ -1021,14 +1012,23 @@ class TransactionManager:
         index: dict[str, str | None] = {}
         for relative in affected:
             target = self._vault_path(relative)
-            current = self._current_vault_hash(relative)
-            if current is None:
+            expected = record.preimages.get(relative)
+            if not target.exists() and not target.is_symlink():
+                if expected is not None:
+                    raise TransactionError(
+                        "transaction target changed after transaction began: "
+                        + relative
+                    )
                 index[relative] = None
                 continue
+            data = self._read_single_link_bytes(target, "transaction target")
+            if self._hash_bytes(data) != expected:
+                raise TransactionError(
+                    "transaction target changed after transaction began: " + relative
+                )
             snapshot_relative = PurePosixPath("originals") / PurePosixPath(relative)
             snapshot = record.workspace / "snapshots" / snapshot_relative
             self._ensure_contained_directory(snapshot.parent, originals)
-            data = self._read_single_link_bytes(target, "transaction target")
             self._write_atomic_bytes(snapshot, data)
             index[relative] = snapshot_relative.as_posix()
         return dict(sorted(index.items()))
@@ -1105,6 +1105,45 @@ class TransactionManager:
             )
             data = self._read_single_link_bytes(snapshot, "transaction snapshot")
             self._replace_vault_bytes(target, data)
+
+    def _restore_persisted_writer_guard(
+        self,
+        record: TransactionRecord,
+        payload: dict[str, object],
+        snapshot_index: dict[str, str | None],
+        *,
+        base_affected: set[str],
+    ) -> None:
+        if not payload["writer_prepared"]:
+            return
+        writer_before = {
+            relative: content_hash
+            for relative, content_hash in self._load_writer_guard(
+                payload["writer_guard"]
+            ).items()
+            if relative not in base_affected
+        }
+        operation_before = self._load_operation_guard(payload["operation_guard"])
+        writer_after = {
+            relative: content_hash
+            for relative, content_hash in self._writer_guard_state(
+                allow_unsafe=True
+            ).items()
+            if relative not in base_affected
+        }
+        cleanup = self._writer_guard_diff(
+            writer_before,
+            writer_after,
+            {relative: snapshot_index[relative] for relative in writer_before},
+        )
+        cleanup.update(
+            self._operation_tree_diff(
+                operation_before,
+                self._operation_tree_state(allow_unsafe=True),
+                {relative: snapshot_index[relative] for relative in operation_before},
+            )
+        )
+        self._restore_snapshot_index(record, cleanup)
 
     def _promote_candidate(self, candidate: _Candidate, target: Path) -> None:
         self._replace_vault_bytes(target, candidate.data)
@@ -1549,18 +1588,6 @@ class TransactionManager:
         operation_guard = self._load_operation_guard(payload["operation_guard"])
         writer_guard = self._load_writer_guard(payload["writer_guard"])
         writer_prepared = payload["writer_prepared"]
-        writer_preimages: set[str] = set()
-        operation_preimages: set[str] = set()
-        for relative in preimages:
-            if PurePosixPath(relative).parts[:2] == ("journal", "operations"):
-                self._validate_operation_guard_path(relative)
-                operation_preimages.add(relative)
-            else:
-                self._validate_writer_guard_path(relative)
-                writer_preimages.add(relative)
-        expected_writer_guard = (
-            (writer_preimages - set(deletions)) | set(candidate_names) | shard_paths
-        )
         operation_paths = set(self._load_operation_paths(payload["operation_paths"]))
         operation_path = payload["operation_path"]
         if operation_path is not None and operation_path not in operation_paths:
@@ -1576,6 +1603,15 @@ class TransactionManager:
         postimages = self._load_image_map(
             payload["postimages"], "transaction postimages"
         )
+        expected_snapshot_hashes = {
+            relative: preimages.get(relative) for relative in base_affected
+        }
+        for relative, content_hash in writer_guard.items():
+            expected_snapshot_hashes.setdefault(relative, content_hash)
+        for relative, content_hash in operation_guard.items():
+            expected_snapshot_hashes.setdefault(relative, content_hash)
+        for relative in operation_paths:
+            expected_snapshot_hashes.setdefault(relative, None)
         if not set(snapshots) <= snapshot_allowed:
             raise TransactionError(
                 "transaction snapshot target is outside the affected set"
@@ -1585,13 +1621,6 @@ class TransactionManager:
                 "transaction postimages contain paths outside the affected set"
             )
         if writer_prepared:
-            if (
-                set(writer_guard) != expected_writer_guard
-                or set(operation_guard) != operation_preimages
-            ):
-                raise TransactionError(
-                    "persisted writer guard does not exactly match authoritative paths"
-                )
             if set(snapshots) != snapshot_allowed:
                 raise TransactionError(
                     "transaction snapshots do not exactly match persisted writer guard"
@@ -1609,6 +1638,11 @@ class TransactionManager:
             raise TransactionError(
                 "unprepared transaction cannot contain persisted writer guards"
             )
+        self._validate_snapshot_backing_hashes(
+            workspace,
+            snapshots,
+            expected_snapshot_hashes,
+        )
 
         created = set(payload["created"])
         updated = set(payload["updated"])
@@ -1807,6 +1841,34 @@ class TransactionManager:
             raise TransactionError("transaction snapshot targets must be sorted")
         return result
 
+    def _validate_snapshot_backing_hashes(
+        self,
+        workspace: Path,
+        snapshots: dict[str, str | None],
+        expected_hashes: dict[str, str | None],
+    ) -> None:
+        snapshot_root = workspace / "snapshots"
+        for relative, stored in snapshots.items():
+            expected = expected_hashes[relative]
+            if stored is None:
+                if expected is not None:
+                    raise TransactionError(
+                        f"transaction snapshot backing hash is missing for {relative}"
+                    )
+                continue
+            if expected is None:
+                raise TransactionError(
+                    f"transaction snapshot backing is unexpected for {relative}"
+                )
+            snapshot = snapshot_root.joinpath(*PurePosixPath(stored).parts)
+            data = self._read_single_link_bytes(
+                snapshot, "transaction snapshot backing"
+            )
+            if self._hash_bytes(data) != expected:
+                raise TransactionError(
+                    f"transaction snapshot backing hash mismatch for {relative}"
+                )
+
     def _workspace_path(self, transaction_id: str) -> Path:
         self._validate_transaction_id(transaction_id)
         workspace = self.transactions_root / transaction_id
@@ -1958,6 +2020,10 @@ class TransactionManager:
         finally:
             os.close(descriptor)
         return f"sha256:{digest.hexdigest()}"
+
+    @staticmethod
+    def _hash_bytes(data: bytes) -> str:
+        return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
     def _acquire_lock(self, transaction_id: str, started_at: str) -> None:
         payload = {"started_at": started_at, "transaction_id": transaction_id}
