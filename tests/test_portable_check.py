@@ -158,6 +158,30 @@ def test_nested_flow_collections_are_rejected(page: str) -> None:
         parse_frontmatter(page)
 
 
+@pytest.mark.parametrize(
+    "item",
+    [
+        "!!str /etc/passwd",
+        "&path /etc/passwd",
+        "*path",
+    ],
+)
+def test_unquoted_yaml_node_indicators_are_rejected(item: str) -> None:
+    with pytest.raises(FrontmatterError, match="YAML.*tag.*anchor.*alias"):
+        parse_frontmatter(f"---\nsources: [{item}]\n---\n")
+
+
+def test_quoted_yaml_node_indicators_remain_literal_strings() -> None:
+    parsed = parse_frontmatter(
+        "---\nsources: [\"!!str /etc/passwd\", '&path /etc/passwd', \"*path\"]\n---\n"
+    )
+    assert parsed.lists["sources"] == (
+        "!!str /etc/passwd",
+        "&path /etc/passwd",
+        "*path",
+    )
+
+
 def test_plain_scalars_may_end_with_quote_characters() -> None:
     parsed = parse_frontmatter("---\ntitle: James' # comment\nmeasurement: 6\"\n---\n")
     assert parsed.scalars["title"] == "James'"

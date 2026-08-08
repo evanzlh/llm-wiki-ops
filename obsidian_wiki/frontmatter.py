@@ -97,6 +97,8 @@ def _scalar(value: str) -> str:
         return _double_quoted(value)
     if value[0] == "'":
         return _single_quoted(value)
+    if value[0] in "!&*":
+        raise FrontmatterError("unsupported YAML tag, anchor, or alias")
     if value[0] in "[{":
         raise FrontmatterError("nested flow collection is not supported")
     return value
