@@ -508,7 +508,33 @@ def _operation_finding(finding: object) -> bool:
     )
 
 
+def _lint_page_topology_is_safe(config: PortableConfig) -> bool:
+    """Return whether legacy lint can inspect the vault without following links."""
+    if not _ordinary_directory(config.vault) or _has_symlink_component(
+        config.root, config.vault
+    ):
+        return False
+    try:
+        pages = config.vault.rglob("*.md")
+        return all(
+            _ordinary_file(page)
+            and not _has_symlink_component(config.vault, page)
+            for page in pages
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    if not _lint_page_topology_is_safe(config):
+        issues.append(
+            CheckIssue(
+                "lint-invalid",
+                ".",
+                "lint skipped because the vault Markdown topology is unsafe",
+            )
+        )
+        return
     try:
         report = lint_vault(
             config.vault,

@@ -665,6 +665,23 @@ def test_checker_rejects_hardlinked_managed_files(
     assert str(root) not in json.dumps(report)
 
 
+def test_checker_does_not_follow_symlinked_knowledge_page(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    marker = "PORTABLE_CHECK_EXTERNAL_MARKER_8F39"
+    target = "portable-check-external-target-8f39"
+    external = tmp_path / "external.md"
+    external.write_text(f"# {marker}\n\n[[{target}]]\n", encoding="utf-8")
+    leak = root / "wiki/concepts/leak.md"
+    leak.symlink_to(external)
+
+    report = check_portable_repo(config)
+    serialized = json.dumps(report)
+
+    assert "knowledge-page-invalid" in issue_codes(report)
+    assert marker not in serialized
+    assert target not in serialized
+
+
 def test_malformed_marker_and_config_are_reported_without_absolute_paths(
     tmp_path: Path,
 ) -> None:
