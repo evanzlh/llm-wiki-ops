@@ -39,7 +39,7 @@ _METADATA_FIELDS = frozenset(
     {"preimages", "source_ids", "started_at", "status", "transaction_id"}
 )
 _LOCK_FIELDS = frozenset({"started_at", "transaction_id"})
-_MAX_JSON_BYTES = 1024 * 1024
+_MAX_LOCK_BYTES = 16 * 1024
 _FileIdentity = tuple[int, int]
 
 
@@ -386,7 +386,9 @@ class TransactionManager:
 
     def _read_lock(self) -> tuple[dict[str, str], _FileIdentity]:
         payload, identity = self._read_json_file_with_identity(
-            self.lock_path, "transaction lock"
+            self.lock_path,
+            "transaction lock",
+            max_bytes=_MAX_LOCK_BYTES,
         )
         if not isinstance(payload, dict) or set(payload) != _LOCK_FIELDS:
             raise TransactionError("transaction lock has invalid fields")
@@ -549,15 +551,20 @@ class TransactionManager:
             raise TransactionError(f"{label} is unsafe: {raw!r}")
 
     @staticmethod
-    def _read_json_file(path: Path, label: str) -> object:
+    def _read_json_file(
+        path: Path, label: str, *, max_bytes: int | None = None
+    ) -> object:
         payload, _identity = TransactionManager._read_json_file_with_identity(
-            path, label
+            path, label, max_bytes=max_bytes
         )
         return payload
 
     @staticmethod
     def _read_json_file_with_identity(
-        path: Path, label: str
+        path: Path,
+        label: str,
+        *,
+        max_bytes: int | None = None,
     ) -> tuple[object, _FileIdentity]:
         directory_fd = TransactionManager._open_directory(path.parent, label)
         descriptor: int | None = None
@@ -577,19 +584,23 @@ class TransactionManager:
                     f"{label} must be a single-link ordinary file, "
                     f"not a symlink: {path}"
                 )
-            if before.st_size > _MAX_JSON_BYTES:
+            if max_bytes is not None and before.st_size > max_bytes:
                 raise TransactionError(f"{label} is too large")
 
             chunks: list[bytes] = []
-            remaining = _MAX_JSON_BYTES + 1
-            while remaining:
-                chunk = os.read(descriptor, min(64 * 1024, remaining))
+            remaining = max_bytes + 1 if max_bytes is not None else None
+            while remaining is None or remaining > 0:
+                read_size = 64 * 1024
+                if remaining is not None:
+                    read_size = min(read_size, remaining)
+                chunk = os.read(descriptor, read_size)
                 if not chunk:
                     break
                 chunks.append(chunk)
-                remaining -= len(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
             data = b"".join(chunks)
-            if len(data) > _MAX_JSON_BYTES:
+            if max_bytes is not None and len(data) > max_bytes:
                 raise TransactionError(f"{label} is too large")
 
             after = os.fstat(descriptor)

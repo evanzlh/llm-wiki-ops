@@ -403,15 +403,44 @@ def test_lock_unlink_refuses_same_owner_replacement_inode(
     ] == "tx-1"
 
 
-def test_load_rejects_oversized_metadata(tmp_path: Path) -> None:
+def test_begin_loads_legitimate_metadata_larger_than_one_megabyte(
+    tmp_path: Path,
+) -> None:
     root, config = make_config(tmp_path)
-    manager = TransactionManager(config)
-    record = manager.begin([add_source(root)], transaction_id="tx-1")
-    metadata = record.workspace / "metadata.json"
-    metadata.write_bytes(metadata.read_bytes() + b" " * (1024 * 1024))
+    source = add_source(root)
+    for index in range(5_000):
+        page = config.vault / "concepts" / (
+            f"{index:05d}-" + "x" * 150 + ".md"
+        )
+        page.write_text(f"page {index}", encoding="utf-8")
 
-    with pytest.raises(TransactionError, match="metadata.*large"):
-        manager.load("tx-1")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-1")
+
+    metadata = record.workspace / "metadata.json"
+    assert metadata.stat().st_size > 1024 * 1024
+    assert len(record.preimages) == 5_001
+    assert manager.load("tx-1") == record
+
+
+def test_existing_lock_uses_a_strict_small_size_bound(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    config.local_state.mkdir(parents=True)
+    lock = config.local_state / "write.lock"
+    lock.write_text(
+        json.dumps(
+            {"started_at": "2026-08-07T00:00:00Z", "transaction_id": "owner"}
+        )
+        + " " * (32 * 1024)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransactionError, match="lock.*large"):
+        TransactionManager(config).begin([source], transaction_id="tx-1")
+
+    assert lock.exists()
 
 
 def test_transactions_root_and_workspace_must_not_be_symlinks(tmp_path: Path) -> None:
