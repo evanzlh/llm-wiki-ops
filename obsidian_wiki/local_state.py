@@ -636,7 +636,12 @@ def _invalidated_name() -> str:
     return ".hot-invalidated-" + secrets.token_hex(16) + ".tmp"
 
 
-def _restore_mismatched_hot_at(vault_fd: int, local_fd: int, tombstone: str) -> None:
+def _restore_mismatched_hot_at(
+    vault_fd: int,
+    local_fd: int,
+    tombstone: str,
+    expected: _FileIdentity,
+) -> None:
     source = -1
     target = -1
     try:
@@ -646,7 +651,10 @@ def _restore_mismatched_hot_at(vault_fd: int, local_fd: int, tombstone: str) -> 
             dir_fd=local_fd,
         )
         source_metadata = os.fstat(source)
-        if not stat.S_ISREG(source_metadata.st_mode):
+        if (
+            not stat.S_ISREG(source_metadata.st_mode)
+            or _identity(source_metadata) != expected
+        ):
             raise LocalStateError(
                 "non-file hot.md replacement was preserved in local state"
             )
@@ -662,6 +670,12 @@ def _restore_mismatched_hot_at(vault_fd: int, local_fd: int, tombstone: str) -> 
                 break
             _write_all(target, chunk)
         os.fsync(target)
+        target_identity = _identity(os.fstat(target))
+        installed = os.stat(_HOT_NAME, dir_fd=vault_fd, follow_symlinks=False)
+        if _identity(installed) != target_identity:
+            raise LocalStateError(
+                "a newer hot.md replaced the restored concurrent write"
+            )
         os.fsync(vault_fd)
     except OSError as exc:
         raise LocalStateError(
@@ -674,12 +688,18 @@ def _restore_mismatched_hot_at(vault_fd: int, local_fd: int, tombstone: str) -> 
             os.close(target)
 
 
-def _restore_mismatched_hot_path(tombstone: Path, hot: Path) -> None:
+def _restore_mismatched_hot_path(
+    tombstone: Path, hot: Path, expected: _FileIdentity
+) -> None:
     source = -1
     target = -1
     try:
         source = os.open(tombstone, os.O_RDONLY)
-        if not stat.S_ISREG(os.fstat(source).st_mode):
+        source_metadata = os.fstat(source)
+        if (
+            not stat.S_ISREG(source_metadata.st_mode)
+            or _identity(source_metadata) != expected
+        ):
             raise LocalStateError(
                 "non-file hot.md replacement was preserved in local state"
             )
@@ -696,6 +716,11 @@ def _restore_mismatched_hot_path(tombstone: Path, hot: Path) -> None:
                 break
             _write_all(target, chunk)
         os.fsync(target)
+        target_identity = _identity(os.fstat(target))
+        if _identity(hot.lstat()) != target_identity:
+            raise LocalStateError(
+                "a newer hot.md replaced the restored concurrent write"
+            )
     except OSError as exc:
         raise LocalStateError(
             "hot.md replacement could not be restored from local quarantine"
@@ -741,7 +766,9 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
                 raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
             moved = os.stat(tombstone, dir_fd=local_fd, follow_symlinks=False)
             if _identity(moved) != expected:
-                _restore_mismatched_hot_at(vault_fd, local_fd, tombstone)
+                _restore_mismatched_hot_at(
+                    vault_fd, local_fd, tombstone, _identity(moved)
+                )
                 os.fsync(local_fd)
                 return
             os.fsync(vault_fd)
@@ -776,7 +803,7 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
             raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
         moved = target.lstat()
         if _identity(moved) != expected:
-            _restore_mismatched_hot_path(target, hot)
+            _restore_mismatched_hot_path(target, hot, _identity(moved))
             return
         _verify_directory_identities(vault_identities)
         _verify_directory_identities(local_identities)
