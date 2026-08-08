@@ -191,3 +191,31 @@ def test_owned_cleanup_never_deletes_a_concurrent_collision(
     assert not (tmp_path / "owned-alias.md").exists()
     tombstones = list(tmp_path.glob(".operation-cleanup-*"))
     assert any(path.read_bytes() == b"owned" for path in tombstones)
+
+
+def test_final_target_replacement_quarantines_owned_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    change = OperationChange("tx-1", "2026-08-07T07:30:00Z", (), (), (), ())
+    target = operation_path(tmp_path, change, suffix="a81f")
+    original = operations._verify_directory_identities
+    replaced = False
+
+    def verify_then_replace(identities) -> None:
+        nonlocal replaced
+        original(identities)
+        if replaced:
+            return
+        replaced = True
+        target.rename(target.with_name("owned-alias.md"))
+        target.write_bytes(b"collision")
+
+    monkeypatch.setattr(operations, "_verify_directory_identities", verify_then_replace)
+
+    with pytest.raises(OperationError, match="target changed"):
+        write_operation(tmp_path, change, suffix="a81f")
+
+    assert target.read_bytes() == b"collision"
+    assert not target.with_name("owned-alias.md").exists()
+    tombstones = list(tmp_path.glob(".operation-cleanup-*"))
+    assert any(b"# Operation tx-1" in path.read_bytes() for path in tombstones)

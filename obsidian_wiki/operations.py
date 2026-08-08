@@ -594,7 +594,7 @@ def write_operation(
                             "operation directory changed during write"
                         ) from exc
                     if (current.st_dev, current.st_ino) != identity:
-                        _cleanup_owned_at(parent_fd, target.name, identity)
+                        _cleanup_owned_at(parent_fd, target.name, identity, cleanup_fd)
                         raise OperationError("operation target changed during write")
                 finally:
                     try:
