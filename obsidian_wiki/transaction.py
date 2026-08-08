@@ -18,7 +18,11 @@ from typing import Callable
 
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
-from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
+from obsidian_wiki.portable_manifest import (
+    ManifestError,
+    ManifestPreconditionError,
+    ShardedManifest,
+)
 
 try:
     import fcntl as _fcntl
@@ -39,6 +43,10 @@ _TOMBSTONE_PREFIX = ".tombstone-"
 
 
 class TransactionError(RuntimeError):
+    pass
+
+
+class _MutationPreconditionError(TransactionError):
     pass
 
 
@@ -92,6 +100,7 @@ _METADATA_FIELDS = frozenset(
         "operation_paths",
         "postimages",
         "preimages",
+        "residual_postimages",
         "removed",
         "snapshot_index",
         "source_ids",
@@ -262,6 +271,7 @@ class TransactionManager:
                 "operation_paths": [],
                 "postimages": {},
                 "preimages": preimages,
+                "residual_postimages": {},
                 "removed": [],
                 "snapshot_index": {},
                 "source_ids": list(source_ids),
@@ -456,6 +466,7 @@ class TransactionManager:
                 affected = set(self._affected_preimage_paths(record, candidates))
                 payload = self._read_metadata_payload(record.workspace)
                 snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
+                self._verify_failed_residual_postimages(payload)
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
@@ -497,6 +508,8 @@ class TransactionManager:
                 if record.status == "restored":
                     return
                 payload = self._read_metadata_payload(record.workspace)
+                if record.status == "failed":
+                    self._verify_failed_residual_postimages(payload)
                 postimages = self._load_image_map(
                     payload["postimages"], "transaction postimages"
                 )
@@ -525,6 +538,7 @@ class TransactionManager:
                 )
                 self._restore_snapshot_index(record, snapshot_index)
                 payload["status"] = "restored"
+                payload["residual_postimages"] = {}
                 self._write_metadata(record.workspace, payload)
             finally:
                 if self.lock_path.exists() or self.lock_path.is_symlink():
@@ -577,6 +591,7 @@ class TransactionManager:
         writer_before: dict[str, str] | None = None
         writer_before_index: dict[str, str | None] = {}
         writer_rollback: dict[str, str | None] = {}
+        rollback_exclusions: set[str] = set()
         try:
             candidates = self._enumerate_candidates(record)
             candidate_names = tuple(candidate.relative for candidate in candidates)
@@ -615,6 +630,7 @@ class TransactionManager:
                     "operation_path": None,
                     "operation_paths": [],
                     "postimages": {},
+                    "residual_postimages": {},
                     "removed": list(removed),
                     "snapshot_index": snapshot_index,
                     "status": "promoting",
@@ -626,18 +642,43 @@ class TransactionManager:
             self._write_metadata(record.workspace, payload)
 
             for candidate in candidates:
-                self._promote_candidate(candidate, self._vault_path(candidate.relative))
+                try:
+                    self._promote_candidate(
+                        candidate,
+                        self._vault_path(candidate.relative),
+                        record.preimages.get(candidate.relative),
+                    )
+                except _MutationPreconditionError:
+                    rollback_exclusions.add(candidate.relative)
+                    raise
             for relative in record.deletions:
-                self._delete_vault_target(relative)
+                try:
+                    self._delete_vault_target(relative, record.preimages.get(relative))
+                except _MutationPreconditionError:
+                    rollback_exclusions.add(relative)
+                    raise
 
             pages_by_source = self._scan_page_relationships(record.source_ids)
             manifest = ShardedManifest(self.config)
             for source_id in record.source_ids:
-                manifest.upsert(
-                    manifest.source_path(source_id),
-                    pages=list(pages_by_source[source_id]),
-                    compiled_at=resolved_completed_at,
+                shard_relative = (
+                    manifest.entry_path(source_id)
+                    .relative_to(self.config.vault)
+                    .as_posix()
                 )
+                try:
+                    manifest.upsert(
+                        manifest.source_path(source_id),
+                        pages=list(pages_by_source[source_id]),
+                        compiled_at=resolved_completed_at,
+                        expected_preimage=record.preimages.get(shard_relative),
+                    )
+                except ManifestPreconditionError as exc:
+                    rollback_exclusions.add(shard_relative)
+                    raise TransactionError(
+                        "transaction target changed after transaction began: "
+                        + shard_relative
+                    ) from exc
 
             change = _OperationChange(
                 transaction_id=record.transaction_id,
@@ -711,6 +752,7 @@ class TransactionManager:
                     "operation_path": operation_relative,
                     "operation_paths": sorted(operation_affected),
                     "postimages": postimages,
+                    "residual_postimages": {},
                     "snapshot_index": {
                         relative: snapshot_index[relative]
                         for relative in postimage_paths
@@ -776,14 +818,27 @@ class TransactionManager:
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"writer restore failed: {rollback_exc}")
             try:
-                self._restore_snapshot_index(record, snapshot_index)
+                self._restore_snapshot_index(
+                    record,
+                    {
+                        relative: stored
+                        for relative, stored in snapshot_index.items()
+                        if relative not in rollback_exclusions
+                    },
+                )
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"restore failed: {rollback_exc}")
+            residual_postimages = self._failed_residual_postimages(
+                writer_before,
+                operation_before,
+                base_affected=set(affected),
+            )
             payload.update(
                 {
                     "operation_path": operation_relative,
                     "operation_paths": sorted(operation_affected),
                     "postimages": {},
+                    "residual_postimages": residual_postimages,
                     "snapshot_index": dict(sorted(snapshot_index.items())),
                     "status": "failed",
                 }
@@ -1052,6 +1107,7 @@ class TransactionManager:
                 "operation_path": None,
                 "operation_paths": [],
                 "postimages": {},
+                "residual_postimages": {},
                 "removed": [],
                 "snapshot_index": {},
                 "status": "failed",
@@ -1150,19 +1206,85 @@ class TransactionManager:
         )
         self._restore_snapshot_index(record, cleanup)
 
-    def _promote_candidate(self, candidate: _Candidate, target: Path) -> None:
-        self._replace_vault_bytes(target, candidate.data)
+    def _failed_residual_postimages(
+        self,
+        writer_before: dict[str, str] | None,
+        operation_before: dict[str, str] | None,
+        *,
+        base_affected: set[str],
+    ) -> dict[str, str | None]:
+        residual: dict[str, str | None] = {}
+        if writer_before is not None:
+            writer_after = self._writer_guard_state(allow_unsafe=True)
+            changed = {
+                relative
+                for relative, content_hash in writer_before.items()
+                if writer_after.get(relative) != content_hash
+            }
+            changed.update(set(writer_after) - set(writer_before))
+            for relative in changed - base_affected:
+                residual[relative] = writer_after.get(relative)
+        if operation_before is not None:
+            operation_after = self._operation_tree_state(allow_unsafe=True)
+            changed = {
+                relative
+                for relative, content_hash in operation_before.items()
+                if operation_after.get(relative) != content_hash
+            }
+            changed.update(set(operation_after) - set(operation_before))
+            for relative in changed:
+                residual[relative] = operation_after.get(relative)
+        return dict(sorted(residual.items()))
 
-    def _replace_vault_bytes(self, target: Path, data: bytes) -> None:
+    def _verify_failed_residual_postimages(self, payload: dict[str, object]) -> None:
+        residuals = self._load_residual_postimages(payload["residual_postimages"])
+        for relative, expected in residuals.items():
+            try:
+                current = self._current_vault_hash(relative)
+            except TransactionError as exc:
+                raise TransactionError(
+                    "failed transaction residual changed after lock release: "
+                    + relative
+                ) from exc
+            if current != expected:
+                raise TransactionError(
+                    "failed transaction residual changed after lock release: "
+                    + relative
+                )
+
+    def _promote_candidate(
+        self,
+        candidate: _Candidate,
+        target: Path,
+        expected_preimage: str | None,
+    ) -> None:
+        self._replace_vault_bytes(
+            target,
+            candidate.data,
+            before_replace=lambda: self._require_mutation_preimage(
+                candidate.relative, expected_preimage
+            ),
+        )
+
+    def _replace_vault_bytes(
+        self,
+        target: Path,
+        data: bytes,
+        *,
+        before_replace: Callable[[], None] | None = None,
+    ) -> None:
         self._require_contained(
             target, self.config.vault, "vault target", strict_child=True
         )
         self._ensure_contained_directory(target.parent, self.config.vault)
-        self._write_atomic_bytes(target, data)
+        self._write_atomic_bytes(target, data, before_replace=before_replace)
 
-    def _delete_vault_target(self, relative: str) -> None:
+    def _delete_vault_target(
+        self, relative: str, expected_preimage: str | None
+    ) -> None:
         target = self._vault_path(relative)
-        if not target.exists() and not target.is_symlink():
+        self._require_mutation_preimage(relative, expected_preimage)
+        if expected_preimage is None:
             return
         self._require_ordinary_file(target, "transaction deletion target")
         try:
@@ -1172,6 +1294,20 @@ class TransactionManager:
             raise TransactionError(
                 f"cannot delete transaction target: {relative}"
             ) from exc
+
+    def _require_mutation_preimage(
+        self, relative: str, expected_preimage: str | None
+    ) -> None:
+        try:
+            current = self._current_vault_hash(relative)
+        except TransactionError as exc:
+            raise _MutationPreconditionError(
+                f"transaction target changed after transaction began: {relative}"
+            ) from exc
+        if current != expected_preimage:
+            raise _MutationPreconditionError(
+                f"transaction target changed after transaction began: {relative}"
+            )
 
     def _scan_page_relationships(
         self, source_ids: tuple[str, ...]
@@ -1452,7 +1588,13 @@ class TransactionManager:
                 self._fsync_directory(current.parent)
             self._require_ordinary_directory(current, "transaction directory")
 
-    def _write_atomic_bytes(self, target: Path, data: bytes) -> None:
+    def _write_atomic_bytes(
+        self,
+        target: Path,
+        data: bytes,
+        *,
+        before_replace: Callable[[], None] | None = None,
+    ) -> None:
         self._require_ordinary_directory(target.parent, "atomic write directory")
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.", dir=target.parent
@@ -1463,6 +1605,8 @@ class TransactionManager:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if before_replace is not None:
+                before_replace()
             temporary_path.replace(target)
             self._fsync_directory(target.parent)
         except Exception:
@@ -1553,6 +1697,7 @@ class TransactionManager:
                 raise TransactionError("transaction completed_at is invalid") from exc
         self._load_image_map(payload.get("preimages"), "transaction preimages")
         self._load_image_map(payload.get("postimages"), "transaction postimages")
+        self._load_residual_postimages(payload.get("residual_postimages"))
         self._load_snapshot_index(payload.get("snapshot_index"), workspace=workspace)
         self._load_operation_paths(payload.get("operation_paths"))
         self._load_operation_guard(payload.get("operation_guard"))
@@ -1619,6 +1764,9 @@ class TransactionManager:
         postimages = self._load_image_map(
             payload["postimages"], "transaction postimages"
         )
+        residual_postimages = self._load_residual_postimages(
+            payload["residual_postimages"]
+        )
         expected_snapshot_hashes = {
             relative: preimages.get(relative) for relative in base_affected
         }
@@ -1678,6 +1826,7 @@ class TransactionManager:
                     bool(operation_paths),
                     bool(snapshots),
                     bool(postimages),
+                    bool(residual_postimages),
                     writer_prepared,
                 )
             ):
@@ -1690,6 +1839,7 @@ class TransactionManager:
                 or operation_paths
                 or set(snapshots) != snapshot_allowed
                 or postimages
+                or residual_postimages
             ):
                 raise TransactionError(
                     "promoting transaction has invalid recovery fields"
@@ -1701,6 +1851,7 @@ class TransactionManager:
                 or operation_path is None
                 or operation_paths != {operation_path}
                 or writer_prepared
+                or residual_postimages
                 or set(snapshots) != allowed
                 or set(postimages) != allowed
             ):
@@ -1717,6 +1868,7 @@ class TransactionManager:
                         bool(operation_paths),
                         bool(snapshots),
                         bool(postimages),
+                        bool(residual_postimages),
                         writer_prepared,
                     )
                 ):
@@ -1730,6 +1882,7 @@ class TransactionManager:
         if status == "restored" and (
             set(snapshots) != snapshot_allowed
             or (postimages and set(postimages) != allowed)
+            or residual_postimages
         ):
             raise TransactionError("restored transaction recovery fields are invalid")
 
@@ -1764,6 +1917,15 @@ class TransactionManager:
         for relative in guard:
             self._validate_operation_guard_path(relative)
         return guard
+
+    def _load_residual_postimages(self, raw: object) -> dict[str, str | None]:
+        residuals = self._load_image_map(raw, "transaction residual postimages")
+        for relative in residuals:
+            if PurePosixPath(relative).parts[:2] == ("journal", "operations"):
+                self._validate_operation_guard_path(relative)
+            else:
+                self._validate_writer_guard_path(relative)
+        return residuals
 
     def _load_guard_hashes(self, raw: object, label: str) -> dict[str, str]:
         loaded = self._load_image_map(raw, label)

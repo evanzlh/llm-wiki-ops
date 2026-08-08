@@ -996,12 +996,12 @@ def test_multiple_candidates_mid_promotion_failure_rolls_back_all_pages(
     original = manager._promote_candidate
     calls = 0
 
-    def fail_second(candidate: Path, target: Path) -> None:
+    def fail_second(candidate: Path, target: Path, expected_preimage) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise OSError("second promotion failed")
-        original(candidate, target)
+        original(candidate, target, expected_preimage)
 
     monkeypatch.setattr(manager, "_promote_candidate", fail_second)
 
@@ -1750,9 +1750,9 @@ def test_restore_recovers_promoting_transaction_after_page_replace_crash(
     original_promote = manager._promote_candidate
     crashed = False
 
-    def crash_after_first(candidate, target: Path) -> None:
+    def crash_after_first(candidate, target: Path, expected_preimage) -> None:
         nonlocal crashed
-        original_promote(candidate, target)
+        original_promote(candidate, target, expected_preimage)
         if not crashed:
             crashed = True
             raise SystemExit("simulated process crash after page replace")
@@ -2047,7 +2047,7 @@ def test_candidate_interposition_cannot_change_promoted_bytes(
     external.write_text(PAGE.replace("# A", "# Swapped"), encoding="utf-8")
     original_promote = manager._promote_candidate
 
-    def interpose(candidate_value, target: Path) -> None:
+    def interpose(candidate_value, target: Path, expected_preimage) -> None:
         path = getattr(candidate_value, "path", candidate_value)
         path.unlink()
         if kind == "symlink":
@@ -2055,7 +2055,7 @@ def test_candidate_interposition_cannot_change_promoted_bytes(
         else:
             path.write_bytes(external.read_bytes())
         try:
-            original_promote(candidate_value, target)
+            original_promote(candidate_value, target, expected_preimage)
         finally:
             path.unlink()
             path.write_bytes(original_bytes)
@@ -2066,6 +2066,88 @@ def test_candidate_interposition_cannot_change_promoted_bytes(
 
     assert (config.vault / "concepts/a.md").read_bytes() == original_bytes
     assert manager.load("tx-1").status == "complete"
+
+
+def test_page_change_after_snapshot_is_rejected_at_promotion_boundary(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    concurrent = PAGE.replace("# A", "# Concurrent")
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Candidate"))
+    original_promote = manager._promote_candidate
+
+    def interpose(candidate_value, target_value: Path, *args) -> None:
+        target_value.write_text(concurrent, encoding="utf-8")
+        original_promote(candidate_value, target_value, *args)
+
+    monkeypatch.setattr(manager, "_promote_candidate", interpose)
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.commit("tx-1")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert manager.load("tx-1").status == "failed"
+
+
+def test_delete_change_after_snapshot_is_rejected_at_unlink_boundary(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    concurrent = PAGE.replace("# A", "# Concurrent")
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    manager.mark_delete(record.transaction_id, "concepts/a.md")
+    original_delete = manager._delete_vault_target
+
+    def interpose(relative: str, expected_preimage) -> None:
+        target.write_text(concurrent, encoding="utf-8")
+        original_delete(relative, expected_preimage)
+
+    monkeypatch.setattr(manager, "_delete_vault_target", interpose)
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.commit("tx-1")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert manager.load("tx-1").status == "failed"
+
+
+def test_manifest_change_after_snapshot_is_rejected_at_upsert_boundary(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manifest = ShardedManifest(config)
+    manifest.upsert(source, compiled_at="2026-08-07T00:00:00Z")
+    shard = manifest.entry_path("sources/a.md")
+    concurrent = b'{"later":"concurrent work"}\n'
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    manager.begin([source], transaction_id="tx-1")
+    original_upsert = ShardedManifest.upsert
+
+    def interpose(store, source_value, **kwargs):
+        shard.write_bytes(concurrent)
+        return original_upsert(store, source_value, **kwargs)
+
+    monkeypatch.setattr(ShardedManifest, "upsert", interpose)
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.commit("tx-1")
+
+    assert shard.read_bytes() == concurrent
+    assert manager.load("tx-1").status == "failed"
 
 
 @pytest.mark.parametrize("target_kind", ["page", "manifest-marker"])
@@ -2308,6 +2390,51 @@ def test_retry_cleans_persisted_writer_additions_before_new_attempt(
 
     assert not extra.exists()
     assert manager.load("tx-1").status == "complete"
+
+
+def test_retry_preserves_failed_writer_residual_modified_after_lock_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    extra = config.vault / "references/writer-extra.md"
+
+    def writer(change):
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("writer addition\n", encoding="utf-8")
+        raise OSError("writer failed")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    cleanup_failed = False
+
+    def fail_writer_cleanup(record_value, index):
+        nonlocal cleanup_failed
+        if not cleanup_failed and "references/writer-extra.md" in index:
+            cleanup_failed = True
+            raise TransactionError("simulated writer cleanup failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", fail_writer_cleanup)
+    with pytest.raises(TransactionError, match="writer restore failed"):
+        manager.commit("tx-1")
+    assert cleanup_failed
+    assert manager.load("tx-1").status == "failed"
+
+    later = "later legitimate work\n"
+    extra.write_text(later, encoding="utf-8")
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    with pytest.raises(TransactionError, match="residual.*changed"):
+        manager.retry("tx-1")
+
+    assert extra.read_text(encoding="utf-8") == later
+    assert manager.load("tx-1").status == "failed"
 
 
 @pytest.mark.parametrize("snapshot_kind", ["base", "writer", "operation"])

@@ -19,6 +19,13 @@ class ManifestError(ValueError):
     pass
 
 
+class ManifestPreconditionError(ManifestError):
+    pass
+
+
+_UNSET_PREIMAGE = object()
+
+
 @dataclass(frozen=True)
 class ManifestEntry:
     source_id: str
@@ -266,6 +273,7 @@ class ShardedManifest:
         *,
         pages: list[str] | None = None,
         compiled_at: str | None = None,
+        expected_preimage: str | None | object = _UNSET_PREIMAGE,
     ) -> ManifestEntry:
         source_path = Path(source)
         self._validate_source_file(source_path)
@@ -300,6 +308,8 @@ class ShardedManifest:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            if expected_preimage is not _UNSET_PREIMAGE:
+                self._require_preimage(target, expected_preimage)
             temporary_path.replace(target)
             self._fsync_directory(target.parent)
         except OSError as exc:
@@ -307,6 +317,41 @@ class ShardedManifest:
         finally:
             temporary_path.unlink(missing_ok=True)
         return entry
+
+    @staticmethod
+    def _require_preimage(target: Path, expected: str | None | object) -> None:
+        if expected is not None and (
+            not isinstance(expected, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", expected) is None
+        ):
+            raise ManifestError("manifest shard expected preimage is invalid")
+        if not target.exists() and not target.is_symlink():
+            current = None
+        else:
+            try:
+                metadata = target.lstat()
+            except OSError as exc:
+                raise ManifestPreconditionError(
+                    "manifest shard changed after transaction began"
+                ) from exc
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise ManifestPreconditionError(
+                    "manifest shard changed after transaction began"
+                )
+            try:
+                current = f"sha256:{compute_hash(target)}"
+            except OSError as exc:
+                raise ManifestPreconditionError(
+                    "manifest shard changed after transaction began"
+                ) from exc
+        if current != expected:
+            raise ManifestPreconditionError(
+                "manifest shard changed after transaction began"
+            )
 
     def _ensure_directory_tree(self, target: Path) -> None:
         try:
