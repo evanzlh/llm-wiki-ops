@@ -72,17 +72,43 @@ tags: ["topic#portable", 'review # notes'] # Page tags.
     assert parsed.lists["tags"] == ("topic#portable", "review # notes")
 
 
-def test_parse_inline_list_respects_escaped_quotes() -> None:
+def test_parse_double_quoted_values_decodes_supported_escapes() -> None:
     parsed = parse_frontmatter(
         r'''---
-aliases: ["Portable \"Repository\", v2", 'owner\'s, notes']
+title: "Portable \"Repository\""
+aliases: ["Portable \"Repository\", v2", "sources\\windows\\page.md"]
 ---
 '''
     )
+    assert parsed.scalars["title"] == 'Portable "Repository"'
     assert parsed.lists["aliases"] == (
-        r'Portable \"Repository\", v2',
-        r"owner\'s, notes",
+        'Portable "Repository", v2',
+        r"sources\windows\page.md",
     )
+
+
+@pytest.mark.parametrize("escape", [r"\x2Fetc/passwd", r"line\nbreak"])
+def test_parse_rejects_unsupported_double_quoted_escapes(escape: str) -> None:
+    with pytest.raises(FrontmatterError, match="unsupported.*escape"):
+        parse_frontmatter(f'---\nsources: ["{escape}"]\n---\n')
+
+
+def test_parse_single_quoted_values_use_doubled_apostrophes() -> None:
+    parsed = parse_frontmatter(
+        "---\ntitle: 'Owner''s # page' # trailing comment\naliases: ['owner''s, notes']\n---\n"
+    )
+    assert parsed.scalars["title"] == "Owner's # page"
+    assert parsed.lists["aliases"] == ("owner's, notes",)
+
+
+def test_parse_single_quoted_backslash_does_not_escape_apostrophe() -> None:
+    with pytest.raises(FrontmatterError, match="quoted"):
+        parse_frontmatter(
+            r'''---
+aliases: ['owner\'s, notes']
+---
+'''
+        )
 
 
 def test_parse_inline_list_preserves_quoted_comma() -> None:
@@ -122,8 +148,26 @@ def test_nested_mapping_is_not_interpreted_as_frontmatter() -> None:
 @pytest.mark.parametrize(
     "page",
     [
+        "---\ntags: [one, [two, three]]\n---\n",
+        "---\ntags: [one, {name: two}]\n---\n",
+        "---\nmetadata: {source: sources/a.md}\n---\n",
+    ],
+)
+def test_nested_flow_collections_are_rejected(page: str) -> None:
+    with pytest.raises(FrontmatterError, match="flow collection"):
+        parse_frontmatter(page)
+
+
+def test_plain_scalars_may_end_with_quote_characters() -> None:
+    parsed = parse_frontmatter("---\ntitle: James' # comment\nmeasurement: 6\"\n---\n")
+    assert parsed.scalars["title"] == "James'"
+    assert parsed.scalars["measurement"] == '6"'
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
         '---\ntitle: "Portable Repository\n---\n',
-        '---\ntitle: Portable Repository"\n---\n',
         "---\nsources:\n  - 'sources/a.md\n---\n",
         '---\nsources: ["sources/a.md]\n---\n',
     ],

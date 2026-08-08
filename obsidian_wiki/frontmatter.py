@@ -13,50 +13,92 @@ class Frontmatter:
     lists: dict[str, tuple[str, ...]]
 
 
-def _starts_quote(value: str, index: int) -> bool:
-    return index == 0 or value[index - 1].isspace() or value[index - 1] in "[,"
+def _starts_quote(value: str, index: int, *, inline: bool) -> bool:
+    previous = index - 1
+    while previous >= 0 and value[previous].isspace():
+        previous -= 1
+    return previous < 0 or (inline and value[previous] in "[,")
 
 
 def _strip_comment(value: str) -> str:
     quote: str | None = None
-    escaped = False
-    for index, char in enumerate(value):
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
+    inline = value.lstrip().startswith("[")
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
                 quote = None
-            continue
-        if char in "'\"" and _starts_quote(value, index):
+        elif quote == "'":
+            if char == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif char in "'\"" and _starts_quote(value, index, inline=inline):
             quote = char
         elif char == "#" and (index == 0 or value[index - 1].isspace()):
             return value[:index].rstrip()
+        index += 1
     if quote is not None:
         raise FrontmatterError("unterminated quote in frontmatter value")
     return value.strip()
+
+
+def _double_quoted(value: str) -> str:
+    decoded: list[str] = []
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if char == '"':
+            if index != len(value) - 1:
+                raise FrontmatterError("malformed quoted frontmatter scalar")
+            return "".join(decoded)
+        if char == "\\":
+            if index + 1 >= len(value):
+                raise FrontmatterError("malformed quoted frontmatter scalar")
+            escape = value[index + 1]
+            if escape not in {'"', "\\"}:
+                raise FrontmatterError(f"unsupported double-quoted escape: \\{escape}")
+            decoded.append(escape)
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    raise FrontmatterError("malformed quoted frontmatter scalar")
+
+
+def _single_quoted(value: str) -> str:
+    decoded: list[str] = []
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if char == "'":
+            if index + 1 < len(value) and value[index + 1] == "'":
+                decoded.append("'")
+                index += 2
+                continue
+            if index != len(value) - 1:
+                raise FrontmatterError("malformed quoted frontmatter scalar")
+            return "".join(decoded)
+        decoded.append(char)
+        index += 1
+    raise FrontmatterError("malformed quoted frontmatter scalar")
 
 
 def _scalar(value: str) -> str:
     value = _strip_comment(value).strip()
     if not value:
         return value
-    if value[0] in "'\"":
-        quote = value[0]
-        escaped = False
-        for index, char in enumerate(value[1:], start=1):
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                if index != len(value) - 1:
-                    raise FrontmatterError("malformed quoted frontmatter scalar")
-                return value[1:-1]
-        raise FrontmatterError("malformed quoted frontmatter scalar")
-    if value[-1] in "'\"":
-        raise FrontmatterError("unmatched quote in frontmatter scalar")
+    if value[0] == '"':
+        return _double_quoted(value)
+    if value[0] == "'":
+        return _single_quoted(value)
+    if value[0] in "[{":
+        raise FrontmatterError("nested flow collection is not supported")
     return value
 
 
@@ -69,20 +111,30 @@ def _inline_list(value: str) -> tuple[str, ...]:
     items: list[str] = []
     current: list[str] = []
     quote: str | None = None
-    escaped = False
-    for index, char in enumerate(body):
-        if quote is not None:
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if quote == '"':
             current.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
+            if char == "\\" and index + 1 < len(body):
+                current.append(body[index + 1])
+                index += 2
+                continue
+            if char == quote:
                 quote = None
-            continue
-        if char in "'\"" and _starts_quote(body, index):
+        elif quote == "'":
+            current.append(char)
+            if char == quote:
+                if index + 1 < len(body) and body[index + 1] == quote:
+                    current.append(body[index + 1])
+                    index += 2
+                    continue
+                quote = None
+        elif char in "'\"" and not "".join(current).strip():
             quote = char
             current.append(char)
+        elif char in "[]{}":
+            raise FrontmatterError("nested flow collection is not supported")
         elif char == ",":
             item = _scalar("".join(current))
             if not item:
@@ -91,6 +143,7 @@ def _inline_list(value: str) -> tuple[str, ...]:
             current = []
         else:
             current.append(char)
+        index += 1
     if quote is not None:
         raise FrontmatterError("unterminated quote in frontmatter list")
     item = _scalar("".join(current))
