@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -22,6 +23,34 @@ class LocalStateError(RuntimeError):
 _HASH_PREFIX = "sha256:"
 _SIDECAR_NAME = "hot-state.json"
 _HOT_NAME = "hot.md"
+_KNOWLEDGE_CATEGORIES = frozenset(
+    {"concepts", "entities", "skills", "references", "synthesis", "journal", "projects"}
+)
+_GIT_ENV_OVERRIDES = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+)
+_SUPPORTS_BOUND_DIRECTORIES = all(
+    function in os.supports_dir_fd
+    for function in (os.mkdir, os.open, os.rename, os.stat)
+)
+_FileIdentity = tuple[int, int]
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+
+
+def _identity(metadata: os.stat_result) -> _FileIdentity:
+    return metadata.st_dev, metadata.st_ino
 
 
 def _contained_relative(root: Path, path: Path, label: str) -> PurePosixPath:
@@ -40,8 +69,77 @@ def _require_ordinary_directory(path: Path, label: str) -> None:
         metadata = path.lstat()
     except OSError as exc:
         raise LocalStateError(f"{label} is unavailable: {path}") from exc
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse(metadata)
+    ):
         raise LocalStateError(f"{label} must be an ordinary directory: {path}")
+
+
+def _open_directory_at(parent_fd: int | None, path: str | Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        if parent_fd is None:
+            descriptor = os.open(path, flags)
+        else:
+            descriptor = os.open(path, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise LocalStateError(f"directory is unsafe or unreadable: {path}") from exc
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode) or _is_reparse(metadata):
+        os.close(descriptor)
+        raise LocalStateError(f"directory must be ordinary: {path}")
+    return descriptor
+
+
+def _open_bound_directory(root: Path, path: Path, *, create: bool = False) -> int:
+    relative = _contained_relative(root, path, "bound directory")
+    descriptor = _open_directory_at(None, root)
+    try:
+        for part in relative.parts:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise LocalStateError(
+                        f"cannot create contained directory: {path}"
+                    ) from exc
+            child = _open_directory_at(descriptor, part)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _directory_identities(
+    root: Path, path: Path
+) -> tuple[tuple[Path, _FileIdentity], ...]:
+    relative = _contained_relative(root, path, "directory")
+    current = root
+    identities: list[tuple[Path, _FileIdentity]] = []
+    for part in (None, *relative.parts):
+        if part is not None:
+            current = current / part
+        _require_ordinary_directory(current, "contained directory")
+        identities.append((current, _identity(current.lstat())))
+    return tuple(identities)
+
+
+def _verify_directory_identities(
+    identities: tuple[tuple[Path, _FileIdentity], ...],
+) -> None:
+    for path, expected in identities:
+        _require_ordinary_directory(path, "contained directory")
+        if _identity(path.lstat()) != expected:
+            raise LocalStateError(
+                f"contained directory changed during operation: {path}"
+            )
 
 
 def _validate_vault(config: PortableConfig) -> None:
@@ -54,6 +152,10 @@ def _validate_vault(config: PortableConfig) -> None:
 def _ensure_local_state(config: PortableConfig) -> Path:
     root = config.root.resolve(strict=False)
     relative = _contained_relative(root, config.local_state, "local state")
+    if _SUPPORTS_BOUND_DIRECTORIES:
+        descriptor = _open_bound_directory(root, config.local_state, create=True)
+        os.close(descriptor)
+        return config.local_state
     current = root
     for part in relative.parts:
         current = current / part
@@ -78,47 +180,87 @@ def _ensure_local_state(config: PortableConfig) -> Path:
             raise LocalStateError(
                 f"local state directory is unavailable: {current}"
             ) from exc
-        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or _is_reparse(metadata)
+        ):
             raise LocalStateError(
                 f"local state path must contain only ordinary directories: {current}"
             )
     return config.local_state
 
 
-def _hash_ordinary_file(path: Path, label: str) -> str:
+def _open_ordinary_file(
+    path: Path, label: str, *, root: Path | None
+) -> tuple[int, os.stat_result]:
+    try:
+        lexical = path.lstat()
+    except OSError as exc:
+        raise LocalStateError(
+            f"{label} must be a readable ordinary file: {path}"
+        ) from exc
+    if (
+        not stat.S_ISREG(lexical.st_mode)
+        or stat.S_ISLNK(lexical.st_mode)
+        or _is_reparse(lexical)
+        or lexical.st_nlink != 1
+    ):
+        raise LocalStateError(f"{label} must be a single-link ordinary file: {path}")
+
     flags = os.O_RDONLY
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    parent_fd: int | None = None
     try:
-        descriptor = os.open(path, flags)
+        if root is not None and _SUPPORTS_BOUND_DIRECTORIES:
+            parent_fd = _open_bound_directory(root, path.parent)
+            descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+        else:
+            descriptor = os.open(path, flags)
     except OSError as exc:
         raise LocalStateError(
             f"{label} must be a readable ordinary file: {path}"
         ) from exc
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or _is_reparse(opened)
+        or opened.st_nlink != 1
+        or _identity(opened) != _identity(lexical)
+    ):
+        os.close(descriptor)
+        raise LocalStateError(f"{label} changed while it was being opened: {path}")
+    return descriptor, opened
+
+
+def _hash_ordinary_file(path: Path, label: str, *, root: Path | None = None) -> str:
+    descriptor, before = _open_ordinary_file(path, label, root=root)
     digest = hashlib.sha256()
     try:
-        before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or stat.S_ISLNK(before.st_mode)
-            or before.st_nlink != 1
-        ):
-            raise LocalStateError(
-                f"{label} must be a single-link ordinary file: {path}"
-            )
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
                 break
             digest.update(chunk)
         after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) != (
             after.st_dev,
             after.st_ino,
             after.st_size,
             after.st_mtime_ns,
+            after.st_nlink,
         ):
             raise LocalStateError(f"{label} changed while it was being read: {path}")
     finally:
@@ -133,6 +275,16 @@ def _relative_if_below(path: Path, parent: Path) -> Path | None:
         return None
 
 
+def _authoritative_directory(relative: Path) -> bool:
+    if not relative.parts:
+        return True
+    if relative.parts[0] in _KNOWLEDGE_CATEGORIES:
+        return True
+    return relative.parts[:2] == (".manifest", "sources") or relative == Path(
+        ".manifest"
+    )
+
+
 def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
     vault = config.vault
     local_relative = _relative_if_below(config.local_state, vault)
@@ -145,7 +297,7 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
         kept_directories: list[str] = []
         for name in sorted(dirnames):
             child_relative = current_relative / name
-            if child_relative.parts[:1] == (".obsidian",):
+            if not _authoritative_directory(child_relative):
                 continue
             if local_relative is not None and (
                 child_relative == local_relative
@@ -163,6 +315,10 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
                 raise LocalStateError(
                     f"vault content directory must be an ordinary directory: {child}"
                 )
+            if _is_reparse(metadata):
+                raise LocalStateError(
+                    f"vault content directory must not be a reparse point: {child}"
+                )
             kept_directories.append(name)
         dirnames[:] = kept_directories
 
@@ -176,9 +332,16 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
                 relative == local_relative or local_relative in relative.parents
             ):
                 continue
-            is_knowledge_page = relative.suffix == ".md"
+            is_knowledge_page = (
+                len(relative.parts) >= 2
+                and relative.parts[0] in _KNOWLEDGE_CATEGORIES
+                and relative.suffix == ".md"
+            )
             is_manifest_marker = relative == Path(".manifest.json")
-            is_manifest_shard = relative.parts[:2] == (".manifest", "sources")
+            is_manifest_shard = (
+                relative.parts[:2] == (".manifest", "sources")
+                and relative.suffix == ".json"
+            )
             if is_knowledge_page or is_manifest_marker or is_manifest_shard:
                 selected.append(current / name)
 
@@ -186,16 +349,40 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
 
 
 def _git_identity(root: Path) -> str | None:
+    environment = {
+        key: value for key, value in os.environ.items() if key not in _GIT_ENV_OVERRIDES
+    }
     try:
-        branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=root,
+        worktree = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if worktree.returncode != 0:
+        return None
+    discovered = Path(worktree.stdout.strip())
+    try:
+        if discovered.resolve(strict=True) != root.resolve(strict=True):
+            return None
+    except OSError:
+        return None
+    try:
+        branch = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -208,14 +395,14 @@ def _git_identity(root: Path) -> str | None:
         return f"branch:{name}"
     try:
         commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "detached:HEAD"
@@ -232,7 +419,7 @@ def authoritative_fingerprint(config: PortableConfig) -> str:
     files = [
         [
             _contained_relative(config.root, path, "authoritative file").as_posix(),
-            _hash_ordinary_file(path, "authoritative file"),
+            _hash_ordinary_file(path, "authoritative file", root=config.root),
         ]
         for path in _authoritative_files(config)
     ]
@@ -243,22 +430,49 @@ def authoritative_fingerprint(config: PortableConfig) -> str:
     return _HASH_PREFIX + hashlib.sha256(canonical).hexdigest()
 
 
-def _sidecar_payload(path: Path) -> dict[str, str] | None:
+def _sidecar_payload(config: PortableConfig) -> dict[str, str] | None:
+    path = config.local_state / _SIDECAR_NAME
     try:
-        metadata = path.lstat()
+        descriptor, before = _open_ordinary_file(
+            path, "hot-state sidecar", root=config.root
+        )
     except FileNotFoundError:
         return None
+    except LocalStateError:
+        return None
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 1024 * 1024:
+                return None
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
     except OSError:
         return None
+    finally:
+        os.close(descriptor)
     if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_nlink != 1
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_nlink,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_nlink,
     ):
         return None
     try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload: Any = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or set(payload) != {"fingerprint", "hot_hash"}:
         return None
@@ -272,25 +486,122 @@ def _sidecar_payload(path: Path) -> dict[str, str] | None:
 def _hot_metadata(config: PortableConfig) -> os.stat_result | None:
     hot = config.vault / _HOT_NAME
     _contained_relative(config.root, hot, "hot.md")
+    vault_fd: int | None = None
     try:
-        return hot.lstat()
+        if _SUPPORTS_BOUND_DIRECTORIES:
+            vault_fd = _open_bound_directory(config.root, config.vault)
+            return os.stat(_HOT_NAME, dir_fd=vault_fd, follow_symlinks=False)
+        metadata = hot.lstat()
+        if _is_reparse(metadata):
+            raise LocalStateError(f"hot.md must not be a reparse point: {hot}")
+        return metadata
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise LocalStateError(f"hot.md is unavailable: {hot}") from exc
+    finally:
+        if vault_fd is not None:
+            os.close(vault_fd)
 
 
-def _invalidate_hot(config: PortableConfig) -> None:
+def _write_all(descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("short local-state write")
+        remaining = remaining[written:]
+
+
+def _invalidated_name() -> str:
+    return ".hot-invalidated-" + secrets.token_hex(16) + ".tmp"
+
+
+def _restore_mismatched_hot(vault_fd: int, local_fd: int, tombstone: str) -> None:
+    if os.link not in os.supports_dir_fd:
+        return
+    try:
+        os.link(
+            tombstone,
+            _HOT_NAME,
+            src_dir_fd=local_fd,
+            dst_dir_fd=vault_fd,
+            follow_symlinks=False,
+        )
+        os.fsync(vault_fd)
+    except OSError:
+        pass
+
+
+def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
     hot = config.vault / _HOT_NAME
+    _ensure_local_state(config)
+    tombstone = _invalidated_name()
+    if _SUPPORTS_BOUND_DIRECTORIES:
+        vault_fd = _open_bound_directory(config.root, config.vault)
+        local_fd: int | None = None
+        try:
+            local_fd = _open_bound_directory(config.root, config.local_state)
+            vault_identities = _directory_identities(config.root, config.vault)
+            local_identities = _directory_identities(config.root, config.local_state)
+            if _identity(os.fstat(vault_fd)) != vault_identities[-1][1]:
+                raise LocalStateError("vault changed while it was being opened")
+            if _identity(os.fstat(local_fd)) != local_identities[-1][1]:
+                raise LocalStateError("local state changed while it was being opened")
+            try:
+                current = os.stat(_HOT_NAME, dir_fd=vault_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if _identity(current) != expected:
+                return
+            if not (stat.S_ISREG(current.st_mode) or stat.S_ISLNK(current.st_mode)):
+                raise LocalStateError(f"hot.md must be a file or symlink: {hot}")
+            try:
+                os.rename(
+                    _HOT_NAME,
+                    tombstone,
+                    src_dir_fd=vault_fd,
+                    dst_dir_fd=local_fd,
+                )
+            except OSError as exc:
+                raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
+            moved = os.stat(tombstone, dir_fd=local_fd, follow_symlinks=False)
+            if _identity(moved) != expected:
+                _restore_mismatched_hot(vault_fd, local_fd, tombstone)
+                raise LocalStateError(
+                    "hot.md changed during invalidation; replacement was preserved"
+                )
+            os.fsync(vault_fd)
+            os.fsync(local_fd)
+            _verify_directory_identities(vault_identities)
+            _verify_directory_identities(local_identities)
+            return
+        finally:
+            os.close(vault_fd)
+            if local_fd is not None:
+                os.close(local_fd)
+
+    vault_identities = _directory_identities(config.root, config.vault)
+    local_identities = _directory_identities(config.root, config.local_state)
     metadata = _hot_metadata(config)
-    if metadata is None:
+    if metadata is None or _identity(metadata) != expected:
         return
     if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
         raise LocalStateError(f"hot.md must be a file or symlink: {hot}")
+    target = config.local_state / tombstone
+    _verify_directory_identities(vault_identities)
+    _verify_directory_identities(local_identities)
     try:
-        hot.unlink()
+        hot.replace(target)
     except OSError as exc:
         raise LocalStateError(f"cannot invalidate hot.md: {hot}") from exc
+    moved = target.lstat()
+    if _identity(moved) != expected:
+        raise LocalStateError(
+            "hot.md changed during invalidation; replacement was preserved"
+        )
+    _verify_directory_identities(vault_identities)
+    _verify_directory_identities(local_identities)
 
 
 def hot_status(
@@ -300,7 +611,7 @@ def hot_status(
 
     _validate_vault(config)
     fingerprint_before = authoritative_fingerprint(config)
-    sidecar = _sidecar_payload(config.local_state / _SIDECAR_NAME)
+    sidecar = _sidecar_payload(config)
     metadata = _hot_metadata(config)
     reason = "current"
     if metadata is None:
@@ -317,7 +628,9 @@ def hot_status(
         stale = True
         reason = "sidecar-missing-or-invalid"
     else:
-        hot_hash = _hash_ordinary_file(config.vault / _HOT_NAME, "hot.md")
+        hot_hash = _hash_ordinary_file(
+            config.vault / _HOT_NAME, "hot.md", root=config.root
+        )
         stale = sidecar["fingerprint"] != fingerprint_before
         if stale:
             reason = "authoritative-state-changed"
@@ -329,8 +642,8 @@ def hot_status(
     if fingerprint_after != fingerprint_before:
         stale = True
         reason = "authoritative-state-changed-during-check"
-    if stale and invalidate:
-        _invalidate_hot(config)
+    if stale and invalidate and metadata is not None:
+        _invalidate_hot(config, _identity(metadata))
     return {
         "stale": stale,
         "reason": reason,
@@ -348,18 +661,82 @@ def _canonical_sidecar(payload: dict[str, str]) -> bytes:
 def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
     local_state = _ensure_local_state(config)
     sidecar = local_state / _SIDECAR_NAME
+    data = _canonical_sidecar(payload)
+    if _SUPPORTS_BOUND_DIRECTORIES:
+        directory = _open_bound_directory(config.root, local_state)
+        try:
+            identities = _directory_identities(config.root, local_state)
+        except BaseException:
+            os.close(directory)
+            raise
+        if _identity(os.fstat(directory)) != identities[-1][1]:
+            os.close(directory)
+            raise LocalStateError("local state changed while it was being opened")
+        descriptor = -1
+        temporary_name = ""
+        temporary_identity: _FileIdentity | None = None
+        try:
+            for _attempt in range(128):
+                candidate = ".hot-state-" + secrets.token_hex(16) + ".tmp"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+                try:
+                    descriptor = os.open(candidate, flags, 0o600, dir_fd=directory)
+                except FileExistsError:
+                    continue
+                temporary_name = candidate
+                temporary_identity = _identity(os.fstat(descriptor))
+                break
+            else:
+                raise LocalStateError("cannot allocate a local hot-state file")
+            _write_all(descriptor, data)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            current = os.stat(temporary_name, dir_fd=directory, follow_symlinks=False)
+            if _identity(current) != temporary_identity:
+                raise LocalStateError("local hot-state file changed during write")
+            os.rename(
+                temporary_name,
+                _SIDECAR_NAME,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
+            temporary_name = ""
+            installed = os.stat(_SIDECAR_NAME, dir_fd=directory, follow_symlinks=False)
+            if _identity(installed) != temporary_identity:
+                raise LocalStateError("local hot-state target changed during write")
+            os.fsync(directory)
+            _verify_directory_identities(identities)
+            return
+        except OSError as exc:
+            raise LocalStateError(f"cannot write local hot state: {sidecar}") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            os.close(directory)
+
+    identities = _directory_identities(config.root, local_state)
     descriptor = -1
     temporary_name = ""
+    temporary_identity: _FileIdentity | None = None
     try:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".hot-state-", suffix=".tmp", dir=local_state
         )
-        os.write(descriptor, _canonical_sidecar(payload))
+        temporary_identity = _identity(os.fstat(descriptor))
+        _write_all(descriptor, data)
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
+        _verify_directory_identities(identities)
+        if _identity(Path(temporary_name).lstat()) != temporary_identity:
+            raise LocalStateError("local hot-state file changed during write")
         os.replace(temporary_name, sidecar)
         temporary_name = ""
+        if _identity(sidecar.lstat()) != temporary_identity:
+            raise LocalStateError("local hot-state target changed during write")
+        _verify_directory_identities(identities)
         if os.name != "nt":
             directory = os.open(local_state, os.O_RDONLY)
             try:
@@ -371,11 +748,6 @@ def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary_name:
-            try:
-                Path(temporary_name).unlink()
-            except OSError:
-                pass
 
 
 def mark_hot_current(config: PortableConfig) -> None:
@@ -392,7 +764,7 @@ def mark_hot_current(config: PortableConfig) -> None:
     ):
         raise LocalStateError("hot.md must be a single-link ordinary file")
     fingerprint_before = authoritative_fingerprint(config)
-    hot_hash = _hash_ordinary_file(config.vault / _HOT_NAME, "hot.md")
+    hot_hash = _hash_ordinary_file(config.vault / _HOT_NAME, "hot.md", root=config.root)
     fingerprint_after = authoritative_fingerprint(config)
     if fingerprint_after != fingerprint_before:
         raise LocalStateError(
