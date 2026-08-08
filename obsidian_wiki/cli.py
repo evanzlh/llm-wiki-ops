@@ -159,7 +159,11 @@ def install_skills(
 GLOBAL_AGENT_DIRS: list[tuple[str, str, tuple[str, ...] | None]] = [
     (".claude/skills", "~/.claude/skills/ (Claude Code)", None),
     (".gemini/skills", "~/.gemini/skills/ (Gemini CLI)", None),
-    (".gemini/antigravity/skills", "~/.gemini/antigravity/skills/ (Antigravity, legacy)", None),
+    (
+        ".gemini/antigravity/skills",
+        "~/.gemini/antigravity/skills/ (Antigravity, legacy)",
+        None,
+    ),
     (".codex/skills", "~/.codex/skills/ (Codex)", None),
     (".hermes/skills", "~/.hermes/skills/ (Hermes default)", None),
     (".openclaw/skills", "~/.openclaw/skills/ (OpenClaw)", None),
@@ -185,7 +189,9 @@ def _install_hermes_profiles(mode: str) -> None:
     if hermes_home:
         hp = Path(hermes_home).expanduser()
         if hp != HOME / ".hermes":
-            install_skills(hp / "skills", f"{hp}/skills/ (Hermes active profile)", mode=mode)
+            install_skills(
+                hp / "skills", f"{hp}/skills/ (Hermes active profile)", mode=mode
+            )
             handled.add(hp)
     profiles = HOME / ".hermes" / "profiles"
     if profiles.is_dir():
@@ -359,7 +365,11 @@ def _portable_for_vault(vault: Path) -> PortableConfig | None:
         ):
             raise
         return None
-    return runtime.portable if runtime.mode == "portable" and runtime.vault == vault else None
+    return (
+        runtime.portable
+        if runtime.mode == "portable" and runtime.vault == vault
+        else None
+    )
 
 
 def _manifest_context_for_vault(vault: Path) -> PortableConfig | None:
@@ -551,12 +561,14 @@ def _doctor_add(
     detail: str,
     hint: str = "",
 ) -> None:
-    checks.append({
-        "name": name,
-        "status": status,
-        "detail": detail,
-        "hint": hint,
-    })
+    checks.append(
+        {
+            "name": name,
+            "status": status,
+            "detail": detail,
+            "hint": hint,
+        }
+    )
 
 
 def _doctor_status(checks: list[dict[str, str]]) -> str:
@@ -578,22 +590,33 @@ def _required_vault_paths(vault: Path) -> list[Path]:
 
 
 def _doctor_project_check(project_dir: Path) -> dict[str, str]:
-    required = [project_dir / "AGENTS.md", *[project_dir / dest for _src, dest in BOOTSTRAP_FILES[1:]]]
-    missing = [str(path.relative_to(project_dir)) for path in required if not path.exists()]
+    required = [
+        project_dir / "AGENTS.md",
+        *[project_dir / dest for _src, dest in BOOTSTRAP_FILES[1:]],
+    ]
+    missing = [
+        str(path.relative_to(project_dir)) for path in required if not path.exists()
+    ]
     if missing:
         return {
             "status": "warn",
             "detail": f"missing {len(missing)} bootstrap file(s)",
             "hint": f"run: obsidian-wiki setup --project {project_dir}",
         }
-    aliases_missing = [alias for alias in AGENTS_ALIASES if not (project_dir / alias).exists()]
+    aliases_missing = [
+        alias for alias in AGENTS_ALIASES if not (project_dir / alias).exists()
+    ]
     if aliases_missing:
         return {
             "status": "warn",
             "detail": f"missing AGENTS aliases: {', '.join(aliases_missing)}",
             "hint": f"run: obsidian-wiki setup --project {project_dir}",
         }
-    return {"status": "pass", "detail": "bootstrap files and aliases present", "hint": ""}
+    return {
+        "status": "pass",
+        "detail": "bootstrap files and aliases present",
+        "hint": "",
+    }
 
 
 def _nearest_portable_config() -> Path | None:
@@ -655,7 +678,13 @@ def _portable_lexical_paths(
         skills = paths["skills"]
         local_state = paths["local_state"]
         sources = paths["sources"]
-    except (KeyError, OSError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        tomllib.TOMLDecodeError,
+    ) as exc:
         raise ValueError(
             f"portable configuration paths could not be read safely: {config_path}: {exc}"
         ) from exc
@@ -745,8 +774,7 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
                 if stat.S_ISLNK(metadata.st_mode):
                     relative = entry.relative_to(portable.root).as_posix()
                     raise ValueError(
-                        "portable manifest shard tree contains a symlink: "
-                        f"{relative}"
+                        f"portable manifest shard tree contains a symlink: {relative}"
                     )
             for name in filenames:
                 path = current / name
@@ -869,12 +897,18 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
     return {"status": _doctor_status(checks), "checks": checks}
 
 
-def run_doctor(*, vault_override: str | None = None, project_dir: str | None = None) -> dict[str, object]:
+def run_doctor(
+    *, vault_override: str | None = None, project_dir: str | None = None
+) -> dict[str, object]:
     portable_candidate = _nearest_portable_config()
     resolution_errors: list[ConfigError] = []
     runtime = _resolve_runtime(vault_override, error_sink=resolution_errors)
     resolution_error = resolution_errors[0] if resolution_errors else None
-    if runtime is not None and runtime.mode == "portable" and runtime.portable is not None:
+    if (
+        runtime is not None
+        and runtime.mode == "portable"
+        and runtime.portable is not None
+    ):
         return _run_portable_doctor(runtime.portable)
     if portable_candidate is not None and vault_override is None:
         try:
@@ -895,8 +929,7 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             "portable configuration was discovered but did not resolve",
         )
     if resolution_error is not None and (
-        vault_override is not None
-        or not _is_absent_runtime_config(resolution_error)
+        vault_override is not None or not _is_absent_runtime_config(resolution_error)
     ):
         return _doctor_resolution_error(resolution_error)
 
@@ -912,7 +945,13 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             hint="" if bundled else SOURCE_REINSTALL_HINT,
         )
     except FileNotFoundError as exc:
-        _doctor_add(checks, name="bundled-skills", status="fail", detail=str(exc), hint=SOURCE_REINSTALL_HINT)
+        _doctor_add(
+            checks,
+            name="bundled-skills",
+            status="fail",
+            detail=str(exc),
+            hint=SOURCE_REINSTALL_HINT,
+        )
         bundled = []
 
     boot = bootstrap_dir()
@@ -931,7 +970,9 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
         name="global-config",
         status="pass" if config_present else "fail",
         detail=str(GLOBAL_CONFIG) if config_present else "global config not written",
-        hint="" if config_present else "run: obsidian-wiki setup --vault /path/to/your/vault",
+        hint=""
+        if config_present
+        else "run: obsidian-wiki setup --vault /path/to/your/vault",
     )
 
     vault_path = ""
@@ -973,14 +1014,26 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
             checks,
             name="setup-version",
             status="pass",
-            detail=f"setup version matches installed package ({version_label()})" if setup_version else "setup version not recorded",
+            detail=f"setup version matches installed package ({version_label()})"
+            if setup_version
+            else "setup version not recorded",
             hint="" if setup_version else "re-run setup to record install metadata",
         )
 
     if vault is not None:
         if vault.is_dir():
-            _doctor_add(checks, name="vault-path", status="pass", detail="vault directory exists", hint="")
-            missing_core = [str(path.relative_to(vault)) for path in _required_vault_paths(vault) if not path.exists()]
+            _doctor_add(
+                checks,
+                name="vault-path",
+                status="pass",
+                detail="vault directory exists",
+                hint="",
+            )
+            missing_core = [
+                str(path.relative_to(vault))
+                for path in _required_vault_paths(vault)
+                if not path.exists()
+            ]
             if missing_core:
                 _doctor_add(
                     checks,
@@ -990,7 +1043,13 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
                     hint="run the wiki setup skill or create the missing files",
                 )
             else:
-                _doctor_add(checks, name="vault-core-files", status="pass", detail="core vault files present", hint="")
+                _doctor_add(
+                    checks,
+                    name="vault-core-files",
+                    status="pass",
+                    detail="core vault files present",
+                    hint="",
+                )
 
             manifest_path = vault / ".manifest.json"
             if manifest_path.exists():
@@ -1029,7 +1088,9 @@ def run_doctor(*, vault_override: str | None = None, project_dir: str | None = N
         agent_dir = HOME / rel
         if not agent_dir.is_dir():
             continue
-        installed = {p.name for p in agent_dir.iterdir() if (p.is_dir() or p.is_symlink())}
+        installed = {
+            p.name for p in agent_dir.iterdir() if (p.is_dir() or p.is_symlink())
+        }
         missing = bundled_set - installed
         count = len(installed & bundled_set)
         agent_summaries.append(f"{label}: {count}/{len(bundled_set)}")
@@ -1128,7 +1189,9 @@ def _maybe_configure_sync(vault_path: Path, remote_arg: str | None) -> bool:
         if answer.lower() != "y":
             return False
         try:
-            remote = input("  GitHub repo URL (e.g. https://github.com/you/my-wiki.git): ").strip()
+            remote = input(
+                "  GitHub repo URL (e.g. https://github.com/you/my-wiki.git): "
+            ).strip()
         except EOFError:
             remote = ""
         if not remote:
@@ -1203,7 +1266,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     sync_configured = False
     if vault_path and Path(vault_path).expanduser().is_dir():
-        sync_configured = _maybe_configure_sync(Path(vault_path).expanduser(), args.remote)
+        sync_configured = _maybe_configure_sync(
+            Path(vault_path).expanduser(), args.remote
+        )
 
     n = len(list_skills())
     print("\n───────────────────────────────────────────────────")
@@ -1255,6 +1320,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 def cmd_graph_query(args: argparse.Namespace) -> int:
     from obsidian_wiki.graphrag import query
+
     vault = Path(args.vault).expanduser().resolve()
     if not vault.is_dir():
         print(f"error: vault not found: {vault}", file=sys.stderr)
@@ -1303,6 +1369,7 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
 
 def cmd_graph_analyse(args: argparse.Namespace) -> int:
     from obsidian_wiki.graph_analysis import analyse_vault
+
     vault = Path(args.vault).expanduser().resolve()
     if not vault.is_dir():
         print(f"error: vault not found: {vault}", file=sys.stderr)
@@ -1332,9 +1399,13 @@ def _skip_list(args: argparse.Namespace) -> list[str]:
 
 def cmd_sessions_build(args: argparse.Namespace) -> int:
     from obsidian_wiki.session_graph import build
+
     claude_dir = Path(args.claude_dir).expanduser()
-    bookmarks = Path(args.bookmarks).expanduser() if args.bookmarks else \
-        Path("~/.bookmark-agent/bookmarks.json").expanduser()
+    bookmarks = (
+        Path(args.bookmarks).expanduser()
+        if args.bookmarks
+        else Path("~/.bookmark-agent/bookmarks.json").expanduser()
+    )
 
     def progress(message: str) -> None:
         if args.verbose:
@@ -1359,26 +1430,40 @@ def cmd_sessions_build(args: argparse.Namespace) -> int:
         return 0
 
     stats = result["stats"]
-    print(f"{stats['sessions']} sessions ({stats['full']} with transcripts, "
-          f"{stats['thin']} history-only) · {stats['edges']} links · "
-          f"{stats['clusters']} topics · {stats['unclustered']} unclustered")
+    print(
+        f"{stats['sessions']} sessions ({stats['full']} with transcripts, "
+        f"{stats['thin']} history-only) · {stats['edges']} links · "
+        f"{stats['clusters']} topics · {stats['unclustered']} unclustered"
+    )
     print(f"read {stats['read_this_run']} this run, reused {stats['reused']} cached")
     for cluster in result["clusters"][:15]:
-        flag = " [dormant]" if cluster["dormant"] else (" [hot]" if cluster["momentum"] >= 2 else "")
+        flag = (
+            " [dormant]"
+            if cluster["dormant"]
+            else (" [hot]" if cluster["momentum"] >= 2 else "")
+        )
         print(f"  {cluster['size']:4}  {cluster['name'] or cluster['label']}{flag}")
     if result["unnamed"]:
-        print(f"{result['unnamed']} unnamed topic(s) — run the session-brain skill to name them")
+        print(
+            f"{result['unnamed']} unnamed topic(s) — run the session-brain skill to name them"
+        )
     print(f"-> {result['out_dir']}")
     return 0
 
 
 def cmd_sessions_query(args: argparse.Namespace) -> int:
     from obsidian_wiki.session_query import query
+
     try:
         result = query(
-            _brain_dir(args), args.question,
-            top_n=args.top, max_load=args.max_load, half_life_days=args.half_life,
-            project=args.project, cluster=args.cluster, since=args.since,
+            _brain_dir(args),
+            args.question,
+            top_n=args.top,
+            max_load=args.max_load,
+            half_life_days=args.half_life,
+            project=args.project,
+            cluster=args.cluster,
+            since=args.since,
             min_score=args.min_score,
         )
     except FileNotFoundError as exc:
@@ -1392,8 +1477,10 @@ def cmd_sessions_query(args: argparse.Namespace) -> int:
         return 0
     for c in result["candidates"]:
         loadable = "" if c["loadable"] else "  (no transcript)"
-        print(f"{c['score']:.2f}  {c['end_ts'][:10]}  {c['project'][:18]:18}  "
-              f"{(c['title'] or '(untitled)')[:52]:52}{loadable}")
+        print(
+            f"{c['score']:.2f}  {c['end_ts'][:10]}  {c['project'][:18]:18}  "
+            f"{(c['title'] or '(untitled)')[:52]:52}{loadable}"
+        )
         print(f"      {c['why']}")
     if result["should_load"]:
         print(f"\nload: {result['load_command']}")
@@ -1402,6 +1489,7 @@ def cmd_sessions_query(args: argparse.Namespace) -> int:
 
 def cmd_sessions_show(args: argparse.Namespace) -> int:
     from obsidian_wiki.session_query import show
+
     try:
         result = show(_brain_dir(args), args.session_id, neighbors=args.neighbors)
     except (FileNotFoundError, KeyError) as exc:
@@ -1413,6 +1501,7 @@ def cmd_sessions_show(args: argparse.Namespace) -> int:
 
 def cmd_sessions_clusters(args: argparse.Namespace) -> int:
     from obsidian_wiki.session_graph import load_graph
+
     try:
         _, clusters_doc = load_graph(_brain_dir(args))
     except FileNotFoundError as exc:
@@ -1421,13 +1510,17 @@ def cmd_sessions_clusters(args: argparse.Namespace) -> int:
     clusters = clusters_doc.get("clusters", [])
     if args.unnamed:
         clusters = [c for c in clusters if not c.get("name")]
-    clusters = clusters[:args.top]
+    clusters = clusters[: args.top]
     if args.json:
         payload = {"clusters": clusters}
         print(json.dumps(payload, indent=2) if args.pretty else json.dumps(payload))
         return 0
     for c in clusters:
-        flag = " [dormant]" if c.get("dormant") else (" [hot]" if c.get("momentum", 0) >= 2 else "")
+        flag = (
+            " [dormant]"
+            if c.get("dormant")
+            else (" [hot]" if c.get("momentum", 0) >= 2 else "")
+        )
         print(f"{c['id']:3}  {c['size']:4}  {c.get('name') or c['label']}{flag}")
         print(f"      terms: {', '.join(t for t, _ in c['top_terms'][:8])}")
     return 0
@@ -1435,16 +1528,22 @@ def cmd_sessions_clusters(args: argparse.Namespace) -> int:
 
 def cmd_sessions_name(args: argparse.Namespace) -> int:
     from obsidian_wiki.session_graph import set_cluster_names
-    raw = sys.stdin.read() if args.from_file == "-" else \
-        Path(args.from_file).expanduser().read_text(encoding="utf-8")
+
+    raw = (
+        sys.stdin.read()
+        if args.from_file == "-"
+        else Path(args.from_file).expanduser().read_text(encoding="utf-8")
+    )
     try:
         updates = json.loads(raw)
     except ValueError as exc:
         print(f"error: invalid JSON: {exc}", file=sys.stderr)
         return 1
     if not isinstance(updates, list):
-        print('error: expected a JSON array of {"id": N, "name": "...", "summary": "..."}',
-              file=sys.stderr)
+        print(
+            'error: expected a JSON array of {"id": N, "name": "...", "summary": "..."}',
+            file=sys.stderr,
+        )
         return 1
     try:
         result = set_cluster_names(_brain_dir(args), updates)
@@ -1457,6 +1556,7 @@ def cmd_sessions_name(args: argparse.Namespace) -> int:
 
 def cmd_cache_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import check_sources
+
     vault = Path(args.vault).expanduser().resolve()
     sources = [Path(p).expanduser().resolve() for p in args.sources]
     try:
@@ -1474,6 +1574,7 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
 
 def cmd_cache_update(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import update_source
+
     vault = Path(args.vault).expanduser().resolve()
     source = Path(args.source).expanduser().resolve()
     pages = args.pages or []
@@ -1489,6 +1590,7 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
 
 def cmd_cache_hash(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import hash_file
+
     path = Path(args.path).expanduser().resolve()
     if not path.exists():
         print(f"error: {path} does not exist", file=sys.stderr)
@@ -1514,19 +1616,205 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("error: check requires a portable repository", file=sys.stderr)
         return 1
     from obsidian_wiki.portable_check import check_portable_repo
+
     report = check_portable_repo(runtime.portable)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None, ensure_ascii=False))
     else:
-        print(f"portable check: {report['status']} ({report['errors']} errors, {report['warnings']} warnings)")
+        print(
+            f"portable check: {report['status']} ({report['errors']} errors, {report['warnings']} warnings)"
+        )
         for issue in report["issues"]:
-            print(f"{issue['severity']}: {issue['code']}: {issue['path']}: {issue['message']}")
+            print(
+                f"{issue['severity']}: {issue['code']}: {issue['path']}: {issue['message']}"
+            )
     return 1 if report["status"] == "fail" else 0
+
+
+def _portable_command_config(command: str) -> PortableConfig:
+    try:
+        runtime = resolve_config(
+            cwd=Path.cwd(),
+            home=HOME,
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+    except ConfigError as exc:
+        raise ConfigError(f"{command} requires a portable repository: {exc}") from exc
+    if runtime.mode != "portable" or runtime.portable is None:
+        raise ConfigError(f"{command} requires a portable repository")
+    return runtime.portable
+
+
+def _json_print(payload: object, *, pretty: bool = False) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None))
+
+
+def _transaction_manager():
+    from obsidian_wiki.transaction import TransactionManager
+
+    return TransactionManager(_portable_command_config("transaction"))
+
+
+def _transaction_source(config: PortableConfig, raw: str) -> Path:
+    source = Path(raw).expanduser()
+    if source.is_absolute():
+        return source
+    cwd_candidate = (Path.cwd() / source).absolute()
+    if cwd_candidate.exists() or cwd_candidate.is_symlink():
+        return cwd_candidate
+    return (config.root / source).absolute()
+
+
+def _record_payload(record) -> dict[str, object]:
+    return {
+        "transaction_id": record.transaction_id,
+        "status": record.status,
+        "started_at": record.started_at,
+        "source_ids": list(record.source_ids),
+        "workspace": str(record.workspace),
+        "candidate_vault": str(record.candidate_vault),
+        "snapshots": str(record.workspace / "snapshots"),
+        "deletions": list(record.deletions),
+    }
+
+
+def _commit_payload(result) -> dict[str, object]:
+    return {
+        "transaction_id": result.transaction_id,
+        "created": list(result.created),
+        "updated": list(result.updated),
+        "removed": list(result.removed),
+        "operation_path": result.operation_path,
+    }
+
+
+def cmd_transaction_begin(args: argparse.Namespace) -> int:
+    from obsidian_wiki.transaction import TransactionManager
+
+    config = _portable_command_config("transaction begin")
+    manager = TransactionManager(config)
+    record = manager.begin([_transaction_source(config, raw) for raw in args.sources])
+    payload = _record_payload(record)
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(f"transaction {record.transaction_id}: {record.candidate_vault}")
+    return 0
+
+
+def cmd_transaction_list(args: argparse.Namespace) -> int:
+    records = _transaction_manager().list_transactions()
+    payload = [_record_payload(record) for record in records]
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    elif not records:
+        print("No retained transactions.")
+    else:
+        for record in records:
+            print(f"{record.transaction_id}\t{record.status}\t{record.workspace}")
+    return 0
+
+
+def cmd_transaction_delete(args: argparse.Namespace) -> int:
+    manager = _transaction_manager()
+    manager.mark_delete(args.transaction_id, args.path)
+    payload = {
+        "transaction_id": args.transaction_id,
+        "deleted": args.path,
+    }
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(f"transaction {args.transaction_id}: delete {args.path}")
+    return 0
+
+
+def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
+    manager = _transaction_manager()
+    action = manager.retry if retry else manager.commit
+    result = action(args.transaction_id)
+    payload = _commit_payload(result)
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(
+            f"transaction {result.transaction_id}: "
+            f"{len(result.created)} created, {len(result.updated)} updated, "
+            f"{len(result.removed)} removed; {result.operation_path}"
+        )
+    return 0
+
+
+def cmd_transaction_commit(args: argparse.Namespace) -> int:
+    return _run_transaction_commit(args, retry=False)
+
+
+def cmd_transaction_retry(args: argparse.Namespace) -> int:
+    return _run_transaction_commit(args, retry=True)
+
+
+def _transaction_state_action(args: argparse.Namespace, action_name: str) -> int:
+    manager = _transaction_manager()
+    action = getattr(manager, action_name)
+    action(args.transaction_id)
+    payload = {
+        "transaction_id": args.transaction_id,
+        "status": {
+            "restore": "restored",
+            "discard": "discarded",
+            "abort": "aborted",
+        }[action_name],
+    }
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(f"transaction {args.transaction_id}: {payload['status']}")
+    return 0
+
+
+def cmd_transaction_restore(args: argparse.Namespace) -> int:
+    return _transaction_state_action(args, "restore")
+
+
+def cmd_transaction_discard(args: argparse.Namespace) -> int:
+    return _transaction_state_action(args, "discard")
+
+
+def cmd_transaction_abort(args: argparse.Namespace) -> int:
+    return _transaction_state_action(args, "abort")
+
+
+def cmd_hot_status(args: argparse.Namespace) -> int:
+    from obsidian_wiki.local_state import hot_status
+
+    status = hot_status(
+        _portable_command_config("hot status"),
+        invalidate=True,
+    )
+    if args.json:
+        _json_print(status, pretty=args.pretty)
+    else:
+        print("stale" if status["stale"] else "current")
+    return 0
+
+
+def cmd_hot_mark_current(args: argparse.Namespace) -> int:
+    from obsidian_wiki.local_state import mark_hot_current
+
+    mark_hot_current(_portable_command_config("hot mark-current"))
+    payload = {"stale": False, "status": "current"}
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print("hot.md marked current")
+    return 0
 
 
 def cmd_ast_extract(args: argparse.Namespace) -> int:
     from pathlib import Path
     from obsidian_wiki.ast_extractor import extract
+
     path = Path(args.path).expanduser().resolve()
     try:
         result = extract(path)
@@ -1627,10 +1915,13 @@ def _schema_options(
         else None
     )
     configured_lifecycles = _schema_csv(config, "OBSIDIAN_ALLOWED_LIFECYCLES")
-    configured_relationships = _schema_csv(config, "OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES")
+    configured_relationships = _schema_csv(
+        config, "OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES"
+    )
     configured_required = _schema_csv(config, "OBSIDIAN_REQUIRED_TRUST_FIELDS")
     unknown_required = sorted(
-        set(configured_required).union(cli_required or ()) - TRUST_REQUIRED_FIELD_ALLOWLIST
+        set(configured_required).union(cli_required or ())
+        - TRUST_REQUIRED_FIELD_ALLOWLIST
     )
     if unknown_required:
         allowed = ", ".join(sorted(TRUST_REQUIRED_FIELD_ALLOWLIST))
@@ -1646,14 +1937,10 @@ def _schema_options(
         or list(default_required_trust_fields or TRUST_REQUIRED_FRONTMATTER)
     )
     cli_overrides = bool(
-        cli_lifecycles
-        or cli_relationships
-        or cli_required is not None
+        cli_lifecycles or cli_relationships or cli_required is not None
     )
     configured_overrides = bool(
-        configured_lifecycles
-        or configured_relationships
-        or configured_required
+        configured_lifecycles or configured_relationships or configured_required
     )
     source = _schema_source_value(args, config)
     if not source:
@@ -1666,7 +1953,9 @@ def _schema_options(
         else:
             source = "framework-defaults"
     return {
-        "allowed_lifecycles": ALLOWED_LIFECYCLES.union(configured_lifecycles, cli_lifecycles),
+        "allowed_lifecycles": ALLOWED_LIFECYCLES.union(
+            configured_lifecycles, cli_lifecycles
+        ),
         "allowed_relationship_types": ALLOWED_RELATIONSHIP_TYPES.union(
             configured_relationships, cli_relationships
         ),
@@ -1687,7 +1976,9 @@ def cmd_lint(args: argparse.Namespace) -> int:
     config = runtime.values
     config_source = _schema_config_source(runtime)
 
-    strict_trust = args.strict_trust or config.get("OBSIDIAN_TRUST_STRICT", "").strip().lower() in (
+    strict_trust = args.strict_trust or config.get(
+        "OBSIDIAN_TRUST_STRICT", ""
+    ).strip().lower() in (
         "1",
         "true",
         "yes",
@@ -1777,9 +2068,7 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
                 allowed_lifecycles=schema["allowed_lifecycles"],
                 required_trust_keys=schema["required_trust_fields"],
             )
-            requested = {
-                Path(raw).as_posix().removeprefix("./") for raw in args.page
-            }
+            requested = {Path(raw).as_posix().removeprefix("./") for raw in args.page}
             recorded_pages = len(requested.intersection(ledger["pages"]))
         write_trust_ledger(path, ledger, vault=vault)
     except (RuntimeError, ValueError) as exc:
@@ -1946,7 +2235,9 @@ def cmd_info(args: argparse.Namespace) -> int:
     print(f"skills:    {skills_dir()}")
     boot = bootstrap_dir()
     print(f"bootstrap: {boot if boot else '(not found)'}")
-    print(f"config:    {GLOBAL_CONFIG}{'' if GLOBAL_CONFIG.exists() else ' (not written yet)'}")
+    print(
+        f"config:    {GLOBAL_CONFIG}{'' if GLOBAL_CONFIG.exists() else ' (not written yet)'}"
+    )
     if GLOBAL_CONFIG.exists():
         vp = _read_config_value("OBSIDIAN_VAULT_PATH")
         setup_ver = _read_config_value("OBSIDIAN_WIKI_VERSION")
@@ -1954,8 +2245,11 @@ def cmd_info(args: argparse.Namespace) -> int:
         print(f"setup ran: {setup_ver or '(never)'}")
         if vp:
             from obsidian_wiki.sync import get_remote
+
             remote = get_remote(Path(vp).expanduser())
-            print(f"sync:      {remote if remote else '(not configured — run: obsidian-wiki sync-setup <url>)'}")
+            print(
+                f"sync:      {remote if remote else '(not configured — run: obsidian-wiki sync-setup <url>)'}"
+            )
     print(f"bundled skills: {len(bundled)}")
     print()
     print("Agent skill install status:")
@@ -2003,6 +2297,15 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
 
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
+def _add_json_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
+    parser.add_argument(
+        "--pretty", action="store_true", help="pretty-print JSON output"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="obsidian-wiki",
@@ -2011,7 +2314,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-V", "--version", action="version", version=version_label())
     sub = p.add_subparsers(dest="command")
 
-    sp = sub.add_parser("setup", help="install skills into your agents and write config (default)")
+    sp = sub.add_parser(
+        "setup", help="install skills into your agents and write config (default)"
+    )
     _add_setup_args(sp)
     sp.set_defaults(func=cmd_setup)
 
@@ -2019,12 +2324,21 @@ def build_parser() -> argparse.ArgumentParser:
         "sync-setup",
         help="configure GitHub sync for your vault (git init, .gitignore, remote)",
     )
-    ssp.add_argument("remote", help="GitHub (or any git host) repo URL, e.g. https://github.com/you/my-wiki.git")
-    ssp.add_argument("--vault", metavar="PATH", help="absolute path to your Obsidian vault")
+    ssp.add_argument(
+        "remote",
+        help="GitHub (or any git host) repo URL, e.g. https://github.com/you/my-wiki.git",
+    )
+    ssp.add_argument(
+        "--vault", metavar="PATH", help="absolute path to your Obsidian vault"
+    )
     ssp.set_defaults(func=cmd_sync_setup)
 
-    syp = sub.add_parser("sync", help="commit and push pending vault changes (git add -A, commit, push)")
-    syp.add_argument("--vault", metavar="PATH", help="absolute path to your Obsidian vault")
+    syp = sub.add_parser(
+        "sync", help="commit and push pending vault changes (git add -A, commit, push)"
+    )
+    syp.add_argument(
+        "--vault", metavar="PATH", help="absolute path to your Obsidian vault"
+    )
     syp.set_defaults(func=cmd_sync)
 
     lp = sub.add_parser("list", help="list bundled skills")
@@ -2041,14 +2355,88 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rus.set_defaults(func=cmd_repo_upgrade_skills)
 
+    transaction = sub.add_parser(
+        "transaction",
+        help="stage, promote, and recover portable repository writes",
+    )
+    transaction_sub = transaction.add_subparsers(
+        dest="transaction_command", required=True
+    )
+    transaction_begin = transaction_sub.add_parser(
+        "begin", help="begin one local portable write transaction"
+    )
+    transaction_begin.add_argument(
+        "--source",
+        dest="sources",
+        nargs="+",
+        required=True,
+        metavar="PATH",
+        help="one or more authoritative source paths",
+    )
+    _add_json_args(transaction_begin)
+    transaction_begin.set_defaults(func=cmd_transaction_begin)
+
+    transaction_list = transaction_sub.add_parser(
+        "list", help="list active and retained recovery transactions"
+    )
+    _add_json_args(transaction_list)
+    transaction_list.set_defaults(func=cmd_transaction_list)
+
+    transaction_delete = transaction_sub.add_parser(
+        "delete", help="declare one vault-relative page removal"
+    )
+    transaction_delete.add_argument("transaction_id")
+    transaction_delete.add_argument("path", help="vault-relative knowledge page path")
+    _add_json_args(transaction_delete)
+    transaction_delete.set_defaults(func=cmd_transaction_delete)
+
+    for name, help_text, function in (
+        ("commit", "promote an active transaction", cmd_transaction_commit),
+        ("retry", "retry a retained failed transaction", cmd_transaction_retry),
+        (
+            "restore",
+            "restore a failed or completed transaction",
+            cmd_transaction_restore,
+        ),
+        ("discard", "discard retained recovery state", cmd_transaction_discard),
+        ("abort", "abort active or failed staged work", cmd_transaction_abort),
+    ):
+        command = transaction_sub.add_parser(name, help=help_text)
+        command.add_argument("transaction_id")
+        _add_json_args(command)
+        command.set_defaults(func=function)
+
+    hot = sub.add_parser("hot", help="inspect local derived hot.md state")
+    hot_sub = hot.add_subparsers(dest="hot_command", required=True)
+    hot_status_parser = hot_sub.add_parser(
+        "status", help="report hot.md freshness and remove it when stale"
+    )
+    _add_json_args(hot_status_parser)
+    hot_status_parser.set_defaults(func=cmd_hot_status)
+    hot_mark = hot_sub.add_parser(
+        "mark-current", help="record an Agent-written hot.md as current"
+    )
+    _add_json_args(hot_mark)
+    hot_mark.set_defaults(func=cmd_hot_mark_current)
+
     gq = sub.add_parser(
         "graph-query",
         help="answer a question from the vault's wikilink index without reading page bodies",
     )
     gq.add_argument("vault", help="path to the Obsidian vault")
     gq.add_argument("question", help="question to answer")
-    gq.add_argument("--top", type=int, default=8, help="number of candidate pages to rank (default: 8)")
-    gq.add_argument("--max-read", type=int, default=3, help="max pages to return in should_read (default: 3)")
+    gq.add_argument(
+        "--top",
+        type=int,
+        default=8,
+        help="number of candidate pages to rank (default: 8)",
+    )
+    gq.add_argument(
+        "--max-read",
+        type=int,
+        default=3,
+        help="max pages to return in should_read (default: 3)",
+    )
     gq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     gq.set_defaults(func=cmd_graph_query)
 
@@ -2058,10 +2446,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bp.add_argument("vault", help="path to the Obsidian vault")
     bp.add_argument("source_dir", help="directory of source documents to ingest")
-    bp.add_argument("--max-mb", type=float, default=2.0, help="max MB per batch (default: 2)")
-    bp.add_argument("--max-files", type=int, default=20, help="max files per batch (default: 20)")
-    bp.add_argument("--no-cache", action="store_true", help="disable manifest-based skip of unchanged files")
-    bp.add_argument("--include-code", action="store_true", help="include code files (default: excluded; use ast-extract instead)")
+    bp.add_argument(
+        "--max-mb", type=float, default=2.0, help="max MB per batch (default: 2)"
+    )
+    bp.add_argument(
+        "--max-files", type=int, default=20, help="max files per batch (default: 20)"
+    )
+    bp.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="disable manifest-based skip of unchanged files",
+    )
+    bp.add_argument(
+        "--include-code",
+        action="store_true",
+        help="include code files (default: excluded; use ast-extract instead)",
+    )
     bp.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     bp.set_defaults(func=cmd_batch_plan)
 
@@ -2070,7 +2470,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="analyse the vault's wikilink graph: god nodes, communities, surprising connections",
     )
     ga.add_argument("vault", help="path to the Obsidian vault")
-    ga.add_argument("--top", type=int, default=20, help="number of top results to return (default: 20)")
+    ga.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="number of top results to return (default: 20)",
+    )
     ga.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     ga.set_defaults(func=cmd_graph_analyse)
 
@@ -2078,28 +2483,60 @@ def build_parser() -> argparse.ArgumentParser:
         "sessions-build",
         help="build a topic graph over your agent session history (writes a sidecar, not the vault)",
     )
-    sb.add_argument("--claude-dir", default=DEFAULT_CLAUDE_DIR,
-                    help=f"agent session cache to read (default: {DEFAULT_CLAUDE_DIR})")
-    sb.add_argument("--out", default=None,
-                    help=f"output directory (default: $WIKI_SESSION_BRAIN_DIR or {DEFAULT_BRAIN_DIR})")
-    sb.add_argument("--k", type=int, default=8, help="neighbours per session (default: 8)")
-    sb.add_argument("--min-sim", type=float, default=0.08,
-                    help="minimum cosine similarity for an edge (default: 0.08)")
-    sb.add_argument("--mutual", action="store_true",
-                    help="keep only mutual kNN edges — tighter, smaller clusters")
-    sb.add_argument("--half-life", type=float, default=90.0,
-                    help="recency half-life in days (default: 90)")
-    sb.add_argument("--since", help="only read sessions modified on or after this ISO date")
-    sb.add_argument("--skip",
-                    help="comma-separated substrings of project dirs to skip (or $WIKI_SKIP_PROJECTS). "
-                         "Cache dir names begin with '-', which argparse reads as a flag — pass the "
-                         "bare name ('game') or use --skip=-w-game")
-    sb.add_argument("--full", action="store_true", help="ignore caches and re-read every session")
+    sb.add_argument(
+        "--claude-dir",
+        default=DEFAULT_CLAUDE_DIR,
+        help=f"agent session cache to read (default: {DEFAULT_CLAUDE_DIR})",
+    )
+    sb.add_argument(
+        "--out",
+        default=None,
+        help=f"output directory (default: $WIKI_SESSION_BRAIN_DIR or {DEFAULT_BRAIN_DIR})",
+    )
+    sb.add_argument(
+        "--k", type=int, default=8, help="neighbours per session (default: 8)"
+    )
+    sb.add_argument(
+        "--min-sim",
+        type=float,
+        default=0.08,
+        help="minimum cosine similarity for an edge (default: 0.08)",
+    )
+    sb.add_argument(
+        "--mutual",
+        action="store_true",
+        help="keep only mutual kNN edges — tighter, smaller clusters",
+    )
+    sb.add_argument(
+        "--half-life",
+        type=float,
+        default=90.0,
+        help="recency half-life in days (default: 90)",
+    )
+    sb.add_argument(
+        "--since", help="only read sessions modified on or after this ISO date"
+    )
+    sb.add_argument(
+        "--skip",
+        help="comma-separated substrings of project dirs to skip (or $WIKI_SKIP_PROJECTS). "
+        "Cache dir names begin with '-', which argparse reads as a flag — pass the "
+        "bare name ('game') or use --skip=-w-game",
+    )
+    sb.add_argument(
+        "--full", action="store_true", help="ignore caches and re-read every session"
+    )
     sb.add_argument("--no-html", action="store_true", help="skip writing graph.html")
-    sb.add_argument("--bookmarks", help="path to bookmarks.json (default: ~/.bookmark-agent/bookmarks.json)")
-    sb.add_argument("--json", action="store_true", help="emit JSON instead of a human summary")
+    sb.add_argument(
+        "--bookmarks",
+        help="path to bookmarks.json (default: ~/.bookmark-agent/bookmarks.json)",
+    )
+    sb.add_argument(
+        "--json", action="store_true", help="emit JSON instead of a human summary"
+    )
     sb.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    sb.add_argument("-v", "--verbose", action="store_true", help="report progress to stderr")
+    sb.add_argument(
+        "-v", "--verbose", action="store_true", help="report progress to stderr"
+    )
     sb.set_defaults(func=cmd_sessions_build)
 
     sq = sub.add_parser(
@@ -2108,16 +2545,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sq.add_argument("question", help="topic or question to search for")
     sq.add_argument("--out", default=None, help="session-brain directory")
-    sq.add_argument("--top", type=int, default=10, help="candidates to return (default: 10)")
-    sq.add_argument("--max-load", type=int, default=3,
-                    help="max sessions to recommend loading (default: 3)")
-    sq.add_argument("--half-life", type=float, default=None,
-                    help="override the recency half-life used at build time")
+    sq.add_argument(
+        "--top", type=int, default=10, help="candidates to return (default: 10)"
+    )
+    sq.add_argument(
+        "--max-load",
+        type=int,
+        default=3,
+        help="max sessions to recommend loading (default: 3)",
+    )
+    sq.add_argument(
+        "--half-life",
+        type=float,
+        default=None,
+        help="override the recency half-life used at build time",
+    )
     sq.add_argument("--project", help="restrict to one project")
     sq.add_argument("--cluster", type=int, help="restrict to one topic cluster id")
-    sq.add_argument("--since", help="only consider sessions ending on or after this ISO date")
-    sq.add_argument("--min-score", type=float, default=0.05, help="drop candidates below this score")
-    sq.add_argument("--json", action="store_true", help="emit JSON instead of a human summary")
+    sq.add_argument(
+        "--since", help="only consider sessions ending on or after this ISO date"
+    )
+    sq.add_argument(
+        "--min-score", type=float, default=0.05, help="drop candidates below this score"
+    )
+    sq.add_argument(
+        "--json", action="store_true", help="emit JSON instead of a human summary"
+    )
     sq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     sq.set_defaults(func=cmd_sessions_query)
 
@@ -2127,22 +2580,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ssh.add_argument("session_id", help="session id (full or unique prefix)")
     ssh.add_argument("--out", default=None, help="session-brain directory")
-    ssh.add_argument("--neighbors", type=int, default=8, help="neighbours to include (default: 8)")
+    ssh.add_argument(
+        "--neighbors", type=int, default=8, help="neighbours to include (default: 8)"
+    )
     ssh.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     ssh.set_defaults(func=cmd_sessions_show)
 
     scl = sub.add_parser("sessions-clusters", help="list the discovered topic clusters")
     scl.add_argument("--out", default=None, help="session-brain directory")
-    scl.add_argument("--unnamed", action="store_true", help="only clusters that still need a name")
-    scl.add_argument("--top", type=int, default=20, help="max clusters to list (default: 20)")
-    scl.add_argument("--json", action="store_true", help="emit JSON instead of a human summary")
+    scl.add_argument(
+        "--unnamed", action="store_true", help="only clusters that still need a name"
+    )
+    scl.add_argument(
+        "--top", type=int, default=20, help="max clusters to list (default: 20)"
+    )
+    scl.add_argument(
+        "--json", action="store_true", help="emit JSON instead of a human summary"
+    )
     scl.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     scl.set_defaults(func=cmd_sessions_clusters)
 
-    snm = sub.add_parser("sessions-name", help="assign names to topic clusters (durable across rebuilds)")
+    snm = sub.add_parser(
+        "sessions-name", help="assign names to topic clusters (durable across rebuilds)"
+    )
     snm.add_argument("--out", default=None, help="session-brain directory")
-    snm.add_argument("--from", dest="from_file", required=True, metavar="FILE",
-                     help='JSON array of {"id": N, "name": "...", "summary": "..."}; use - for stdin')
+    snm.add_argument(
+        "--from",
+        dest="from_file",
+        required=True,
+        metavar="FILE",
+        help='JSON array of {"id": N, "name": "...", "summary": "..."}; use - for stdin',
+    )
     snm.set_defaults(func=cmd_sessions_name)
 
     cc = sub.add_parser(
@@ -2150,7 +2618,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="check which sources are new/modified/unchanged vs. .manifest.json",
     )
     cc.add_argument("vault", help="path to the Obsidian vault")
-    cc.add_argument("sources", nargs="+", help="source file or directory paths to check")
+    cc.add_argument(
+        "sources", nargs="+", help="source file or directory paths to check"
+    )
     cc.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     cc.set_defaults(func=cmd_cache_check)
 
@@ -2160,7 +2630,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cu.add_argument("vault", help="path to the Obsidian vault")
     cu.add_argument("source", help="source file or directory that was just ingested")
-    cu.add_argument("--pages", nargs="*", metavar="PAGE", help="vault-relative paths of pages produced")
+    cu.add_argument(
+        "--pages",
+        nargs="*",
+        metavar="PAGE",
+        help="vault-relative paths of pages produced",
+    )
     cu.set_defaults(func=cmd_cache_update)
 
     ch = sub.add_parser(
@@ -2187,21 +2662,37 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="check config, vault shape, bootstrap assets, and installed skills",
     )
-    dr.add_argument("--vault", help="override OBSIDIAN_VAULT_PATH for this health check")
-    dr.add_argument("--project", help="also check project-local bootstrap files in this directory")
+    dr.add_argument(
+        "--vault", help="override OBSIDIAN_VAULT_PATH for this health check"
+    )
+    dr.add_argument(
+        "--project", help="also check project-local bootstrap files in this directory"
+    )
     dr.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     dr.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    dr.add_argument("--strict", action="store_true", help="exit non-zero on warnings as well as failures")
+    dr.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero on warnings as well as failures",
+    )
     dr.set_defaults(func=cmd_doctor)
 
     lt = sub.add_parser(
         "lint",
         help="lint a vault for missing frontmatter, broken links, duplicates, and orphans",
     )
-    lt.add_argument("vault", nargs="?", help="vault path or @name (defaults via CWD .env, then global config)")
+    lt.add_argument(
+        "vault",
+        nargs="?",
+        help="vault path or @name (defaults via CWD .env, then global config)",
+    )
     lt.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     lt.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    lt.add_argument("--strict", action="store_true", help="exit non-zero on warnings as well as failures")
+    lt.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero on warnings as well as failures",
+    )
     lt.add_argument(
         "--strict-trust",
         action="store_true",
@@ -2239,16 +2730,24 @@ def build_parser() -> argparse.ArgumentParser:
         "trust-record",
         help="record explicitly approved manual confidence reviews in the vault trust ledger",
     )
-    tr.add_argument("vault", nargs="?", help="vault path or @name (defaults via CWD .env, then global config)")
+    tr.add_argument(
+        "vault",
+        nargs="?",
+        help="vault path or @name (defaults via CWD .env, then global config)",
+    )
     selection = tr.add_mutually_exclusive_group(required=True)
-    selection.add_argument("--all", action="store_true", help="record every current trust-schema page")
+    selection.add_argument(
+        "--all", action="store_true", help="record every current trust-schema page"
+    )
     selection.add_argument(
         "--page",
         action="append",
         metavar="VAULT_RELATIVE_PATH",
         help="record only this explicitly reviewed page (repeatable)",
     )
-    tr.add_argument("--reviewed-at", required=True, help="ISO timestamp for the approved review")
+    tr.add_argument(
+        "--reviewed-at", required=True, help="ISO timestamp for the approved review"
+    )
     tr.add_argument(
         "--approved",
         action="store_true",
@@ -2276,10 +2775,18 @@ def build_parser() -> argparse.ArgumentParser:
         "trust-check",
         help="validate confidence values and material fingerprints against the manual trust ledger",
     )
-    tc.add_argument("vault", nargs="?", help="vault path or @name (defaults via CWD .env, then global config)")
+    tc.add_argument(
+        "vault",
+        nargs="?",
+        help="vault path or @name (defaults via CWD .env, then global config)",
+    )
     tc.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     tc.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    tc.add_argument("--strict", action="store_true", help="exit non-zero on warnings as well as failures")
+    tc.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero on warnings as well as failures",
+    )
     tc.add_argument(
         "--allow-lifecycle",
         action="append",
@@ -2304,8 +2811,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     qq.add_argument("question", help="question to ask against the vault index")
     qq.add_argument("--vault", help="override OBSIDIAN_VAULT_PATH for this query")
-    qq.add_argument("--top", type=int, default=8, help="number of candidate pages to rank (default: 8)")
-    qq.add_argument("--max-read", type=int, default=3, help="max pages to return in should_read (default: 3)")
+    qq.add_argument(
+        "--top",
+        type=int,
+        default=8,
+        help="number of candidate pages to rank (default: 8)",
+    )
+    qq.add_argument(
+        "--max-read",
+        type=int,
+        default=3,
+        help="max pages to return in should_read (default: 3)",
+    )
     qq.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     qq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     qq.set_defaults(func=cmd_query)
@@ -2315,7 +2832,9 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["context"],
         help="compile a token-bounded vault slice for a downstream agent",
     )
-    cp.add_argument("topic", nargs="?", help="topic to retrieve; omit only with --recent")
+    cp.add_argument(
+        "topic", nargs="?", help="topic to retrieve; omit only with --recent"
+    )
     cp.add_argument("--vault", help="override OBSIDIAN_VAULT_PATH")
     cp.add_argument(
         "--budget",
@@ -2323,7 +2842,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=8_000,
         help="maximum estimated output tokens, 256..100000 (default: 8000)",
     )
-    cp.add_argument("--recent", action="store_true", help="select recently updated notes")
+    cp.add_argument(
+        "--recent", action="store_true", help="select recently updated notes"
+    )
     cp.add_argument(
         "--public-only",
         action="store_true",
@@ -2350,7 +2871,9 @@ def _add_setup_args(sp: argparse.ArgumentParser) -> None:
         metavar="DIR",
         help="create a clone-ready portable knowledge repository in DIR",
     )
-    sp.add_argument("--vault", metavar="PATH", help="absolute path to your Obsidian vault")
+    sp.add_argument(
+        "--vault", metavar="PATH", help="absolute path to your Obsidian vault"
+    )
     sp.add_argument(
         "--project",
         nargs="?",
@@ -2380,11 +2903,14 @@ def _add_setup_args(sp: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
 
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     # No subcommand → default to `setup` (the common case).
-    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")):
+    if not argv or (
+        argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")
+    ):
         argv = ["setup", *argv]
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
@@ -2403,7 +2929,10 @@ def main(argv: list[str] | None = None) -> int:
         _check_stale()
     try:
         return args.func(args)
-    except (FileNotFoundError, RuntimeError, ManifestError) as exc:
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (FileNotFoundError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

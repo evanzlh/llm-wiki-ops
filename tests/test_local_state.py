@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,19 @@ from obsidian_wiki.local_state import (
     hot_status,
     mark_hot_current,
 )
+
+
+def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["HOME"] = str(home)
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 @pytest.fixture
@@ -365,3 +380,46 @@ def test_detached_head_identity_invalidates_hot(config_fixture: PortableConfig) 
     )
 
     assert hot_status(config)["stale"] is True
+
+
+def test_hot_cli_marks_reports_and_invalidates_local_state(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    config = config_fixture
+    home = tmp_path / "home"
+    initial = run_cli(home, config.root, "hot", "status", "--json")
+    assert initial.returncode == 0, initial.stderr
+    assert json.loads(initial.stdout)["stale"] is True
+
+    hot = config.vault / "hot.md"
+    hot.write_text("# Hot\n", encoding="utf-8")
+    marked = run_cli(home, config.root, "hot", "mark-current")
+    assert marked.returncode == 0, marked.stderr
+    current = run_cli(home, config.root, "hot", "status", "--json")
+    assert current.returncode == 0, current.stderr
+    assert json.loads(current.stdout)["stale"] is False
+
+    page = config.vault / "concepts" / "changed.md"
+    page.parent.mkdir()
+    page.write_text("changed\n", encoding="utf-8")
+    stale = run_cli(home, config.root, "hot", "status", "--json")
+    assert stale.returncode == 0, stale.stderr
+    assert json.loads(stale.stdout)["stale"] is True
+    assert not hot.exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [("hot", "status", "--json"), ("hot", "mark-current")],
+)
+def test_hot_cli_fails_outside_portable_mode(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, *arguments)
+
+    assert result.returncode == 1
+    assert "portable repository" in result.stderr
+    assert "Traceback" not in result.stderr

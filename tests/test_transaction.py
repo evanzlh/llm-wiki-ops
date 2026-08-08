@@ -107,6 +107,28 @@ def candidate_page(record, relative: str, text: str = PAGE) -> Path:
     return path
 
 
+def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["HOME"] = str(home)
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def git_output(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
 def test_transaction_module_imports_when_fcntl_is_unavailable() -> None:
     script = """
 import builtins
@@ -2834,3 +2856,159 @@ def test_snapshot_rejects_target_changed_after_preimage_verification(
         manager.commit("tx-1")
 
     assert target.read_text(encoding="utf-8") == interposed
+
+
+def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    obsolete = config.vault / "concepts/obsolete.md"
+    obsolete.write_text(PAGE.replace("title: A", "title: Obsolete"), encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "initial"], check=True)
+    before_head = git_output(root, "rev-parse", "HEAD")
+    before_remotes = git_output(root, "remote", "-v")
+    home = tmp_path / "home"
+
+    begun = run_cli(
+        home,
+        root,
+        "transaction",
+        "begin",
+        "--source",
+        "sources/a.md",
+        "--json",
+    )
+    assert begun.returncode == 0, begun.stderr
+    begin_payload = json.loads(begun.stdout)
+    transaction_id = begin_payload["transaction_id"]
+    candidate_vault = Path(begin_payload["candidate_vault"])
+    assert candidate_vault.is_dir()
+
+    listed = run_cli(home, root, "transaction", "list", "--json")
+    assert listed.returncode == 0, listed.stderr
+    assert json.loads(listed.stdout)[0]["status"] == "active"
+    assert json.loads(listed.stdout)[0]["workspace"]
+    assert run_cli(home, root, "transaction", "list", "--json").stdout == listed.stdout
+
+    deleted = run_cli(
+        home,
+        root,
+        "transaction",
+        "delete",
+        transaction_id,
+        "concepts/obsolete.md",
+    )
+    assert deleted.returncode == 0, deleted.stderr
+    candidate = candidate_vault / "concepts/a.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(PAGE, encoding="utf-8")
+
+    committed = run_cli(home, root, "transaction", "commit", transaction_id, "--json")
+    assert committed.returncode == 0, committed.stderr
+    commit_payload = json.loads(committed.stdout)
+    assert commit_payload["created"] == ["concepts/a.md"]
+    assert commit_payload["removed"] == ["concepts/obsolete.md"]
+    assert commit_payload["operation_path"].startswith("journal/operations/")
+
+    for _attempt in range(2):
+        restored = run_cli(home, root, "transaction", "restore", transaction_id)
+        assert restored.returncode == 0, restored.stderr
+    assert obsolete.is_file()
+    assert not (config.vault / "concepts/a.md").exists()
+
+    for _attempt in range(2):
+        discarded = run_cli(home, root, "transaction", "discard", transaction_id)
+        assert discarded.returncode == 0, discarded.stderr
+    assert json.loads(run_cli(home, root, "transaction", "list", "--json").stdout) == []
+
+    aborted_begin = run_cli(
+        home,
+        root,
+        "transaction",
+        "begin",
+        "--source",
+        str(source),
+        "--json",
+    )
+    aborted_id = json.loads(aborted_begin.stdout)["transaction_id"]
+    aborted = run_cli(home, root, "transaction", "abort", aborted_id)
+    assert aborted.returncode == 0, aborted.stderr
+
+    assert git_output(root, "rev-parse", "HEAD") == before_head
+    assert git_output(root, "remote", "-v") == before_remotes
+
+
+def test_transaction_cli_retries_a_retained_failed_transaction(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "initial"], check=True)
+    before_head = git_output(root, "rev-parse", "HEAD")
+    before_remotes = git_output(root, "remote", "-v")
+
+    def fail_operation(_change):
+        raise OSError("simulated operation failure")
+
+    manager = TransactionManager(config, operation_writer=fail_operation)
+    record = manager.begin([source], transaction_id="retry-cli")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError, match="simulated operation failure"):
+        manager.commit("retry-cli")
+    assert manager.load("retry-cli").status == "failed"
+
+    retried = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "retry",
+        "retry-cli",
+        "--json",
+    )
+
+    assert retried.returncode == 0, retried.stderr
+    assert json.loads(retried.stdout)["transaction_id"] == "retry-cli"
+    assert TransactionManager(config).load("retry-cli").status == "complete"
+    assert git_output(root, "rev-parse", "HEAD") == before_head
+    assert git_output(root, "remote", "-v") == before_remotes
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("transaction", "begin", "--source", "source.md", "--json"),
+        ("transaction", "list", "--json"),
+        ("transaction", "delete", "tx-1", "concepts/a.md"),
+        ("transaction", "commit", "tx-1", "--json"),
+        ("transaction", "retry", "tx-1", "--json"),
+        ("transaction", "restore", "tx-1"),
+        ("transaction", "discard", "tx-1"),
+        ("transaction", "abort", "tx-1"),
+    ],
+)
+def test_transaction_cli_commands_fail_outside_portable_mode(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, *arguments)
+
+    assert result.returncode == 1
+    assert "portable repository" in result.stderr
+    assert "Traceback" not in result.stderr
