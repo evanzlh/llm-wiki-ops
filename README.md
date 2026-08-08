@@ -16,6 +16,8 @@ This fork focuses on Git-native, multi-contributor knowledge bases: sources and 
 - Tracked repository-local skills and multi-agent bootstrap files
 - Stable repository-relative Source IDs and sharded manifest state
 - Recoverable local transactions, immutable operation pages, and rebuildable local hot state
+- Dry-run-first legacy migration with byte-for-byte rollback snapshots
+- Clone-stable source bytes and merge-friendly concurrent branches
 - Deterministic, LLM-free validation for any CI platform
 
 ## Install
@@ -43,6 +45,22 @@ obsidian-wiki repo upgrade-skills  # after installing a newer framework CLI
 Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, install the CLI as a uv tool from their own framework clone, run `obsidian-wiki doctor`, and use the tracked repository-local skills from their preferred agent. The knowledge repository contains no `.venv` or vendored CLI.
 
 Portable agents stage writes in ignored local transaction workspaces and promote reviewed candidates into the working tree. Ordinary writes leave `wiki/index.md` and `wiki/log.md` stable, keep `wiki/hot.md` local and ignored, and append an immutable operation page. Transaction commands do not commit or push; review the Git diff and publish through your normal branch and pull-request workflow. See [Architecture](docs/architecture.md#portable-write-lifecycle) and the [CLI transaction reference](docs/cli.md#portable-transactions-and-local-hot-state).
+
+## Migrate an existing repository
+
+When a legacy vault and its sources are already separate directories in one repository, run the read-only analysis first:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+```
+
+Before applying, require the enclosing Git root to equal `--root`, commit the complete legacy baseline, and confirm a clean worktree. Then run the exact apply command printed by dry-run:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+```
+
+Migration never imports external sources or publishes Git changes. See the [dry-run, blocker, and rollback reference](docs/cli.md#legacy-to-portable-migration).
 
 ## Personal mode
 

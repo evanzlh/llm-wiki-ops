@@ -72,6 +72,86 @@ obsidian-wiki repo upgrade-skills
 git status --short
 ```
 
+## Migrate a co-located legacy repository
+
+Migration is for an existing Git-oriented layout where the legacy vault and a
+single source directory are already separate children of the same repository.
+It does not gather files from elsewhere. Before invoking the CLI, the operator
+must deliberately relocate or capture every authoritative source as a bounded
+snapshot below the repository's source directory and update its legacy
+provenance. Migration itself never moves or copies that material. Then run the
+read-only analysis:
+
+```bash
+cd /path/to/knowledge-base
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+```
+
+The command reports source mappings, page rewrites, manifest shards, warnings,
+and blockers without changing any file. Fix every blocker and review the plan;
+then ensure the enclosing Git top level equals `--root`, commit the complete
+legacy baseline (including intended sources), and confirm a clean worktree.
+That commit is the supported post-success rollback point. Only then run the
+exact command the analyzer prints:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+obsidian-wiki check
+git diff
+```
+
+Apply converts the legacy manifest and page provenance, installs portable
+repository assets, makes `index.md` and `log.md` stable query surfaces, removes
+the existing legacy `hot.md`, and appends one migration operation page. It
+does not initialize Git, stage, commit, or push. A failed apply attempts to
+restore the original files byte-for-byte. If rollback is incomplete, it reports
+that state and retains evidence for manual diagnosis. A successful apply
+reports retained recovery data below `.obsidian-wiki/local/migrations/`; that
+internal layout is not a supported restore interface. Keep it until the diff is
+accepted and committed. See the [CLI migration reference](cli.md#legacy-to-portable-migration)
+for blocker meanings.
+
+Use Markdown, text, or small reviewable text/structured snapshots for
+collaborative source material, and commit their exact bytes with ordinary Git.
+The analyzer checks ordinary files but not Git-index membership or LFS
+signatures; review `git status` and `git ls-files` before publishing. Binary
+PDFs/images remain Personal-mode inputs unless converted into a reviewable text
+snapshot. A Git LFS pointer contains only metadata for an external object, so
+agents must not compile it as source contents.
+
+## Provider-neutral CI validation
+
+After the knowledge repository has been checked out beside the framework
+clone, this sequence builds the CLI from source and validates the local
+portable repository:
+
+```bash
+git clone https://github.com/evanzlh/obsidian-wiki.git
+cd obsidian-wiki
+uv tool install .
+cd ../knowledge-base
+obsidian-wiki check
+```
+
+It invokes no LLM and no hosting-provider API; `check` reads local files and
+read-only Git facts only. The `git clone` is ordinary Git transport used to
+obtain the framework source.
+
+In production CI, the knowledge-repository maintainer must pin the framework
+checkout to a concrete fork release tag whose version satisfies the tracked
+`requires_cli` constraint, then run the same `uv tool install .`. The generic
+sequence above remains runnable before this fork has its first release tag, but
+it is a pre-release convenience rather than a production pin. Once a tag
+exists, insert this before installation:
+
+```bash
+git checkout --detach <fork-release-tag>
+uv tool install .
+```
+
+`obsidian-wiki check` then fails closed if that tagged CLI does not satisfy
+`requires_cli`.
+
 ## Personal mode
 
 Personal mode keeps the existing global configuration and agent-wide skill links. Run it only when you want this machine-wide behavior:

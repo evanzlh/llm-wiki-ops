@@ -81,7 +81,7 @@ Portable setup establishes this repository boundary:
 | Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
 | Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
 | Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
-| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration and agent behavior. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration, byte-stability rules, and agent behavior. |
 | Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
 | Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
 | Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |
@@ -96,6 +96,36 @@ Do not override the ignored paths with `git add -f`. Portable changes stop in
 the working tree. Review `git diff`, run `obsidian-wiki check`, and use the
 repository's normal branch and pull-request workflow; the portable transaction
 and hot-state commands never commit or push those changes.
+
+Portable setup and migration manage a marked block at the end of
+`.gitattributes`. It disables Git text conversion for authoritative working-
+tree bytes while keeping common Markdown, JSON, TOML, YAML, text, and Obsidian
+Base files reviewable with text diff and merge drivers. Owner rules outside the
+managed block are preserved. This prevents a collaborator's `core.autocrlf`
+setting from making a just-cloned source immediately stale.
+
+### Enclosing Git worktree
+
+The portable root is the directory containing `.obsidian-wiki/config.toml`.
+Read-only Git discovery starts at the configured vault (normally `wiki/`) and
+uses its enclosing worktree. If that Git top level differs from the portable
+root, `doctor` and `check` fail with a Git-root mismatch. If no worktree exists,
+`doctor` reports that fact and `check` warns; neither command initializes one.
+Portable tooling never creates `<vault>/.git` or a nested repository.
+
+A migration dry-run may be used before Git exists, but supported `--apply`
+requires the enclosing top level to equal the portable root and a clean,
+complete legacy baseline to be committed first. The CLI does not enforce this
+as a migration blocker; the baseline is the operator's post-success rollback
+point.
+
+When portable config is resolved, `obsidian-wiki sync` and `sync-setup` refuse
+the Personal-mode auto-stage/commit/push workflow. Remove old Personal-mode
+cron jobs or aliases before migrating, do not bypass portable resolution with
+an explicit `--vault`, and use ordinary Git branches and pull requests from the
+enclosing repository. Portable tooling cannot enumerate external schedulers or
+shell aliases; inspect and disable them in the operating system or shell where
+they were created.
 
 ## Manifest mode selected by configuration
 
@@ -123,6 +153,16 @@ not a durable Source ID; store necessary external material as a small,
 reviewable snapshot below `sources` using ordinary Git. Git LFS pointers are
 unsupported. Portable manifest entries do not record model, agent, API, or
 generation-tool provenance.
+
+The collaboration format is deliberately conservative: prefer Markdown and
+plain text, plus small reviewable snapshots such as JSON, YAML, or TOML when
+their exact bytes are committed. Binary PDFs/images remain Personal-mode
+inputs unless converted to a reviewable text snapshot; large opaque binaries
+are outside the supported portable compilation contract. The analyzer and
+`check` validate ordinary source files but do not enforce Git-index membership
+or detect LFS signatures. Review `git status`/`git ls-files` before publishing.
+A Git LFS pointer is not dereferenced and must never be treated as the
+underlying source contents.
 
 See [Architecture → Manifest protocols](architecture.md#manifest-protocols) for
 the marker and shard JSON shapes, and [CLI Reference → Portable repository

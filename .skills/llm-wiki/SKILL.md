@@ -623,6 +623,93 @@ marker and can silently erase the distinction between an invalid config and a
 missing one. Follow the ordered protocol above or use the installed CLI, whose
 resolver implements it.
 
+## Legacy-to-Portable Migration Protocol
+
+Migration is a separate operator action, never an implicit `wiki-setup` branch
+or a normal knowledge write. It accepts only a repository in which the legacy
+vault and exactly one source root are already contained, distinct directories.
+All legacy manifest sources and page-frontmatter sources must map to ordinary
+files below that source root. The migration command must not copy or delete
+external files. Before analysis, an operator may deliberately create a bounded,
+reviewable repository snapshot and update legacy provenance to that snapshot;
+never do this silently on the user's behalf.
+
+Always analyze first. Paths are resolved against `--root`, not the current
+working directory:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+```
+
+The no-flag form is strictly read-only. It prints mappings, page updates,
+manifest shards, warnings, blockers, and—only for a blocker-free plan—the exact
+apply command. JSON automation may add `--json --pretty`. Resolve all blockers,
+review the mappings, then establish the supported rollback boundary before
+apply: the vault's enclosing Git top level must equal `--root`, the legacy
+baseline (including every intended source) must be committed, and the worktree
+must be clean. Only then run:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+obsidian-wiki check
+git diff
+```
+
+Blocker codes have these meanings:
+
+| Code | Meaning |
+|---|---|
+| `outside-root` | The vault or source root is outside the migration repository. |
+| `path-overlap` | The vault and source root contain one another. |
+| `managed-path-overlap` | The vault or source root overlaps portable framework-owned paths. |
+| `portable-artifact-conflict` | Existing manifest v2 artifacts cannot be safely adopted. |
+| `manifest-missing` / `manifest-invalid` | The legacy v1 manifest is absent, unreadable, or malformed. |
+| `unsafe-page` / `missing-page` | A manifest page path escapes policy, crosses a link, or is absent. |
+| `page-frontmatter-invalid` | A knowledge page cannot be parsed as valid UTF-8 frontmatter. |
+| `live-url-source` / `pseudo-source` | A source is not a durable repository file. |
+| `external-source` | A source does not remain below the configured source root. |
+| `unsafe-source` / `missing-source` | A source crosses a link, is absent, or is not an ordinary readable file. |
+| `source-id-collision` | Different legacy records map incompatibly to one repository Source ID. |
+| `unmapped-page-source` | Page frontmatter cites a source with no manifest mapping. |
+
+For collaboration, preserve authoritative material as small, reviewable
+Markdown or text files and commit those exact bytes with ordinary Git; external
+material may be represented by a bounded text snapshot. The analyzer validates
+ordinary files but does not verify Git-index membership or detect LFS pointer
+signatures, so inspect `git status`/`git ls-files` before publishing. Binary
+PDFs/images belong to Personal-mode ingest unless converted to a reviewable
+text snapshot. Git LFS pointer files are metadata, not the referenced bytes,
+and agents must not compile them as source contents.
+
+Apply rechecks every analyzed preimage, builds candidates in local migration
+state, installs portable config/skills/bootstrap/Git rules, rewrites page source
+frontmatter, creates manifest v2 shards, replaces `index.md` and `log.md` with
+stable built-in-query views, removes the existing legacy `hot.md`, and writes one immutable
+migration operation last. A failure attempts to restore every original
+preimage byte-for-byte and remove created files. If rollback is incomplete, the
+CLI returns external `status: "error"`, explains that rollback was incomplete,
+and records internal `rollback-failed` state while retaining its manifest and
+snapshots; stop and use that evidence for manual diagnosis. A success reports a retained recovery
+directory below `.obsidian-wiki/local/migrations/`; keep it until the Git diff
+is accepted and committed, then it may be removed deliberately as local state.
+The backup layout is internal evidence, not a supported post-success restore
+interface. There is no migration restore subcommand—after a successful apply,
+ordinary Git review/revert is the publication rollback boundary.
+
+Migration never initializes Git, stages files, commits, pushes, or opens a pull
+request. Portable Git facts use the worktree surrounding the configured vault
+and require it to match the portable root; never create `wiki/.git`. When
+portable config is resolved, `sync` and `sync-setup` refuse the Personal-mode
+automatic workflow. Disable old Personal-mode cron/aliases, do not bypass mode
+resolution with `--vault`, and let a human publish the reviewed branch. The
+CLI cannot discover external schedulers or shell configuration, so the operator
+must inspect the environment where that automation was installed.
+The migration analyzer can run before Git is initialized, and `check` only
+warns when no worktree exists. That tolerance supports read-only planning, not
+apply: do not run `--apply` until the enclosing root and clean committed legacy
+baseline exist. Absence from Git is not a CLI blocker, so this precondition is
+the operator's responsibility.
+
 ## Portable Write Protocol
 
 After config resolution, every skill that can write must branch on the resolved

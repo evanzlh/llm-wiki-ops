@@ -56,6 +56,7 @@ agent discovery in one Git repository:
 knowledge-repo/
 ├── .obsidian-wiki/config.toml
 ├── .obsidian-wiki/managed-skills.json
+├── .gitattributes
 ├── sources/
 ├── wiki/
 ├── .skills/
@@ -72,6 +73,11 @@ refreshes only inventory-owned framework content and preserves owner files.
 Linux and macOS are the first-release CLI support boundary, but no OS-specific
 absolute path is committed.
 
+The tracked `.gitattributes` managed block disables clone-specific text
+conversion while retaining text diff/merge behavior for common knowledge and
+configuration formats. Consequently a contributor's `core.autocrlf` setting
+does not change authoritative source bytes or manifest hashes after clone.
+
 ### Authoritative, collaborative, and local state
 
 Portable repositories use this tracked/ignored boundary:
@@ -83,7 +89,7 @@ Portable repositories use this tracked/ignored boundary:
 | Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
 | Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
 | Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
-| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration and agent behavior. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration, byte-stability rules, and agent behavior. |
 | Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
 | Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
 | Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |
@@ -132,6 +138,39 @@ The transaction CLI changes the working tree but never commits or pushes
 portable changes. Git diff and pull-request review are the content boundary;
 branch publication and merging are explicit human actions.
 
+### Legacy migration lifecycle
+
+Legacy-to-portable conversion is not a setup side effect. A read-only analyzer
+first proves that the vault and one non-overlapping source root are contained
+in the target repository and that every legacy provenance edge maps to an
+ordinary source file. Blockers stop the operation before any mutation.
+
+Apply then builds all candidates in ignored local migration state, rechecks
+the analyzed preimages, and promotes portable config, skills, bootstrap files,
+byte-stability attributes, rewritten page frontmatter, manifest v2 shards, and
+one immutable migration operation. The existing legacy `hot.md` is removed;
+`index.md` and `log.md` become stable built-in-query surfaces. A mid-apply
+failure attempts to restore all original files byte-for-byte and remove newly
+created files. An incomplete rollback is reported and retains its manifest and
+snapshots for manual diagnosis. Successful recovery data remains below
+`.obsidian-wiki/local/migrations/` until the operator has accepted and
+committed the ordinary Git diff; it is internal audit/recovery state, not a
+supported post-success restore interface.
+
+Git discovery begins at the vault and recognizes the enclosing worktree. Its
+top level must equal the portable root; portable tooling never initializes
+`<vault>/.git`. Migration, transactions, validation, and hot-state maintenance
+never stage, commit, push, or call a hosting-provider API. `sync` and
+`sync-setup` fail when portable config is resolved, leaving publication to a
+human-controlled branch and pull request.
+
+Migration analysis can run before Git initialization, and validation warns
+rather than mutates when no worktree exists. Apply has a stricter operator
+precondition: the enclosing top level must equal the portable root and a clean,
+complete legacy baseline must already be committed. That baseline is the
+supported post-success rollback point. Git membership is not a CLI blocker, so
+the operator must verify it before apply.
+
 ## Manifest protocols
 
 ### Personal mode: manifest v1
@@ -174,6 +213,14 @@ below a configured `sources` root. A live URL or external filesystem path is
 not a durable Source ID. Capture external material as a small, reviewable
 snapshot below `sources` using ordinary Git storage. Git LFS pointers are
 unsupported because a pointer is not authoritative content.
+
+Markdown and plain text are the primary collaboration formats; small
+reviewable JSON, YAML, or TOML snapshots are also suitable when their bytes are
+committed directly. Binary PDFs/images remain Personal-mode inputs unless
+converted to reviewable text. Migration and validation do not recognize a
+dedicated untracked-source or LFS-pointer blocker, so the operator must inspect
+Git status and source bytes. Large opaque binaries and Git LFS pointers are not
+compiled as authoritative source contents.
 
 Agents use `obsidian-wiki cache-check` and `cache-update`; they do not hand-edit
 the marker or shards. The v2 schema deliberately omits model, agent, API, and

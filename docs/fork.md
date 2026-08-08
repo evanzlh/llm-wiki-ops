@@ -20,6 +20,8 @@ The fork targets knowledge bases maintained like software: authoritative sources
 - Transactional page promotion and merge-friendly operation journals
 - Stable index/log views and local rebuildable `hot.md`
 - Deterministic `obsidian-wiki check` validation without LLM calls
+- Dry-run-first legacy migration with byte-for-byte rollback snapshots
+- Clone-stable source bytes and conflict-resistant multi-branch collaboration
 
 ## Compatibility
 

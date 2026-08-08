@@ -38,11 +38,67 @@ or global agent skill directories. Do not add a
 repository `.venv`, vendor the CLI, or commit an absolute
 `OBSIDIAN_WIKI_REPO`; each contributor installs the CLI separately with `uv`.
 
+#### Migrate an existing co-located repository
+
+Migration is explicit and dry-run first; never run portable setup over a legacy
+vault. The repository root, legacy vault, and single source root must already
+exist in one repository, with the vault and source tree separate. Every
+manifest source and every page-frontmatter source must map to an ordinary file
+below that source root. First run:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+```
+
+The analyzer changes nothing. Resolve every reported blocker, then run the
+exact apply command printed by the dry-run. Before `--apply`, require an
+enclosing Git worktree whose top level equals `--root`, commit an intentional
+legacy baseline, and confirm the worktree is clean; this is the supported
+post-success rollback point:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+obsidian-wiki check
+git diff
+```
+
+Apply converts manifest v1 to repository-relative manifest v2 shards, rewrites
+page source frontmatter, replaces `index.md` and `log.md` with stable portable
+views, removes the existing legacy `hot.md`, installs repository-local skills and portable
+Git rules, and writes one migration operation page. It never copies external
+sources, initializes Git, commits, or pushes. On a write failure it attempts to
+restore preimages byte-for-byte. If rollback is incomplete, stop: the command
+reports that state and retains its snapshots for manual diagnosis. After
+success it reports the retained local recovery directory below
+`.obsidian-wiki/local/migrations/`; this is internal recovery/audit data, not a
+supported restore interface. Review the ordinary Git diff before a human
+commits on a branch.
+
+Live URLs, pseudo-sources, external or missing files, unsafe paths, invalid
+manifest/frontmatter, unmapped page sources, and conflicting Source ID mappings
+are blockers. Before migration, an operator may deliberately capture required
+external material as small, reviewable Markdown or text snapshots below
+`sources`; the migration command itself never moves or copies it. The analyzer
+checks ordinary files, not Git-index membership or LFS signatures. Confirm the
+sources are tracked before publishing. Git LFS pointer files are not source
+content and must not be compiled. See the migration reference in
+`llm-wiki/SKILL.md` and the human CLI documentation for the complete blocker
+table.
+
+Portable validation recognizes the Git worktree surrounding `wiki/`; it never
+creates `wiki/.git`. `obsidian-wiki sync` and `sync-setup` refuse when portable
+config is resolved. Remove any old Personal-mode cron or alias, do not bypass
+portable resolution with an explicit `--vault`, and publish only with the
+repository's human-controlled Git workflow.
+
 ### Personal mode
 
 For one person's machine-wide vault and globally discoverable agent skills,
 continue with the `.env`/global-config workflow below or run
 `obsidian-wiki setup --vault /absolute/path/to/vault`.
+
+The numbered setup steps and optional hook, GitHub-sync, and QMD sections below
+are Personal-mode instructions unless they explicitly say otherwise.
 
 ## Step 1: Create .env
 

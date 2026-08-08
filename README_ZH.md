@@ -16,6 +16,8 @@
 - 仓库内受版本管理的 Skills 与多 Agent 引导文件
 - 稳定的仓库相对 Source ID 与分片 Manifest 状态
 - 可恢复的本地事务、不可变操作页面以及可重建的本地 hot 状态
+- 先 dry-run、配有按字节回滚快照的旧知识库迁移
+- 跨 clone 稳定的来源字节与便于合并的并行分支
 - 可在任意 CI 平台运行、无需 LLM 的确定性校验
 
 ## 安装
@@ -43,6 +45,22 @@ obsidian-wiki repo upgrade-skills  # 安装新版框架 CLI 后运行
 在 Obsidian 中将 `team-knowledge/wiki/` 作为 Vault 打开。每位协作者都从自己的框架 clone 用 uv tool 安装 CLI；clone 知识库仓库后运行 `obsidian-wiki doctor`，再通过偏好的 Agent 使用受版本管理的仓库内 Skills。知识库仓库不包含 `.venv` 或内置 CLI 副本。
 
 便携模式下，Agent 会在被忽略的本地事务工作区中暂存写入，再将已审查的候选内容提升到工作树。普通写入会保持 `wiki/index.md` 与 `wiki/log.md` 稳定，将 `wiki/hot.md` 保持为被忽略的本地状态，并追加一个不可变操作页面。事务命令不会提交或推送；请审查 Git diff，并通过常规分支和 Pull Request 工作流发布。详见 [架构](docs/architecture.md#portable-write-lifecycle)与 [CLI 事务参考](docs/cli.md#portable-transactions-and-local-hot-state)。
+
+## 迁移现有仓库
+
+如果旧 Vault 和来源资料已经是同一仓库中的两个独立目录，请先运行只读分析：
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+```
+
+应用之前，必须确认外围 Git 根目录等于 `--root`、完整旧基线已经提交且工作树干净。然后再运行 dry-run 输出的准确 apply 命令：
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+```
+
+迁移不会导入仓库外的来源，也不会发布 Git 变更。详见 [dry-run、blocker 与回滚参考](docs/cli.md#legacy-to-portable-migration)。
 
 ## 个人模式
 

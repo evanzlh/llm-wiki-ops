@@ -109,6 +109,34 @@ or shards. Small, reviewable authoritative snapshots use ordinary Git storage.
 Git LFS pointers are unsupported. The manifest stores source compilation state,
 not model, agent, API, or generation-tool provenance.
 
+### Legacy repository awaiting portable migration
+
+If the resolved vault still has a personal manifest v1 and the user wants a
+clone-ready repository, report migration readiness separately from the ingest
+delta. Migration is supported only when the repository root already contains
+both the legacy vault and one non-overlapping source root, and every legacy
+source can map to an ordinary file below that source root. Run the read-only
+analysis before recommending any mutation:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --json --pretty
+```
+
+Surface every item in `blockers` with its stable code, source, and message. Do
+not recommend `--apply` until the list is empty; do not reinterpret external or
+live sources as portable IDs. Once ready, use the analyzer's exact apply command,
+but only after the enclosing Git root matches `--root` and a clean legacy
+baseline has been committed. Then run `obsidian-wiki check` and review
+`git diff`. Migration replaces the v1 ledger with manifest v2 shards, converts
+`index.md` and `log.md` to stable portable views, removes the existing legacy
+`hot.md`, and records a migration operation.
+Apply never initializes, commits, or pushes Git; a failed apply attempts an
+automatic rollback. If rollback itself is incomplete, report the retained
+snapshots and stop rather than claiming restoration. A successful apply reports
+its retained local recovery directory below
+`.obsidian-wiki/local/migrations/`, but that directory is not a supported
+post-success restore interface.
+
 ## Step 1: Scan Current Sources
 
 Build an inventory of everything available to ingest right now:

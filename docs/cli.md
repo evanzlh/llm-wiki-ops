@@ -20,6 +20,7 @@ Running `obsidian-wiki` with no subcommand defaults to `setup`.
 | `doctor` | Health-check config, vault shape, bootstrap assets, and installed skills |
 | `check` | Read-only deterministic validation for the current portable repository |
 | `repo upgrade-skills` | Transactionally refresh tracked framework-managed skills and adapters |
+| `repo migrate` | Analyze or explicitly apply a legacy-to-portable repository migration |
 
 ```bash
 obsidian-wiki setup --vault ~/brain
@@ -46,6 +47,102 @@ does not contain `.venv` or a vendored CLI; contributors install the CLI with
 first-release CLI support boundary.
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
+
+## Legacy-to-portable migration
+
+Migration is intentionally separate from `setup`. It accepts only a repository
+that already contains a legacy vault and one separate source root. Both paths
+must remain below `--root`; every manifest and page-frontmatter source must map
+to an ordinary file below `--sources`. It never imports external files.
+
+Run the analyzer first:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --json --pretty
+```
+
+Without `--apply`, the command is read-only. Human output lists `Mappings`,
+`Page updates`, `Manifest shards`, `Warnings`, and `Blockers`, then prints the
+exact apply command only when the plan has no blocker. JSON uses
+`status: "ready"` or `status: "blocked"`; a blocked plan exits `1` and has no
+apply command.
+Paths are resolved against `--root`, not the shell's current directory. An
+already-portable repository returns success without rewriting it.
+
+Blockers are stable operator-facing categories:
+
+| Code | Meaning and action |
+|---|---|
+| `outside-root` | The vault or source root is outside the migration repository; co-locate it first. |
+| `path-overlap` | The vault and source root contain one another; make them separate trees. |
+| `managed-path-overlap` | A configured tree overlaps portable-owned config, skill, adapter, or ignore paths. |
+| `portable-artifact-conflict` | Existing manifest v2 artifacts are non-empty or unsafe; reconcile them before migration. |
+| `manifest-missing` | The legacy manifest is absent or not an ordinary file. |
+| `manifest-invalid` | The legacy manifest cannot be parsed or has invalid source entries. |
+| `unsafe-page` | A manifest page path is unsafe, escapes policy, or crosses a symbolic link. |
+| `missing-page` | A page named by the legacy manifest is absent or not an ordinary file. |
+| `page-frontmatter-invalid` | A knowledge page is unreadable UTF-8 or has invalid frontmatter. |
+| `live-url-source` | A live URL must be captured as a bounded repository snapshot. |
+| `pseudo-source` | A synthetic source token cannot become a portable Source ID. |
+| `external-source` | A source is outside the configured source root; move or snapshot it first. |
+| `unsafe-source` | A source crosses a symbolic link or another unsafe path boundary. |
+| `missing-source` | A source is absent, unreadable, or not an ordinary file. |
+| `source-id-collision` | Different legacy records map incompatibly to one repository-relative Source ID. |
+| `unmapped-page-source` | Page frontmatter cites a source with no legacy manifest mapping. |
+
+Warnings do not enable implicit apply; review them together with mappings.
+Resolve every blocker and rerun dry-run. Before apply, require an enclosing Git
+worktree whose top level equals `--root`, commit the complete legacy baseline
+including intended sources, and confirm the worktree is clean. That baseline
+commit is the supported post-success rollback point. Then use only the printed
+explicit command:
+
+```bash
+obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
+obsidian-wiki check
+git diff
+```
+
+Apply rechecks all analyzed preimages and refuses drift. It installs portable
+config, managed skills/adapters/bootstrap, `.gitignore`, and byte-stable
+`.gitattributes`; rewrites page provenance; replaces manifest v1 with the v2
+marker and one shard per source; replaces `index.md` and `log.md` with stable
+built-in-query views; removes the existing legacy `hot.md`; and writes
+one immutable migration operation last. It never initializes Git, stages,
+commits, pushes, or opens a pull request.
+
+Before changing the worktree, apply stores original bytes and absence records
+below `.obsidian-wiki/local/migrations/<id>/snapshots`. Any failure attempts an
+automatic byte-for-byte rollback and removes created files. A successful apply
+prints `changed_files`, `removed_files`, and its retained `backup_dir`; keep
+that ignored local directory until the ordinary Git diff is accepted and
+committed. If rollback itself is incomplete, JSON reports `status: "error"`,
+the error states that rollback failed, and the migration manifest/snapshots are
+retained for manual diagnosis. The backup layout is internal evidence, not a
+supported restore interface. There is no migration restore command after
+success—use normal Git review/revert as the publication rollback boundary.
+
+Portable Git discovery recognizes the worktree surrounding `<vault>/`; its top
+level must match the portable root. These commands never create
+`<vault>/.git`. When portable config is resolved, `sync` and `sync-setup`
+refuse Personal-mode auto-stage/commit/push. Remove old Personal-mode cron or
+aliases and do not bypass portable resolution with an explicit `--vault`.
+There is no portable command that enumerates external schedulers or shell
+configuration; inspect the system where that automation was installed.
+The analyzer may run before Git exists, while `check` warns rather than
+initializes a missing worktree. This is read-only planning tolerance: do not
+run `--apply` until the enclosing root and clean committed baseline exist.
+Untracked source state is not a dedicated migration blocker, so verify it
+explicitly.
+
+Collaborative sources are Markdown, text, and small reviewable text/structured
+snapshots such as JSON, YAML, or TOML whose exact bytes are committed with
+ordinary Git. The analyzer checks ordinary files but does not enforce Git-index
+membership or detect LFS signatures; inspect `git status`, `git ls-files`, and
+source bytes before publishing. Binary PDFs/images remain Personal-mode inputs
+unless converted to reviewable text. Git LFS pointers are not dereferenced and
+agents must not compile them as source contents.
 
 ## Portable transactions and local hot state
 
