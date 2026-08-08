@@ -24,10 +24,11 @@ You are computing the current state of the wiki: what's been ingested, what's ne
 2. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 ledger. Portable mode uses manifest v2: its
    `.manifest.json` is only a marker, shards are below
-   `wiki/.manifest/sources/`, and each authoritative file has a
+   `<vault>/.manifest/sources/`, and each authoritative file has a
    repository-relative Source ID. Inspect portable state with
    `obsidian-wiki check --json` or the cache commands, never by treating the
-   marker as a v1 source map.
+   marker as a v1 source map. In portable mode, manifest v2 schema 1 requires
+   exactly one configured source root even though the TOML field is a list.
 
 ## The Manifest
 
@@ -87,8 +88,8 @@ personal vault with nothing ingested.
 
 ### Portable Repository mode — manifest v2
 
-Portable repositories keep a fixed marker at `wiki/.manifest.json` and exactly
-one JSON shard per authoritative source below `wiki/.manifest/sources/`. A
+Portable repositories keep a fixed marker at `<vault>/.manifest.json` and exactly
+one JSON shard per authoritative source below `<vault>/.manifest/sources/`. A
 repository-relative Source ID such as `sources/design/portable.md` uses `/`
 and identifies an ordinary file below the configured `sources` root. Absolute
 paths, backslashes, traversal segments, live URLs, and external filesystem
@@ -113,6 +114,10 @@ Build an inventory of everything available to ingest right now:
 In portable mode, inventory only ordinary files below the configured `sources`
 root. The broader personal-mode discovery paths below do not make external
 files authoritative in a portable repository.
+
+Portable status discovery ignores `.gitkeep` and hidden source path components
+(any relative path component beginning with `.`); they are not authoritative
+tracked sources and must not be reported as `source-new` or assigned shards.
 
 ### Documents (from `OBSIDIAN_SOURCES_DIR`)
 ```
@@ -160,11 +165,17 @@ For portable manifest v2, `obsidian-wiki check` exposes the PR-facing names:
 |---|---|---|
 | `source-new` | An authoritative source exists with no shard | Compile it, then run `cache-update` |
 | `source-stale` | Source content differs from the shard hash | Recompile it, then run `cache-update` |
-| `source-orphaned` | A shard exists but its source no longer exists | Restore the source or remove the obsolete shard in a reviewed change |
+| `source-orphaned` | A shard exists but its source no longer exists | Restore the source, or reconcile an intentional deletion as described below |
 
 All three are deterministic errors and therefore PR blockers. Report them
 separately from page-level age or graph-orphan concepts; here “stale” and
 “orphaned” describe source-to-manifest state.
+
+For `source-orphaned`, restore a source deleted by mistake. If its deletion was
+intentional, remove the entire corresponding shard file with
+`git rm <vault>/.manifest/sources/<relative>.json`; this is whole-file deletion,
+never editing marker or shard JSON fields. Do not invent a manifest removal
+command.
 
 For Claude history specifically, also compute:
 - New projects (directories in `~/.claude/projects/` not in manifest)

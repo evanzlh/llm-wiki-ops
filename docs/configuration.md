@@ -80,8 +80,14 @@ in-vault sources.
 The presence of a valid `.obsidian-wiki/config.toml` selects manifest v2. Its
 `[paths].sources` entries are the authority boundary: every durable
 repository-relative Source ID must use `/`, be normalized, and name an ordinary
-file below one configured source root. The portable vault contains a fixed
-`.manifest.json` marker and one entry below `.manifest/sources/` per source.
+file below the source root. Although the TOML value is a list, manifest v2
+schema 1 requires exactly one configured source root; multiple entries fail
+closed. The portable vault contains a fixed `<vault>/.manifest.json` marker and
+one entry below `<vault>/.manifest/sources/` per source.
+
+Status scans ignore `.gitkeep` and any file with hidden source path components
+(relative components beginning with `.`). These placeholders and hidden files
+are not authoritative tracked sources.
 
 Use `obsidian-wiki cache-check` and `cache-update` for v2 state. Do not run the
 legacy `scripts/manifest.py` commands, manually edit shards, or replace the

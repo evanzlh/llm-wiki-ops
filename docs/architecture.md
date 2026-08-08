@@ -80,7 +80,9 @@ its maintenance tools.
 
 ### Portable Repository mode: manifest v2
 
-Portable repositories commit this fixed marker at `wiki/.manifest.json`:
+Portable repositories commit this fixed marker at `<vault>/.manifest.json`.
+Although `[paths].sources` uses list syntax, manifest v2 schema 1 requires
+exactly one configured source root; multiple entries fail validation.
 
 ```json
 {
@@ -90,9 +92,9 @@ Portable repositories commit this fixed marker at `wiki/.manifest.json`:
 }
 ```
 
-Each authoritative source has one entry below `wiki/.manifest/sources/`. For
+Each authoritative source has one entry below `<vault>/.manifest/sources/`. For
 example, `sources/design/portable.md` maps to
-`wiki/.manifest/sources/design/portable.md.json`:
+`<vault>/.manifest/sources/design/portable.md.json`:
 
 ```json
 {
@@ -103,12 +105,12 @@ example, `sources/design/portable.md` maps to
 }
 ```
 
-The repository-relative Source ID is clone-independent. It must use forward slashes (`/`),
-be normalized without `.` or `..`, and name an ordinary file
+The repository-relative Source ID is clone-independent. It must use forward
+slashes (`/`), be normalized without `.` or `..`, and name an ordinary file
 below a configured `sources` root. A live URL or external filesystem path is
 not a durable Source ID. Capture external material as a small, reviewable
-snapshot below `sources` using ordinary Git storage. Git LFS pointers are unsupported
-because a pointer is not authoritative content.
+snapshot below `sources` using ordinary Git storage. Git LFS pointers are
+unsupported because a pointer is not authoritative content.
 
 Agents use `obsidian-wiki cache-check` and `cache-update`; they do not hand-edit
 the marker or shards. The v2 schema deliberately omits model, agent, API, and
@@ -117,12 +119,21 @@ which tool happened to perform it.
 
 Portable validation gives source drift stable issue names:
 
+The source scan ignores `.gitkeep` and hidden source path components (any
+relative component beginning with `.`). They are not authoritative tracked
+sources, so they do not produce shards or `source-new` errors.
+
 - `source-new`: a source exists without a shard.
 - `source-stale`: a source hash differs from its shard.
 - `source-orphaned`: a shard names a source that no longer exists.
 
 All three are errors and PR blockers. Run `obsidian-wiki check` locally and in CI
 before merging.
+
+For `source-orphaned`, restore a mistakenly deleted source. If deletion was
+intentional, remove the entire corresponding shard file with
+`git rm <vault>/.manifest/sources/<relative>.json`. This is whole-file Git
+deletion, never editing marker or shard JSON fields.
 
 ## Vault structure
 

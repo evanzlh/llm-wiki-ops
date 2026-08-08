@@ -26,7 +26,9 @@ You are distilling knowledge from the current project into the user's Obsidian w
    `source_cwd` plus existing vault-relative source behavior. Portable mode
    uses manifest v2 through `obsidian-wiki cache-check` and `cache-update`;
    every authoritative input is named by a repository-relative Source ID.
-   Never hand-edit a v2 marker or shard.
+   Never hand-edit a v2 marker or shard. In portable mode, manifest v2 schema 1
+   requires exactly one configured source root even though the TOML field is a
+   list.
 3. Read `$OBSIDIAN_VAULT_PATH/index.md` to know what the wiki already contains.
 
 When writing internal links in Steps 4–5, apply the link format from `llm-wiki/SKILL.md` (Link Format section) using the `OBSIDIAN_LINK_FORMAT` value.
@@ -211,7 +213,7 @@ obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page
 ```
 
 The CLI derives the repository-relative Source ID and writes below
-`wiki/.manifest/sources/`. Do not reconstruct a monolithic project collection,
+`<vault>/.manifest/sources/`. Do not reconstruct a monolithic project collection,
 manually edit JSON, or add model, agent, API, or generation-tool provenance
 fields to the marker or shards.
 

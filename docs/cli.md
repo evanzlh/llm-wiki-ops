@@ -213,3 +213,9 @@ authoritative source has no shard, `source-stale` means its content hash no
 longer matches, and `source-orphaned` means a shard has no source file. All
 three are PR blockers: compile or reconcile the source and run `cache-update`, then rerun
 `check` before merging.
+
+For `source-orphaned`, restore a source deleted by mistake. If deletion was
+intentional, remove the entire corresponding shard file with
+`git rm <vault>/.manifest/sources/<relative>.json`. This is whole-file Git
+deletion, never editing marker or shard JSON fields; there is no CLI removal
+subcommand.

@@ -33,7 +33,9 @@ You are ingesting source documents into an Obsidian wiki. Your job is not to sum
    vault-relative source-key behavior. Portable mode uses manifest v2: inspect
    it through the CLI cache commands and refer to each authoritative file by
    its repository-relative Source ID. Never parse the v2 marker as a source
-   collection or hand-edit its shards.
+   collection or hand-edit its shards. In portable mode, manifest v2 schema 1
+   requires exactly one configured source root even though the TOML field is a
+   list.
 4. Read `index.md` to understand current wiki content
 5. Read `log.md` to understand recent activity
 
@@ -67,7 +69,12 @@ Output: `{"new": [...], "modified": [...], "unchanged": [...], "missing": [...]}
 - `new` → ingest these
 - `modified` → re-ingest these (content changed since last run)
 - `unchanged` → skip entirely — hash matches, content is identical
-- `missing` → in manifest but no longer on disk; skip and optionally clean up
+- `missing` → in manifest but no longer on disk. In personal manifest v1, skip
+  and optionally reconcile the v1 entry. In portable manifest v2, restore an
+  accidentally deleted source; for an intentional deletion, remove the entire
+  corresponding shard file with
+  `git rm <vault>/.manifest/sources/<relative>.json`. That is file deletion,
+  never editing marker or shard JSON fields.
 
 After ingesting each source, record its hash:
 
@@ -77,7 +84,7 @@ obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page
 
 In a portable repository these commands resolve manifest v2, return
 repository-relative Source ID values, and update exactly one shard below
-`wiki/.manifest/sources/` per source. Do not replace them with manual JSON
+`<vault>/.manifest/sources/` per source. Do not replace them with manual JSON
 editing. Portable repositories require the installed CLI.
 
 **Personal manifest v1 fallback only** (if `obsidian-wiki` is not installed):
@@ -509,7 +516,7 @@ configured source root, identified by its repository-relative Source ID. Run:
 obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
 ```
 
-This updates its single shard below `wiki/.manifest/sources/`. Never manually
+This updates its single shard below `<vault>/.manifest/sources/`. Never manually
 edit the v2 marker or shard, never add live URLs or external paths as durable
 IDs, and never add model/agent/API/generation-tool provenance fields.
 

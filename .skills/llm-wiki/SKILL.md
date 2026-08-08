@@ -174,20 +174,27 @@ Personal vaults keep the established monolithic manifest v1 object in
 
 ### Portable Repository mode — manifest v2
 
-Portable repositories use a marker at `wiki/.manifest.json` and one shard in
-`wiki/.manifest/sources/` per authoritative source. Each shard is keyed by a
+Portable repositories use a marker at `<vault>/.manifest.json` and one shard in
+`<vault>/.manifest/sources/` per authoritative source. Each shard is keyed by a
 stable repository-relative Source ID, for example
 `sources/design/portable.md`; it never depends on a clone's filesystem
 location.
 
 The portable rules are strict:
 
+- In portable mode, manifest v2 schema 1 requires exactly one configured
+  source root, even though `[paths].sources` uses TOML list syntax. Multiple
+  roots fail config validation; the list shape reserves future schema
+  evolution.
 - A repository-relative Source ID uses `/`, is normalized, contains no `.` or
   `..` segments, and identifies an ordinary file below the configured
   `sources` root. Absolute paths and backslashes are invalid.
+- Status discovery ignores `.gitkeep` and files beneath hidden source path
+  components (any relative component beginning with `.`). They are not
+  authoritative tracked sources and do not receive shards.
 - The shard path mirrors the portion below the source root:
   `sources/design/portable.md` maps to
-  `wiki/.manifest/sources/design/portable.md.json`. There is exactly one shard
+  `<vault>/.manifest/sources/design/portable.md.json`. There is exactly one shard
   per source.
 - Use `obsidian-wiki cache-check` before compiling and `obsidian-wiki
   cache-update` after compiling. These commands select manifest v2 from the
@@ -200,6 +207,11 @@ The portable rules are strict:
 - The marker and shards record source-to-page compilation state only. Do not
   add model, agent, API, or generation-tool provenance fields; those details do
   not identify the authoritative source and cause needless contributor churn.
+- If a source was intentionally deleted, either restore it or remove the
+  entire corresponding shard file with
+  `git rm <vault>/.manifest/sources/<relative>.json`. This is whole-file Git
+  deletion, never editing marker or shard JSON fields. There is no portable
+  cache removal command.
 
 ## Page Template
 

@@ -10,10 +10,19 @@ SKILL_DOCS = (
     ".skills/wiki-update/SKILL.md",
     ".skills/wiki-status/SKILL.md",
 )
+HUMAN_MANIFEST_DOCS = (
+    "docs/architecture.md",
+    "docs/configuration.md",
+    "docs/cli.md",
+)
 
 
 def _text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def _collapsed(relative: str) -> str:
+    return " ".join(_text(relative).split())
 
 
 def test_core_skills_distinguish_personal_and_portable_manifests() -> None:
@@ -30,9 +39,22 @@ def test_llm_wiki_portable_protocol_never_requires_clone_specific_paths() -> Non
     portable_section = text[start : text.find("\n## ", start)]
 
     assert "canonical absolute paths" not in portable_section
-    assert "wiki/.manifest/sources/" in portable_section
+    assert "<vault>/.manifest/sources/" in portable_section
     assert "cache-check" in portable_section
     assert "cache-update" in portable_section
+
+
+def test_portable_protocol_uses_the_resolved_vault_placeholder() -> None:
+    for relative in (*SKILL_DOCS, *HUMAN_MANIFEST_DOCS):
+        text = _text(relative)
+        assert "wiki/.manifest" not in text, relative
+        assert "<vault>/.manifest" in text, relative
+
+
+def test_manifest_v2_schema_one_has_exactly_one_source_root() -> None:
+    rule = "manifest v2 schema 1 requires exactly one configured source root"
+    for relative in (*SKILL_DOCS, "docs/architecture.md", "docs/configuration.md"):
+        assert rule in _collapsed(relative), relative
 
 
 def test_human_docs_show_the_manifest_marker_and_shard_shapes() -> None:
@@ -53,8 +75,8 @@ def test_human_docs_show_the_manifest_marker_and_shard_shapes() -> None:
 
 
 def test_human_docs_define_portable_source_id_and_snapshot_rules() -> None:
-    docs = "\n".join(
-        _text(relative)
+    docs = " ".join(
+        _collapsed(relative)
         for relative in ("docs/architecture.md", "docs/configuration.md")
     )
     for phrase in (
@@ -80,6 +102,32 @@ def test_status_docs_define_portable_pr_blockers() -> None:
             assert issue in text
         assert "PR blocker" in text
         assert "obsidian-wiki check" in text
+
+
+def test_orphaned_source_reconciliation_deletes_the_whole_shard_file() -> None:
+    command = "git rm <vault>/.manifest/sources/<relative>.json"
+    for relative in (
+        ".skills/wiki-status/SKILL.md",
+        "docs/architecture.md",
+        "docs/cli.md",
+    ):
+        text = _collapsed(relative)
+        assert command in text, relative
+        assert "entire corresponding shard file" in text, relative
+        assert "never editing marker or shard JSON fields" in text, relative
+
+    combined = "\n".join(
+        _text(relative) for relative in (*SKILL_DOCS, *HUMAN_MANIFEST_DOCS)
+    )
+    assert "cache-remove" not in combined
+
+
+def test_portable_status_ignores_placeholder_and_hidden_source_paths() -> None:
+    for relative in (".skills/wiki-status/SKILL.md", "docs/architecture.md"):
+        text = _collapsed(relative)
+        assert ".gitkeep" in text, relative
+        assert "hidden source path components" in text, relative
+        assert "not authoritative tracked sources" in text, relative
 
 
 def test_cli_docs_define_check_output_and_exit_behavior() -> None:
