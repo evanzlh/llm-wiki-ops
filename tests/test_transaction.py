@@ -1390,3 +1390,137 @@ def test_operation_writer_partial_creation_is_removed_on_failure(
 
     assert not (config.vault / "journal/operations/partial.md").exists()
     assert not (config.vault / "concepts/a.md").exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "index.md",
+        ".manifest/sources/forged.json",
+        ".obsidian/workspace.md",
+        "journal/operations/forged.md",
+    ],
+)
+def test_commit_revalidates_tampered_deletions_file(
+    tmp_path: Path,
+    operation_writer,
+    relative: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    (record.workspace / "deletions.json").write_text(
+        json.dumps([relative], indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        TransactionError, match="deletion.*(control|reserved|operations|markdown)"
+    ):
+        manager.commit("tx-1")
+
+    assert operation_writer.calls == []
+    assert (
+        json.loads((record.workspace / "metadata.json").read_text())["status"]
+        == "active"
+    )
+
+
+def test_operation_writer_overwrite_then_return_restores_existing_page(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    operation = config.vault / "journal/operations/existing.md"
+    operation.parent.mkdir(parents=True)
+    operation.write_text("original operation\n", encoding="utf-8")
+
+    def writer(_change):
+        operation.write_text("corrupted operation\n", encoding="utf-8")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-1")
+
+    assert operation.read_text(encoding="utf-8") == "original operation\n"
+    assert not (config.vault / "concepts/a.md").exists()
+    assert manager.load("tx-1").status == "failed"
+
+
+def test_operation_writer_overwrite_then_raise_restores_existing_page(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    operation = config.vault / "journal/operations/existing.md"
+    operation.parent.mkdir(parents=True)
+    operation.write_text("original operation\n", encoding="utf-8")
+
+    def writer(_change):
+        operation.write_text("corrupted operation\n", encoding="utf-8")
+        raise OSError("writer failed after overwrite")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*writer failed"):
+        manager.commit("tx-1")
+
+    assert operation.read_text(encoding="utf-8") == "original operation\n"
+    assert not (config.vault / "concepts/a.md").exists()
+
+
+def test_operation_writer_extra_page_then_return_rolls_back_all_new_pages(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    returned = config.vault / "journal/operations/returned.md"
+    extra = config.vault / "journal/operations/extra.md"
+
+    def writer(_change):
+        returned.parent.mkdir(parents=True, exist_ok=True)
+        returned.write_text("returned\n", encoding="utf-8")
+        extra.write_text("extra\n", encoding="utf-8")
+        return returned
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*exactly one"):
+        manager.commit("tx-1")
+
+    assert not returned.exists()
+    assert not extra.exists()
+    assert not (config.vault / "concepts/a.md").exists()
+
+
+def test_retry_refuses_drift_at_prior_failed_operation_artifact(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    partial = config.vault / "journal/operations/partial.md"
+
+    def failing_writer(_change):
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text("partial\n", encoding="utf-8")
+        raise OSError("operation interrupted")
+
+    manager = TransactionManager(config, operation_writer=failing_writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-1")
+    assert not partial.exists()
+    partial.write_text("foreign artifact\n", encoding="utf-8")
+    manager.operation_writer = operation_writer(config)
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.retry("tx-1")
+
+    assert partial.read_text(encoding="utf-8") == "foreign artifact\n"
+    assert manager.load("tx-1").status == "failed"

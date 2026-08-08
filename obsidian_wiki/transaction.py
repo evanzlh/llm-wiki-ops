@@ -391,7 +391,9 @@ class TransactionManager:
         lock_identity = self._require_owned_lock(transaction_id)
         try:
             candidates = self._enumerate_candidates(record)
-            affected = self._affected_preimage_paths(record, candidates)
+            affected = set(self._affected_preimage_paths(record, candidates))
+            payload = self._read_metadata_payload(record.workspace)
+            affected.update(self._load_snapshot_index(payload["snapshot_index"]))
             self._verify_preimages(record, affected)
             self._clear_snapshot_state(record)
             record = self.load(transaction_id)
@@ -482,7 +484,8 @@ class TransactionManager:
         payload = self._read_metadata_payload(record.workspace)
         snapshot_index: dict[str, str | None] = {}
         operation_relative: str | None = None
-        operation_paths_before: set[str] | None = None
+        operation_before: dict[str, str] | None = None
+        operation_before_index: dict[str, str] = {}
         try:
             candidates = self._enumerate_candidates(record)
             candidate_names = tuple(relative for relative, _path in candidates)
@@ -548,12 +551,28 @@ class TransactionManager:
                 updated=updated,
                 removed=removed,
             )
-            operation_paths_before = self._operation_page_paths()
+            operation_before, operation_before_index = self._snapshot_operation_tree(
+                record
+            )
             operation_path = Path(self.operation_writer(change))
             operation_relative = self._validate_operation_result(operation_path)
-            if record.preimages.get(operation_relative) is not None:
+            operation_after = self._operation_tree_state(allow_unsafe=True)
+            operation_rollback = self._operation_tree_diff(
+                operation_before,
+                operation_after,
+                operation_before_index,
+            )
+            added = set(operation_after) - set(operation_before)
+            modified_or_removed = {
+                relative
+                for relative, content_hash in operation_before.items()
+                if operation_after.get(relative) != content_hash
+            }
+            if added != {operation_relative} or modified_or_removed:
+                snapshot_index.update(operation_rollback)
                 raise TransactionError(
-                    f"operation writer overwrote an existing page: {operation_relative}"
+                    "operation writer must create exactly one new operation page "
+                    "without modifying or removing existing operation pages"
                 )
             snapshot_index[operation_relative] = None
 
@@ -593,12 +612,16 @@ class TransactionManager:
                     raise
                 raise TransactionError(str(exc)) from exc
             rollback_errors: list[str] = []
-            if operation_paths_before is not None:
+            if operation_before is not None:
                 try:
-                    for relative in sorted(
-                        self._operation_page_paths() - operation_paths_before
-                    ):
-                        snapshot_index[relative] = None
+                    operation_after = self._operation_tree_state(allow_unsafe=True)
+                    snapshot_index.update(
+                        self._operation_tree_diff(
+                            operation_before,
+                            operation_after,
+                            operation_before_index,
+                        )
+                    )
                 except (OSError, TransactionError) as rollback_exc:
                     rollback_errors.append(
                         f"operation cleanup discovery failed: {rollback_exc}"
@@ -688,9 +711,9 @@ class TransactionManager:
         return tuple(sorted(affected))
 
     def _verify_preimages(
-        self, record: TransactionRecord, affected: tuple[str, ...]
+        self, record: TransactionRecord, affected: tuple[str, ...] | set[str]
     ) -> None:
-        for relative in affected:
+        for relative in sorted(affected):
             expected = record.preimages.get(relative)
             try:
                 current = self._current_vault_hash(relative)
@@ -912,12 +935,46 @@ class TransactionManager:
         self._require_ordinary_file(candidate, "operation page")
         return relative
 
-    def _operation_page_paths(self) -> set[str]:
+    def _snapshot_operation_tree(
+        self, record: TransactionRecord
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        raw_state = self._operation_tree_state()
+        state = {relative: content_hash for relative, content_hash in raw_state.items()}
+        originals = record.workspace / "snapshots" / "originals"
+        index: dict[str, str] = {}
+        for relative in sorted(state):
+            snapshot_relative = PurePosixPath("originals") / PurePosixPath(relative)
+            snapshot = record.workspace / "snapshots" / snapshot_relative
+            self._ensure_contained_directory(snapshot.parent, originals)
+            data = self._read_single_link_bytes(
+                self._vault_path(relative), "operation page"
+            )
+            self._write_atomic_bytes(snapshot, data)
+            index[relative] = snapshot_relative.as_posix()
+        return state, index
+
+    @staticmethod
+    def _operation_tree_diff(
+        before: dict[str, str],
+        after: dict[str, str | None],
+        before_index: dict[str, str],
+    ) -> dict[str, str | None]:
+        changed = {
+            relative: before_index[relative]
+            for relative, content_hash in before.items()
+            if after.get(relative) != content_hash
+        }
+        changed.update({relative: None for relative in set(after) - set(before)})
+        return dict(sorted(changed.items()))
+
+    def _operation_tree_state(
+        self, *, allow_unsafe: bool = False
+    ) -> dict[str, str | None]:
         root = self.config.vault / "journal" / "operations"
         if not root.exists() and not root.is_symlink():
-            return set()
+            return {}
         self._require_ordinary_directory(root, "operation directory")
-        result: set[str] = set()
+        result: dict[str, str | None] = {}
         for directory, dirnames, filenames in os.walk(
             root, topdown=True, followlinks=False
         ):
@@ -928,9 +985,16 @@ class TransactionManager:
             dirnames[:] = sorted(dirnames)
             for name in sorted(filenames):
                 page = current / name
-                self._require_ordinary_file(page, "operation page")
-                result.add(page.relative_to(self.config.vault).as_posix())
-        return result
+                relative = page.relative_to(self.config.vault).as_posix()
+                try:
+                    result[relative] = self._hash_single_link_file(
+                        page, "operation page"
+                    )
+                except TransactionError:
+                    if not allow_unsafe:
+                        raise
+                    result[relative] = None
+        return dict(sorted(result.items()))
 
     def _vault_path(self, relative: str) -> Path:
         self._validate_relative_path(relative, "vault-relative path")
@@ -1392,7 +1456,7 @@ class TransactionManager:
         if values != tuple(sorted(set(values))):
             raise TransactionError("transaction deletions must be unique and sorted")
         for value in values:
-            self._validate_relative_path(value, "transaction deletion path")
+            self._validate_output_path(value, "transaction deletion")
         return values
 
     @staticmethod
