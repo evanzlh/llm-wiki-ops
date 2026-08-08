@@ -327,7 +327,8 @@ def _discover_source_skills(source_skills: Path) -> tuple[Path, tuple[str, ...]]
     return source, tuple(names)
 
 
-def _inventory_text(version: str, skill_names: Iterable[str]) -> str:
+def render_managed_skills_inventory(version: str, skill_names: Iterable[str]) -> str:
+    """Render the canonical managed-skills inventory without writing it."""
     payload = {
         "implementation": IMPLEMENTATION_ID,
         "skills": sorted(skill_names),
@@ -341,7 +342,7 @@ def _write_managed_skills_inventory(
 ) -> None:
     _atomic_replace_text(
         root / MANAGED_SKILLS_INVENTORY,
-        _inventory_text(version, skill_names),
+        render_managed_skills_inventory(version, skill_names),
         root=root,
     )
 
@@ -518,6 +519,52 @@ def compatible_cli_spec(version: str) -> str:
     return f">={year}.{month},<{next_year}.{next_month}"
 
 
+def render_portable_config(
+    *,
+    version: str,
+    implementation: str = IMPLEMENTATION_ID,
+    vault: str = "wiki",
+    sources: tuple[str, ...] = ("sources",),
+    skills: str = ".skills",
+    local_state: str = ".obsidian-wiki/local",
+) -> str:
+    """Render repository-relative portable TOML without filesystem access."""
+    source_values = ", ".join(json.dumps(source) for source in sources)
+    return (
+        "schema_version = 1\n"
+        f"implementation = {json.dumps(implementation)}\n"
+        f"requires_cli = {json.dumps(compatible_cli_spec(version))}\n"
+        "\n"
+        "[paths]\n"
+        f"vault = {json.dumps(vault)}\n"
+        f"sources = [{source_values}]\n"
+        f"skills = {json.dumps(skills)}\n"
+        f"local_state = {json.dumps(local_state)}\n"
+        "\n"
+        "[settings]\n"
+        'OBSIDIAN_CATEGORIES = "concepts,entities,skills,references,synthesis,journal,projects"\n'
+        "OBSIDIAN_MAX_PAGES_PER_INGEST = 15\n"
+        'OBSIDIAN_LINK_FORMAT = "wikilink"\n'
+        'OBSIDIAN_RAW_DIR = "_raw"\n'
+        "OBSIDIAN_TRUST_STRICT = false\n"
+    )
+
+
+def render_stable_index() -> str:
+    """Render the clone-stable built-in-query index."""
+    return _INDEX
+
+
+def render_stable_log() -> str:
+    """Render the clone-stable operation log."""
+    return _LOG
+
+
+def render_manifest_marker() -> str:
+    """Render the canonical sharded-manifest marker."""
+    return json.dumps(MANIFEST_MARKER, indent=2) + "\n"
+
+
 def _load_canonical_portable_config(root: Path, *, version: str) -> PortableConfig:
     path = root / ".obsidian-wiki" / "config.toml"
     config = load_portable_config(
@@ -588,24 +635,13 @@ def write_portable_config(
         _load_canonical_portable_config(root, version=version)
         return path
 
-    source_values = ", ".join(json.dumps(source) for source in sources)
-    text = (
-        "schema_version = 1\n"
-        f"implementation = {json.dumps(implementation)}\n"
-        f"requires_cli = {json.dumps(compatible_cli_spec(version))}\n"
-        "\n"
-        "[paths]\n"
-        f"vault = {json.dumps(vault)}\n"
-        f"sources = [{source_values}]\n"
-        f"skills = {json.dumps(skills)}\n"
-        f"local_state = {json.dumps(local_state)}\n"
-        "\n"
-        "[settings]\n"
-        'OBSIDIAN_CATEGORIES = "concepts,entities,skills,references,synthesis,journal,projects"\n'
-        "OBSIDIAN_MAX_PAGES_PER_INGEST = 15\n"
-        'OBSIDIAN_LINK_FORMAT = "wikilink"\n'
-        'OBSIDIAN_RAW_DIR = "_raw"\n'
-        "OBSIDIAN_TRUST_STRICT = false\n"
+    text = render_portable_config(
+        version=version,
+        implementation=implementation,
+        vault=vault,
+        sources=sources,
+        skills=skills,
+        local_state=local_state,
     )
     _write_text_if_changed(path, text, root=root)
     return path
@@ -622,11 +658,11 @@ def scaffold_portable_vault(vault: Path) -> None:
             raise ValueError(f"portable vault directory collision: {directory}")
         directory.mkdir(parents=True, exist_ok=True)
 
-    _write_text_if_missing(vault / "index.md", _INDEX, root=vault)
-    _write_text_if_missing(vault / "log.md", _LOG, root=vault)
+    _write_text_if_missing(vault / "index.md", render_stable_index(), root=vault)
+    _write_text_if_missing(vault / "log.md", render_stable_log(), root=vault)
     _write_text_if_missing(
         vault / ".manifest.json",
-        json.dumps(MANIFEST_MARKER, indent=2) + "\n",
+        render_manifest_marker(),
         root=vault,
     )
     _write_text_if_missing(
@@ -852,19 +888,23 @@ def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
 
 def _render_bootstrap_target(root: Path, target: Path, existing: str) -> str:
     """Render one fixed bootstrap target from its authoritative old content."""
-    agents_path = root / "AGENTS.md"
-    if target == agents_path:
+    relative = _repo_relative_path(root, target)
+    return render_portable_bootstrap(relative, existing)
+
+
+def render_portable_bootstrap(relative: str, existing: str) -> str:
+    """Render one managed bootstrap file while preserving owner-maintained text."""
+    if relative == "AGENTS.md":
         if not existing:
             existing = _TEAM_CONVENTIONS
         elif MANAGED_START not in existing and "## Team conventions" not in existing:
             existing = f"{_TEAM_CONVENTIONS}\n{existing}"
         return merge_managed_block(existing, _PORTABLE_AGENT_INSTRUCTIONS)
 
-    relative = _repo_relative_path(root, target)
     try:
         agents_reference = _BOOTSTRAP_REFERENCES[relative]
     except KeyError as exc:  # pragma: no cover - callers use the fixed target set
-        raise ValueError(f"unexpected portable bootstrap target: {target}") from exc
+        raise ValueError(f"unexpected portable bootstrap target: {relative}") from exc
     planned = _planned_bootstrap_text(existing, agents_reference)
     return existing if planned is None else planned
 
@@ -925,10 +965,8 @@ def _escape_gitignore_path(value: str) -> str:
     return "".join(f"\\{char}" if char in "\\ #![]*?" else char for char in value)
 
 
-def ensure_portable_gitignore(root: Path, vault: str | Path = "wiki") -> None:
-    """Append portable local-state ignores while preserving existing entries."""
-    root = _safe_root(Path(root))
-    vault_relative = _vault_relative_posix(root, vault)
+def render_portable_gitignore(existing: str, vault_relative: str = "wiki") -> str:
+    """Render required local-state ignores while preserving existing entries."""
     escaped_vault = _escape_gitignore_path(vault_relative)
     prefix = "" if escaped_vault == "." else f"{escaped_vault}/"
     required = (
@@ -938,18 +976,28 @@ def ensure_portable_gitignore(root: Path, vault: str | Path = "wiki") -> None:
         f"{prefix}.obsidian/workspace-mobile.json",
         f"{prefix}.trash/",
     )
+    present = {line.strip() for line in existing.splitlines()}
+    missing = [entry for entry in required if entry not in present]
+    if not missing:
+        return existing
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    appended = "\n".join(missing)
+    return f"{existing}{separator}{appended}\n"
+
+
+def ensure_portable_gitignore(root: Path, vault: str | Path = "wiki") -> None:
+    """Append portable local-state ignores while preserving existing entries."""
+    root = _safe_root(Path(root))
+    vault_relative = _vault_relative_posix(root, vault)
     path = root / ".gitignore"
     _assert_safe_managed_path(root, path)
     if path.exists() and not path.is_file():
         raise ValueError(f"portable .gitignore must be an ordinary file: {path}")
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [entry for entry in required if entry not in present]
-    if not missing:
+    rendered = render_portable_gitignore(existing, vault_relative)
+    if rendered == existing:
         return
-    separator = "" if not existing or existing.endswith("\n") else "\n"
-    appended = "\n".join(missing)
-    _write_text_if_changed(path, f"{existing}{separator}{appended}\n", root=root)
+    _write_text_if_changed(path, rendered, root=root)
 
 
 def _preflight_managed_destinations(root: Path) -> None:
@@ -1561,7 +1609,7 @@ def _authorize_upgrade_recovery(
             "",
             "file",
             stat.S_IMODE(old_inventory.lstat().st_mode),
-            _inventory_text(version, current_names).encode("utf-8"),
+            render_managed_skills_inventory(version, current_names).encode("utf-8"),
         ),
     )
     validate_artifacts(
@@ -2201,7 +2249,7 @@ def upgrade_portable_skills(
                 transaction,
                 staged_inventory,
                 inventory,
-                _inventory_text(version, current_names),
+                render_managed_skills_inventory(version, current_names),
             )
             replacements.append((inventory, staged_inventory))
             payload, records = _prepare_upgrade_journal(

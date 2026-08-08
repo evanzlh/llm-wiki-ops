@@ -4,7 +4,14 @@ import json
 import os
 from pathlib import Path
 
-from obsidian_wiki.migration import analyze_migration
+import pytest
+
+from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import migration as migration_module
+from obsidian_wiki.cli import skills_dir
+from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.migration import MigrationError, analyze_migration, apply_migration
+from obsidian_wiki.portable_manifest import ShardedManifest
 
 
 def make_legacy_repo(tmp_path: Path):
@@ -445,3 +452,902 @@ def test_windows_drive_source_is_not_misclassified_as_live_url(
 
     matching = [item for item in plan.blockers if item.source == "C://docs/a.md"]
     assert {item.code for item in matching} == {"external-source"}
+
+
+@pytest.mark.parametrize("managed", [".obsidian-wiki", ".skills"])
+def test_analyze_rejects_source_root_overlapping_managed_paths(
+    tmp_path: Path, managed: str
+) -> None:
+    root, _sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    managed_source = root / managed
+    managed_source.mkdir()
+
+    plan = analyze_migration(
+        root=root, vault=vault, source_root=managed_source
+    )
+
+    assert "managed-path-overlap" in {blocker.code for blocker in plan.blockers}
+
+
+def test_analyze_rejects_vault_below_portable_local_state(tmp_path: Path) -> None:
+    root, sources, _vault, _source, _page = make_legacy_repo(tmp_path)
+    managed_vault = root / ".obsidian-wiki/local/wiki"
+
+    plan = analyze_migration(
+        root=root, vault=managed_vault, source_root=sources
+    )
+
+    assert "managed-path-overlap" in {blocker.code for blocker in plan.blockers}
+
+
+def test_analyze_rejects_preexisting_portable_manifest_artifacts(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    stale = vault / ".manifest/sources/stale.md.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale shard\n", encoding="utf-8")
+
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    assert "portable-artifact-conflict" in {
+        blocker.code for blocker in plan.blockers
+    }
+
+
+def test_apply_converts_manifest_frontmatter_and_derived_files(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    result = apply_migration(
+        plan, installed_version="2026.8", source_skills=skills_dir()
+    )
+
+    config = load_portable_config(
+        root / ".obsidian-wiki" / "config.toml",
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+    assert "sources/a.md" in page.read_text(encoding="utf-8")
+    entry = ShardedManifest(config).load("sources/a.md")
+    assert entry is not None
+    assert entry.compiled_at == "2026-08-01T00:00:00Z"
+    assert json.loads((vault / ".manifest.json").read_text())["schema_version"] == 2
+    assert "```query" in (vault / "index.md").read_text(encoding="utf-8")
+    assert "journal/operations" in (vault / "log.md").read_text(encoding="utf-8")
+    assert not (vault / "hot.md").exists()
+    assert result.changed_files
+    assert result.backup_dir.is_dir()
+    assert len(list((vault / "journal/operations").rglob("*.md"))) == 1
+    backup_manifest = json.loads(
+        (result.backup_dir.parent / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert backup_manifest["status"] == "committed"
+
+
+def test_apply_refuses_blocked_plan(tmp_path: Path) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    external = tmp_path / "outside.md"
+    manifest = json.loads((vault / ".manifest.json").read_text())
+    manifest["sources"][str(external)] = {
+        "content_hash": "x",
+        "pages_produced": [],
+    }
+    (vault / ".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    with pytest.raises(MigrationError, match="blocker"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert not (root / ".obsidian-wiki" / "config.toml").exists()
+
+
+def test_apply_failure_restores_every_original_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    before = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    before_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    monkeypatch.setattr(
+        ShardedManifest,
+        "upsert",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(MigrationError, match="rolled back"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    after = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    after_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    assert after == before
+    assert after_directories == before_directories
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_mid_swap_failure_restores_preimages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    before = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    before_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    calls = 0
+
+    def fail_once(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 5:
+            raise OSError("swap failed")
+        original_replace(path, data, **kwargs)
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", fail_once)
+
+    with pytest.raises(MigrationError, match="rolled back: swap failed"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    after = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    after_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    assert after == before
+    assert after_directories == before_directories
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_retains_snapshots_when_rollback_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    page_applied = False
+    forward_failed = False
+
+    def fail_forward_and_restore(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal page_applied, forward_failed
+        if page_applied and not forward_failed:
+            forward_failed = True
+            raise OSError("forward swap failed")
+        if forward_failed:
+            raise OSError("restore failed")
+        original_replace(path, data, **kwargs)
+        if path == page:
+            page_applied = True
+
+    monkeypatch.setattr(
+        migration_module, "_atomic_replace_bytes", fail_forward_and_restore
+    )
+
+    with pytest.raises(MigrationError, match="rollback was incomplete") as caught:
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert "forward swap failed" in str(caught.value)
+    migration_roots = list((root / ".obsidian-wiki/local/migrations").iterdir())
+    assert len(migration_roots) == 1
+    payload = json.loads(
+        (migration_roots[0] / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "rollback-failed"
+    assert (migration_roots[0] / "snapshots").is_dir()
+
+
+def test_rollback_preserves_in_place_competitor_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    competitor = b"concurrent in-place edit\n"
+    competed = False
+
+    def compete_after_page(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal competed
+        original_replace(path, data, **kwargs)
+        if path == page and not competed:
+            page.write_bytes(competitor)
+            competed = True
+            raise OSError("fail after competitor edit")
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", compete_after_page)
+
+    with pytest.raises(MigrationError, match="rollback was incomplete"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert competed
+    assert page.read_bytes() == competitor
+
+
+def test_apply_refuses_manifest_or_page_preimage_drift(tmp_path: Path) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    page.write_text(page.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="changed since analysis"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert not (root / ".obsidian-wiki" / "config.toml").exists()
+
+
+def test_apply_rejects_absent_target_below_symlinked_managed_parent(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    outside = tmp_path / "outside-skills"
+    outside.mkdir()
+    os.symlink(outside, root / ".skills")
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    with pytest.raises(MigrationError, match="symbolic link"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert list(outside.iterdir()) == []
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_rechecks_managed_parent_at_each_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    outside = tmp_path / "race-outside"
+    outside.mkdir()
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    swapped = False
+
+    def swap_parent(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal swapped
+        relative = path.relative_to(root)
+        if not swapped and relative.parts[0] == ".skills":
+            skills = root / ".skills"
+            if skills.exists():
+                skills.rename(root / ".skills-raced")
+            os.symlink(outside, skills)
+            swapped = True
+        original_replace(path, data, **kwargs)
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", swap_parent)
+
+    with pytest.raises(MigrationError, match="rollback was incomplete"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+
+
+def test_apply_never_overwrites_competing_operation_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_exclusive = migration_module._write_exclusive_bytes
+    competitor: bytes | None = None
+    operation_target: Path | None = None
+
+    def create_competitor(path: Path, data: bytes, *, root: Path, **kwargs) -> None:
+        nonlocal competitor, operation_target
+        operation_target = path
+        competitor = data
+        path.write_bytes(data)
+        original_exclusive(path, data, root=root, **kwargs)
+
+    monkeypatch.setattr(
+        migration_module, "_write_exclusive_bytes", create_competitor
+    )
+
+    with pytest.raises(MigrationError, match="rollback was incomplete"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert operation_target is not None
+    assert competitor is not None
+    assert operation_target.read_bytes() == competitor
+
+
+def test_apply_does_not_claim_exact_competitor_as_its_config_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    competitor_path = root / ".obsidian-wiki/config.toml"
+    installed = False
+    competitor_data: bytes | None = None
+
+    def install_exact_competitor(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal competitor_data, installed
+        if path == competitor_path and not installed:
+            path.write_bytes(data)
+            installed = True
+            competitor_data = data
+        original_replace(path, data, **kwargs)
+
+    monkeypatch.setattr(
+        migration_module, "_atomic_replace_bytes", install_exact_competitor
+    )
+
+    with pytest.raises(MigrationError, match="rolled back"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert installed
+    assert competitor_data is not None
+    assert competitor_path.read_bytes() == competitor_data
+
+
+def test_apply_preserves_concurrent_hot_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_unlink = migration_module._unlink_expected
+    hot = vault / "hot.md"
+    deleted = False
+
+    def delete_before_migration(path: Path, **kwargs) -> None:
+        nonlocal deleted
+        if path == hot and not deleted:
+            path.unlink()
+            deleted = True
+        original_unlink(path, **kwargs)
+
+    monkeypatch.setattr(migration_module, "_unlink_expected", delete_before_migration)
+
+    with pytest.raises(MigrationError, match="rolled back"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert deleted
+    assert not hot.exists()
+
+
+def test_apply_preserves_markdown_body_bytes_and_normalizes_scalar_sources(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, source, page = make_legacy_repo(tmp_path)
+    body = b"# A\r\n\r\nBody with  spaces.\r\n"
+    page.write_bytes(
+        (
+            "---\r\n"
+            "title: A\r\n"
+            "category: concepts\r\n"
+            "tags: [example]\r\n"
+            f"sources: {source}\r\n"
+            "created: 2026-08-07\r\n"
+            "updated: 2026-08-07\r\n"
+            "---\r\n"
+        ).encode()
+        + body
+    )
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    migrated = page.read_bytes()
+    assert migrated.split(b"---\r\n", 2)[2] == body
+    assert b"sources:\r\n  - sources/a.md\r\n" in migrated
+
+
+def test_apply_rebuilds_shard_edges_from_actual_page_frontmatter(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, source, _page = make_legacy_repo(tmp_path)
+    stale = vault / "entities" / "stale.md"
+    stale.parent.mkdir()
+    stale.write_text(
+        "---\ntitle: Stale\ncategory: entities\ntags: []\nsources: []\n"
+        "created: 2026-08-07\nupdated: 2026-08-07\n---\n# Stale\n",
+        encoding="utf-8",
+    )
+    manifest_path = vault / ".manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sources"][str(source)]["pages_produced"] = ["entities/stale.md"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+    entry = ShardedManifest(config).load("sources/a.md")
+    assert entry is not None
+    assert entry.pages == ("concepts/a.md",)
+
+
+def test_apply_refuses_knowledge_page_inventory_drift(tmp_path: Path) -> None:
+    root, sources, vault, source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    added = vault / "entities" / "added.md"
+    added.parent.mkdir()
+    added.write_text(
+        "---\ntitle: Added\ncategory: entities\ntags: []\n"
+        f"sources: [{source}]\ncreated: 2026-08-07\nupdated: 2026-08-07\n"
+        "---\n# Added\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MigrationError, match="knowledge page set changed"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_rolls_back_when_page_inventory_changes_during_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_verify = migration_module._verify_candidate_dependencies
+    added = vault / "entities/concurrent.md"
+    inserted = False
+
+    def add_after_candidate_verification(
+        root: Path, dependencies: dict[str, bytes | None]
+    ) -> None:
+        nonlocal inserted
+        original_verify(root, dependencies)
+        if not inserted:
+            added.parent.mkdir()
+            added.write_text(
+                "---\ntitle: Concurrent\ncategory: entities\ntags: []\n"
+                "sources: [sources/a.md]\ncreated: 2026-08-08\n"
+                "updated: 2026-08-08\n---\n# Concurrent\n",
+                encoding="utf-8",
+            )
+            inserted = True
+
+    monkeypatch.setattr(
+        migration_module,
+        "_verify_candidate_dependencies",
+        add_after_candidate_verification,
+    )
+
+    with pytest.raises(MigrationError, match="knowledge page set changed during apply"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert inserted
+    assert added.is_file()
+
+
+def test_apply_refuses_portable_manifest_artifact_drift(tmp_path: Path) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    stale = vault / ".manifest/sources/stale.md.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale shard\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="artifacts changed since analysis"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_preserves_existing_obsidian_owner_settings(tmp_path: Path) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    settings = {
+        vault / ".obsidian/app.json": b'{"owner": "app"}\n',
+        vault / ".obsidian/appearance.json": b'{"owner": "appearance"}\n',
+    }
+    for path, data in settings.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert {path: path.read_bytes() for path in settings} == settings
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")
+def test_apply_preserves_executable_mode_in_canonical_skill_assets(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    source_skills = tmp_path / "bundled-skills"
+    script = source_skills / "demo" / "scripts" / "run.sh"
+    script.parent.mkdir(parents=True)
+    (source_skills / "demo" / "SKILL.md").write_text(
+        "# Demo\n", encoding="utf-8"
+    )
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(
+        plan, installed_version="2026.8", source_skills=source_skills
+    )
+
+    installed = root / ".skills/demo/scripts/run.sh"
+    assert installed.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")
+def test_apply_rollback_restores_original_file_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    page.chmod(0o750)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    page_applied = False
+    failed = False
+
+    def fail_after_page(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal failed, page_applied
+        if page_applied and not failed:
+            failed = True
+            raise OSError("fail after page")
+        original_replace(path, data, **kwargs)
+        if path == page:
+            page_applied = True
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", fail_after_page)
+
+    with pytest.raises(MigrationError, match="rolled back: fail after page"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert page.stat().st_mode & 0o777 == 0o750
+
+
+def test_apply_preserves_sources_field_comments(tmp_path: Path) -> None:
+    root, sources, vault, source, page = make_legacy_repo(tmp_path)
+    page.write_text(
+        "---\n"
+        "title: A\n"
+        "category: concepts\n"
+        "tags: [example]\n"
+        "sources: # provenance header\n"
+        "  # source note\n"
+        f'  - "{source}" # source tail\n'
+        "\n"
+        "created: 2026-08-07\n"
+        "updated: 2026-08-07\n"
+        "---\n"
+        "# A\n",
+        encoding="utf-8",
+    )
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    migrated = page.read_text(encoding="utf-8")
+    assert "# provenance header" in migrated
+    assert "# source note" in migrated
+    assert "# source tail" in migrated
+    assert str(source) not in migrated
+
+
+def test_apply_preserves_comment_after_unquoted_source_with_apostrophe(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, source, page = make_legacy_repo(tmp_path)
+    apostrophe_source = sources / "O'Brien.md"
+    source.rename(apostrophe_source)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            str(source), f"{apostrophe_source} # keep me"
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = vault / ".manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sources"][str(apostrophe_source)] = manifest["sources"].pop(
+        str(source)
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    migrated = page.read_text(encoding="utf-8")
+    assert '  - "sources/O\'Brien.md" # keep me' in migrated
+    assert str(apostrophe_source) not in migrated
+
+
+def test_apply_refuses_owner_file_change_while_building_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_build = migration_module._build_migration_candidates
+
+    def change_owner_after_build(*args, **kwargs):
+        result = original_build(*args, **kwargs)
+        (root / "AGENTS.md").write_text("owner edit\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        migration_module, "_build_migration_candidates", change_owner_after_build
+    )
+
+    with pytest.raises(MigrationError, match="changed while building candidates"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert (root / "AGENTS.md").read_bytes() == b"owner edit\n"
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_rolls_back_when_source_changes_after_candidate_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_verify = migration_module._verify_candidate_dependencies
+    changed = False
+
+    def change_after_full_verification(
+        root: Path, dependencies: dict[str, bytes | None]
+    ) -> None:
+        nonlocal changed
+        original_verify(root, dependencies)
+        if not changed and "sources/a.md" in dependencies:
+            source.write_text("concurrent source edit\n", encoding="utf-8")
+            changed = True
+
+    monkeypatch.setattr(
+        migration_module,
+        "_verify_candidate_dependencies",
+        change_after_full_verification,
+    )
+
+    with pytest.raises(MigrationError, match="changed while building candidates"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert changed
+    assert source.read_bytes() == b"concurrent source edit\n"
+    assert not (root / ".obsidian-wiki").exists()
+
+
+def test_apply_rolls_back_after_parent_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    before = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    before_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_fsync = migration_module._fsync_open_parent
+    failed = False
+
+    def fail_once(parent_fd: int) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("directory fsync failed")
+        original_fsync(parent_fd)
+
+    monkeypatch.setattr(migration_module, "_fsync_open_parent", fail_once)
+
+    with pytest.raises(
+        MigrationError, match="rolled back: directory fsync failed"
+    ):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    after = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    after_directories = {
+        path.relative_to(root) for path in root.rglob("*") if path.is_dir()
+    }
+    assert after == before
+    assert after_directories == before_directories
+
+
+@pytest.mark.skipif(os.name == "nt", reason="dir_fd identity check is POSIX-only")
+def test_atomic_replace_rejects_parent_renamed_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repository"
+    parent = root / ".skills"
+    parent.mkdir(parents=True)
+    target = parent / "managed.md"
+    moved = root / ".skills-moved"
+    original_open = migration_module._open_parent_fd
+    swapped = False
+
+    def rename_after_open(root: Path, path: Path) -> int:
+        nonlocal swapped
+        descriptor = original_open(root, path)
+        if not swapped:
+            parent.rename(moved)
+            parent.mkdir()
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr(migration_module, "_open_parent_fd", rename_after_open)
+
+    with pytest.raises(MigrationError, match="parent changed during apply"):
+        migration_module._atomic_replace_bytes(
+            target, b"managed\n", root=root, expected=None
+        )
+
+    assert not target.exists()
+    assert not (moved / target.name).exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="dir_fd identity check is POSIX-only")
+def test_atomic_replace_preserves_competitor_in_renamed_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repository"
+    parent = root / ".skills"
+    parent.mkdir(parents=True)
+    target = parent / "managed.md"
+    moved = root / ".skills-moved"
+    original_open = migration_module._open_parent_fd
+    original_matches = migration_module._parent_fd_matches
+    competitor = b"competitor\n"
+    swapped = False
+    competed = False
+
+    def rename_after_open(root: Path, path: Path) -> int:
+        nonlocal swapped
+        descriptor = original_open(root, path)
+        if not swapped:
+            parent.rename(moved)
+            parent.mkdir()
+            swapped = True
+        return descriptor
+
+    def replace_before_identity_check(root: Path, path: Path, parent_fd: int) -> bool:
+        nonlocal competed
+        if not competed:
+            (moved / path.name).write_bytes(competitor)
+            competed = True
+        return original_matches(root, path, parent_fd)
+
+    monkeypatch.setattr(migration_module, "_open_parent_fd", rename_after_open)
+    monkeypatch.setattr(
+        migration_module, "_parent_fd_matches", replace_before_identity_check
+    )
+
+    with pytest.raises(MigrationError, match="local restoration failed"):
+        migration_module._atomic_replace_bytes(
+            target, b"managed\n", root=root, expected=None
+        )
+
+    assert competed
+    assert (moved / target.name).read_bytes() == competitor
+
+
+@pytest.mark.skipif(os.name == "nt", reason="dir_fd identity check is POSIX-only")
+def test_apply_detects_parent_renamed_after_helper_identity_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_matches = migration_module._parent_fd_matches
+    moved = root / ".skills-raced"
+    swapped = False
+
+    def rename_after_check(root: Path, path: Path, parent_fd: int) -> bool:
+        nonlocal swapped
+        matches = original_matches(root, path, parent_fd)
+        if matches and not swapped and path.relative_to(root).parts[0] == ".skills":
+            skills = root / ".skills"
+            skills.rename(moved)
+            skills.mkdir()
+            for directory in sorted(
+                (entry for entry in moved.rglob("*") if entry.is_dir()),
+                key=lambda entry: len(entry.parts),
+            ):
+                (skills / directory.relative_to(moved)).mkdir(exist_ok=True)
+            swapped = True
+        return matches
+
+    monkeypatch.setattr(
+        migration_module, "_parent_fd_matches", rename_after_check
+    )
+
+    with pytest.raises(MigrationError, match="rollback was incomplete") as caught:
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert swapped
+    assert "migration postimage" in str(caught.value)
+    assert any(path.is_file() for path in moved.rglob("*"))
+
+
+def test_apply_writes_pages_before_manifest_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_replace = migration_module._atomic_replace_bytes
+    writes: list[str] = []
+
+    def record_write(path: Path, data: bytes, **kwargs) -> None:
+        writes.append(path.relative_to(root).as_posix())
+        original_replace(path, data, **kwargs)
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", record_write)
+
+    apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert writes.index("wiki/concepts/a.md") < writes.index(
+        "wiki/.manifest/sources/a.md.json"
+    )
+
+
+def test_apply_detects_stale_shard_appearing_during_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    original_verify = migration_module._verify_source_dependencies
+    stale = vault / ".manifest/sources/stale.md.json"
+    calls = 0
+
+    def insert_before_marker(*args, **kwargs) -> None:
+        nonlocal calls
+        original_verify(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            stale.write_text("stale shard\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        migration_module, "_verify_source_dependencies", insert_before_marker
+    )
+
+    with pytest.raises(MigrationError, match="shard tree changed during apply"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert stale.read_bytes() == b"stale shard\n"
+
+
+def test_apply_never_overwrites_planned_shard_appearing_during_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    planned = vault / ".manifest/sources/a.md.json"
+    competitor = b"planned competitor\n"
+    original_preimage = migration_module._target_preimage
+    inserted = False
+
+    def insert_planned(path: Path, *, root: Path) -> bytes | None:
+        nonlocal inserted
+        if path == planned and not inserted:
+            path.parent.mkdir(parents=True)
+            path.write_bytes(competitor)
+            inserted = True
+        return original_preimage(path, root=root)
+
+    monkeypatch.setattr(migration_module, "_target_preimage", insert_planned)
+
+    with pytest.raises(MigrationError, match="planned manifest shard appeared"):
+        apply_migration(plan, installed_version="2026.8", source_skills=skills_dir())
+
+    assert inserted
+    assert planned.read_bytes() == competitor
