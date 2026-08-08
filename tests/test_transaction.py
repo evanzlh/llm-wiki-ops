@@ -1595,7 +1595,7 @@ def test_operation_writer_extra_page_then_return_rolls_back_all_new_pages(
     assert not (config.vault / "concepts/a.md").exists()
 
 
-def test_retry_cleans_drift_at_prior_failed_operation_artifact(
+def test_retry_refuses_new_drift_at_prior_cleaned_operation_artifact(
     tmp_path: Path,
     operation_writer,
 ) -> None:
@@ -1616,10 +1616,11 @@ def test_retry_cleans_drift_at_prior_failed_operation_artifact(
     partial.write_text("foreign artifact\n", encoding="utf-8")
     manager.operation_writer = operation_writer(config)
 
-    manager.retry("tx-1")
+    with pytest.raises(TransactionError, match="residual.*changed"):
+        manager.retry("tx-1")
 
-    assert not partial.exists()
-    assert manager.load("tx-1").status == "complete"
+    assert partial.read_text(encoding="utf-8") == "foreign artifact\n"
+    assert manager.load("tx-1").status == "failed"
 
 
 def test_a_only_transaction_cannot_update_existing_a_b_page(
@@ -2150,6 +2151,83 @@ def test_manifest_change_after_snapshot_is_rejected_at_upsert_boundary(
     assert manager.load("tx-1").status == "failed"
 
 
+def _prepare_failed_page_conflict(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    concurrent_heading: str,
+):
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    concurrent = PAGE.replace("# A", concurrent_heading)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Candidate"))
+    original_promote = manager._promote_candidate
+
+    def interpose(candidate_value, target_value: Path, *args) -> None:
+        target_value.write_text(concurrent, encoding="utf-8")
+        original_promote(candidate_value, target_value, *args)
+
+    monkeypatch.setattr(manager, "_promote_candidate", interpose)
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.commit("tx-1")
+    monkeypatch.setattr(manager, "_promote_candidate", original_promote)
+    return manager, record, target, concurrent
+
+
+def test_failed_restore_preserves_persisted_mutation_conflict(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, record, target, concurrent = _prepare_failed_page_conflict(
+        tmp_path,
+        operation_writer,
+        monkeypatch,
+        concurrent_heading="# Concurrent",
+    )
+
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload.get("rollback_exclusions") == {
+        "concepts/a.md": manager._current_vault_hash("concepts/a.md")
+    }
+
+    manager.restore("tx-1")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert manager.load("tx-1").status == "restored"
+
+
+@pytest.mark.parametrize("action", ["retry", "restore"])
+def test_failed_recovery_rejects_drift_at_persisted_mutation_conflict(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    manager, record, target, _ = _prepare_failed_page_conflict(
+        tmp_path,
+        operation_writer,
+        monkeypatch,
+        concurrent_heading="# First concurrent",
+    )
+
+    later = PAGE.replace("# A", "# Second concurrent")
+    target.write_text(later, encoding="utf-8")
+    metadata = record.workspace / "metadata.json"
+    metadata_before = metadata.read_bytes()
+
+    with pytest.raises(TransactionError, match="rollback exclusion.*changed"):
+        getattr(manager, action)("tx-1")
+
+    assert target.read_text(encoding="utf-8") == later
+    assert metadata.read_bytes() == metadata_before
+    assert manager.load("tx-1").status == "failed"
+
+
 @pytest.mark.parametrize("target_kind", ["page", "manifest-marker"])
 def test_operation_writer_vault_side_effect_is_rolled_back(
     tmp_path: Path,
@@ -2396,6 +2474,19 @@ def test_retry_preserves_failed_writer_residual_modified_after_lock_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    manager, _, extra = _prepare_failed_writer_residual(tmp_path, monkeypatch)
+
+    later = "later legitimate work\n"
+    extra.write_text(later, encoding="utf-8")
+
+    with pytest.raises(TransactionError, match="residual.*changed"):
+        manager.retry("tx-1")
+
+    assert extra.read_text(encoding="utf-8") == later
+    assert manager.load("tx-1").status == "failed"
+
+
+def _prepare_failed_writer_residual(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root, config = make_config(tmp_path)
     extra = config.vault / "references/writer-extra.md"
 
@@ -2424,17 +2515,91 @@ def test_retry_preserves_failed_writer_residual_modified_after_lock_release(
     with pytest.raises(TransactionError, match="writer restore failed"):
         manager.commit("tx-1")
     assert cleanup_failed
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
     assert manager.load("tx-1").status == "failed"
+    return manager, record, extra
 
+
+def test_retry_preflight_preserves_residual_when_base_target_drifted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, record, extra = _prepare_failed_writer_residual(tmp_path, monkeypatch)
+    target = manager.config.vault / "concepts/a.md"
+    later = "later base work\n"
+    target.write_text(later, encoding="utf-8")
+    extra_before = extra.read_bytes()
+    metadata = record.workspace / "metadata.json"
+    metadata_before = metadata.read_bytes()
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.retry("tx-1")
+
+    assert target.read_text(encoding="utf-8") == later
+    assert extra.read_bytes() == extra_before
+    assert metadata.read_bytes() == metadata_before
+
+
+def test_retry_rejects_deleted_residual_metadata_key_without_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, record, extra = _prepare_failed_writer_residual(tmp_path, monkeypatch)
+    metadata = record.workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload["residual_postimages"] = {}
+    metadata.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     later = "later legitimate work\n"
     extra.write_text(later, encoding="utf-8")
-    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+    metadata_before = metadata.read_bytes()
 
     with pytest.raises(TransactionError, match="residual.*changed"):
         manager.retry("tx-1")
 
     assert extra.read_text(encoding="utf-8") == later
-    assert manager.load("tx-1").status == "failed"
+    assert metadata.read_bytes() == metadata_before
+
+
+def test_unknown_failed_residual_state_is_persisted_and_recovery_refuses(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    unsafe = config.vault / "references" / "unsafe"
+
+    def writer(change):
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        unsafe.parent.mkdir(parents=True, exist_ok=True)
+        unsafe.symlink_to(external, target_is_directory=True)
+        raise OSError("writer failed")
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*residual discovery"):
+        manager.commit("tx-1")
+
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["status"] == "failed"
+    assert payload["residual_postimages"] is None
+    assert not manager.lock_path.exists()
+    assert unsafe.is_symlink()
+
+    for action in (manager.retry, manager.restore):
+        with pytest.raises(TransactionError, match="residual state is unknown"):
+            action("tx-1")
+        assert unsafe.is_symlink()
+
+    manager.discard("tx-1")
+    assert not record.workspace.exists()
+    assert unsafe.is_symlink()
 
 
 @pytest.mark.parametrize("snapshot_kind", ["base", "writer", "operation"])

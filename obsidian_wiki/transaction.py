@@ -101,6 +101,7 @@ _METADATA_FIELDS = frozenset(
         "postimages",
         "preimages",
         "residual_postimages",
+        "rollback_exclusions",
         "removed",
         "snapshot_index",
         "source_ids",
@@ -272,6 +273,7 @@ class TransactionManager:
                 "postimages": {},
                 "preimages": preimages,
                 "residual_postimages": {},
+                "rollback_exclusions": {},
                 "removed": [],
                 "snapshot_index": {},
                 "source_ids": list(source_ids),
@@ -466,12 +468,30 @@ class TransactionManager:
                 affected = set(self._affected_preimage_paths(record, candidates))
                 payload = self._read_metadata_payload(record.workspace)
                 snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
-                self._verify_failed_residual_postimages(payload)
+                rollback_exclusions = self._verify_rollback_exclusions(payload)
+                if (
+                    self._load_residual_postimages(payload["residual_postimages"])
+                    is None
+                ):
+                    raise TransactionError(
+                        "failed transaction residual state is unknown; "
+                        "discard is required"
+                    )
+                cleanup = self._persisted_writer_cleanup(
+                    payload,
+                    snapshot_index,
+                    base_affected=affected,
+                    rollback_exclusions=set(rollback_exclusions),
+                )
+                self._verify_failed_residual_postimages(payload, cleanup)
+                self._verify_preimages(record, affected)
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
                     snapshot_index,
                     base_affected=affected,
+                    rollback_exclusions=set(rollback_exclusions),
+                    cleanup=cleanup,
                 )
                 self._verify_preimages(record, affected)
                 self._clear_snapshot_state(record)
@@ -508,8 +528,6 @@ class TransactionManager:
                 if record.status == "restored":
                     return
                 payload = self._read_metadata_payload(record.workspace)
-                if record.status == "failed":
-                    self._verify_failed_residual_postimages(payload)
                 postimages = self._load_image_map(
                     payload["postimages"], "transaction postimages"
                 )
@@ -530,15 +548,44 @@ class TransactionManager:
                 snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
                 candidates = self._enumerate_candidates(record)
                 base_affected = set(self._affected_preimage_paths(record, candidates))
+                rollback_exclusions: dict[str, str | None] = {}
+                cleanup: dict[str, str | None] | None = None
+                if record.status == "failed":
+                    rollback_exclusions = self._verify_rollback_exclusions(payload)
+                    if (
+                        self._load_residual_postimages(payload["residual_postimages"])
+                        is None
+                    ):
+                        raise TransactionError(
+                            "failed transaction residual state is unknown; "
+                            "discard is required"
+                        )
+                    cleanup = self._persisted_writer_cleanup(
+                        payload,
+                        snapshot_index,
+                        base_affected=base_affected,
+                        rollback_exclusions=set(rollback_exclusions),
+                    )
+                    self._verify_failed_residual_postimages(payload, cleanup)
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
                     snapshot_index,
                     base_affected=base_affected,
+                    rollback_exclusions=set(rollback_exclusions),
+                    cleanup=cleanup,
                 )
-                self._restore_snapshot_index(record, snapshot_index)
+                self._restore_snapshot_index(
+                    record,
+                    {
+                        relative: stored
+                        for relative, stored in snapshot_index.items()
+                        if relative not in rollback_exclusions
+                    },
+                )
                 payload["status"] = "restored"
                 payload["residual_postimages"] = {}
+                payload["rollback_exclusions"] = {}
                 self._write_metadata(record.workspace, payload)
             finally:
                 if self.lock_path.exists() or self.lock_path.is_symlink():
@@ -591,7 +638,8 @@ class TransactionManager:
         writer_before: dict[str, str] | None = None
         writer_before_index: dict[str, str | None] = {}
         writer_rollback: dict[str, str | None] = {}
-        rollback_exclusions: set[str] = set()
+        rollback_exclusion_paths: set[str] = set()
+        rollback_exclusions: dict[str, str | None] | None = {}
         try:
             candidates = self._enumerate_candidates(record)
             candidate_names = tuple(candidate.relative for candidate in candidates)
@@ -631,6 +679,7 @@ class TransactionManager:
                     "operation_paths": [],
                     "postimages": {},
                     "residual_postimages": {},
+                    "rollback_exclusions": {},
                     "removed": list(removed),
                     "snapshot_index": snapshot_index,
                     "status": "promoting",
@@ -649,13 +698,19 @@ class TransactionManager:
                         record.preimages.get(candidate.relative),
                     )
                 except _MutationPreconditionError:
-                    rollback_exclusions.add(candidate.relative)
+                    rollback_exclusion_paths.add(candidate.relative)
+                    rollback_exclusions = self._capture_rollback_exclusion(
+                        rollback_exclusions, candidate.relative
+                    )
                     raise
             for relative in record.deletions:
                 try:
                     self._delete_vault_target(relative, record.preimages.get(relative))
                 except _MutationPreconditionError:
-                    rollback_exclusions.add(relative)
+                    rollback_exclusion_paths.add(relative)
+                    rollback_exclusions = self._capture_rollback_exclusion(
+                        rollback_exclusions, relative
+                    )
                     raise
 
             pages_by_source = self._scan_page_relationships(record.source_ids)
@@ -674,7 +729,10 @@ class TransactionManager:
                         expected_preimage=record.preimages.get(shard_relative),
                     )
                 except ManifestPreconditionError as exc:
-                    rollback_exclusions.add(shard_relative)
+                    rollback_exclusion_paths.add(shard_relative)
+                    rollback_exclusions = self._capture_rollback_exclusion(
+                        rollback_exclusions, shard_relative
+                    )
                     raise TransactionError(
                         "transaction target changed after transaction began: "
                         + shard_relative
@@ -753,6 +811,7 @@ class TransactionManager:
                     "operation_paths": sorted(operation_affected),
                     "postimages": postimages,
                     "residual_postimages": {},
+                    "rollback_exclusions": {},
                     "snapshot_index": {
                         relative: snapshot_index[relative]
                         for relative in postimage_paths
@@ -823,22 +882,27 @@ class TransactionManager:
                     {
                         relative: stored
                         for relative, stored in snapshot_index.items()
-                        if relative not in rollback_exclusions
+                        if relative not in rollback_exclusion_paths
                     },
                 )
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"restore failed: {rollback_exc}")
-            residual_postimages = self._failed_residual_postimages(
-                writer_before,
-                operation_before,
-                base_affected=set(affected),
-            )
+            try:
+                residual_postimages = self._failed_residual_postimages(
+                    writer_before,
+                    operation_before,
+                    base_affected=set(affected),
+                )
+            except (OSError, TransactionError) as rollback_exc:
+                residual_postimages = None
+                rollback_errors.append(f"residual discovery failed: {rollback_exc}")
             payload.update(
                 {
                     "operation_path": operation_relative,
                     "operation_paths": sorted(operation_affected),
                     "postimages": {},
                     "residual_postimages": residual_postimages,
+                    "rollback_exclusions": rollback_exclusions,
                     "snapshot_index": dict(sorted(snapshot_index.items())),
                     "status": "failed",
                 }
@@ -1108,6 +1172,7 @@ class TransactionManager:
                 "operation_paths": [],
                 "postimages": {},
                 "residual_postimages": {},
+                "rollback_exclusions": {},
                 "removed": [],
                 "snapshot_index": {},
                 "status": "failed",
@@ -1174,23 +1239,57 @@ class TransactionManager:
         snapshot_index: dict[str, str | None],
         *,
         base_affected: set[str],
+        rollback_exclusions: set[str] | None = None,
+        cleanup: dict[str, str | None] | None = None,
     ) -> None:
+        resolved_cleanup = cleanup
+        if resolved_cleanup is None:
+            resolved_cleanup = self._persisted_writer_cleanup(
+                payload,
+                snapshot_index,
+                base_affected=base_affected,
+                rollback_exclusions=rollback_exclusions or set(),
+            )
+        self._restore_snapshot_index(record, resolved_cleanup)
+
+    def _persisted_writer_cleanup(
+        self,
+        payload: dict[str, object],
+        snapshot_index: dict[str, str | None],
+        *,
+        base_affected: set[str],
+        rollback_exclusions: set[str],
+    ) -> dict[str, str | None]:
         if not payload["writer_prepared"]:
-            return
+            return {}
+        excluded = base_affected | rollback_exclusions
         writer_before = {
             relative: content_hash
             for relative, content_hash in self._load_writer_guard(
                 payload["writer_guard"]
             ).items()
-            if relative not in base_affected
+            if relative not in excluded
         }
-        operation_before = self._load_operation_guard(payload["operation_guard"])
+        operation_before = {
+            relative: content_hash
+            for relative, content_hash in self._load_operation_guard(
+                payload["operation_guard"]
+            ).items()
+            if relative not in rollback_exclusions
+        }
         writer_after = {
             relative: content_hash
             for relative, content_hash in self._writer_guard_state(
                 allow_unsafe=True
             ).items()
-            if relative not in base_affected
+            if relative not in excluded
+        }
+        operation_after = {
+            relative: content_hash
+            for relative, content_hash in self._operation_tree_state(
+                allow_unsafe=True
+            ).items()
+            if relative not in rollback_exclusions
         }
         cleanup = self._writer_guard_diff(
             writer_before,
@@ -1200,11 +1299,11 @@ class TransactionManager:
         cleanup.update(
             self._operation_tree_diff(
                 operation_before,
-                self._operation_tree_state(allow_unsafe=True),
+                operation_after,
                 {relative: snapshot_index[relative] for relative in operation_before},
             )
         )
-        self._restore_snapshot_index(record, cleanup)
+        return dict(sorted(cleanup.items()))
 
     def _failed_residual_postimages(
         self,
@@ -1223,7 +1322,7 @@ class TransactionManager:
             }
             changed.update(set(writer_after) - set(writer_before))
             for relative in changed - base_affected:
-                residual[relative] = writer_after.get(relative)
+                residual[relative] = self._current_vault_hash(relative)
         if operation_before is not None:
             operation_after = self._operation_tree_state(allow_unsafe=True)
             changed = {
@@ -1233,24 +1332,56 @@ class TransactionManager:
             }
             changed.update(set(operation_after) - set(operation_before))
             for relative in changed:
-                residual[relative] = operation_after.get(relative)
+                residual[relative] = self._current_vault_hash(relative)
         return dict(sorted(residual.items()))
 
-    def _verify_failed_residual_postimages(self, payload: dict[str, object]) -> None:
+    def _verify_failed_residual_postimages(
+        self,
+        payload: dict[str, object],
+        cleanup: dict[str, str | None],
+    ) -> None:
         residuals = self._load_residual_postimages(payload["residual_postimages"])
-        for relative, expected in residuals.items():
+        if residuals is None:
+            raise TransactionError(
+                "failed transaction residual state is unknown; discard is required"
+            )
+        actual: dict[str, str | None] = {}
+        for relative in cleanup:
             try:
-                current = self._current_vault_hash(relative)
+                actual[relative] = self._current_vault_hash(relative)
             except TransactionError as exc:
                 raise TransactionError(
                     "failed transaction residual changed after lock release: "
                     + relative
                 ) from exc
+        if dict(sorted(actual.items())) != residuals:
+            raise TransactionError(
+                "failed transaction residual set or content changed after lock release"
+            )
+
+    def _verify_rollback_exclusions(
+        self, payload: dict[str, object]
+    ) -> dict[str, str | None]:
+        exclusions = self._load_rollback_exclusions(payload["rollback_exclusions"])
+        if exclusions is None:
+            raise TransactionError(
+                "failed transaction rollback exclusion state is unknown; "
+                "discard is required"
+            )
+        for relative, expected in exclusions.items():
+            try:
+                current = self._current_vault_hash(relative)
+            except TransactionError as exc:
+                raise TransactionError(
+                    "failed transaction rollback exclusion changed after lock release: "
+                    + relative
+                ) from exc
             if current != expected:
                 raise TransactionError(
-                    "failed transaction residual changed after lock release: "
+                    "failed transaction rollback exclusion changed after lock release: "
                     + relative
                 )
+        return exclusions
 
     def _promote_candidate(
         self,
@@ -1308,6 +1439,19 @@ class TransactionManager:
             raise _MutationPreconditionError(
                 f"transaction target changed after transaction began: {relative}"
             )
+
+    def _capture_rollback_exclusion(
+        self,
+        exclusions: dict[str, str | None] | None,
+        relative: str,
+    ) -> dict[str, str | None] | None:
+        if exclusions is None:
+            return None
+        try:
+            exclusions[relative] = self._current_vault_hash(relative)
+        except TransactionError:
+            return None
+        return dict(sorted(exclusions.items()))
 
     def _scan_page_relationships(
         self, source_ids: tuple[str, ...]
@@ -1698,6 +1842,7 @@ class TransactionManager:
         self._load_image_map(payload.get("preimages"), "transaction preimages")
         self._load_image_map(payload.get("postimages"), "transaction postimages")
         self._load_residual_postimages(payload.get("residual_postimages"))
+        self._load_rollback_exclusions(payload.get("rollback_exclusions"))
         self._load_snapshot_index(payload.get("snapshot_index"), workspace=workspace)
         self._load_operation_paths(payload.get("operation_paths"))
         self._load_operation_guard(payload.get("operation_guard"))
@@ -1767,6 +1912,31 @@ class TransactionManager:
         residual_postimages = self._load_residual_postimages(
             payload["residual_postimages"]
         )
+        rollback_exclusions = self._load_rollback_exclusions(
+            payload["rollback_exclusions"]
+        )
+        if (
+            rollback_exclusions is not None
+            and not set(rollback_exclusions) <= base_affected
+        ):
+            raise TransactionError(
+                "transaction rollback exclusions are outside the affected set"
+            )
+        if residual_postimages is not None:
+            if set(residual_postimages) & base_affected:
+                raise TransactionError(
+                    "transaction residual postimages overlap the affected set"
+                )
+            if rollback_exclusions is not None and set(residual_postimages) & set(
+                rollback_exclusions
+            ):
+                raise TransactionError(
+                    "transaction residual postimages overlap rollback exclusions"
+                )
+        if not writer_prepared and residual_postimages not in ({},):
+            raise TransactionError(
+                "unprepared transaction cannot contain unknown writer residuals"
+            )
         expected_snapshot_hashes = {
             relative: preimages.get(relative) for relative in base_affected
         }
@@ -1826,7 +1996,8 @@ class TransactionManager:
                     bool(operation_paths),
                     bool(snapshots),
                     bool(postimages),
-                    bool(residual_postimages),
+                    residual_postimages != {},
+                    rollback_exclusions != {},
                     writer_prepared,
                 )
             ):
@@ -1839,7 +2010,8 @@ class TransactionManager:
                 or operation_paths
                 or set(snapshots) != snapshot_allowed
                 or postimages
-                or residual_postimages
+                or residual_postimages != {}
+                or rollback_exclusions != {}
             ):
                 raise TransactionError(
                     "promoting transaction has invalid recovery fields"
@@ -1851,7 +2023,8 @@ class TransactionManager:
                 or operation_path is None
                 or operation_paths != {operation_path}
                 or writer_prepared
-                or residual_postimages
+                or residual_postimages != {}
+                or rollback_exclusions != {}
                 or set(snapshots) != allowed
                 or set(postimages) != allowed
             ):
@@ -1868,7 +2041,8 @@ class TransactionManager:
                         bool(operation_paths),
                         bool(snapshots),
                         bool(postimages),
-                        bool(residual_postimages),
+                        residual_postimages != {},
+                        rollback_exclusions != {},
                         writer_prepared,
                     )
                 ):
@@ -1882,7 +2056,8 @@ class TransactionManager:
         if status == "restored" and (
             set(snapshots) != snapshot_allowed
             or (postimages and set(postimages) != allowed)
-            or residual_postimages
+            or residual_postimages != {}
+            or rollback_exclusions != {}
         ):
             raise TransactionError("restored transaction recovery fields are invalid")
 
@@ -1918,7 +2093,9 @@ class TransactionManager:
             self._validate_operation_guard_path(relative)
         return guard
 
-    def _load_residual_postimages(self, raw: object) -> dict[str, str | None]:
+    def _load_residual_postimages(self, raw: object) -> dict[str, str | None] | None:
+        if raw is None:
+            return None
         residuals = self._load_image_map(raw, "transaction residual postimages")
         for relative in residuals:
             if PurePosixPath(relative).parts[:2] == ("journal", "operations"):
@@ -1926,6 +2103,11 @@ class TransactionManager:
             else:
                 self._validate_writer_guard_path(relative)
         return residuals
+
+    def _load_rollback_exclusions(self, raw: object) -> dict[str, str | None] | None:
+        if raw is None:
+            return None
+        return self._load_image_map(raw, "transaction rollback exclusions")
 
     def _load_guard_hashes(self, raw: object, label: str) -> dict[str, str]:
         loaded = self._load_image_map(raw, label)
