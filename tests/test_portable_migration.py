@@ -457,7 +457,9 @@ def test_windows_drive_source_is_not_misclassified_as_live_url(
     assert {item.code for item in matching} == {"external-source"}
 
 
-@pytest.mark.parametrize("managed", [".obsidian-wiki", ".skills"])
+@pytest.mark.parametrize(
+    "managed", [".obsidian-wiki", ".skills", ".gitattributes"]
+)
 def test_analyze_rejects_source_root_overlapping_managed_paths(
     tmp_path: Path, managed: str
 ) -> None:
@@ -520,6 +522,7 @@ def test_apply_converts_manifest_frontmatter_and_derived_files(
     assert json.loads((vault / ".manifest.json").read_text())["schema_version"] == 2
     assert "```query" in (vault / "index.md").read_text(encoding="utf-8")
     assert "journal/operations" in (vault / "log.md").read_text(encoding="utf-8")
+    assert "* -text" in (root / ".gitattributes").read_text().splitlines()
     assert not (vault / "hot.md").exists()
     assert result.changed_files
     assert result.backup_dir.is_dir()

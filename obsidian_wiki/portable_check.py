@@ -31,6 +31,7 @@ from .portable import (
     PROJECT_AGENT_DIRS,
     _adapter_text,
     _bootstrap_body,
+    render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
 
@@ -826,6 +827,27 @@ def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> N
 
 
 def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    attributes = config.root / ".gitattributes"
+    if not _ordinary_file(attributes) or _has_symlink_component(
+        config.root, attributes
+    ):
+        attributes_valid = False
+    else:
+        try:
+            attributes_text = attributes.read_text(encoding="utf-8")
+            attributes_valid = (
+                render_portable_gitattributes(attributes_text) == attributes_text
+            )
+        except (OSError, UnicodeDecodeError, ValueError):
+            attributes_valid = False
+    if not attributes_valid:
+        issues.append(
+            CheckIssue(
+                "managed-gitattributes-invalid",
+                ".gitattributes",
+                "portable byte-stability attributes are missing or stale",
+            )
+        )
     targets: list[tuple[str, str]] = [
         ("AGENTS.md", _PORTABLE_AGENT_INSTRUCTIONS),
         *(

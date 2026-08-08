@@ -30,6 +30,7 @@ from obsidian_wiki.portable import (
     PORTABLE_VAULT_DIRS,
     PROJECT_AGENT_DIRS,
     copy_canonical_skills,
+    ensure_portable_gitattributes,
     ensure_portable_gitignore,
     install_portable_bootstrap,
     render_managed_skills_inventory,
@@ -397,6 +398,7 @@ def analyze_migration(*, root: Path, vault: Path, source_root: Path) -> Migratio
         root / ".obsidian-wiki",
         root / ".skills",
         root / "AGENTS.md",
+        root / ".gitattributes",
         root / ".gitignore",
         *(root / relative for relative in _BOOTSTRAP_REFERENCES),
         *(root / relative for relative, _label in PROJECT_AGENT_DIRS),
@@ -1537,7 +1539,12 @@ def _build_migration_candidates(
 
     owner_dependencies = {
         relative: _seed_owner_file(root, candidate_root, relative)
-        for relative in ("AGENTS.md", ".gitignore", *_BOOTSTRAP_REFERENCES)
+        for relative in (
+            "AGENTS.md",
+            ".gitattributes",
+            ".gitignore",
+            *_BOOTSTRAP_REFERENCES,
+        )
     }
 
     write_portable_config(
@@ -1570,6 +1577,7 @@ def _build_migration_candidates(
     skill_names = copy_canonical_skills(source_skills, candidate_root)
     write_agent_adapters(candidate_root, skill_names)
     install_portable_bootstrap(candidate_root)
+    ensure_portable_gitattributes(candidate_root)
     ensure_portable_gitignore(candidate_root, vault_relative.as_posix())
     inventory = candidate_root / MANAGED_SKILLS_INVENTORY
     inventory.parent.mkdir(parents=True, exist_ok=True)
@@ -2057,7 +2065,7 @@ def apply_migration(
         def priority(relative: str) -> tuple[int, str]:
             if relative == ".obsidian-wiki/config.toml":
                 return (0, relative)
-            if relative == ".gitignore":
+            if relative in (".gitattributes", ".gitignore"):
                 return (1, relative)
             if relative == operation_relative:
                 return (100, relative)

@@ -30,6 +30,20 @@ from obsidian_wiki.config import PortableConfig, load_portable_config
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
 MANAGED_END = "<!-- obsidian-wiki:managed:end -->"
+GITATTRIBUTES_START = "# obsidian-wiki:gitattributes:start"
+GITATTRIBUTES_END = "# obsidian-wiki:gitattributes:end"
+_PORTABLE_GITATTRIBUTES = """# Preserve authoritative working-tree bytes across clones.
+* -text
+
+# Keep common knowledge and configuration formats reviewable and mergeable.
+*.md diff merge
+*.json diff merge
+*.toml diff merge
+*.yaml diff merge
+*.yml diff merge
+*.txt diff merge
+*.base diff merge
+"""
 MANIFEST_MARKER = {
     "schema_version": 2,
     "storage": "sharded",
@@ -1000,6 +1014,43 @@ def ensure_portable_gitignore(root: Path, vault: str | Path = "wiki") -> None:
     _write_text_if_changed(path, rendered, root=root)
 
 
+def render_portable_gitattributes(existing: str) -> str:
+    """Render byte-stability attributes last while retaining owner rules."""
+    start_count = existing.count(GITATTRIBUTES_START)
+    end_count = existing.count(GITATTRIBUTES_END)
+    if start_count != end_count or start_count > 1:
+        raise ValueError("malformed obsidian-wiki gitattributes markers")
+    owner = existing
+    if start_count:
+        start = existing.index(GITATTRIBUTES_START)
+        end = existing.index(GITATTRIBUTES_END)
+        if end < start:
+            raise ValueError("malformed obsidian-wiki gitattributes marker order")
+        end += len(GITATTRIBUTES_END)
+        owner = f"{existing[:start]}{existing[end:]}"
+    owner = owner.strip("\n")
+    block = (
+        f"{GITATTRIBUTES_START}\n"
+        f"{_PORTABLE_GITATTRIBUTES.rstrip()}\n"
+        f"{GITATTRIBUTES_END}\n"
+    )
+    return f"{owner}\n\n{block}" if owner else block
+
+
+def ensure_portable_gitattributes(root: Path) -> None:
+    """Install tracked rules that prevent clone-specific byte conversion."""
+    root = _safe_root(Path(root))
+    path = root / ".gitattributes"
+    _assert_safe_managed_path(root, path)
+    if path.exists() and not path.is_file():
+        raise ValueError(f"portable .gitattributes must be an ordinary file: {path}")
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    rendered = render_portable_gitattributes(existing)
+    if rendered == existing:
+        return
+    _write_text_if_changed(path, rendered, root=root)
+
+
 def _preflight_managed_destinations(root: Path) -> None:
     managed_trees = (
         root / ".obsidian-wiki",
@@ -1013,6 +1064,7 @@ def _preflight_managed_destinations(root: Path) -> None:
 
     managed_files = (
         root / "AGENTS.md",
+        root / ".gitattributes",
         root / ".gitignore",
         *(root / relative for relative in _BOOTSTRAP_REFERENCES),
     )
@@ -1106,6 +1158,19 @@ def _preflight_existing_portable(
             gitignore.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             raise ValueError(f"portable .gitignore is invalid: {exc}") from exc
+    gitattributes = root / ".gitattributes"
+    _assert_safe_managed_path(root, gitattributes)
+    if gitattributes.exists() and not gitattributes.is_file():
+        raise ValueError(
+            f"portable .gitattributes must be an ordinary file: {gitattributes}"
+        )
+    if gitattributes.is_file():
+        try:
+            render_portable_gitattributes(
+                gitattributes.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"portable .gitattributes is invalid: {exc}") from exc
 
 
 def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) -> None:
@@ -1120,6 +1185,7 @@ def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) ->
     skill_names = copy_canonical_skills(source_skills, root)
     write_agent_adapters(root, skill_names)
     install_portable_bootstrap(root)
+    ensure_portable_gitattributes(root)
     ensure_portable_gitignore(root, "wiki")
     _write_managed_skills_inventory(root, version=version, skill_names=skill_names)
 
@@ -1134,6 +1200,7 @@ def _repair_existing_portable_repo(
     _copy_missing_managed_skills(source_skills, root, skill_names)
     write_agent_adapters(root, skill_names)
     install_portable_bootstrap(root)
+    ensure_portable_gitattributes(root)
     ensure_portable_gitignore(root, "wiki")
 
 

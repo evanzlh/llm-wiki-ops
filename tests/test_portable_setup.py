@@ -10,9 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import IMPLEMENTATION_ID
-from obsidian_wiki import cli
-from obsidian_wiki import portable
+from obsidian_wiki import IMPLEMENTATION_ID, cli, portable
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable import (
     MANAGED_END,
@@ -21,12 +19,13 @@ from obsidian_wiki.portable import (
     PORTABLE_ROOT_IGNORE,
     PORTABLE_VAULT_DIRS,
     compatible_cli_spec,
+    ensure_portable_gitattributes,
     ensure_portable_gitignore,
     merge_managed_block,
+    render_portable_gitattributes,
     setup_portable_repo,
     upgrade_portable_skills,
 )
-
 
 INDEX_BYTES = b'''---
 title: Wiki Index
@@ -318,6 +317,7 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     assert not (target / "obsidian_wiki").exists()
     assert not (target / ".git").exists()
     assert "wiki/hot.md" in (target / ".gitignore").read_text().splitlines()
+    assert "* -text" in (target / ".gitattributes").read_text().splitlines()
     assert (target / ".skills/wiki-ingest/SKILL.md").read_bytes() == (
         cli.skills_dir() / "wiki-ingest/SKILL.md"
     ).read_bytes()
@@ -500,6 +500,26 @@ def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(
         "notes/brain/.trash/",
     ]
     assert str(root.resolve()) not in first
+
+
+def test_gitattributes_preserve_owner_rules_and_disable_byte_conversion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    attributes = root / ".gitattributes"
+    owner = "*.png binary\n# owner rule\n"
+    attributes.write_text(owner, encoding="utf-8")
+
+    ensure_portable_gitattributes(root)
+    first = attributes.read_text(encoding="utf-8")
+    ensure_portable_gitattributes(root)
+
+    assert attributes.read_text(encoding="utf-8") == first
+    assert first == render_portable_gitattributes(owner)
+    assert first.startswith(owner.rstrip("\n"))
+    assert "\n* -text\n" in first
+    assert first.rstrip().endswith(portable.GITATTRIBUTES_END)
 
 
 def test_canonical_skills_and_all_agent_adapters_are_copies_with_relative_targets(
