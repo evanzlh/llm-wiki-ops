@@ -1212,6 +1212,8 @@ def cmd_graph_query(args: argparse.Namespace) -> int:
 
 def cmd_batch_plan(args: argparse.Namespace) -> int:
     from obsidian_wiki.batch import plan_batches
+    from obsidian_wiki.portable_manifest import ManifestError
+
     source_dir = Path(args.source_dir).expanduser().resolve()
     vault = Path(args.vault).expanduser().resolve()
     try:
@@ -1222,15 +1224,19 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     if not source_dir.is_dir():
         print(f"error: source directory not found: {source_dir}", file=sys.stderr)
         return 1
-    result = plan_batches(
-        source_dir,
-        vault,
-        max_batch_mb=args.max_mb,
-        max_batch_files=args.max_files,
-        skip_unchanged=not args.no_cache,
-        include_code=args.include_code,
-        portable=portable,
-    )
+    try:
+        result = plan_batches(
+            source_dir,
+            vault,
+            max_batch_mb=args.max_mb,
+            max_batch_files=args.max_files,
+            skip_unchanged=not args.no_cache,
+            include_code=args.include_code,
+            portable=portable,
+        )
+    except ManifestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if args.pretty:
         print(json.dumps(result, indent=2))
     else:

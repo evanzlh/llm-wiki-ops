@@ -15,6 +15,7 @@ from obsidian_wiki.batch import (
     plan_batches,
 )
 from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.portable_manifest import ManifestError
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +247,39 @@ class TestPlanBatches:
         assert result["stats"]["skipped_unchanged"] == 1
         assert result["stats"]["to_ingest"] == 0
 
+    def test_portable_corrupted_manifest_error_propagates(self, portable_repo):
+        root, config = portable_repo
+        (root / "sources" / "a.md").write_text("a", encoding="utf-8")
+        (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(ManifestError, match="invalid manifest v2 marker"):
+            plan_batches(config.sources[0], config.vault, portable=config)
+
+    def test_portable_out_of_config_source_error_propagates(self, portable_repo):
+        root, config = portable_repo
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "a.md").write_text("a", encoding="utf-8")
+
+        with pytest.raises(ManifestError, match="outside the configured source root"):
+            plan_batches(outside, config.vault, portable=config)
+
+    def test_legacy_cache_error_keeps_permissive_fallback(
+        self, source_dir, vault, monkeypatch
+    ):
+        source = _write(source_dir / "a.md")
+        import obsidian_wiki.cache as cache
+
+        def fail_cache_check(*args, **kwargs):
+            raise RuntimeError("legacy cache unavailable")
+
+        monkeypatch.setattr(cache, "check_sources", fail_cache_check)
+
+        result = plan_batches(source_dir, vault)
+
+        assert result["stats"]["skipped_unchanged"] == 0
+        assert result["batches"][0]["files"] == [str(source)]
+
     def test_returns_required_keys(self, source_dir, vault):
         _write(source_dir / "a.md")
         result = plan_batches(source_dir, vault)
@@ -368,3 +402,46 @@ class TestBatchPlanCLI:
 
         assert proc.returncode == 1
         assert "implementation" in proc.stderr
+
+    def _run_portable(self, root, config, source_dir):
+        home = root / "home"
+        home.mkdir()
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "obsidian_wiki.cli",
+                "batch-plan",
+                str(config.vault),
+                str(source_dir),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.sources[0],
+            env=env,
+        )
+
+    def test_corrupted_portable_manifest_exits_concisely(self, portable_repo):
+        root, config = portable_repo
+        (root / "sources" / "a.md").write_text("a", encoding="utf-8")
+        (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+        proc = self._run_portable(root, config, config.sources[0])
+
+        assert proc.returncode == 1
+        assert "invalid manifest v2 marker" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_out_of_config_portable_source_exits_concisely(self, portable_repo):
+        root, config = portable_repo
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "a.md").write_text("a", encoding="utf-8")
+
+        proc = self._run_portable(root, config, outside)
+
+        assert proc.returncode == 1
+        assert "outside the configured source root" in proc.stderr
+        assert "Traceback" not in proc.stderr

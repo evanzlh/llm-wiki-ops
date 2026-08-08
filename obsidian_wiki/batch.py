@@ -198,6 +198,8 @@ def _filter_unchanged(
             ]
         return to_ingest, len(unchanged_set)
     except Exception:
+        if portable is not None:
+            raise
         return files, 0
 
 
