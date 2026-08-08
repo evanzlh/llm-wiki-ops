@@ -1,8 +1,9 @@
-"""GitHub sync for an Obsidian vault.
+"""GitHub sync for a personal Obsidian vault.
 
 The supported entry points are `obsidian-wiki setup`,
 `obsidian-wiki sync-setup`, and `obsidian-wiki sync`. They share this single
-implementation of the git-sync flow.
+implementation of the legacy personal-vault git-sync flow. Portable repositories
+use ordinary branches and pull requests instead.
 
 The vault's own `git remote` is the source of truth for "is sync configured
 and where does it push" — nothing here caches the remote URL elsewhere, so

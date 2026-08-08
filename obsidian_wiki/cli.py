@@ -32,6 +32,7 @@ from obsidian_wiki.config import (
     load_portable_config,
     resolve_config,
 )
+from obsidian_wiki.git_support import discover_git_root
 from obsidian_wiki.migration import (
     MigrationError,
     MigrationPlan,
@@ -869,6 +870,24 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
         status="pass",
         detail=f"{loaded.implementation}; CLI {__version__} satisfies {loaded.requires_cli}",
     )
+    git_root = discover_git_root(loaded.vault)
+    if git_root is not None and git_root != loaded.root:
+        _doctor_add(
+            checks,
+            name="portable-git",
+            status="fail",
+            detail="vault is enclosed by a different Git worktree",
+            hint="move the portable config to the enclosing repository root",
+        )
+    else:
+        _doctor_add(
+            checks,
+            name="portable-git",
+            status="pass",
+            detail="enclosing Git root matches the portable repository"
+            if git_root is not None
+            else "no enclosing Git worktree detected",
+        )
     try:
         path_detail = _validate_portable_paths(loaded)
     except (ValueError, OSError) as exc:
@@ -1297,11 +1316,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_sync_setup(args: argparse.Namespace) -> int:
-    from obsidian_wiki.sync import configure_sync
-
     runtime = _resolve_runtime(args.vault)
     if runtime is None:
         return 1
+    if runtime.mode == "portable":
+        print(
+            "error: portable repositories use branch and pull-request workflows; "
+            "configure remotes and publish changes with Git",
+            file=sys.stderr,
+        )
+        return 1
+    from obsidian_wiki.sync import configure_sync
+
     vault_path = runtime.vault
     try:
         messages = configure_sync(vault_path, args.remote)
@@ -1315,11 +1341,18 @@ def cmd_sync_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    from obsidian_wiki.sync import run_sync
-
     runtime = _resolve_runtime(args.vault)
     if runtime is None:
         return 1
+    if runtime.mode == "portable":
+        print(
+            "error: portable repositories use branch and pull-request workflows; "
+            "commit on a branch and open a pull request with Git",
+            file=sys.stderr,
+        )
+        return 1
+    from obsidian_wiki.sync import run_sync
+
     code, message = run_sync(runtime.vault)
     print(message)
     return code

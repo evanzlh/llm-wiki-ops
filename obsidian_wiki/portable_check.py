@@ -6,7 +6,6 @@ import json
 import os
 import posixpath
 import stat
-import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -18,6 +17,7 @@ from . import IMPLEMENTATION_ID, __version__
 from .cache import compute_hash
 from .config import ConfigError, PortableConfig, load_portable_config
 from .frontmatter import FrontmatterError, parse_frontmatter
+from .git_support import discover_git_root, tracked_paths
 from .lint import lint_vault
 from .operations import OperationError, validate_operation
 from .portable import (
@@ -671,18 +671,8 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
 
 
 def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(config.root), "ls-files", "-z"],
-            capture_output=True,
-            text=False,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("not a Git worktree")
-        tracked = [os.fsdecode(path) for path in result.stdout.split(b"\0")]
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+    git_root = discover_git_root(config.vault)
+    if git_root is None:
         issues.append(
             CheckIssue(
                 "git-unavailable",
@@ -692,10 +682,20 @@ def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
             )
         )
         return
+    if git_root != config.root:
+        issues.append(
+            CheckIssue(
+                "git-root-mismatch",
+                ".",
+                "vault is enclosed by a different Git worktree than the portable root",
+            )
+        )
+        return
+    tracked = tracked_paths(git_root)
     hot = _rel(config.root, config.vault / "hot.md")
     local = _rel(config.root, config.local_state)
     canonical_local = ".obsidian-wiki/local"
-    for path in sorted(item for item in tracked if item):
+    for path in tracked:
         parts = PurePosixPath(path).parts
         if (
             path == hot

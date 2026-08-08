@@ -7,13 +7,13 @@ import json
 import os
 import secrets
 import stat
-import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import PortableConfig
+from .git_support import discover_git_root, git_branch_id
 
 
 class LocalStateError(RuntimeError):
@@ -25,17 +25,6 @@ _SIDECAR_NAME = "hot-state.json"
 _HOT_NAME = "hot.md"
 _KNOWLEDGE_CATEGORIES = frozenset(
     {"concepts", "entities", "skills", "references", "synthesis", "journal", "projects"}
-)
-_GIT_ENV_OVERRIDES = frozenset(
-    {
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_COMMON_DIR",
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_WORK_TREE",
-    }
 )
 _SUPPORTS_BOUND_DIRECTORIES = all(
     function in os.supports_dir_fd
@@ -500,68 +489,12 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
     yield from sorted(selected, key=lambda item: item.relative_to(vault).as_posix())
 
 
-def _git_identity(root: Path) -> str | None:
-    environment = {
-        key: value for key, value in os.environ.items() if key not in _GIT_ENV_OVERRIDES
-    }
-    try:
-        worktree = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+def _git_identity(config: PortableConfig) -> str | None:
+    discovered = discover_git_root(config.vault)
+    if discovered is None or discovered != config.root:
         return None
-    if worktree.returncode != 0:
-        return None
-    discovered = Path(worktree.stdout.strip())
-    try:
-        if discovered.resolve(strict=True) != root.resolve(strict=True):
-            return None
-    except OSError:
-        return None
-    try:
-        branch = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if branch.returncode != 0:
-        return None
-    name = branch.stdout.strip()
-    if not name:
-        return None
-    if name != "HEAD":
-        return f"branch:{name}"
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return "detached:HEAD"
-    value = commit.stdout.strip()
-    if commit.returncode == 0 and value:
-        return f"detached:{value}"
-    return "detached:HEAD"
+    identity = git_branch_id(discovered)
+    return identity if identity != "no-git" else None
 
 
 def authoritative_fingerprint(config: PortableConfig) -> str:
@@ -575,7 +508,7 @@ def authoritative_fingerprint(config: PortableConfig) -> str:
         ]
         for path in _authoritative_files(config)
     ]
-    payload = {"files": files, "git": _git_identity(config.root)}
+    payload = {"files": files, "git": _git_identity(config)}
     canonical = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
