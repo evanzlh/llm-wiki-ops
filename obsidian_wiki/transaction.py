@@ -39,6 +39,8 @@ _METADATA_FIELDS = frozenset(
     {"preimages", "source_ids", "started_at", "status", "transaction_id"}
 )
 _LOCK_FIELDS = frozenset({"started_at", "transaction_id"})
+_MAX_JSON_BYTES = 1024 * 1024
+_FileIdentity = tuple[int, int]
 
 
 class TransactionManager:
@@ -80,8 +82,10 @@ class TransactionManager:
                 )
             workspace.mkdir(mode=0o700)
             workspace_created = True
+            self._fsync_directory(self.transactions_root)
             (workspace / "wiki").mkdir()
             (workspace / "snapshots").mkdir()
+            self._fsync_directory(workspace)
 
             self._write_json_atomic(workspace / "deletions.json", [])
             preimages = self._snapshot_preimages()
@@ -188,8 +192,9 @@ class TransactionManager:
             )
 
         lock_exists = self.lock_path.exists() or self.lock_path.is_symlink()
+        lock_identity: _FileIdentity | None = None
         if lock_exists:
-            lock = self._read_lock()
+            lock, lock_identity = self._read_lock()
             owner = lock["transaction_id"]
             if owner != transaction_id:
                 raise TransactionError(
@@ -203,7 +208,9 @@ class TransactionManager:
 
         self._remove_workspace(record.workspace)
         if lock_exists:
-            self._unlink_owned_lock(transaction_id)
+            self._unlink_owned_lock(
+                transaction_id, expected_identity=lock_identity
+            )
 
     def _workspace_path(self, transaction_id: str) -> Path:
         self._validate_transaction_id(transaction_id)
@@ -358,7 +365,7 @@ class TransactionManager:
 
     def _acquire_lock(self, transaction_id: str, started_at: str) -> None:
         payload = {"started_at": started_at, "transaction_id": transaction_id}
-        created_identity: tuple[int, int] | None = None
+        created_identity: _FileIdentity | None = None
         try:
             with self.lock_path.open("x", encoding="utf-8", newline="\n") as handle:
                 opened = os.fstat(handle.fileno())
@@ -366,42 +373,81 @@ class TransactionManager:
                 handle.write(self._canonical_json(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
+            self._fsync_directory(self.local_state)
         except FileExistsError as exc:
-            lock = self._read_lock()
+            lock, _identity = self._read_lock()
             raise TransactionError(
                 f"portable repository is locked by transaction {lock['transaction_id']}"
             ) from exc
-        except OSError as exc:
+        except (OSError, TransactionError) as exc:
             if created_identity is not None:
-                try:
-                    current = self.lock_path.lstat()
-                    if (current.st_dev, current.st_ino) == created_identity:
-                        self.lock_path.unlink()
-                except OSError:
-                    pass
+                self._cleanup_created_lock(created_identity)
             raise TransactionError(f"cannot create transaction lock: {exc}") from exc
 
-    def _read_lock(self) -> dict[str, str]:
-        payload = self._read_json_file(self.lock_path, "transaction lock")
+    def _read_lock(self) -> tuple[dict[str, str], _FileIdentity]:
+        payload, identity = self._read_json_file_with_identity(
+            self.lock_path, "transaction lock"
+        )
         if not isinstance(payload, dict) or set(payload) != _LOCK_FIELDS:
             raise TransactionError("transaction lock has invalid fields")
         transaction_id = payload.get("transaction_id")
         started_at = payload.get("started_at")
         self._validate_transaction_id(transaction_id)
         self._validate_started_at(started_at)
-        return {"started_at": started_at, "transaction_id": transaction_id}
+        return (
+            {"started_at": started_at, "transaction_id": transaction_id},
+            identity,
+        )
 
-    def _unlink_owned_lock(self, transaction_id: str) -> None:
-        lock = self._read_lock()
+    def _unlink_owned_lock(
+        self,
+        transaction_id: str,
+        *,
+        expected_identity: _FileIdentity | None = None,
+    ) -> None:
+        lock, identity = self._read_lock()
+        if expected_identity is not None and identity != expected_identity:
+            raise TransactionError("transaction lock inode changed before unlink")
         if lock["transaction_id"] != transaction_id:
             raise TransactionError(
                 f"transaction lock belongs to {lock['transaction_id']}, "
                 f"not {transaction_id}"
             )
+        directory_fd = self._open_directory(self.local_state, "local state")
         try:
-            self.lock_path.unlink()
+            current = os.stat(
+                self.lock_path.name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (current.st_dev, current.st_ino) != identity:
+                raise TransactionError("transaction lock inode changed before unlink")
+            os.unlink(self.lock_path.name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except TransactionError:
+            raise
         except OSError as exc:
             raise TransactionError("cannot remove owned transaction lock") from exc
+        finally:
+            os.close(directory_fd)
+
+    def _cleanup_created_lock(self, identity: _FileIdentity) -> None:
+        try:
+            directory_fd = self._open_directory(self.local_state, "local state")
+        except TransactionError:
+            return
+        try:
+            current = os.stat(
+                self.lock_path.name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (current.st_dev, current.st_ino) == identity:
+                os.unlink(self.lock_path.name, dir_fd=directory_fd)
+                try:
+                    os.fsync(directory_fd)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        finally:
+            os.close(directory_fd)
 
     def _write_metadata(self, workspace: Path, payload: dict[str, object]) -> None:
         self._write_json_atomic(workspace / "metadata.json", payload)
@@ -418,6 +464,7 @@ class TransactionManager:
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary_path.replace(target)
+            self._fsync_directory(target.parent)
         except Exception:
             try:
                 os.close(descriptor)
@@ -503,11 +550,78 @@ class TransactionManager:
 
     @staticmethod
     def _read_json_file(path: Path, label: str) -> object:
-        TransactionManager._require_ordinary_file(path, label)
+        payload, _identity = TransactionManager._read_json_file_with_identity(
+            path, label
+        )
+        return payload
+
+    @staticmethod
+    def _read_json_file_with_identity(
+        path: Path, label: str
+    ) -> tuple[object, _FileIdentity]:
+        directory_fd = TransactionManager._open_directory(path.parent, label)
+        descriptor: int | None = None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+            except OSError as exc:
+                raise TransactionError(
+                    f"{label} must be a single-link ordinary file, "
+                    f"not a symlink: {path}"
+                ) from exc
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise TransactionError(
+                    f"{label} must be a single-link ordinary file, "
+                    f"not a symlink: {path}"
+                )
+            if before.st_size > _MAX_JSON_BYTES:
+                raise TransactionError(f"{label} is too large")
+
+            chunks: list[bytes] = []
+            remaining = _MAX_JSON_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > _MAX_JSON_BYTES:
+                raise TransactionError(f"{label} is too large")
+
+            after = os.fstat(descriptor)
+            identity = (after.st_dev, after.st_ino)
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_nlink,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_nlink,
+            ):
+                raise TransactionError(f"{label} changed while being read")
+            current = os.stat(
+                path.name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (current.st_dev, current.st_ino) != identity:
+                raise TransactionError(f"{label} inode changed while being read")
+            return json.loads(data.decode("utf-8")), identity
+        except TransactionError:
+            raise
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TransactionError(f"invalid {label}: {exc}") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory_fd)
 
     def _ensure_directory(self, path: Path) -> None:
         self._require_contained(path, self.config.root, "local transaction directory")
@@ -524,6 +638,7 @@ class TransactionManager:
             if not current.exists() and not current.is_symlink():
                 try:
                     current.mkdir()
+                    self._fsync_directory(current.parent)
                 except OSError as exc:
                     raise TransactionError(
                         f"cannot create local transaction directory: {current}"
@@ -540,6 +655,39 @@ class TransactionManager:
             raise TransactionError(
                 f"{label} must be an ordinary directory, not a symlink: {path}"
             )
+
+    @staticmethod
+    def _open_directory(path: Path, label: str) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("not a directory")
+            return descriptor
+        except OSError as exc:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            raise TransactionError(
+                f"{label} directory is unsafe or unreadable: {path}"
+            ) from exc
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = TransactionManager._open_directory(path, "transaction")
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            raise TransactionError(
+                f"cannot sync transaction directory: {path}"
+            ) from exc
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _require_ordinary_file(path: Path, label: str) -> None:
@@ -604,9 +752,14 @@ class TransactionManager:
         expected = self._workspace_path(workspace.name)
         if workspace != expected or workspace.parent != self.transactions_root:
             raise TransactionError("refusing to remove an unsafe transaction workspace")
+        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+            raise TransactionError(
+                "symlink-safe recursive removal is unavailable on this platform"
+            )
         self._require_managed_tree(workspace)
         try:
             shutil.rmtree(workspace)
+            self._fsync_directory(self.transactions_root)
         except OSError as exc:
             raise TransactionError(
                 f"cannot remove transaction workspace: {workspace}"

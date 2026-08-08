@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -283,6 +285,135 @@ def test_lock_write_failure_removes_only_the_newly_created_lock(
     assert not (config.local_state / "transactions" / "tx-1").exists()
 
 
+def test_directory_sync_failure_after_lock_create_cleans_owned_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    (config.local_state / "transactions").mkdir(parents=True)
+    original_fsync = transaction_module.os.fsync
+
+    def fail_directory_sync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory sync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(transaction_module.os, "fsync", fail_directory_sync)
+
+    with pytest.raises(TransactionError, match="transaction lock|begin transaction"):
+        TransactionManager(config).begin([source], transaction_id="tx-1")
+
+    assert not (config.local_state / "write.lock").exists()
+    assert not (config.local_state / "transactions" / "tx-1").exists()
+
+
+def test_transaction_boundaries_fsync_containing_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    original_fsync = transaction_module.os.fsync
+    synced_directories: set[tuple[int, int]] = set()
+
+    def record_sync(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            synced_directories.add((metadata.st_dev, metadata.st_ino))
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(transaction_module.os, "fsync", record_sync)
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-1")
+
+    def identity(path: Path) -> tuple[int, int]:
+        metadata = path.stat()
+        return metadata.st_dev, metadata.st_ino
+
+    assert identity(config.local_state) in synced_directories
+    assert identity(manager.transactions_root) in synced_directories
+    assert identity(record.workspace) in synced_directories
+
+    synced_directories.clear()
+    transactions_identity = identity(manager.transactions_root)
+    local_state_identity = identity(config.local_state)
+    manager.abort("tx-1")
+
+    assert transactions_identity in synced_directories
+    assert local_state_identity in synced_directories
+
+
+def test_lock_read_refuses_inode_swap_before_returning_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    lock_metadata = manager.lock_path.stat()
+    original_identity = lock_metadata.st_dev, lock_metadata.st_ino
+    replacement = config.local_state / "replacement.lock"
+    replacement.write_text(
+        manager.lock_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    original_read = transaction_module.os.read
+    swapped = False
+
+    def swap_during_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        metadata = os.fstat(descriptor)
+        if not swapped and (metadata.st_dev, metadata.st_ino) == original_identity:
+            os.replace(replacement, manager.lock_path)
+            swapped = True
+        return original_read(descriptor, size)
+
+    monkeypatch.setattr(transaction_module.os, "read", swap_during_read)
+
+    with pytest.raises(TransactionError, match="lock.*changed|inode"):
+        manager.abort("tx-1")
+
+    assert swapped
+    assert record.workspace.is_dir()
+    assert manager.lock_path.is_file()
+
+
+def test_lock_unlink_refuses_same_owner_replacement_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    replacement = config.local_state / "replacement.lock"
+    replacement.write_text(
+        manager.lock_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    original_remove = manager._remove_workspace
+
+    def remove_then_replace(workspace: Path) -> None:
+        original_remove(workspace)
+        os.replace(replacement, manager.lock_path)
+
+    monkeypatch.setattr(manager, "_remove_workspace", remove_then_replace)
+
+    with pytest.raises(TransactionError, match="lock.*changed|inode"):
+        manager.abort("tx-1")
+
+    assert not record.workspace.exists()
+    assert manager.lock_path.is_file()
+    assert json.loads(manager.lock_path.read_text(encoding="utf-8"))[
+        "transaction_id"
+    ] == "tx-1"
+
+
+def test_load_rejects_oversized_metadata(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    metadata = record.workspace / "metadata.json"
+    metadata.write_bytes(metadata.read_bytes() + b" " * (1024 * 1024))
+
+    with pytest.raises(TransactionError, match="metadata.*large"):
+        manager.load("tx-1")
+
+
 def test_transactions_root_and_workspace_must_not_be_symlinks(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     source = add_source(root)
@@ -489,3 +620,54 @@ def test_abort_refuses_symlink_inside_workspace_without_touching_target(
     assert marker.read_text(encoding="utf-8") == "keep"
     assert record.workspace.exists()
     assert manager.lock_path.exists()
+
+
+def test_abort_fails_closed_when_safe_rmtree_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+
+    with pytest.raises(TransactionError, match="symlink-safe|safe recursive"):
+        manager.abort("tx-1")
+
+    assert record.workspace.is_dir()
+    assert manager.lock_path.is_file()
+
+
+@pytest.mark.skipif(
+    not shutil.rmtree.avoids_symlink_attacks,
+    reason="path replacement behavior requires symlink-safe rmtree",
+)
+def test_abort_path_replacement_never_traverses_external_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    external = tmp_path / "external-delete-target"
+    external.mkdir()
+    marker = external / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    moved = record.workspace.with_name("tx-1-moved")
+    original_validate = manager._require_managed_tree
+    calls = 0
+
+    def replace_after_validation(workspace: Path) -> None:
+        nonlocal calls
+        original_validate(workspace)
+        calls += 1
+        if calls == 2:
+            workspace.rename(moved)
+            workspace.symlink_to(external, target_is_directory=True)
+
+    monkeypatch.setattr(manager, "_require_managed_tree", replace_after_validation)
+
+    with pytest.raises(TransactionError, match="remove transaction workspace"):
+        manager.abort("tx-1")
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert record.workspace.is_symlink()
+    assert manager.lock_path.is_file()
