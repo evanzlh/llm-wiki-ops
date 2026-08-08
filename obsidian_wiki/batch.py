@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from obsidian_wiki.config import PortableConfig
+from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
 
 # ---------------------------------------------------------------------------
 # File classification
@@ -188,8 +189,6 @@ def _filter_unchanged(
         if portable is None:
             to_ingest = [f for f in files if f["path"] not in unchanged_set]
         else:
-            from obsidian_wiki.portable_manifest import ShardedManifest
-
             store = ShardedManifest(portable)
             to_ingest = [
                 f
@@ -239,12 +238,10 @@ def _make_batches(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _validate_portable_source_dir(
+def _validated_portable_store(
     source_dir: Path,
     portable: PortableConfig,
-) -> None:
-    from obsidian_wiki.portable_manifest import ManifestError, ShardedManifest
-
+) -> ShardedManifest:
     store = ShardedManifest(portable)
     try:
         source_dir.resolve(strict=False).relative_to(
@@ -254,6 +251,7 @@ def _validate_portable_source_dir(
         raise ManifestError(
             "source directory is outside the configured source root"
         ) from exc
+    return store
 
 
 def plan_batches(
@@ -267,9 +265,15 @@ def plan_batches(
     portable: PortableConfig | None = None,
 ) -> dict[str, Any]:
     """Discover sources, filter unchanged, and split into batches."""
-    if portable is not None:
-        _validate_portable_source_dir(source_dir, portable)
+    portable_store = (
+        _validated_portable_store(source_dir, portable)
+        if portable is not None
+        else None
+    )
     all_files = discover_sources(source_dir, vault=vault, include_code=include_code)
+    if portable_store is not None:
+        for file in all_files:
+            portable_store.source_id(Path(file["path"]))
 
     skipped_binary = 0  # files already excluded by _classify
     skipped_unchanged = 0

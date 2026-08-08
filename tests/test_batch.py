@@ -293,6 +293,21 @@ class TestPlanBatches:
                 portable=config,
             )
 
+    def test_portable_no_cache_rejects_external_source_symlink(self, portable_repo):
+        root, config = portable_repo
+        external = root / "external.md"
+        external.write_text("external", encoding="utf-8")
+        linked = config.sources[0] / "linked.md"
+        linked.symlink_to(external)
+
+        with pytest.raises(ManifestError, match="outside the configured source root"):
+            plan_batches(
+                config.sources[0],
+                config.vault,
+                skip_unchanged=False,
+                portable=config,
+            )
+
     def test_legacy_cache_error_keeps_permissive_fallback(
         self, source_dir, vault, monkeypatch
     ):
@@ -501,4 +516,17 @@ class TestBatchPlanCLI:
 
         assert proc.returncode == 1
         assert "invalid manifest v2 marker" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_no_cache_external_source_symlink_exits_concisely(self, portable_repo):
+        root, config = portable_repo
+        external = root / "external.md"
+        external.write_text("external", encoding="utf-8")
+        linked = config.sources[0] / "linked.md"
+        linked.symlink_to(external)
+
+        proc = self._run_portable(root, config, config.sources[0], "--no-cache")
+
+        assert proc.returncode == 1
+        assert "outside the configured source root" in proc.stderr
         assert "Traceback" not in proc.stderr
