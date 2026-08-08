@@ -18,6 +18,7 @@ Running `obsidian-wiki` with no subcommand defaults to `setup`.
 | `info` | Show install paths, version, and resolved config |
 | `list` | List the bundled skills |
 | `doctor` | Health-check config, vault shape, bootstrap assets, and installed skills |
+| `check` | Read-only deterministic validation for the current portable repository |
 | `repo upgrade-skills` | Transactionally refresh tracked framework-managed skills and adapters |
 
 ```bash
@@ -33,6 +34,7 @@ obsidian-wiki doctor --vault /other/vault --project .
 obsidian-wiki doctor --strict          # exit non-zero on warnings too
 
 cd ./team-knowledge
+obsidian-wiki check
 obsidian-wiki repo upgrade-skills      # run after installing a newer CLI
 ```
 
@@ -171,8 +173,8 @@ Available for automation, scripting, and debugging. Skills call some of these in
 | `graph-query <vault> <question>` | Answer from the wikilink index without reading page bodies |
 | `graph-analyse <vault>` | God nodes, communities, surprising connections |
 | `batch-plan <vault> <source_dir>` | Split a source directory into parallel-ingest batches, skipping unchanged files |
-| `cache-check <vault> <sources...>` | Which sources are new / modified / unchanged vs. `.manifest.json` |
-| `cache-update <vault> <source>` | Record a source's SHA-256 in `.manifest.json` after ingest |
+| `cache-check <vault> <sources...>` | Which sources are new / modified / unchanged in the mode-appropriate manifest |
+| `cache-update <vault> <source>` | Record a source hash and pages in personal v1 or the portable v2 shard |
 | `cache-hash <path>` | Compute a file or directory hash (no manifest I/O) |
 | `ast-extract <path>` | Extract classes, functions, and imports from code — no LLM, no API calls |
 
@@ -186,8 +188,28 @@ obsidian-wiki ast-extract ./src --pretty
 ```
 
 Most commands accept `--json` and/or `--pretty` for machine-readable output.
-# Portable repository validation
 
-From any directory inside a portable repository, run `obsidian-wiki check`.
-Use `--json` (and optionally `--pretty`) for CI. The command is read-only and
-returns non-zero when deterministic repository checks find errors.
+## Portable repository validation
+
+From any directory inside a portable repository, run:
+
+```bash
+obsidian-wiki check
+obsidian-wiki check --json --pretty
+```
+
+The command is read-only and does not invoke an LLM. Human output lists every
+issue; `--json` emits `status`, `errors`, `warnings`, and `issues`, while
+`--pretty` only formats that JSON.
+
+Exit behavior is suitable for any CI platform:
+
+- `exit 0` when the report has no errors (warnings, if any, remain visible).
+- `exit 1` when validation finds an error, config resolution fails, or the
+  command is run outside Portable Repository mode.
+
+Portable manifest drift uses three stable error codes: `source-new` means an
+authoritative source has no shard, `source-stale` means its content hash no
+longer matches, and `source-orphaned` means a shard has no source file. All
+three are PR blockers: compile or reconcile the source and run `cache-update`, then rerun
+`check` before merging.

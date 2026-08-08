@@ -21,8 +21,13 @@ You are distilling knowledge from the current project into the user's Obsidian w
    `OBSIDIAN_LINK_FORMAT` (`wikilink` or `markdown`), and optional QMD settings.
    In portable mode, keep computed absolute repository paths in memory and
    never write them into committed files. Works from any project directory.
-3. Read `$OBSIDIAN_VAULT_PATH/.manifest.json` to check if this project has been synced before.
-4. Read `$OBSIDIAN_VAULT_PATH/index.md` to know what the wiki already contains.
+2. **Select the manifest protocol from the resolved mode.** Personal mode reads
+   the monolithic manifest v1 project entry and preserves its absolute
+   `source_cwd` plus existing vault-relative source behavior. Portable mode
+   uses manifest v2 through `obsidian-wiki cache-check` and `cache-update`;
+   every authoritative input is named by a repository-relative Source ID.
+   Never hand-edit a v2 marker or shard.
+3. Read `$OBSIDIAN_VAULT_PATH/index.md` to know what the wiki already contains.
 
 When writing internal links in Steps 4–5, apply the link format from `llm-wiki/SKILL.md` (Link Format section) using the `OBSIDIAN_LINK_FORMAT` value.
 
@@ -38,9 +43,15 @@ Figure out what this project is by scanning the current working directory:
 
 Derive a clean project name from the directory name.
 
+In Portable Repository mode, the scan may help you understand the working
+tree, but only ordinary files below the configured `sources` root may become
+durable provenance. A live URL or external filesystem path is not a durable
+Source ID. First capture any necessary external material as a small, reviewable
+ordinary Git snapshot below `sources`; Git LFS pointers are unsupported.
+
 ## Step 2: Compute the Delta
 
-Check `.manifest.json` for this project:
+For personal manifest v1, check the project entry in `.manifest.json`:
 
 - **First time?** Full scan. Everything is new.
 - **Synced before?** Look at `last_commit_synced`. Before computing the delta, verify the stored SHA is still reachable:
@@ -51,6 +62,11 @@ Check `.manifest.json` for this project:
   - **Exit 1 (not an ancestor — rebase or force-push occurred):** The stored SHA is no longer in this branch's history. Warn the user: *"Stored commit `<sha>` is no longer reachable — branch may have been rebased or force-pushed. Falling back to full scan."* Then treat as first-time sync: re-scan everything and update `last_commit_synced` to the current HEAD SHA at the end of Step 6.
 
 If nothing meaningful changed since last sync, tell the user and stop.
+
+For portable manifest v2, run `obsidian-wiki cache-check` on the authoritative
+source files. Its `new`, `modified`, and `unchanged` lists use each file's
+repository-relative Source ID. Compile only `new` and `modified` inputs; the
+manifest hash, not a clone-specific absolute project path, defines the delta.
 
 ## Step 3: Decide What to Distill
 
@@ -166,9 +182,9 @@ After creating/updating pages:
 
 ## Step 6: Update Tracking
 
-### Update `.manifest.json`
+### Personal mode — manifest v1
 
-Add or update this project's entry:
+Add or update this project's entry in the monolithic `.manifest.json`:
 
 ```json
 {
@@ -182,6 +198,22 @@ Add or update this project's entry:
   }
 }
 ```
+
+The absolute `source_cwd`, `last_commit_synced`, and project collection are
+personal v1 behavior and remain valid there.
+
+### Portable mode — manifest v2
+
+After compiling each authoritative source, update its one shard with:
+
+```bash
+obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
+```
+
+The CLI derives the repository-relative Source ID and writes below
+`wiki/.manifest/sources/`. Do not reconstruct a monolithic project collection,
+manually edit JSON, or add model, agent, API, or generation-tool provenance
+fields to the marker or shards.
 
 ### Update `index.md`
 
@@ -204,7 +236,9 @@ Write conceptually: "Synced obsidian-wiki — added wiki-capture and wiki-resear
 
 **GUARD: If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step.** The markdown vault is the source of truth; QMD is only a search index.
 
-Run this step only after pages, `.manifest.json`, `index.md`, `log.md`, and `hot.md` have been written. If Step 2 found no meaningful changes and the sync stopped early, do not refresh QMD.
+Run this step only after pages, the mode-appropriate manifest tracking,
+`index.md`, `log.md`, and `hot.md` have been written. If Step 2 found no
+meaningful changes and the sync stopped early, do not refresh QMD.
 
 This refresh currently requires the local QMD CLI. Use `$QMD_CLI` if set; otherwise use `qmd`. If the CLI is unavailable or returns an error, do not roll back the wiki update; report that the wiki was updated but QMD refresh was skipped or failed.
 
@@ -244,5 +278,3 @@ Record QMD refresh in the final report as one of:
 - **Consult the tag taxonomy.** Read `$VAULT/_meta/taxonomy.md` if it exists, and use canonical tags.
 - **Don't copy code.** Distill the *knowledge*, not the implementation. "This project uses a debounced search pattern with 300ms delay" is useful. Pasting the actual debounce function is not.
 - **Project overview is the anchor.** The `<project-name>.md` file is what you'd read to get oriented. Make it good.
-In portable mode, update the sharded manifest through `obsidian-wiki
-cache-update`; do not reconstruct a monolithic `.manifest.json`.

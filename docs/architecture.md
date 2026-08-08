@@ -29,16 +29,19 @@ New knowledge merges against what's already there. If a concept page exists, the
 
 The schema isn't fixed upfront. It emerges from your sources and evolves as you add more. The agent maintains coherence: categories stay consistent, wikilinks point to real pages, the index reflects what's actually there. When you add a new domain, the schema expands without breaking what exists.
 
-A `.manifest.json` tracks every source that's been ingested — path, timestamps, which pages it produced. On the next run, the agent computes the delta and only processes what's new or changed.
+A manifest tracks every source that's been ingested — identity, content hash,
+and which pages it produced. Personal vaults use a monolithic v1 ledger;
+portable repositories use a v2 marker plus source shards. On the next run, the
+agent computes the delta and only processes what's new or changed.
 
 ## The loop
 
 1. Agent resolves the vault path (`@name` → nearest
    `.obsidian-wiki/config.toml` → nearest matching `.env` → global config)
-2. Agent reads `.manifest.json` to know what's already been done
+2. Agent reads the mode-appropriate manifest state to know what's already been done
 3. Agent reads the relevant skill for instructions
 4. Agent uses its built-in tools to do the work
-5. Agent updates `.manifest.json`, `index.md`, `log.md`, and `hot.md`
+5. Agent updates manifest state, `index.md`, `log.md`, and `hot.md`
 6. Output is standard Obsidian-compatible markdown with frontmatter and `[[wikilinks]]`
 
 ## Portable repository layer
@@ -66,6 +69,61 @@ refreshes only inventory-owned framework content and preserves owner files.
 Linux and macOS are the first-release CLI support boundary, but no OS-specific
 absolute path is committed.
 
+## Manifest protocols
+
+### Personal mode: manifest v1
+
+Personal vaults retain the monolithic `.manifest.json`. Sources outside the
+vault use expanded absolute keys; existing vault-relative keys remain valid for
+sources inside the vault. This preserves the established personal workflow and
+its maintenance tools.
+
+### Portable Repository mode: manifest v2
+
+Portable repositories commit this fixed marker at `wiki/.manifest.json`:
+
+```json
+{
+  "schema_version": 2,
+  "storage": "sharded",
+  "entries": ".manifest/sources"
+}
+```
+
+Each authoritative source has one entry below `wiki/.manifest/sources/`. For
+example, `sources/design/portable.md` maps to
+`wiki/.manifest/sources/design/portable.md.json`:
+
+```json
+{
+  "source_id": "sources/design/portable.md",
+  "content_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "pages": ["concepts/portable-repository.md"],
+  "compiled_at": "2026-08-07T07:30:00Z"
+}
+```
+
+The repository-relative Source ID is clone-independent. It must use forward slashes (`/`),
+be normalized without `.` or `..`, and name an ordinary file
+below a configured `sources` root. A live URL or external filesystem path is
+not a durable Source ID. Capture external material as a small, reviewable
+snapshot below `sources` using ordinary Git storage. Git LFS pointers are unsupported
+because a pointer is not authoritative content.
+
+Agents use `obsidian-wiki cache-check` and `cache-update`; they do not hand-edit
+the marker or shards. The v2 schema deliberately omits model, agent, API, and
+generation-tool provenance: it records authoritative source compilation, not
+which tool happened to perform it.
+
+Portable validation gives source drift stable issue names:
+
+- `source-new`: a source exists without a shard.
+- `source-stale`: a source hash differs from its shard.
+- `source-orphaned`: a shard names a source that no longer exists.
+
+All three are errors and PR blockers. Run `obsidian-wiki check` locally and in CI
+before merging.
+
 ## Vault structure
 
 ```
@@ -73,7 +131,7 @@ $OBSIDIAN_VAULT_PATH/
 ├── index.md                # Master index — every page, always current
 ├── log.md                  # Chronological activity log
 ├── hot.md                  # ~500-word semantic snapshot of recent activity
-├── .manifest.json          # Ingest ledger: path, timestamps, pages produced
+├── .manifest.json          # Personal v1 ledger or portable v2 marker
 ├── _meta/
 │   ├── taxonomy.md         # Controlled tag vocabulary
 │   └── *.base              # Obsidian Bases dashboard definitions
@@ -190,9 +248,3 @@ obsidian-wiki/
 The two supported setup modes are described in [Installation](installation.md): personal mode connects bundled skills to agent-wide discovery paths, while Portable Repository mode writes tracked repository-local integrations.
 
 For the full pattern — three-layer architecture, page templates, project organization — read [`.skills/llm-wiki/SKILL.md`](../.skills/llm-wiki/SKILL.md).
-# Portable manifest v2
-
-Portable repositories keep the marker at `wiki/.manifest.json` and one
-canonical JSON shard per source below `wiki/.manifest/sources/`. Source IDs are
-repository-relative POSIX paths, so clones remain location-independent and
-parallel edits merge without rewriting a central manifest.

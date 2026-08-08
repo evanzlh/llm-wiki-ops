@@ -70,6 +70,32 @@ obsidian-wiki repo upgrade-skills
 The command preserves unlisted owner skills and text outside managed bootstrap
 markers.
 
+## Manifest mode selected by configuration
+
+Personal `.env` and global configurations keep manifest v1: one monolithic
+`$OBSIDIAN_VAULT_PATH/.manifest.json`. External source keys use expanded
+absolute paths, while existing vault-relative keys remain supported for
+in-vault sources.
+
+The presence of a valid `.obsidian-wiki/config.toml` selects manifest v2. Its
+`[paths].sources` entries are the authority boundary: every durable
+repository-relative Source ID must use `/`, be normalized, and name an ordinary
+file below one configured source root. The portable vault contains a fixed
+`.manifest.json` marker and one entry below `.manifest/sources/` per source.
+
+Use `obsidian-wiki cache-check` and `cache-update` for v2 state. Do not run the
+legacy `scripts/manifest.py` commands, manually edit shards, or replace the
+marker with a monolithic source map. A live URL or external filesystem path is
+not a durable Source ID; store necessary external material as a small,
+reviewable snapshot below `sources` using ordinary Git. Git LFS pointers are
+unsupported. Portable manifest entries do not record model, agent, API, or
+generation-tool provenance.
+
+See [Architecture → Manifest protocols](architecture.md#manifest-protocols) for
+the marker and shard JSON shapes, and [CLI Reference → Portable repository
+validation](cli.md#portable-repository-validation) for the deterministic CI
+gate.
+
 ## Core
 
 | Variable | What it does | Default |
@@ -274,8 +300,3 @@ Pages can carry a `visibility/` tag marking their intended reach. This is **enti
 **Filtered mode** is opt-in, triggered by phrases like "public only", "user-facing answer", "no internal content", or "as a user would see it" in a query. Default mode shows everything.
 
 `visibility/` tags are **system tags** — they don't count toward the 5-tag limit and are listed separately from domain/type tags in the taxonomy.
-# Manifest mode
-
-Personal vaults continue to use manifest v1. Portable repositories select
-manifest v2 automatically from `.obsidian-wiki/config.toml`; do not run the
-legacy `scripts/manifest.py` maintenance commands against a v2 repository.

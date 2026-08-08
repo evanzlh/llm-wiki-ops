@@ -143,7 +143,11 @@ Chronological append-only record tracking every operation. Each entry is parseab
 ```
 
 ### `.manifest.json`
-Tracks every source file that has been ingested — path, timestamps, what wiki pages it produced. This is the backbone of the delta system. See the `wiki-status` skill for the full schema.
+Tracks every source file that has been ingested — source identity, content hash,
+and what wiki pages it produced. This is the backbone of the delta system. The
+storage protocol depends on the resolved configuration mode; never treat the
+personal and portable layouts as interchangeable. See the `wiki-status` skill
+for reporting semantics.
 
 The manifest enables:
 - **Delta computation** — what's new or modified since last ingest
@@ -151,9 +155,51 @@ The manifest enables:
 - **Audit** — which source produced which wiki page
 - **Staleness detection** — source changed but wiki page hasn't been updated
 
-**Canonical source keys.** Source keys MUST be stored in a single canonical form: **absolute paths with `~` and env vars expanded** (e.g. `/Users/me/.claude/projects/.../abc.jsonl`, never `~/.claude/...`). The manifest is keyed by the raw string, so a mix of `~`-relative and absolute keys lets the *same file* be tracked twice — and the delta check then re-ingests an already-processed file because the lookup misses the other-form key. Always expand before you compare against the manifest and before you write a new entry. To repair an existing vault that already has both forms, run `scripts/manifest.py normalize <vault>` (merges colliding entries, keeps the newest `ingested_at`).
+### Personal mode — manifest v1
 
-**Recording provenance.** When you write a manifest entry, populate `pages_created` and `pages_updated` with the vault-relative page paths that source contributed to. This is what makes re-ingestion (when a source changes) able to find the pages to revisit, instead of guessing.
+Personal vaults keep the established monolithic manifest v1 object in
+`$OBSIDIAN_VAULT_PATH/.manifest.json`.
+
+- For sources outside the vault, expand `~` and environment variables and use
+  one canonical absolute key before comparing or writing. Never mix expanded
+  and unexpanded aliases for the same file.
+- Existing vault-relative keys remain valid for sources inside the vault, such
+  as `_raw/articles/note.md`. Cache operations resolve those keys against the
+  vault and must not convert them into duplicate absolute entries.
+- To repair an older personal manifest containing colliding aliases, run
+  `scripts/manifest.py normalize <vault>`; this command is for manifest v1
+  only.
+- Populate the v1 page-provenance fields with vault-relative paths so a changed
+  source can revisit the pages it created or updated.
+
+### Portable Repository mode — manifest v2
+
+Portable repositories use a marker at `wiki/.manifest.json` and one shard in
+`wiki/.manifest/sources/` per authoritative source. Each shard is keyed by a
+stable repository-relative Source ID, for example
+`sources/design/portable.md`; it never depends on a clone's filesystem
+location.
+
+The portable rules are strict:
+
+- A repository-relative Source ID uses `/`, is normalized, contains no `.` or
+  `..` segments, and identifies an ordinary file below the configured
+  `sources` root. Absolute paths and backslashes are invalid.
+- The shard path mirrors the portion below the source root:
+  `sources/design/portable.md` maps to
+  `wiki/.manifest/sources/design/portable.md.json`. There is exactly one shard
+  per source.
+- Use `obsidian-wiki cache-check` before compiling and `obsidian-wiki
+  cache-update` after compiling. These commands select manifest v2 from the
+  resolved portable config. Agents must not hand-edit the marker or shards and
+  must not reconstruct a monolithic source collection.
+- A live URL or external filesystem path is not a durable Source ID. When that
+  material must be authoritative, capture a small, reviewable snapshot below
+  the configured source root and store it as an ordinary Git file. Git LFS
+  pointers are unsupported because a pointer is not the source content.
+- The marker and shards record source-to-page compilation state only. Do not
+  add model, agent, API, or generation-tool provenance fields; those details do
+  not identify the authoritative source and cause needless contributor churn.
 
 ## Page Template
 
@@ -626,8 +672,3 @@ For details on specific operations, see the companion skills:
 - **wiki-query** — Answer questions against the wiki
 - **wiki-lint** — Audit and maintain wiki health
 - **wiki-setup** — Initialize a new vault
-## Portable manifest v2
-
-When the resolved config is portable, use `obsidian-wiki cache-check` and
-`cache-update`; they write sharded manifest v2 entries with repository-relative
-Source IDs. Never edit `wiki/.manifest.json` as a v1 source collection.

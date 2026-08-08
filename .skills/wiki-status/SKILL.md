@@ -21,13 +21,26 @@ You are computing the current state of the wiki: what's been ingested, what's ne
    `.obsidian-wiki/config.toml`, then `.env`, personal global config, and setup
    guidance. This gives `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_SOURCES_DIR`,
    `CLAUDE_HISTORY_PATH`, and `CODEX_HISTORY_PATH`.
-2. Read `.manifest.json` at the vault root — this is the ingest tracking ledger
+2. **Select the manifest protocol from the resolved mode.** Personal mode uses
+   the monolithic manifest v1 ledger. Portable mode uses manifest v2: its
+   `.manifest.json` is only a marker, shards are below
+   `wiki/.manifest/sources/`, and each authoritative file has a
+   repository-relative Source ID. Inspect portable state with
+   `obsidian-wiki check --json` or the cache commands, never by treating the
+   marker as a v1 source map.
 
 ## The Manifest
 
-The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every source file that has been ingested. If it doesn't exist, this is a fresh vault with nothing ingested.
+### Personal mode — manifest v1
 
-> **Source keys are canonical absolute paths** (`~` and env vars expanded). Never mix `~`-relative and absolute keys — the same file would be tracked twice and re-ingested. See `llm-wiki/SKILL.md` → `.manifest.json`. Repair a mixed manifest with `scripts/manifest.py normalize <vault>`.
+The personal manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks
+every source file that has been ingested. If it doesn't exist, this is a fresh
+personal vault with nothing ingested.
+
+> External personal source keys use expanded absolute paths. Existing
+> vault-relative keys remain valid for in-vault sources. Never create two keys
+> for the same file by mixing expanded and unexpanded aliases. Repair a mixed
+> manifest v1 file with `scripts/manifest.py normalize <vault>`.
 
 ```json
 {
@@ -72,9 +85,34 @@ The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every sou
 }
 ```
 
+### Portable Repository mode — manifest v2
+
+Portable repositories keep a fixed marker at `wiki/.manifest.json` and exactly
+one JSON shard per authoritative source below `wiki/.manifest/sources/`. A
+repository-relative Source ID such as `sources/design/portable.md` uses `/`
+and identifies an ordinary file below the configured `sources` root. Absolute
+paths, backslashes, traversal segments, live URLs, and external filesystem
+paths are not durable Source IDs.
+
+Read portable state with:
+
+```bash
+obsidian-wiki cache-check "$OBSIDIAN_VAULT_PATH" <source1> [source2 ...]
+obsidian-wiki check --json --pretty
+```
+
+Use `cache-update` after a successful compile; do not manually edit the marker
+or shards. Small, reviewable authoritative snapshots use ordinary Git storage.
+Git LFS pointers are unsupported. The manifest stores source compilation state,
+not model, agent, API, or generation-tool provenance.
+
 ## Step 1: Scan Current Sources
 
 Build an inventory of everything available to ingest right now:
+
+In portable mode, inventory only ordinary files below the configured `sources`
+root. The broader personal-mode discovery paths below do not make external
+files authoritative in a portable repository.
 
 ### Documents (from `OBSIDIAN_SOURCES_DIR`)
 ```
@@ -115,6 +153,18 @@ Compare current sources against the manifest. Classify each source file:
 | **Deleted** | In manifest, but file no longer exists on disk | Note it — wiki pages may be stale |
 
 When a manifest entry has no `content_hash` (older entry), fall back to mtime comparison only.
+
+For portable manifest v2, `obsidian-wiki check` exposes the PR-facing names:
+
+| Check issue | Meaning | Required action |
+|---|---|---|
+| `source-new` | An authoritative source exists with no shard | Compile it, then run `cache-update` |
+| `source-stale` | Source content differs from the shard hash | Recompile it, then run `cache-update` |
+| `source-orphaned` | A shard exists but its source no longer exists | Restore the source or remove the obsolete shard in a reviewed change |
+
+All three are deterministic errors and therefore PR blockers. Report them
+separately from page-level age or graph-orphan concepts; here “stale” and
+“orphaned” describe source-to-manifest state.
 
 For Claude history specifically, also compute:
 - New projects (directories in `~/.claude/projects/` not in manifest)
@@ -437,7 +487,8 @@ After writing the file, append to `log.md`:
 
 ## Notes
 
-- If the manifest doesn't exist, report everything as "new" and recommend a full ingest
+- If a personal manifest v1 file doesn't exist, report everything as "new" and recommend a full ingest
+- If a portable manifest v2 marker or shard is invalid, report the `obsidian-wiki check` error; never rebuild it manually
 - This skill only reads and reports — it doesn't modify anything (except writing `_insights.md` in insights mode, which is regenerable)
 - The actual ingest work is done by the ingest skills (`wiki-ingest`, `claude-history-ingest`, `codex-history-ingest`)
 - Those skills are responsible for updating the manifest after they finish
@@ -476,5 +527,3 @@ Record one of:
 - `QMD skipped: QMD_WIKI_COLLECTION unset`
 - `QMD skipped: qmd CLI unavailable`
 - `QMD failed: <short error summary>`
-For a portable repository, `obsidian-wiki check --json` is the deterministic
-manifest and repository health check; it does not invoke an LLM.

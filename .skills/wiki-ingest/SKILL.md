@@ -28,7 +28,12 @@ You are ingesting source documents into an Obsidian wiki. Your job is not to sum
    Only ingest authoritative files below the portable config's `sources`
    paths. Read only the variables you need; never echo unrelated values.
 2. **Check `WIKI_STAGED_WRITES`** — if set to `true`, all new and updated category pages go to `_staging/<category>/` instead of their final location. Tell the user at the start of the ingest: "Staged writes mode is enabled — pages will land in `_staging/` for your review. Run `/wiki-stage-commit` when ready to promote."
-3. Read `.manifest.json` at the vault root to check what's already been ingested
+3. **Select the manifest protocol from the resolved mode.** Personal mode uses
+   the monolithic manifest v1 file, including its existing absolute and
+   vault-relative source-key behavior. Portable mode uses manifest v2: inspect
+   it through the CLI cache commands and refer to each authoritative file by
+   its repository-relative Source ID. Never parse the v2 marker as a source
+   collection or hand-edit its shards.
 4. Read `index.md` to understand current wiki content
 5. Read `log.md` to understand recent activity
 
@@ -70,7 +75,16 @@ After ingesting each source, record its hash:
 obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
 ```
 
-**Fallback** (if `obsidian-wiki` is not installed): compute hashes manually with `sha256sum -- "<file>"` (Linux) or `shasum -a 256 -- "<file>"` (macOS) and compare against `content_hash` in `.manifest.json`. If the entry has no `content_hash`, fall back to mtime comparison.
+In a portable repository these commands resolve manifest v2, return
+repository-relative Source ID values, and update exactly one shard below
+`wiki/.manifest/sources/` per source. Do not replace them with manual JSON
+editing. Portable repositories require the installed CLI.
+
+**Personal manifest v1 fallback only** (if `obsidian-wiki` is not installed):
+compute hashes manually with `sha256sum -- "<file>"` (Linux) or `shasum -a 256
+-- "<file>"` (macOS) and compare against `content_hash` in `.manifest.json`.
+If the entry has no `content_hash`, fall back to mtime comparison. This fallback
+must never write a portable marker or shard.
 
 This avoids redundant work even when timestamps are unreliable (git checkout, NFS drift, copy operations).
 
@@ -194,6 +208,13 @@ Common chat export shapes:
 ### Web URL sources
 
 When the source is a **web URL** (`/ingest-url <url>`, "add this URL", "ingest this link", "save this page", or a pasted link), the flow is different: detect the current project, fetch with `defuddle`/`WebFetch`, then file the page into the detected project's `references/` folder or fall back to `misc/` with affinity scoring for later promotion. **Read `references/url-sources.md` and follow it** — it covers project detection, clean extraction, dedup, slug generation, project-vs-misc frontmatter, affinity scoring, stub handling on fetch failure, and the `INGEST_URL` log/manifest format. The rest of this skill (config, trust boundary, QMD refresh) still applies.
+
+For portable ingest, a live URL or external filesystem path is not a durable
+Source ID. If the fetched material must be authoritative, save a small,
+reviewable snapshot as an ordinary Git file below a configured `sources` root,
+then ingest that snapshot by its repository-relative Source ID. Git LFS
+pointers are unsupported. Do not add model, agent, API, or generation-tool
+provenance fields to the portable marker or shard.
 
 ### Multimodal branch (images)
 
@@ -462,7 +483,8 @@ After writing pages, check that wikilinks work in both directions. If page A lin
 
 ### Step 7: Update Manifest and Special Files
 
-**`.manifest.json`** — For each source file ingested, add or update its entry:
+**Personal mode — manifest v1.** For each source file ingested, add or update
+its entry in the monolithic `.manifest.json`:
 ```json
 {
   "content_hash": "sha256:<64-char-hex>",
@@ -476,7 +498,20 @@ After writing pages, check that wikilinks work in both directions. If page A lin
 
 Also update `stats.total_sources_ingested` and `stats.total_pages`.
 
-If the manifest doesn't exist yet, create it with `version: 1`.
+If the personal manifest doesn't exist yet, create it with `version: 1`.
+Preserve existing v1 source identity behavior: canonical expanded absolute
+keys for external sources and vault-relative keys for in-vault sources.
+
+**Portable mode — manifest v2.** The source must be an ordinary file below the
+configured source root, identified by its repository-relative Source ID. Run:
+
+```bash
+obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
+```
+
+This updates its single shard below `wiki/.manifest/sources/`. Never manually
+edit the v2 marker or shard, never add live URLs or external paths as durable
+IDs, and never add model/agent/API/generation-tool provenance fields.
 
 **`index.md`** — Add entries for any new pages, update summaries for modified pages.
 
@@ -562,5 +597,3 @@ After ingesting, verify:
 ## Reference
 
 Read `references/ingest-prompts.md` for the LLM prompt templates used during extraction.
-Portable repositories use manifest v2 automatically. Record source IDs through
-the CLI cache commands; keep source and page paths repository-relative.

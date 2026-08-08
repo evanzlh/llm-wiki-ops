@@ -36,6 +36,7 @@ The installed CLI does not depend on the clone remaining in place. To upgrade, p
 obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
+obsidian-wiki check
 obsidian-wiki repo upgrade-skills  # after installing a newer framework CLI
 ```
 

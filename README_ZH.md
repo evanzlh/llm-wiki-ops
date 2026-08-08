@@ -36,6 +36,7 @@ uv tool install .
 obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
+obsidian-wiki check
 obsidian-wiki repo upgrade-skills  # 安装新版框架 CLI 后运行
 ```
 
