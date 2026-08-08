@@ -331,6 +331,42 @@ def test_doctor_portable_mode_reports_exact_v2_shard_count(tmp_path: Path) -> No
     assert "manifest shards=2" in detail
 
 
+@pytest.mark.parametrize("target_name", ["marker", "shard"])
+def test_doctor_rejects_hardlinked_manifest_files(
+    tmp_path: Path, target_name: str
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    source = root / "sources/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
+    target = (
+        root / "wiki/.manifest.json"
+        if target_name == "marker"
+        else store.entry_path(entry.source_id)
+    )
+    external = tmp_path / f"external-{target.name}"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    os.link(external, target)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    check = _portable_check(proc, "portable-paths")
+    assert check["status"] == "fail"
+    assert "hard link" in check["detail"].lower() or "multiple links" in check[
+        "detail"
+    ].lower()
+    assert str(root) not in check["detail"]
+
+
 def test_doctor_fresh_portable_clone_allows_lazy_paths_without_mutation(
     tmp_path: Path,
 ) -> None:

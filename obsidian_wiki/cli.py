@@ -699,7 +699,11 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
         portable.vault / ".manifest.json",
     )
     for path in core_files:
-        _assert_single_link_ordinary_file(root, path, "portable vault core file")
+        try:
+            _assert_single_link_ordinary_file(root, path, "portable vault core file")
+        except ValueError as exc:
+            relative_detail = str(exc).replace(f"{root}{os.sep}", "")
+            raise ValueError(relative_detail) from exc
     try:
         manifest = json.loads(core_files[-1].read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -716,13 +720,23 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
                 entry = current / name
                 metadata = entry.lstat()
                 if stat.S_ISLNK(metadata.st_mode):
-                    raise ValueError(f"portable manifest shard tree contains a symlink: {entry}")
+                    relative = entry.relative_to(portable.root).as_posix()
+                    raise ValueError(
+                        "portable manifest shard tree contains a symlink: "
+                        f"{relative}"
+                    )
             for name in filenames:
                 path = current / name
-                if not name.endswith(".json") or not stat.S_ISREG(path.lstat().st_mode):
+                metadata = path.lstat()
+                if (
+                    not name.endswith(".json")
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                ):
+                    relative = path.relative_to(portable.root).as_posix()
                     raise ValueError(
-                        "portable manifest shard must be an ordinary JSON file: "
-                        f"{path}"
+                        "portable manifest shard must be an ordinary JSON file with "
+                        f"one link (hard link detected): {relative}"
                     )
                 shard_count += 1
     return (

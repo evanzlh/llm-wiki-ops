@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -240,3 +241,41 @@ def test_iter_rejects_symlinked_shard_root(tmp_path: Path) -> None:
 
     with pytest.raises(ManifestError, match="ordinary directory|symlink"):
         ShardedManifest(config).iter_entries()
+
+
+def _replace_with_external_hardlink(tmp_path: Path, target: Path) -> None:
+    external = tmp_path / f"external-{target.name}"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    os.link(external, target)
+
+
+def test_marker_must_be_a_single_link_ordinary_file(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    _replace_with_external_hardlink(tmp_path, root / "wiki/.manifest.json")
+
+    with pytest.raises(ManifestError, match="ordinary file|hard link|single link"):
+        ShardedManifest(config)
+
+
+def test_shard_must_be_a_single_link_ordinary_file(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
+    _replace_with_external_hardlink(tmp_path, store.entry_path(entry.source_id))
+
+    with pytest.raises(ManifestError, match="ordinary file|hard link|single link"):
+        store.iter_entries()
+
+
+def test_upsert_rejects_hardlinked_source_files(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    external = tmp_path / "external-source.md"
+    external.write_text("source", encoding="utf-8")
+    source = root / "sources/design/a.md"
+    os.link(external, source)
+
+    with pytest.raises(ManifestError, match="ordinary file|hard link|single link"):
+        ShardedManifest(config).upsert(source)

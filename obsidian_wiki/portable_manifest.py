@@ -40,8 +40,14 @@ class ShardedManifest:
             metadata = self.marker_path.lstat()
         except OSError as exc:
             raise ManifestError("invalid manifest v2 marker") from exc
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise ManifestError("manifest v2 marker must be an ordinary file")
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise ManifestError(
+                "manifest v2 marker must be a single-link ordinary file"
+            )
         try:
             payload = json.loads(self.marker_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -114,8 +120,12 @@ class ShardedManifest:
             metadata = path.lstat()
         except OSError as exc:
             raise ManifestError("manifest shard is unreadable") from exc
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise ManifestError("manifest shard must be an ordinary file")
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise ManifestError("manifest shard must be a single-link ordinary file")
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -182,8 +192,14 @@ class ShardedManifest:
                     metadata = path.lstat()
                 except OSError as exc:
                     raise ManifestError("manifest shard is unreadable") from exc
-                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                    raise ManifestError("manifest shard must be an ordinary file")
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                ):
+                    raise ManifestError(
+                        "manifest shard must be a single-link ordinary file"
+                    )
                 if not name.endswith(".json"):
                     raise ManifestError("manifest shard file must use the .json suffix")
                 shard_paths.append(path)
@@ -228,8 +244,7 @@ class ShardedManifest:
         compiled_at: str | None = None,
     ) -> ManifestEntry:
         source_path = Path(source)
-        if not source_path.is_file() or source_path.is_symlink():
-            raise ManifestError(f"source must be an ordinary file: {source_path}")
+        self._validate_source_file(source_path)
         source_id = self.source_id(source_path)
         entry = ManifestEntry(
             source_id=source_id,
@@ -259,6 +274,19 @@ class ShardedManifest:
             temporary_path.unlink(missing_ok=True)
         return entry
 
+    @staticmethod
+    def _validate_source_file(source_path: Path) -> None:
+        try:
+            metadata = source_path.lstat()
+        except OSError as exc:
+            raise ManifestError("source must be a single-link ordinary file") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise ManifestError("source must be a single-link ordinary file")
+
     def remove(self, source_id: str) -> None:
         self.entry_path(source_id).unlink(missing_ok=True)
 
@@ -267,11 +295,16 @@ class ShardedManifest:
         current: dict[str, Path] = {}
         if self.source_root.exists():
             for path in self.source_root.rglob("*"):
-                if not path.is_file() or path.is_symlink():
-                    continue
                 relative = path.relative_to(self.source_root)
                 if any(part.startswith(".") for part in relative.parts) or path.name == ".gitkeep":
                     continue
+                try:
+                    metadata = path.lstat()
+                except OSError as exc:
+                    raise ManifestError("source cannot be inspected") from exc
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                    continue
+                self._validate_source_file(path)
                 current[self.source_id(path)] = path
         result = {"new": [], "modified": [], "unchanged": [], "missing": []}
         for source_id, path in sorted(current.items()):
@@ -299,6 +332,7 @@ class ShardedManifest:
                 except ManifestError:
                     pass
                 continue
+            self._validate_source_file(path)
             source_id = self.source_id(path)
             selected.add(source_id)
             entry = tracked.get(source_id)

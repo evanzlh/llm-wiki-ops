@@ -589,6 +589,82 @@ def test_fixed_local_state_is_rejected_when_configured_local_path_changes(
     assert "tracked-local-state" in issue_codes(check_portable_repo(config))
 
 
+def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    bad_name = os.fsdecode(b"bad-\xff")
+    (root / bad_name).write_text("bad filename", encoding="utf-8")
+    hot = root / "wiki/hot.md"
+    hot.write_text("local", encoding="utf-8")
+    subprocess.run(
+        [
+            b"git",
+            b"-C",
+            os.fsencode(root),
+            b"add",
+            b"-f",
+            b"bad-\xff",
+            b"wiki/hot.md",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    report = check_portable_repo(config)
+    assert "tracked-local-state" in issue_codes(report)
+    assert "git-unavailable" not in issue_codes(report)
+
+    proc = _run_cli(tmp_path / "home", root, "check", "--json")
+    assert proc.returncode == 1
+    cli_report = json.loads(proc.stdout)
+    assert "tracked-local-state" in issue_codes(cli_report)
+    assert "git-unavailable" not in issue_codes(cli_report)
+
+
+def _replace_with_external_hardlink(tmp_path: Path, target: Path) -> None:
+    external = tmp_path / f"external-{target.name}"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    os.link(external, target)
+
+
+@pytest.mark.parametrize(
+    ("target_name", "expected_code"),
+    [
+        ("config", "config-invalid"),
+        ("source", "source-invalid"),
+        ("page", "knowledge-page-invalid"),
+        ("marker", "manifest-invalid"),
+        ("shard", "manifest-invalid"),
+        ("inventory", "managed-skills-invalid"),
+        ("adapter", "managed-adapter-invalid"),
+        ("bootstrap", "managed-bootstrap-invalid"),
+        ("stable-view", "stable-view-modified"),
+    ],
+)
+def test_checker_rejects_hardlinked_managed_files(
+    tmp_path: Path, target_name: str, expected_code: str
+) -> None:
+    root, config, source, page, shard = valid_repo(tmp_path)
+    targets = {
+        "config": root / ".obsidian-wiki/config.toml",
+        "source": source,
+        "page": page,
+        "marker": root / "wiki/.manifest.json",
+        "shard": shard,
+        "inventory": root / ".obsidian-wiki/managed-skills.json",
+        "adapter": root / ".claude/skills/wiki-ingest/SKILL.md",
+        "bootstrap": root / "CLAUDE.md",
+        "stable-view": root / "wiki/index.md",
+    }
+    _replace_with_external_hardlink(tmp_path, targets[target_name])
+
+    report = check_portable_repo(config)
+    assert expected_code in issue_codes(report)
+    assert str(root) not in json.dumps(report)
+
+
 def test_malformed_marker_and_config_are_reported_without_absolute_paths(
     tmp_path: Path,
 ) -> None:
@@ -711,3 +787,19 @@ def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> Non
     assert proc.returncode == 1
     assert proc.stdout == ""
     assert proc.stderr.strip() == "error: check requires a portable repository"
+
+
+def test_checker_rejects_noncanonical_configured_skills_path(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    (root / ".skills").rename(root / "alternate-skills")
+    config_path = root / ".obsidian-wiki/config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'skills = ".skills"', 'skills = "alternate-skills"'
+        ),
+        encoding="utf-8",
+    )
+
+    report = check_portable_repo(config)
+    assert "config-invalid" in issue_codes(report)
+    assert str(root) not in json.dumps(report)

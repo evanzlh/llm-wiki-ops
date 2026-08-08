@@ -85,7 +85,11 @@ def _ordinary_file(path: Path) -> bool:
         metadata = path.lstat()
     except OSError:
         return False
-    return stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_nlink == 1
+    )
 
 
 def _ordinary_directory(path: Path) -> bool:
@@ -202,6 +206,15 @@ def _reload_config(config: PortableConfig, issues: list[CheckIssue]) -> Portable
                 )
             )
             return None
+    if loaded.skills != root / ".skills":
+        issues.append(
+            CheckIssue(
+                "config-invalid",
+                ".obsidian-wiki/config.toml",
+                "portable canonical skills path must be .skills",
+            )
+        )
+        return None
     return loaded
 
 
@@ -223,18 +236,50 @@ def _load_manifest(
     return store, entries
 
 
-def _source_files(store: ShardedManifest) -> dict[str, Path]:
+def _source_files(
+    store: ShardedManifest, issues: list[CheckIssue]
+) -> tuple[dict[str, Path], set[str]]:
     current: dict[str, Path] = {}
+    invalid: set[str] = set()
     if not _ordinary_directory(store.source_root):
-        return current
+        return current, invalid
     for path in sorted(store.source_root.rglob("*")):
-        if not _ordinary_file(path) or _has_symlink_component(store.source_root, path):
-            continue
         relative = path.relative_to(store.source_root)
         if any(part.startswith(".") for part in relative.parts) or path.name == ".gitkeep":
             continue
-        current[store.source_id(path)] = path
-    return current
+        try:
+            metadata = path.lstat()
+        except OSError:
+            issues.append(
+                CheckIssue(
+                    "source-invalid",
+                    _rel(store.config.root, path),
+                    "source cannot be inspected as an ordinary file",
+                )
+            )
+            continue
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            continue
+        try:
+            source_id = store.source_id(path)
+        except ManifestError:
+            source_id = _rel(store.config.root, path)
+        current[source_id] = path
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or _has_symlink_component(store.source_root, path)
+        ):
+            invalid.add(source_id)
+            issues.append(
+                CheckIssue(
+                    "source-invalid",
+                    source_id,
+                    "source must be a single-link ordinary contained file",
+                )
+            )
+    return current, invalid
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -251,8 +296,10 @@ def _check_sources(
     issues: list[CheckIssue],
 ) -> None:
     tracked = {entry.source_id: entry for entry in entries}
-    current = _source_files(store)
+    current, invalid = _source_files(store, issues)
     for source_id, path in sorted(current.items()):
+        if source_id in invalid:
+            continue
         entry = tracked.get(source_id)
         lfs_pointer = _is_lfs_pointer(path)
         if lfs_pointer:
@@ -518,8 +565,8 @@ def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
         )
         if result.returncode != 0:
             raise RuntimeError("not a Git worktree")
-        tracked = result.stdout.decode("utf-8").split("\0")
-    except (OSError, RuntimeError, subprocess.TimeoutExpired, UnicodeDecodeError):
+        tracked = [os.fsdecode(path) for path in result.stdout.split(b"\0")]
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
         issues.append(
             CheckIssue(
                 "git-unavailable",
