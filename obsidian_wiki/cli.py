@@ -1956,10 +1956,11 @@ def _transaction_source(config: PortableConfig, raw: str) -> Path:
     return (config.root / source).absolute()
 
 
-def _record_payload(record) -> dict[str, object]:
+def _record_payload(record, *, guidance=None) -> dict[str, object]:
     from obsidian_wiki.transaction_guidance import guidance_for_record
 
-    guidance = guidance_for_record(record)
+    if guidance is None:
+        guidance = guidance_for_record(record)
     return {
         "transaction_id": record.transaction_id,
         "status": record.status,
@@ -2022,14 +2023,19 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
         records = manager.list_transactions()
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(args, exc, manager=manager)
-    payload = [_record_payload(record) for record in records]
+    guided_records = [
+        (record, guidance_for_record(record)) for record in records
+    ]
+    payload = [
+        _record_payload(record, guidance=guidance)
+        for record, guidance in guided_records
+    ]
     if args.json:
         _json_print(payload, pretty=args.pretty)
     elif not records:
         print("No retained transactions.")
     else:
-        for record in records:
-            guidance = guidance_for_record(record)
+        for record, guidance in guided_records:
             recommended = (
                 guidance.preferred_action.command
                 if guidance.preferred_action is not None

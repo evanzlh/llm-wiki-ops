@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki import cli as cli_module
 from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki import transaction as transaction_module
+from obsidian_wiki import transaction_guidance as transaction_guidance_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.transaction import (
@@ -3020,6 +3022,35 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
 
     assert git_output(root, "rev-parse", "HEAD") == before_head
     assert git_output(root, "remote", "-v") == before_remotes
+
+
+def test_transaction_cli_human_list_computes_guidance_once_per_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-1")
+    calls: list[str] = []
+    original = transaction_guidance_module.guidance_for_record
+
+    def count_guidance(record):
+        calls.append(record.transaction_id)
+        return original(record)
+
+    monkeypatch.setattr(cli_module, "_transaction_manager", lambda: manager)
+    monkeypatch.setattr(
+        transaction_guidance_module, "guidance_for_record", count_guidance
+    )
+
+    result = cli_module.cmd_transaction_list(
+        argparse.Namespace(json=False, pretty=False)
+    )
+
+    assert result == 0
+    assert calls == ["tx-1"]
+    assert "\tobsidian-wiki transaction commit tx-1\t" in capsys.readouterr().out
 
 
 def test_transaction_cli_retries_a_retained_failed_transaction(
