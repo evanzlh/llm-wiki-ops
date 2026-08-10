@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 _PROVENANCE_FIELDS = frozenset({"extracted", "inferred", "ambiguous"})
 _RELATIONSHIP_FIELDS = frozenset({"target", "type"})
-_RELATIONSHIP_FORBIDDEN_PLAIN_STARTS = frozenset(",]}%@`")
+_RESTRICTED_FORBIDDEN_PLAIN_STARTS = frozenset(",]}%@`")
 
 
 class FrontmatterError(ValueError):
@@ -307,15 +307,7 @@ def _parse_provenance_field(line: str) -> tuple[str, str]:
     _validate_restricted_margins(raw_region, "provenance field")
 
     key = key_region.strip(" ")
-    raw = _strip_comment(raw_region).strip(" ")
-    quoted = bool(raw) and raw[0] in "'\""
-    value = _scalar(raw)
-    if not quoted and any(
-        char == ":" and (index + 1 == len(raw) or raw[index + 1].isspace())
-        for index, char in enumerate(raw)
-    ):
-        raise FrontmatterError("provenance scalar has an unquoted mapping delimiter")
-    return key, value
+    return key, _provenance_scalar(raw_region, key)
 
 
 def _parse_provenance(
@@ -324,7 +316,13 @@ def _parse_provenance(
     values: dict[str, str] = {}
     while index < closing:
         line = lines[index]
-        if not line.strip() or line.lstrip().startswith("#"):
+        if _restricted_control_only_line(line):
+            _validate_restricted_controls(line, "provenance")
+        if not line.strip():
+            index += 1
+            continue
+        if line.lstrip().startswith("#"):
+            _validate_restricted_controls(line, "provenance")
             index += 1
             continue
         if not line[0].isspace():
@@ -363,6 +361,10 @@ def _parse_provenance(
 
 def _relationship_error(message: str) -> FrontmatterError:
     return FrontmatterError(f"relationships {message}")
+
+
+def _provenance_error(message: str) -> FrontmatterError:
+    return FrontmatterError(f"provenance {message}")
 
 
 def _decode_quoted_key(value: str) -> str | None:
@@ -471,6 +473,26 @@ def _relationship_key(
     return False
 
 
+def _provenance_key(key_region: str) -> bool:
+    ascii_trimmed = key_region.strip(" ")
+    if ascii_trimmed == "provenance":
+        return True
+
+    normalized = key_region.strip()
+    if normalized == "provenance":
+        raise _provenance_error("key has unsupported structural whitespace")
+
+    if _key_scalar_value(normalized) == "provenance":
+        raise _provenance_error("reserved key has an unsupported quoted spelling")
+
+    decorated, has_property = _strip_key_properties(normalized)
+    if has_property and _key_scalar_value(decorated) == "provenance":
+        raise _provenance_error(
+            "reserved key has an unsupported tagged or anchored spelling"
+        )
+    return False
+
+
 def _check_indented_relationship_key(line: str) -> None:
     mapping = _top_level_mapping(line)
     if mapping is None:
@@ -503,25 +525,82 @@ def _unrelated_indented_block(raw_region: str) -> bool:
     return not raw or raw[0] in "|>"
 
 
-def _has_forbidden_relationship_control(value: str) -> bool:
+def _has_forbidden_restricted_control(value: str) -> bool:
     return any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value)
 
 
+def _validate_restricted_controls(value: str, owner: str) -> None:
+    if _has_forbidden_restricted_control(value):
+        raise FrontmatterError(f"{owner} contains an unsupported control character")
+
+
+def _validate_restricted_comment_controls(value: str, owner: str) -> None:
+    uncommented = _restricted_uncommented_region(value)
+    if len(uncommented) < len(value):
+        _validate_restricted_controls(value[len(uncommented) :], owner)
+
+
+def _restricted_control_only_line(line: str) -> bool:
+    return _has_forbidden_restricted_control(line) and all(
+        char.isspace() or _has_forbidden_restricted_control(char) for char in line
+    )
+
+
 def _validate_relationship_controls(value: str) -> None:
-    if _has_forbidden_relationship_control(value):
-        raise _relationship_error("contains an unsupported control character")
+    _validate_restricted_controls(value, "relationships")
 
 
 def _validate_relationship_comment_controls(value: str) -> None:
-    uncommented = _restricted_uncommented_region(value)
-    if len(uncommented) < len(value):
-        _validate_relationship_controls(value[len(uncommented) :])
+    _validate_restricted_comment_controls(value, "relationships")
 
 
 def _relationship_control_only_line(line: str) -> bool:
-    return _has_forbidden_relationship_control(line) and all(
-        char.isspace() or _has_forbidden_relationship_control(char) for char in line
-    )
+    return _restricted_control_only_line(line)
+
+
+def _provenance_scalar(raw_region: str, key: str) -> str:
+    _validate_restricted_comment_controls(raw_region, "provenance")
+    try:
+        raw = _strip_comment(raw_region).strip(" ")
+    except FrontmatterError as exc:
+        raise _provenance_error(f"field {key!r} scalar: {exc}") from exc
+
+    if not raw:
+        return raw
+
+    quoted = raw[0] in "'\""
+    if not quoted:
+        if raw[0] in "|>":
+            raise _provenance_error(
+                f"field {key!r} scalar uses an unsupported block scalar header"
+            )
+        if raw[0] in _RESTRICTED_FORBIDDEN_PLAIN_STARTS:
+            raise _provenance_error(
+                f"field {key!r} scalar starts with a forbidden YAML indicator"
+            )
+        if raw[0] in "-?:" and (len(raw) == 1 or raw[1].isspace()):
+            raise _provenance_error(
+                f"field {key!r} scalar starts with a separated YAML indicator"
+            )
+
+    try:
+        value = _scalar(raw)
+    except FrontmatterError as exc:
+        raise _provenance_error(f"field {key!r} scalar: {exc}") from exc
+
+    if not quoted and any(
+        char == ":" and (index + 1 == len(raw) or raw[index + 1].isspace())
+        for index, char in enumerate(raw)
+    ):
+        raise _provenance_error(
+            f"field {key!r} scalar has an unquoted mapping delimiter"
+        )
+
+    if _has_forbidden_restricted_control(raw):
+        raise _provenance_error(
+            f"field {key!r} scalar contains an unsupported control character"
+        )
+    return value
 
 
 def _relationship_scalar(raw_region: str, key: str) -> str:
@@ -540,7 +619,7 @@ def _relationship_scalar(raw_region: str, key: str) -> str:
             raise _relationship_error(
                 f"field {key!r} scalar uses an unsupported block scalar header"
             )
-        if raw[0] in _RELATIONSHIP_FORBIDDEN_PLAIN_STARTS:
+        if raw[0] in _RESTRICTED_FORBIDDEN_PLAIN_STARTS:
             raise _relationship_error(
                 f"field {key!r} scalar starts with a forbidden YAML indicator"
             )
@@ -567,7 +646,7 @@ def _relationship_scalar(raw_region: str, key: str) -> str:
                 f"field {key!r} scalar has an unquoted mapping delimiter"
             )
 
-    if _has_forbidden_relationship_control(raw):
+    if _has_forbidden_restricted_control(raw):
         raise _relationship_error(
             f"field {key!r} scalar contains an unsupported control character"
         )
@@ -721,6 +800,24 @@ def _relationships_inline(raw_region: str) -> tuple[Relationship, ...] | None:
     raise _relationship_error("has an unsupported inline value; only [] is allowed")
 
 
+def _validate_provenance_header(raw_region: str) -> None:
+    if raw_region == "":
+        return
+    if raw_region[0] != " ":
+        if raw_region[0] == "\t":
+            raise _provenance_error("mapping delimiter must not use a tab")
+        raise _provenance_error("has a malformed mapping delimiter")
+
+    _validate_restricted_margins(raw_region, "provenance header")
+    _validate_restricted_comment_controls(raw_region, "provenance")
+    try:
+        raw = _strip_comment(raw_region).strip(" ")
+    except FrontmatterError as exc:
+        raise _provenance_error(f"has an invalid header value: {exc}") from exc
+    if raw:
+        raise _provenance_error("must be a block mapping")
+
+
 def parse_frontmatter(text: str) -> Frontmatter:
     lines, closing = _document_lines(text)
 
@@ -743,6 +840,7 @@ def parse_frontmatter(text: str) -> Frontmatter:
             raise FrontmatterError(f"malformed frontmatter line {index + 1}")
         key_region, raw_region = mapping
         is_relationship = _relationship_key(key_region)
+        is_provenance = _provenance_key(key_region)
         key = key_region.strip()
         if not key or key in seen:
             raise FrontmatterError(f"duplicate or empty frontmatter key: {key!r}")
@@ -757,12 +855,11 @@ def parse_frontmatter(text: str) -> Frontmatter:
                 index += 1
             continue
 
-        raw = _strip_comment(raw_region).strip()
-        if key == "provenance":
-            if raw:
-                raise FrontmatterError("provenance must be a block mapping")
+        if is_provenance:
+            _validate_provenance_header(raw_region)
             provenance, index = _parse_provenance(lines, index + 1, closing)
             continue
+        raw = _strip_comment(raw_region).strip()
         if raw == "":
             values: list[str] = []
             index += 1

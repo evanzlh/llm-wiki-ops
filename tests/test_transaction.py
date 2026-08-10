@@ -923,6 +923,29 @@ relationships:
     assert (config.vault / "concepts/a.md").read_text(encoding="utf-8") == nested_page
 
 
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        "provenance:\n  extracted: >-\n  inferred: 0.25\n  ambiguous: 0.03",
+        '"provenance": []\nprovenance:\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03',
+    ],
+    ids=["block-scalar", "reserved-key"],
+)
+def test_commit_rejects_unsafe_provenance_frontmatter(
+    tmp_path: Path, operation_writer, provenance: str
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    page = PAGE.replace("---\n", f"---\n{provenance}\n", 1)
+    candidate_page(record, "concepts/a.md", page)
+
+    with pytest.raises(TransactionError, match="provenance"):
+        manager.commit("tx-1")
+
+    assert not (config.vault / "concepts/a.md").exists()
+
+
 def test_default_operation_writer_records_operation_last(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     manager = TransactionManager(config)

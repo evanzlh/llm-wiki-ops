@@ -178,6 +178,211 @@ def test_parse_provenance_allows_quoted_unicode_whitespace_in_scalar() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        "|",
+        "|-",
+        ">",
+        ">-",
+        "@bad",
+        "%bad",
+        "`bad`",
+        ",bad",
+        "]bad",
+        "}bad",
+        "- thing",
+        "? thing",
+        ": thing",
+        "bad\x01value",
+        "bad\x80value",
+        '"unterminated',
+    ],
+)
+def test_provenance_leaves_reject_yaml_control_syntax(leaf: str) -> None:
+    page = (
+        "---\nprovenance:\n"
+        f"  extracted: {leaf}\n"
+        "  inferred: 0.25\n  ambiguous: 0.03\n---\n"
+    )
+
+    with pytest.raises(
+        FrontmatterError,
+        match="provenance.*(?:scalar|syntax|indicator|control|quote|header|unsupported)",
+    ):
+        parse_frontmatter(page)
+
+
+def test_provenance_leaves_preserve_quoted_and_valid_plain_scalars() -> None:
+    parsed = parse_frontmatter(
+        '''---
+provenance:
+  extracted: "@bad"
+  inferred: -0.25
+  ambiguous: :value
+---
+'''
+    )
+
+    assert parsed.provenance == Provenance(
+        extracted="@bad", inferred="-0.25", ambiguous=":value"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "provenance:\n  extracted: bad{control}value\n  inferred: 0.25\n  ambiguous: 0.03",
+        'provenance:\n  extracted: "bad{control}value"\n  inferred: 0.25\n  ambiguous: 0.03',
+        "provenance:\n  extracted: 0.72 # invalid{control}\n  inferred: 0.25\n  ambiguous: 0.03",
+        "provenance: # invalid{control}\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03",
+        "provenance:\n  # invalid{control}\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03",
+        "provenance:\n# invalid{control}\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03",
+    ],
+    ids=[
+        "plain-leaf",
+        "quoted-leaf",
+        "trailing-comment",
+        "header-comment",
+        "full-line-comment",
+        "root-comment",
+    ],
+)
+@pytest.mark.parametrize(
+    "control",
+    [
+        pytest.param("\x01", id="c0"),
+        pytest.param("\x0b", id="c0-line-separator"),
+        pytest.param("\x80", id="c1"),
+        pytest.param("\x85", id="c1-line-separator"),
+        pytest.param("\x7f", id="del"),
+    ],
+)
+def test_provenance_values_and_comments_reject_control_characters(
+    body: str, control: str
+) -> None:
+    with pytest.raises(FrontmatterError, match="provenance.*control"):
+        parse_frontmatter(f"---\n{body.format(control=control)}\n---\n")
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        pytest.param("\x0b", id="vertical-tab"),
+        pytest.param("\x0c", id="form-feed"),
+        pytest.param("\x85", id="next-line"),
+        pytest.param("\x7f", id="delete"),
+    ],
+)
+@pytest.mark.parametrize(
+    "surrounding_whitespace",
+    [pytest.param("", id="ascii"), pytest.param("\u00a0\u2003", id="unicode")],
+)
+def test_provenance_blocks_reject_control_only_whitespace_lines(
+    control: str, surrounding_whitespace: str
+) -> None:
+    page = (
+        "---\nprovenance:\n"
+        f"  {surrounding_whitespace}{control}\n"
+        "  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n"
+    )
+
+    with pytest.raises(FrontmatterError, match="provenance.*control"):
+        parse_frontmatter(page)
+
+
+@pytest.mark.parametrize(
+    "margin",
+    [
+        pytest.param("\t", id="tab"),
+        pytest.param("\u00a0", id="non-breaking-space"),
+        pytest.param("\u2003", id="em-space"),
+    ],
+)
+def test_provenance_header_rejects_structural_whitespace(margin: str) -> None:
+    page = (
+        f"---\nprovenance:{margin}\n"
+        "  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n"
+    )
+
+    with pytest.raises(
+        FrontmatterError, match="provenance.*(?:delimiter|tab|whitespace)"
+    ):
+        parse_frontmatter(page)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        '"provenance"',
+        "'provenance'",
+        r'"\x70rovenance"',
+        r'"\u0070rovenance"',
+        "!!str provenance",
+        "&key provenance",
+        "!!str &key provenance",
+        "!<tag:yaml.org,2002:str> provenance",
+    ],
+)
+def test_provenance_key_rejects_unsupported_reserved_equivalents(key: str) -> None:
+    with pytest.raises(
+        FrontmatterError,
+        match="provenance.*(?:key|quoted|tag|anchor|reserved|unsupported)",
+    ):
+        parse_frontmatter(f"---\n{key}: []\n---\n")
+
+
+@pytest.mark.parametrize(
+    "equivalent",
+    [
+        '"provenance"',
+        "'provenance'",
+        r'"\x70rovenance"',
+        "!!str provenance",
+        "&key provenance",
+        "!<tag:yaml.org,2002:str> provenance",
+    ],
+)
+def test_provenance_key_rejects_reserved_equivalent_duplicate(
+    equivalent: str,
+) -> None:
+    page = (
+        f"---\n{equivalent}: []\nprovenance:\n"
+        "  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n"
+    )
+
+    with pytest.raises(FrontmatterError, match="provenance.*(?:key|reserved)"):
+        parse_frontmatter(page)
+
+
+def test_provenance_key_ignores_unrelated_generic_keys() -> None:
+    page = '''---
+my-provenance: ok
+provenance-note: retained
+owner's-provenance: literal
+measurement"provenance: literal
+-meta: ok
+provenance:
+  extracted: 0.72
+  inferred: 0.25
+  ambiguous: 0.03
+---
+'''
+
+    parsed = parse_frontmatter(page)
+
+    assert parsed.provenance == Provenance(
+        extracted="0.72", inferred="0.25", ambiguous="0.03"
+    )
+    assert parsed.scalars == {
+        "my-provenance": "ok",
+        "provenance-note": "retained",
+        "owner's-provenance": "literal",
+        'measurement"provenance': "literal",
+        "-meta": "ok",
+    }
+
+
 def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
     parsed = parse_frontmatter(
         "---\ntitle: ratio: 0.72\nsources:\n  - ratio: 0.72\n---\n"
@@ -1035,6 +1240,28 @@ relationships:
         "warnings": 0,
         "issues": [],
     }
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        "provenance:\n  extracted: |\n  inferred: 0.25\n  ambiguous: 0.03",
+        '"provenance": []\nprovenance:\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03',
+    ],
+    ids=["block-scalar", "reserved-key"],
+)
+def test_portable_check_rejects_unsafe_provenance_frontmatter(
+    tmp_path: Path, provenance: str
+) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "---\n", f"---\n{provenance}\n", 1
+        ),
+        encoding="utf-8",
+    )
+
+    assert "frontmatter-invalid" in issue_codes(check_portable_repo(config))
 
 
 def test_check_is_read_only(tmp_path: Path) -> None:
