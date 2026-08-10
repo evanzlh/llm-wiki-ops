@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from obsidian_wiki import SOURCE_INSTALL_COMMAND
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = (
@@ -70,6 +72,14 @@ def test_portable_setup_never_writes_global_config() -> None:
     assert "does not write `~/.obsidian-wiki/config`" in text
     assert "Personal mode" in text
     assert "Portable Repository mode" in text
+    for phrase in (
+        SOURCE_INSTALL_COMMAND,
+        "only an ordinary `.git` directory",
+        "does not run `git init`",
+        "setup first, then `git init`",
+        "legacy layouts need explicit migration",
+    ):
+        assert phrase in text
 
 
 def test_human_docs_cover_the_portable_repository_contract() -> None:
@@ -80,7 +90,9 @@ def test_human_docs_cover_the_portable_repository_contract() -> None:
         "regular Markdown files",
         "Linux and macOS",
         "does not contain `.venv`",
-        "uv tool install .",
+        SOURCE_INSTALL_COMMAND,
+        "only an ordinary `.git` directory",
+        "does not run `git init`",
     ):
         assert phrase in combined
 

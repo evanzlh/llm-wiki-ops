@@ -51,7 +51,7 @@ clone:
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
-uv tool install .
+uv tool install --link-mode copy .
 ```
 
 Do not execute package source from an arbitrary checkout or from

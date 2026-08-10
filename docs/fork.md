@@ -29,4 +29,4 @@ The fork keeps the `obsidian-wiki` Python distribution and CLI command names. Po
 
 ## Installation policy
 
-The only supported installation is `git clone` followed by non-editable `uv tool install .`. The fork is not published to PyPI, does not support remote-URL or skills-registry installation, and does not retain `setup.sh`.
+The only supported installation is `git clone` followed by non-editable `uv tool install --link-mode copy .`. The fork is not published to PyPI, does not support remote-URL or skills-registry installation, and does not retain `setup.sh`.

@@ -43,8 +43,10 @@ Portable setup writes only inside `DIR`: repository-relative TOML, vault
 scaffolding, canonical skills, regular Markdown adapters, and bootstrap files.
 It does not write global config or global agent directories. The repository
 does not contain `.venv` or a vendored CLI; contributors install the CLI with
-`uv tool install .` from their own framework clone. Linux and macOS are the
+`uv tool install --link-mode copy .` from their own framework clone. Linux and macOS are the
 first-release CLI support boundary.
+
+Portable setup accepts a missing or empty target, or one containing only an ordinary `.git` directory; it preserves that directory and rejects arbitrary non-portable content. It does not run `git init`, commit, or configure a remote: for a new repository, run setup first and then `git init`; use `repo migrate` for legacy layouts.
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
 

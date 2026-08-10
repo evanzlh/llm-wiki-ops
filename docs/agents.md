@@ -48,7 +48,7 @@ obsidian-wiki setup --portable ./team-knowledge
 The first command configures personal, agent-wide discovery on the current machine. The second creates a clone-ready repository without writing global config or global agent directories. The agent-specific notes below describe what the CLI wires.
 
 Each collaborator installs the CLI independently from a framework clone with
-`uv tool install .`; the knowledge repository itself does not contain `.venv`
+`uv tool install --link-mode copy .`; the knowledge repository itself does not contain `.venv`
 or a CLI runtime. Linux and macOS are the first-release CLI support boundary,
 while committed adapters and configuration use platform-neutral relative paths.
 

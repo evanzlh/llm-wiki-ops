@@ -27,10 +27,10 @@ The only supported installation is a non-editable build from a local clone:
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
-uv tool install .
+uv tool install --link-mode copy .
 ```
 
-The installed CLI does not depend on the clone remaining in place. To upgrade, pull the clone and run `uv tool install --force .`.
+The installed CLI does not depend on the clone remaining in place. To upgrade, pull the clone and run `uv tool install --force --link-mode copy .`.
 
 ## Start a portable team wiki
 

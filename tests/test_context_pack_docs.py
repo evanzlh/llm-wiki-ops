@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from obsidian_wiki import SOURCE_INSTALL_COMMAND
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,7 +24,7 @@ def test_context_skill_canonicalizes_vault_and_requires_installed_cli() -> None:
     assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' in skill
     assert "command -v obsidian-wiki" in skill
     assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in skill
-    assert "uv tool install ." in skill
+    assert SOURCE_INSTALL_COMMAND in skill
     assert '"$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py"' not in skill
     assert "python3 -m obsidian_wiki.cli context-pack" not in skill
     assert "pip install obsidian-wiki" not in skill

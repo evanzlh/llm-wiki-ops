@@ -9,7 +9,7 @@ Install [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
-uv tool install .
+uv tool install --link-mode copy .
 ```
 
 The installed CLI carries the skills, bootstrap files, and hook assets that setup needs. It does not depend on the clone remaining at the same path.
@@ -33,7 +33,7 @@ Run these commands in the clone used to build the tool:
 
 ```bash
 git pull
-uv tool install --force .
+uv tool install --force --link-mode copy .
 ```
 
 ## Create a portable repository
@@ -47,6 +47,10 @@ obsidian-wiki doctor
 ```
 
 Open `team-knowledge/wiki/` as the Obsidian vault. The generated repository uses repository-relative configuration and does not write personal global config or global agent directories.
+
+Portable setup accepts a missing target, an empty target, or a target containing only an ordinary `.git` directory. It preserves an existing `.git` directory and rejects arbitrary non-portable content; legacy layouts need explicit migration with `obsidian-wiki repo migrate`.
+
+Setup does not run `git init`, commit, or configure a remote. For a new repository, run setup first and then `git init`; a target containing only `.git` is supported for compatibility and keeps its existing Git metadata.
 
 The first-release CLI support boundary is Linux and macOS. The committed
 representation stays platform-neutral: agent adapters are regular Markdown
@@ -128,7 +132,7 @@ portable repository:
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
-uv tool install .
+uv tool install --link-mode copy .
 cd ../knowledge-base
 obsidian-wiki check
 ```
@@ -139,14 +143,14 @@ obtain the framework source.
 
 In production CI, the knowledge-repository maintainer must pin the framework
 checkout to a concrete fork release tag whose version satisfies the tracked
-`requires_cli` constraint, then run the same `uv tool install .`. The generic
+`requires_cli` constraint, then run the same `uv tool install --link-mode copy .`. The generic
 sequence above remains runnable before this fork has its first release tag, but
 it is a pre-release convenience rather than a production pin. Once a tag
 exists, insert this before installation:
 
 ```bash
 git checkout --detach <fork-release-tag>
-uv tool install .
+uv tool install --link-mode copy .
 ```
 
 `obsidian-wiki check` then fails closed if that tagged CLI does not satisfy

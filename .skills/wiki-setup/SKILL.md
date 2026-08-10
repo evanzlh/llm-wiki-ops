@@ -36,7 +36,21 @@ vault, canonical tracked skills, regular Markdown agent adapters, and bootstrap
 files inside the target repository. It **does not write `~/.obsidian-wiki/config`**
 or global agent skill directories. Do not add a
 repository `.venv`, vendor the CLI, or commit an absolute
-`OBSIDIAN_WIKI_REPO`; each contributor installs the CLI separately with `uv`.
+`OBSIDIAN_WIKI_REPO`; each contributor installs the CLI separately from a
+framework clone:
+
+```bash
+uv tool install --link-mode copy .
+```
+
+Portable setup accepts a missing target, an empty target, or a target containing
+only an ordinary `.git` directory. It preserves an existing `.git` directory
+and rejects arbitrary non-portable content; legacy layouts need explicit migration
+with `obsidian-wiki repo migrate`.
+
+Setup does not run `git init`, commit, or configure a remote. For a new
+repository, run setup first, then `git init`; a Git-only target remains
+compatible and keeps its existing Git metadata.
 
 #### Migrate an existing co-located repository
 
@@ -378,7 +392,7 @@ If yes:
    obsidian-wiki sync-setup "<repo-url>" --vault "$OBSIDIAN_VAULT_PATH"
    ```
    If the installed executable is unavailable, stop and direct the user to the
-   supported clone-and-`uv tool install .` flow. Do not execute source from a
+   supported clone-and-`uv tool install --link-mode copy .` flow. Do not execute source from a
    checkout as a fallback.
 3. Tell the user they can run `obsidian-wiki sync` any time afterward to commit and push pending
    vault changes (stages everything, commits with a timestamp, pushes). There's no config file to

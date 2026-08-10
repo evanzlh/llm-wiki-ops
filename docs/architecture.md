@@ -68,7 +68,7 @@ TOML paths resolve from the repository root. Canonical skills are tracked once
 under `.skills/`; per-agent adapters are regular Markdown files with
 repository-relative references, not symlinks. The knowledge repository does
 not contain `.venv` or a CLI runtime—each contributor installs the CLI from a
-framework clone with `uv tool install .`. `obsidian-wiki repo upgrade-skills`
+framework clone with `uv tool install --link-mode copy .`. `obsidian-wiki repo upgrade-skills`
 refreshes only inventory-owned framework content and preserves owner files.
 Linux and macOS are the first-release CLI support boundary, but no OS-specific
 absolute path is committed.
@@ -342,7 +342,7 @@ The OKF round-trip is lossless. The `graph.json` round-trip is not — it carrie
 
 ## Repo layout
 
-The source-built wheel is the bundled-data carrier for installed operation. It contains the canonical skills, bootstrap files, and hook assets, so the CLI built by `uv tool install .` does not execute the source checkout or require the clone to remain in place.
+The source-built wheel is the bundled-data carrier for installed operation. It contains the canonical skills, bootstrap files, and hook assets, so the CLI built by `uv tool install --link-mode copy .` does not execute the source checkout or require the clone to remain in place.
 
 ```
 obsidian-wiki/

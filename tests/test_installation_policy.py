@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,7 +64,8 @@ def test_bilingual_readmes_disclose_the_fork_and_only_source_install() -> None:
         assert "Ar9av/obsidian-wiki" in text
         assert "5ef66b6bec8b26bab6594ac37fb4d8371469fbab" in text
         assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in text
-        assert "uv tool install ." in text
+        assert SOURCE_INSTALL_COMMAND in text
+        assert SOURCE_REINSTALL_COMMAND in text
         assert "docs/fork.md" in text
         assert "pip install obsidian-wiki" not in text
         assert "setup.sh" not in text
@@ -80,7 +83,7 @@ def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
     adding_skill = contributing.split("## Adding a new skill", 1)[1].split(
         "## Keeping both READMEs in sync", 1
     )[0]
-    rebuild = adding_skill.index("uv tool install --force .")
+    rebuild = adding_skill.index(SOURCE_REINSTALL_COMMAND)
     assert rebuild < adding_skill.index("obsidian-wiki setup")
     assert rebuild < adding_skill.index("Test by saying")
 
@@ -114,6 +117,8 @@ def test_no_unsupported_install_guidance_remains() -> None:
         "npx skills add Ar9av/obsidian-wiki",
         "bash setup.sh",
         "uv tool install git+",
+        "uv tool install .",
+        "uv tool install --force .",
     )
     offenders = {
         path.relative_to(ROOT).as_posix(): token
@@ -128,13 +133,19 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
     checked_roots = (ROOT / ".github", ROOT / "obsidian_wiki", ROOT / "tools")
     files = [ROOT / "pyproject.toml", ROOT / ".env.example"]
     for base in checked_roots:
-        files.extend(path for path in base.rglob("*") if path.is_file())
+        files.extend(
+            path
+            for path in base.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
     banned = (
         "pip install obsidian-wiki",
         "pipx install obsidian-wiki",
         "npx skills add Ar9av/obsidian-wiki",
         "bash setup.sh",
         "uv tool install git+",
+        "uv tool install .",
+        "uv tool install --force .",
     )
     offenders = {
         path.relative_to(ROOT).as_posix(): token
@@ -158,7 +169,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     )
     env = _uv_tool_environment(tmp_path)
     subprocess.run(
-        ["uv", "tool", "install", "."],
+        SOURCE_INSTALL_COMMAND.split(),
         cwd=source,
         env=env,
         text=True,
