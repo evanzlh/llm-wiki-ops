@@ -186,6 +186,13 @@ def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
     assert parsed.lists["sources"] == ("ratio: 0.72",)
 
 
+@pytest.mark.parametrize("key", ["owner's-title", 'measurement"label'])
+def test_parse_plain_keys_preserve_literal_quotes(key: str) -> None:
+    parsed = parse_frontmatter(f"---\n{key}: value\n---\n")
+
+    assert parsed.scalars[key] == "value"
+
+
 def test_parse_relationships_accepts_compact_and_expanded_items_in_any_field_order() -> None:
     parsed = parse_frontmatter(
         '''---
@@ -453,6 +460,39 @@ def test_relationship_parser_ignores_controls_in_unrelated_legacy_content() -> N
     )
 
     assert parse_relationships(page) == ()
+
+
+def test_relationship_parser_ignores_unrelated_nested_legacy_mapping() -> None:
+    page = "---\nmetadata:\n  relationships: []\n---\n"
+
+    assert parse_relationships(page) is None
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        pytest.param("\x0b", id="vertical-tab"),
+        pytest.param("\x0c", id="form-feed"),
+        pytest.param("\x85", id="next-line"),
+        pytest.param("\x7f", id="delete"),
+    ],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_blocks_reject_control_only_whitespace_lines(
+    control: str, parser: Callable[[str], object]
+) -> None:
+    page = (
+        "---\nrelationships:\n"
+        f"  {control}\n"
+        "  - target: one\n    type: uses\n---\n"
+    )
+
+    with pytest.raises(FrontmatterError, match="relationships.*control"):
+        parser(page)
 
 
 @pytest.mark.parametrize(

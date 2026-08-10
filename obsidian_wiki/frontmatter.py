@@ -194,6 +194,31 @@ def _document_lines(text: str) -> tuple[list[str], int]:
     return lines, closing
 
 
+def _quote_starts_key_scalar(prefix: str) -> bool:
+    remaining = prefix.strip()
+    if not remaining:
+        return True
+    while remaining.startswith(("!", "&")):
+        if remaining.startswith("!<"):
+            closing = remaining.find(">", 2)
+            if closing < 0:
+                return False
+            remaining = remaining[closing + 1 :].lstrip()
+            continue
+        separator = next(
+            (
+                index
+                for index, char in enumerate(remaining)
+                if char.isspace()
+            ),
+            None,
+        )
+        if separator is None:
+            return True
+        remaining = remaining[separator:].lstrip()
+    return not remaining
+
+
 def _top_level_mapping(line: str) -> tuple[str, str] | None:
     quote: str | None = None
     verbatim_tag = False
@@ -215,7 +240,7 @@ def _top_level_mapping(line: str) -> tuple[str, str] | None:
         elif verbatim_tag:
             if char == ">":
                 verbatim_tag = False
-        elif char in "'\"":
+        elif char in "'\"" and _quote_starts_key_scalar(line[:index]):
             quote = char
         elif char == "!" and index + 1 < len(line) and line[index + 1] == "<":
             verbatim_tag = True
@@ -473,9 +498,9 @@ def _relationship_anchor(raw_region: str) -> str | None:
     return None
 
 
-def _relationship_block_scalar(raw_region: str) -> bool:
+def _unrelated_indented_block(raw_region: str) -> bool:
     raw = _restricted_uncommented_region(raw_region).strip()
-    return bool(raw) and raw[0] in "|>"
+    return not raw or raw[0] in "|>"
 
 
 def _has_forbidden_relationship_control(value: str) -> bool:
@@ -491,6 +516,12 @@ def _validate_relationship_comment_controls(value: str) -> None:
     uncommented = _restricted_uncommented_region(value)
     if len(uncommented) < len(value):
         _validate_relationship_controls(value[len(uncommented) :])
+
+
+def _relationship_control_only_line(line: str) -> bool:
+    return _has_forbidden_relationship_control(line) and all(
+        char == " " or _has_forbidden_relationship_control(char) for char in line
+    )
 
 
 def _relationship_scalar(raw_region: str, key: str) -> str:
@@ -606,6 +637,8 @@ def _parse_relationships_block(
 
     while index < closing:
         line = lines[index]
+        if _relationship_control_only_line(line):
+            _validate_relationship_controls(line)
         if not line.strip():
             index += 1
             continue
@@ -766,7 +799,7 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
     lines, closing = _document_lines(text)
     relationships: tuple[Relationship, ...] | None = None
     relationship_aliases: set[str] = set()
-    unrelated_block_scalar = False
+    unrelated_indented_block = False
     seen = False
     index = 1
 
@@ -776,7 +809,7 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
             index += 1
             continue
         if line[0].isspace():
-            if unrelated_block_scalar:
+            if unrelated_indented_block:
                 index += 1
                 continue
             stripped = line.strip()
@@ -796,7 +829,7 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
             index += 1
             continue
 
-        unrelated_block_scalar = False
+        unrelated_indented_block = False
         if line.startswith("#"):
             index += 1
             continue
@@ -820,7 +853,7 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
             alias = _relationship_anchor(raw_region)
             if alias is not None:
                 relationship_aliases.add(alias)
-            unrelated_block_scalar = _relationship_block_scalar(raw_region)
+            unrelated_indented_block = _unrelated_indented_block(raw_region)
             index += 1
             continue
         if seen:
