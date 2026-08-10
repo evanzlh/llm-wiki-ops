@@ -130,7 +130,7 @@ def _parse_page(path: Path, vault: Path) -> dict[str, Any]:
         "summary": values.get("summary", "").strip(),
         "fields": fields,
         "links": links,
-        "relationships": _typed_relationships(text),
+        "relationships": _typed_relationships(text) if front_match else [],
     }
 
 

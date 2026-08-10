@@ -108,6 +108,7 @@ def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path
     assert report["status"] == "fail"
     assert report["findings"]["broken_links"] == [{"page": "concepts/alpha.md", "target": "ghost"}]
     assert any(item["page"] == "concepts/beta.md" for item in report["findings"]["missing_frontmatter"])
+    assert report["findings"]["typed_relationship_issues"] == []
 
 
 def test_lint_vault_warns_on_duplicates_missing_summaries_and_orphans(tmp_path: Path) -> None:
