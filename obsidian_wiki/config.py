@@ -380,7 +380,7 @@ def resolve_config(
 
     for ancestor in _ancestors(current_dir):
         portable_path = ancestor / ".obsidian-wiki" / "config.toml"
-        if portable_path.exists():
+        if portable_path.exists() or portable_path.is_symlink():
             portable = load_portable_config(
                 portable_path,
                 installed_version=installed_version,

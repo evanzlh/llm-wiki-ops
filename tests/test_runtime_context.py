@@ -38,6 +38,13 @@ def write_legacy(path: Path, vault: Path) -> Path:
     return path
 
 
+def write_dangling_portable(root: Path) -> Path:
+    config = root / ".obsidian-wiki" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.symlink_to(root / "missing.toml")
+    return config
+
+
 def inspect(cwd: Path, home: Path, vault_arg: str | None = None):
     return inspect_runtime(
         vault_arg,
@@ -141,15 +148,58 @@ def test_dangling_portable_symlink_is_discovered_and_errors_without_override(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "project"
-    config = root / ".obsidian-wiki" / "config.toml"
-    config.parent.mkdir(parents=True)
-    config.symlink_to(root / "missing.toml")
+    config = write_dangling_portable(root)
 
     assert nearest_portable_config(root) == config.absolute()
     result = inspect(root, tmp_path / "home")
     assert result.status == "error"
     assert result.runtime is None
     assert result.error is not None
+
+
+@pytest.mark.parametrize("fallback", ["env", "global"])
+def test_dangling_portable_is_authoritative_over_legacy_fallbacks(
+    tmp_path: Path, fallback: str
+) -> None:
+    root = tmp_path / "project"
+    home = tmp_path / "home"
+    config = write_dangling_portable(root)
+    if fallback == "env":
+        write_legacy(root / ".env", tmp_path / "env-wiki")
+    else:
+        write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "global-wiki")
+
+    result = inspect(root, home)
+
+    assert result.status == "error"
+    assert result.portable_config == config.absolute()
+    assert result.runtime is None
+    assert result.error is not None
+    assert result.warnings == ()
+
+
+@pytest.mark.parametrize("portable_kind", ["invalid", "dangling"])
+@pytest.mark.parametrize("vault_arg", ["explicit-wiki", "@work"])
+def test_explicit_selection_overrides_invalid_or_dangling_portable_context(
+    tmp_path: Path, portable_kind: str, vault_arg: str
+) -> None:
+    root = tmp_path / "project"
+    home = tmp_path / "home"
+    if portable_kind == "invalid":
+        config = write_portable(root, "this is not valid TOML = [")
+    else:
+        config = write_dangling_portable(root)
+    if vault_arg == "@work":
+        write_legacy(home / ".obsidian-wiki" / "config.work", Path("work-wiki"))
+
+    result = inspect(root, home, vault_arg)
+
+    assert result.status == "resolved"
+    assert result.runtime is not None
+    assert result.runtime.mode == ("named" if vault_arg == "@work" else "explicit")
+    assert result.portable_config == config.absolute()
+    assert len(result.warnings) == 1
+    assert result.error is None
 
 
 @pytest.mark.parametrize("kind", ["file", "symlink", "dangling", "none"])
