@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import cli as cli_module
 from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki import transaction as transaction_module
 from obsidian_wiki.config import load_portable_config
@@ -2943,9 +2944,35 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
 
     listed = run_cli(home, root, "transaction", "list", "--json")
     assert listed.returncode == 0, listed.stderr
-    assert json.loads(listed.stdout)[0]["status"] == "active"
-    assert json.loads(listed.stdout)[0]["workspace"]
+    listed_payload = json.loads(listed.stdout)
+    assert isinstance(listed_payload, list)
+    assert listed_payload[0]["status"] == "active"
+    assert listed_payload[0]["workspace"]
+    assert listed_payload[0]["recommended_action"] == {
+        "command": f"obsidian-wiki transaction commit {transaction_id}",
+        "reason": "commit after fixing the original cause and reviewing the candidate",
+        "requires": [
+            "the original failure cause is removed",
+            "the candidate vault has been reviewed",
+        ],
+    }
+    assert listed_payload[0]["allowed_actions"] == [
+        listed_payload[0]["recommended_action"],
+        {
+            "command": f"obsidian-wiki transaction abort {transaction_id}",
+            "reason": "abandon the active staged work",
+            "requires": ["the candidate is no longer needed"],
+        },
+    ]
     assert run_cli(home, root, "transaction", "list", "--json").stdout == listed.stdout
+
+    human_listed = run_cli(home, root, "transaction", "list")
+    assert human_listed.returncode == 0, human_listed.stderr
+    assert human_listed.stdout == (
+        f"{transaction_id}\tactive\t"
+        f"obsidian-wiki transaction commit {transaction_id}\t"
+        f"{candidate_vault.parent}\n"
+    )
 
     deleted = run_cli(
         home,
@@ -3042,15 +3069,15 @@ def test_transaction_cli_retries_a_retained_failed_transaction(
     [
         ("transaction", "begin", "--source", "source.md", "--json"),
         ("transaction", "list", "--json"),
-        ("transaction", "delete", "tx-1", "concepts/a.md"),
+        ("transaction", "delete", "tx-1", "concepts/a.md", "--json"),
         ("transaction", "commit", "tx-1", "--json"),
         ("transaction", "retry", "tx-1", "--json"),
-        ("transaction", "restore", "tx-1"),
-        ("transaction", "discard", "tx-1"),
-        ("transaction", "abort", "tx-1"),
+        ("transaction", "restore", "tx-1", "--json"),
+        ("transaction", "discard", "tx-1", "--json"),
+        ("transaction", "abort", "tx-1", "--json"),
     ],
 )
-def test_transaction_cli_commands_fail_outside_portable_mode(
+def test_transaction_cli_json_failures_outside_portable_mode_are_structured(
     tmp_path: Path, arguments: tuple[str, ...]
 ) -> None:
     cwd = tmp_path / "ordinary"
@@ -3059,5 +3086,125 @@ def test_transaction_cli_commands_fail_outside_portable_mode(
     result = run_cli(tmp_path / "home", cwd, *arguments)
 
     assert result.returncode == 1
-    assert "portable repository" in result.stderr
-    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "config-error"
+    assert "portable repository" in payload["error"]["message"]
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
+    assert result.stdout == json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def test_transaction_cli_active_commit_failure_reports_trusted_guidance(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md", "not frontmatter\n")
+
+    result = run_cli(
+        tmp_path / "home", root, "transaction", "commit", "tx-1", "--json"
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "transaction-error"
+    assert payload["recovery"]["transaction_id"] == "tx-1"
+    assert payload["recovery"]["transaction_status"] == "active"
+    assert payload["recovery"]["preferred_action"]["command"] == (
+        "obsidian-wiki transaction commit tx-1"
+    )
+    assert manager.load("tx-1").status == "active"
+
+
+def test_transaction_cli_corrupt_record_only_reports_inspection_guidance(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    record = TransactionManager(config).begin(
+        [add_source(root)], transaction_id="tx-1"
+    )
+    (record.workspace / "metadata.json").write_text("{not json\n", encoding="utf-8")
+
+    result = run_cli(
+        tmp_path / "home", root, "transaction", "commit", "tx-1", "--json"
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "transaction-error"
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
+
+
+def test_transaction_cli_human_missing_transaction_is_stderr_only(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+
+    result = run_cli(tmp_path / "home", root, "transaction", "commit", "missing")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "error:" in result.stderr
+    assert "inspect: obsidian-wiki transaction list --json" in result.stderr
+    assert "preferred:" not in result.stderr
+    assert "alternative:" not in result.stderr
+
+
+def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    record = TransactionManager(config).begin(
+        [add_source(root)], transaction_id="tx-1"
+    )
+    candidate_page(record, "concepts/a.md", "not frontmatter\n")
+
+    result = run_cli(tmp_path / "home", root, "transaction", "commit", "tx-1")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "error:" in result.stderr
+    assert "transaction status: active" in result.stderr
+    assert "inspect: obsidian-wiki transaction list --json" in result.stderr
+    assert "preferred: obsidian-wiki transaction commit tx-1 — " in result.stderr
+    assert "alternative: obsidian-wiki transaction abort tx-1 — " in result.stderr
+    assert "requires: the original failure cause is removed" in result.stderr
+    assert "requires: the candidate vault has been reviewed" in result.stderr
+    assert "requires: the candidate is no longer needed" in result.stderr
+
+
+def test_global_stale_warning_is_skipped_for_non_transaction_json_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def stale_warning() -> None:
+        print("stale warning", file=sys.stderr)
+
+    def hot_status(args) -> int:
+        cli_module._json_print({"status": "current"}, pretty=args.pretty)
+        return 0
+
+    monkeypatch.setattr(cli_module, "_check_stale", stale_warning)
+    monkeypatch.setattr(cli_module, "cmd_hot_status", hot_status)
+
+    assert cli_module.main(["hot", "status", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "current"}
+    assert captured.err == ""

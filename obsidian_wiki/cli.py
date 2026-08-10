@@ -1878,6 +1878,74 @@ def _transaction_manager():
     return TransactionManager(_portable_command_config("transaction"))
 
 
+def _transaction_error_code(error: Exception) -> str:
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    if isinstance(error, ConfigError):
+        return "config-error"
+    if isinstance(error, ManifestError):
+        return "manifest-error"
+    if isinstance(error, TransactionError):
+        return "transaction-error"
+    raise TypeError(f"unsupported transaction error: {type(error).__name__}")
+
+
+def _trusted_recovery_guidance(manager, transaction_id: str | None):
+    from obsidian_wiki.transaction import TransactionError
+    from obsidian_wiki.transaction_guidance import (
+        guidance_for_record,
+        inspection_only_guidance,
+    )
+
+    if manager is None or transaction_id is None:
+        return inspection_only_guidance()
+    try:
+        record = manager.load(transaction_id)
+    except (TransactionError, OSError, UnicodeError, ValueError):
+        return inspection_only_guidance()
+    return guidance_for_record(record)
+
+
+def _render_transaction_failure(
+    args: argparse.Namespace,
+    error: Exception,
+    *,
+    manager=None,
+    transaction_id: str | None = None,
+) -> int:
+    guidance = _trusted_recovery_guidance(manager, transaction_id)
+    payload = {
+        "status": "error",
+        "error": {
+            "code": _transaction_error_code(error),
+            "message": str(error),
+        },
+        "recovery": guidance.as_dict(),
+    }
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+        return 1
+
+    print(f"error: {error}", file=sys.stderr)
+    if guidance.transaction_status is not None:
+        print(
+            f"transaction status: {guidance.transaction_status}",
+            file=sys.stderr,
+        )
+    print(f"inspect: {guidance.inspect_command}", file=sys.stderr)
+    if guidance.preferred_action is not None:
+        action = guidance.preferred_action
+        print(f"preferred: {action.command} — {action.reason}", file=sys.stderr)
+        for requirement in action.requires:
+            print(f"  requires: {requirement}", file=sys.stderr)
+    for action in guidance.alternatives:
+        print(f"alternative: {action.command} — {action.reason}", file=sys.stderr)
+        for requirement in action.requires:
+            print(f"  requires: {requirement}", file=sys.stderr)
+    return 1
+
+
 def _transaction_source(config: PortableConfig, raw: str) -> Path:
     source = Path(raw).expanduser()
     if source.is_absolute():
@@ -1889,6 +1957,9 @@ def _transaction_source(config: PortableConfig, raw: str) -> Path:
 
 
 def _record_payload(record) -> dict[str, object]:
+    from obsidian_wiki.transaction_guidance import guidance_for_record
+
+    guidance = guidance_for_record(record)
     return {
         "transaction_id": record.transaction_id,
         "status": record.status,
@@ -1898,6 +1969,14 @@ def _record_payload(record) -> dict[str, object]:
         "candidate_vault": str(record.candidate_vault),
         "snapshots": str(record.workspace / "snapshots"),
         "deletions": list(record.deletions),
+        "recommended_action": (
+            guidance.preferred_action.as_dict()
+            if guidance.preferred_action is not None
+            else None
+        ),
+        "allowed_actions": [
+            action.as_dict() for action in guidance.allowed_actions
+        ],
     }
 
 
@@ -1912,11 +1991,18 @@ def _commit_payload(result) -> dict[str, object]:
 
 
 def cmd_transaction_begin(args: argparse.Namespace) -> int:
-    from obsidian_wiki.transaction import TransactionManager
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError, TransactionManager
 
-    config = _portable_command_config("transaction begin")
-    manager = TransactionManager(config)
-    record = manager.begin([_transaction_source(config, raw) for raw in args.sources])
+    manager = None
+    try:
+        config = _portable_command_config("transaction begin")
+        manager = TransactionManager(config)
+        record = manager.begin(
+            [_transaction_source(config, raw) for raw in args.sources]
+        )
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(args, exc, manager=manager)
     payload = _record_payload(record)
     if args.json:
         _json_print(payload, pretty=args.pretty)
@@ -1926,7 +2012,16 @@ def cmd_transaction_begin(args: argparse.Namespace) -> int:
 
 
 def cmd_transaction_list(args: argparse.Namespace) -> int:
-    records = _transaction_manager().list_transactions()
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+    from obsidian_wiki.transaction_guidance import guidance_for_record
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        records = manager.list_transactions()
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(args, exc, manager=manager)
     payload = [_record_payload(record) for record in records]
     if args.json:
         _json_print(payload, pretty=args.pretty)
@@ -1934,13 +2029,34 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
         print("No retained transactions.")
     else:
         for record in records:
-            print(f"{record.transaction_id}\t{record.status}\t{record.workspace}")
+            guidance = guidance_for_record(record)
+            recommended = (
+                guidance.preferred_action.command
+                if guidance.preferred_action is not None
+                else "-"
+            )
+            print(
+                f"{record.transaction_id}\t{record.status}\t"
+                f"{recommended}\t{record.workspace}"
+            )
     return 0
 
 
 def cmd_transaction_delete(args: argparse.Namespace) -> int:
-    manager = _transaction_manager()
-    manager.mark_delete(args.transaction_id, args.path)
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        manager.mark_delete(args.transaction_id, args.path)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
     payload = {
         "transaction_id": args.transaction_id,
         "deleted": args.path,
@@ -1953,9 +2069,21 @@ def cmd_transaction_delete(args: argparse.Namespace) -> int:
 
 
 def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
-    manager = _transaction_manager()
-    action = manager.retry if retry else manager.commit
-    result = action(args.transaction_id)
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        action = manager.retry if retry else manager.commit
+        result = action(args.transaction_id)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
     payload = _commit_payload(result)
     if args.json:
         _json_print(payload, pretty=args.pretty)
@@ -1977,9 +2105,21 @@ def cmd_transaction_retry(args: argparse.Namespace) -> int:
 
 
 def _transaction_state_action(args: argparse.Namespace, action_name: str) -> int:
-    manager = _transaction_manager()
-    action = getattr(manager, action_name)
-    action(args.transaction_id)
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        action = getattr(manager, action_name)
+        action(args.transaction_id)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
     payload = {
         "transaction_id": args.transaction_id,
         "status": {
@@ -3550,13 +3690,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # Warn about stale installs on every command except `setup` (which fixes it)
     # and `info` (which calls _check_stale itself with richer output).
-    if getattr(args, "command", None) not in (
-        "setup",
-        "repo",
-        "info",
-        "doctor",
-        "check",
-        None,
+    if (
+        getattr(args, "command", None)
+        not in ("setup", "repo", "info", "doctor", "check", None)
+        and not getattr(args, "json", False)
     ):
         _check_stale()
     try:
