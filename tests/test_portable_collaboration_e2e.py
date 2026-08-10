@@ -4,10 +4,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
+from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.operations import write_operation
 from obsidian_wiki.portable import setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
@@ -67,6 +69,19 @@ def _git_bytes(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     )
 
 
+def _cli(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    environment = _git_environment(root)
+    environment["PYTHONPATH"] = str(Path(__file__).parents[1])
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _clone(source: Path, target: Path) -> None:
     subprocess.run(
         [
@@ -115,6 +130,13 @@ sources:
 created: {created}
 updated: {created}
 summary: Knowledge compiled from {source_id}.
+relationships:
+  - target: "[[index]]"
+    type: related_to
+provenance:
+  extracted: 1.0
+  inferred: 0.0
+  ambiguous: 0.0
 ---
 # {title}
 """
@@ -283,3 +305,43 @@ def test_unrelated_source_transactions_merge_without_conflicts(tmp_path: Path) -
         "warnings": 0,
         "issues": [],
     }
+
+
+def test_framework_nested_frontmatter_survives_transaction_and_clone(
+    tmp_path: Path,
+) -> None:
+    seed = _portable_seed(tmp_path)
+    _git(seed, "init", "-q")
+    _git(seed, "config", "user.email", "seed@example.invalid")
+    _git(seed, "config", "user.name", "Seed")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-qm", "portable seed")
+
+    source_id = "sources/framework-page.md"
+    page = "concepts/framework-page.md"
+    _ingest(
+        seed,
+        source_id=source_id,
+        page=page,
+        title="Framework Page",
+        transaction_id="framework-nested",
+        started_at="2026-08-10T01:00:00Z",
+        completed_at="2026-08-10T01:05:00Z",
+        operation_suffix="f12a",
+        source_bytes=b"framework nested frontmatter\n",
+    )
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-qm", "ingest framework page")
+
+    clone = tmp_path / "clone"
+    _clone(seed, clone)
+    for root in (seed, clone):
+        doctor = _cli(root, "doctor", "--json")
+        check = _cli(root, "check", "--json")
+        assert doctor.returncode == 0, doctor.stdout + doctor.stderr
+        assert check.returncode == 0, check.stdout + check.stderr
+        assert json.loads(doctor.stdout)["status"] == "pass"
+        assert json.loads(check.stdout)["status"] == "pass"
+        parsed = parse_frontmatter((root / "wiki" / page).read_text(encoding="utf-8"))
+        assert parsed.provenance is not None
+        assert parsed.relationships is not None

@@ -275,6 +275,13 @@ Knowledge that's project-specific goes under `projects/`. Knowledge that's gener
 
 Every page carries required frontmatter: `title`, `category`, `tags`, `sources`, `created`, `updated`.
 
+Portable validation deliberately accepts a restricted frontmatter grammar:
+top-level scalar values, scalar lists, the framework `provenance` mapping
+(`extracted`, `inferred`, `ambiguous`), and the framework `relationships` list
+of mappings (`target`, `type`). These are the only supported nested shapes.
+Arbitrary nested YAML, flow mappings, tags, anchors, and aliases fail closed;
+the CLI does not load general YAML objects from knowledge pages.
+
 In Personal mode, write skills maintain `hot.md` as before. In Portable
 Repository mode it is ignored, freshness-checked local derived state; tracked
 operation entries and page summaries are the durable replacement for its
