@@ -2355,6 +2355,7 @@ def _commit_staged_git_only_repo(root: Path, staging: Path) -> None:
                 )
             staged_entry.replace(target)
             moved.append((target, staged_entry))
+        staging.rmdir()
     except BaseException as original_error:
         rollback_errors: list[str] = []
         for target, staged_entry in reversed(moved):
@@ -2467,7 +2468,6 @@ def setup_portable_repo(
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)
-            staging.rmdir()
         else:
             if target_is_empty:
                 root.rmdir()
@@ -2475,10 +2475,27 @@ def setup_portable_repo(
             staging.replace(root)
     except _PortableSetupRollbackError:
         raise
-    except BaseException:
+    except BaseException as original_error:
+        cleanup_errors: list[str] = []
         if staging.exists() and staging.parent == root.parent:
-            shutil.rmtree(staging)
+            try:
+                shutil.rmtree(staging)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(f"staging {staging}: {cleanup_error}")
         if target_is_empty and removed_empty_target and not root.exists():
-            root.mkdir()
+            try:
+                root.mkdir()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(f"empty target {root}: {cleanup_error}")
+        if cleanup_errors:
+            evidence = (
+                f"; preserved staged evidence at {staging}"
+                if staging.exists() or staging.is_symlink()
+                else ""
+            )
+            raise OSError(
+                "portable setup cleanup is incomplete"
+                f"{evidence}; cleanup errors: {'; '.join(cleanup_errors)}"
+            ) from original_error
         raise
     return root

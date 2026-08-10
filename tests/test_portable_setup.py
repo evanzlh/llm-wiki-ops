@@ -969,6 +969,72 @@ def test_git_only_target_merge_failure_restores_exact_original(
     assert not list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
 
 
+def test_git_only_target_staging_cleanup_failure_restores_exact_original(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    git_dir = root / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text("owner git metadata\n", encoding="utf-8")
+    before = snapshot_tree(root)
+    original_rmdir = Path.rmdir
+    failure_raised = False
+
+    def fail_staging_cleanup_once(self: Path) -> None:
+        nonlocal failure_raised
+        if (
+            not failure_raised
+            and self.parent == root.parent
+            and self.name.startswith(f".{root.name}.obsidian-wiki-")
+            and not any(self.iterdir())
+        ):
+            failure_raised = True
+            raise OSError("simulated staging cleanup failure")
+        original_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", fail_staging_cleanup_once)
+
+    with pytest.raises(OSError, match="simulated staging cleanup failure"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert failure_raised
+    assert snapshot_tree(root) == before
+    assert not list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+
+
+def test_setup_cleanup_failure_preserves_original_error_and_staging_evidence(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    original_rmtree = shutil.rmtree
+
+    def fail_preflight(*args: object, **kwargs: object) -> None:
+        raise ValueError("simulated setup preflight failure")
+
+    def fail_staging_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        candidate = Path(path)
+        if (
+            candidate.parent == root.parent
+            and candidate.name.startswith(f".{root.name}.obsidian-wiki-")
+        ):
+            raise OSError("simulated staging evidence cleanup failure")
+        original_rmtree(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(portable, "_preflight_existing_portable", fail_preflight)
+    monkeypatch.setattr(shutil, "rmtree", fail_staging_cleanup)
+
+    with pytest.raises(OSError, match="cleanup is incomplete") as exc_info:
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert str(exc_info.value.__cause__) == "simulated setup preflight failure"
+    assert "simulated staging evidence cleanup failure" in str(exc_info.value)
+    staging = list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+    assert len(staging) == 1
+    assert snapshot_tree(staging[0])
+    assert not root.exists()
+
+
 def test_setup_cli_scaffolds_git_only_target_and_validators_pass(
     tmp_path: Path,
 ) -> None:
