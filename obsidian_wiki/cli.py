@@ -3124,6 +3124,7 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
 
     parent_tokens: list[str] = []
     leaf_index: int | None = None
+    parent_separator: int | None = None
     index = 1
     while index < len(argv):
         token = argv[index]
@@ -3131,6 +3132,7 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
             leaf_index = index
             break
         if token == "--":
+            parent_separator = index
             index += 1
             if index < len(argv) and argv[index] in _TRANSACTION_SUBCOMMANDS:
                 leaf_index = index
@@ -3146,8 +3148,22 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
             if token == "--":
                 break
             leaf_tokens.append(token)
-
-    option_tokens = (*parent_tokens, *leaf_tokens)
+        option_tokens = (*parent_tokens, *leaf_tokens)
+    else:
+        if parent_separator is None:
+            error_tokens = argv[1:]
+        else:
+            error_tokens = [
+                *argv[1:parent_separator],
+                *argv[parent_separator + 1 :],
+            ]
+        try:
+            separator = error_tokens.index("--")
+        except ValueError:
+            pass
+        else:
+            error_tokens = error_tokens[:separator]
+        option_tokens = tuple(error_tokens)
     return (
         "--json" in option_tokens,
         "--pretty" in option_tokens,

@@ -3448,6 +3448,84 @@ def test_transaction_option_intent_matches_nested_argparse_levels(
 
 
 @pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("transaction", "bogus", "--json"), (True, False, False)),
+        (("transaction", "--json", "bogus"), (True, False, False)),
+        (
+            ("transaction", "bogus", "--pretty", "--json"),
+            (True, True, False),
+        ),
+        (
+            ("transaction", "--json", "--pretty", "bogus"),
+            (True, True, False),
+        ),
+        (("transaction", "bogus", "--", "--json"), (False, False, False)),
+        (("transaction", "--", "bogus", "--json"), (True, False, False)),
+        (
+            ("transaction", "bogus", "--json", "--help"),
+            (True, False, True),
+        ),
+        (("transaction", "--json"), (True, False, False)),
+        (("transaction", "--", "--json"), (True, False, False)),
+    ],
+)
+def test_transaction_option_intent_scans_unknown_subcommand_error_region(
+    arguments: tuple[str, ...], expected: tuple[bool, bool, bool]
+) -> None:
+    assert cli_module._transaction_option_intent(list(arguments)) == expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_mode", "pretty"),
+    [
+        (("transaction", "bogus", "--json"), "json-error", False),
+        (("transaction", "--json", "bogus"), "json-error", False),
+        (
+            ("transaction", "bogus", "--pretty", "--json"),
+            "json-error",
+            True,
+        ),
+        (
+            ("transaction", "--pretty", "--json", "bogus"),
+            "json-error",
+            True,
+        ),
+        (("transaction", "bogus", "--", "--json"), "human-error", False),
+        (("transaction", "--", "bogus", "--json"), "json-error", False),
+        (
+            ("transaction", "bogus", "--json", "--help"),
+            "human-error",
+            False,
+        ),
+        (("transaction", "--json"), "json-error", False),
+        (("transaction", "--", "--json"), "json-error", False),
+    ],
+)
+def test_transaction_cli_unknown_subcommand_intent_is_order_independent(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    expected_mode: str,
+    pretty: bool,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, *arguments)
+
+    if expected_mode == "json-error":
+        assert result.returncode == 1
+        assert result.stderr == ""
+        assert json.loads(result.stdout)["status"] == "error"
+        assert result.stdout.startswith("{\n" if pretty else '{"')
+    else:
+        assert expected_mode == "human-error"
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("usage: obsidian-wiki")
+
+
+@pytest.mark.parametrize(
     ("arguments", "expected_mode", "pretty"),
     [
         (("transaction", "--", "commit", "--json"), "json-error", False),
