@@ -192,6 +192,31 @@ def _document_lines(text: str) -> tuple[list[str], int]:
     return lines, closing
 
 
+def _provenance_uncommented_region(value: str) -> str:
+    quote: str | None = None
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif quote == "'":
+            if char == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif char in "'\"" and _starts_quote(value, index, inline=False):
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index]
+        index += 1
+    return value
+
+
 def _parse_provenance_field(line: str) -> tuple[str, str]:
     field = line[2:]
     delimiter = field.find(":")
@@ -201,20 +226,29 @@ def _parse_provenance_field(line: str) -> tuple[str, str]:
         raise FrontmatterError("provenance field has malformed mapping delimiter")
 
     key_region = field[:delimiter]
-    if "\t" in key_region:
-        raise FrontmatterError("provenance field contains a structural tab")
+    if any(char.isspace() and char != " " for char in key_region):
+        if "\t" in key_region:
+            raise FrontmatterError("provenance field contains a structural tab")
+        raise FrontmatterError("provenance field has unsupported structural whitespace")
 
     raw_region = field[delimiter + 1 :]
-    leading_width = len(raw_region) - len(raw_region.lstrip(" \t"))
-    if "\t" in raw_region[:leading_width]:
-        raise FrontmatterError("provenance field contains a structural tab")
+    uncommented = _provenance_uncommented_region(raw_region)
+    leading_width = len(uncommented) - len(uncommented.lstrip())
+    trailing_width = len(uncommented) - len(uncommented.rstrip())
+    margins = uncommented[:leading_width]
+    if trailing_width:
+        margins += uncommented[-trailing_width:]
+    if any(char != " " for char in margins):
+        if "\t" in margins:
+            raise FrontmatterError("provenance field contains a structural tab")
+        raise FrontmatterError("provenance field has unsupported structural whitespace")
 
-    key = key_region.strip()
-    raw = _strip_comment(raw_region).strip()
+    key = key_region.strip(" ")
+    raw = _strip_comment(raw_region).strip(" ")
     quoted = bool(raw) and raw[0] in "'\""
     value = _scalar(raw)
     if not quoted and any(
-        char == ":" and index + 1 < len(raw) and raw[index + 1] in " \t"
+        char == ":" and (index + 1 == len(raw) or raw[index + 1].isspace())
         for index, char in enumerate(raw)
     ):
         raise FrontmatterError("provenance scalar has an unquoted mapping delimiter")

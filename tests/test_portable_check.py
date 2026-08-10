@@ -162,6 +162,15 @@ def test_parse_provenance_allows_quoted_colon_space_in_scalar() -> None:
     )
 
 
+def test_parse_provenance_allows_quoted_unicode_whitespace_in_scalar() -> None:
+    parsed = parse_frontmatter(
+        '---\nprovenance:\n  extracted: "ratio:\u00a00.72\u2003units"\n  inferred: 0.25\n  ambiguous: 0.03\n---\n'
+    )
+    assert parsed.provenance == Provenance(
+        extracted="ratio:\u00a00.72\u2003units", inferred="0.25", ambiguous="0.03"
+    )
+
+
 def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
     parsed = parse_frontmatter(
         "---\ntitle: ratio: 0.72\nsources:\n  - ratio: 0.72\n---\n"
@@ -236,6 +245,38 @@ def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
         (
             "---\nprovenance:\n  extracted: extra:\t0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
             "provenance.*(?:malformed|delimiter|scalar|tab)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra:\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra: # nested empty\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted\u00a0: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: \u00a00.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted\u2003: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: \u20030.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra:\u00a00.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra:\u20030.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|whitespace)",
         ),
     ],
 )
