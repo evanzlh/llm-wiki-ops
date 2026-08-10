@@ -3413,6 +3413,100 @@ def test_transaction_cli_json_parse_detection_ignores_post_separator_help(
     assert payload["recovery"]["preferred_action"] is None
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("transaction", "--", "commit", "--json"), (True, False, False)),
+        (
+            ("transaction", "--", "commit", "tx", "--json"),
+            (True, False, False),
+        ),
+        (
+            ("transaction", "--", "commit", "tx", "--", "--json"),
+            (False, False, False),
+        ),
+        (
+            ("transaction", "commit", "--json", "tx", "--", "--help"),
+            (True, False, False),
+        ),
+        (("transaction", "--help"), (False, False, True)),
+        (("transaction", "--", "commit", "--help"), (False, False, True)),
+        (
+            ("transaction", "--", "commit", "--json", "--pretty"),
+            (True, True, False),
+        ),
+        (
+            ("transaction", "--", "commit", "--json", "--", "--pretty"),
+            (True, False, False),
+        ),
+    ],
+)
+def test_transaction_option_intent_matches_nested_argparse_levels(
+    arguments: tuple[str, ...], expected: tuple[bool, bool, bool]
+) -> None:
+    assert cli_module._transaction_option_intent(list(arguments)) == expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_mode", "pretty"),
+    [
+        (("transaction", "--", "commit", "--json"), "json-error", False),
+        (
+            ("transaction", "--", "commit", "tx", "--json"),
+            "json-error",
+            False,
+        ),
+        (
+            ("transaction", "--", "commit", "tx", "--", "--json"),
+            "human-error",
+            False,
+        ),
+        (
+            ("transaction", "commit", "--json", "tx", "--", "--help"),
+            "json-error",
+            False,
+        ),
+        (("transaction", "--help"), "help", False),
+        (("transaction", "--", "commit", "--help"), "help", False),
+        (
+            ("transaction", "--", "commit", "--json", "--pretty"),
+            "json-error",
+            True,
+        ),
+        (
+            ("transaction", "--", "commit", "--json", "--", "--pretty"),
+            "json-error",
+            False,
+        ),
+    ],
+)
+def test_transaction_cli_nested_separator_parse_matrix(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    expected_mode: str,
+    pretty: bool,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, *arguments)
+
+    if expected_mode == "json-error":
+        assert result.returncode == 1
+        assert result.stderr == ""
+        assert json.loads(result.stdout)["status"] == "error"
+        assert result.stdout.startswith("{\n" if pretty else '{"')
+    elif expected_mode == "human-error":
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("usage: obsidian-wiki")
+    else:
+        assert expected_mode == "help"
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout.startswith("usage: obsidian-wiki")
+
+
 def test_transaction_cli_post_separator_json_keeps_human_argparse_error(
     tmp_path: Path,
 ) -> None:

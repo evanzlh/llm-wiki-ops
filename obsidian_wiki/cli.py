@@ -3104,6 +3104,57 @@ def _add_json_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+_TRANSACTION_SUBCOMMANDS = frozenset(
+    {
+        "begin",
+        "list",
+        "delete",
+        "commit",
+        "retry",
+        "restore",
+        "discard",
+        "abort",
+    }
+)
+
+
+def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
+    if not argv or argv[0] != "transaction":
+        return False, False, False
+
+    parent_tokens: list[str] = []
+    leaf_index: int | None = None
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in _TRANSACTION_SUBCOMMANDS:
+            leaf_index = index
+            break
+        if token == "--":
+            index += 1
+            if index < len(argv) and argv[index] in _TRANSACTION_SUBCOMMANDS:
+                leaf_index = index
+            break
+        if not token.startswith("-"):
+            break
+        parent_tokens.append(token)
+        index += 1
+
+    leaf_tokens: list[str] = []
+    if leaf_index is not None:
+        for token in argv[leaf_index + 1 :]:
+            if token == "--":
+                break
+            leaf_tokens.append(token)
+
+    option_tokens = (*parent_tokens, *leaf_tokens)
+    return (
+        "--json" in option_tokens,
+        "--pretty" in option_tokens,
+        "-h" in option_tokens or "--help" in option_tokens,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="obsidian-wiki",
@@ -3734,19 +3785,8 @@ def main(argv: list[str] | None = None) -> int:
         argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")
     ):
         argv = ["setup", *argv]
-    try:
-        separator = argv.index("--")
-    except ValueError:
-        option_tokens = argv
-    else:
-        option_tokens = argv[:separator]
-    transaction_json_parse = (
-        bool(option_tokens)
-        and option_tokens[0] == "transaction"
-        and "--json" in option_tokens
-        and "-h" not in option_tokens
-        and "--help" not in option_tokens
-    )
+    json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
+    transaction_json_parse = json_intent and not help_intent
     if transaction_json_parse:
         parse_stderr = StringIO()
         try:
@@ -3762,7 +3802,7 @@ def main(argv: list[str] | None = None) -> int:
                 detail = detail.split(marker, 1)[1]
             parse_args = argparse.Namespace(
                 json=True,
-                pretty="--pretty" in option_tokens,
+                pretty=pretty_intent,
             )
             return _render_transaction_failure(
                 parse_args,
