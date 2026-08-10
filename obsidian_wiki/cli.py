@@ -821,11 +821,6 @@ def _doctor_resolution_error(error: ConfigError) -> dict[str, object]:
     return {"status": "fail", "checks": checks}
 
 
-def _is_absent_runtime_config(error: ConfigError) -> bool:
-    """Recognize the resolver's terminal no-source condition."""
-    return error.args == ("vault not configured",)
-
-
 def _portable_lexical_paths(
     portable: PortableConfig,
 ) -> tuple[Path, Path, Path, tuple[Path, ...]]:

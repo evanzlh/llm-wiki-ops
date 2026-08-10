@@ -302,6 +302,7 @@ def test_doctor_explicit_portable_context_warning_is_additive_in_strict_mode(
     explicit_vault = tmp_path / "explicit-vault"
     _make_vault(explicit_vault)
     _write_config(home, explicit_vault)
+    _install_all_skills(home)
     outside = tmp_path / "outside"
     outside.mkdir()
     args = ("doctor", "--vault", str(explicit_vault), "--json", "--strict")
@@ -309,11 +310,21 @@ def test_doctor_explicit_portable_context_warning_is_additive_in_strict_mode(
     overridden = _run(home, *args, cwd=nested)
     baseline = _run(home, *args, cwd=outside)
 
-    assert overridden.returncode == baseline.returncode
+    assert baseline.returncode == 0
+    assert overridden.returncode == 0
     overridden_report = json.loads(overridden.stdout)
     baseline_report = json.loads(baseline.stdout)
-    assert overridden_report["status"] == baseline_report["status"]
+    assert baseline_report["status"] == "pass"
+    assert overridden_report["status"] == "pass"
     assert overridden_report["checks"] == baseline_report["checks"]
+    baseline_warning_count = sum(
+        check["status"] == "warn" for check in baseline_report["checks"]
+    )
+    overridden_warning_count = sum(
+        check["status"] == "warn" for check in overridden_report["checks"]
+    )
+    assert baseline_warning_count == 0
+    assert overridden_warning_count == baseline_warning_count
     assert len(overridden_report["context_warnings"]) == 1
     assert overridden_report["context_warnings"][0]["code"] == "portable-context-overridden"
     assert overridden_report["context_warnings"][0]["selected_mode"] == "explicit"
