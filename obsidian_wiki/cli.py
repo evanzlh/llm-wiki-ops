@@ -24,7 +24,7 @@ try:
 except ModuleNotFoundError:  # Python 3.9/3.10
     import tomli as tomllib
 
-from obsidian_wiki import IMPLEMENTATION_ID, __version__
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import (
     ConfigError,
     PortableConfig,
@@ -59,7 +59,7 @@ GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
 GLOBAL_CONFIG = GLOBAL_CONFIG_DIR / "config"
 SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/obsidian-wiki, then run "
-    "`uv tool install --force .` from the clone"
+    f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
 )
 
 # Skills usable from any project (no vault context needed beyond the global
@@ -93,7 +93,8 @@ def skills_dir() -> Path:
             return cand
     raise FileNotFoundError(
         "Could not locate bundled skills. Reinstall from a clone of "
-        "https://github.com/evanzlh/obsidian-wiki with `uv tool install --force .`."
+        "https://github.com/evanzlh/obsidian-wiki with "
+        f"`{SOURCE_REINSTALL_COMMAND}`."
     )
 
 

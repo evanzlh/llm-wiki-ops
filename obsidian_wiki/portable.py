@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - repository upgrades are Unix-first
 
 from packaging.version import InvalidVersion, Version
 
-from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND
 from obsidian_wiki.config import PortableConfig, load_portable_config
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
@@ -293,7 +293,9 @@ def _source_entry_kind(path: Path, *, missing_ok: bool = False) -> str | None:
     if stat.S_ISREG(mode):
         if metadata.st_nlink > 1:
             raise ValueError(
-                f"canonical skill source regular file has multiple links (hard link): {path}"
+                "canonical skill source regular file has multiple links (hard link): "
+                f"{path}. Reinstall from a framework clone with "
+                f"`{SOURCE_REINSTALL_COMMAND}`."
             )
         return "file"
     raise ValueError(f"canonical skill source entry must be an ordinary file or directory: {path}")

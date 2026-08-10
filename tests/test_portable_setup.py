@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import IMPLEMENTATION_ID, cli, portable
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, cli, portable
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable import (
     MANAGED_END,
@@ -2559,8 +2559,10 @@ def test_source_skill_hard_links_are_rejected_before_target_creation(
         os.link(external, skill_file)
     target = tmp_path / "repo"
 
-    with pytest.raises(ValueError, match="hard link|multiple links"):
+    with pytest.raises(ValueError, match="hard link|multiple links") as exc_info:
         setup_portable_repo(target, version="2026.8.3", source_skills=source)
+
+    assert SOURCE_REINSTALL_COMMAND in str(exc_info.value)
 
     assert external.read_bytes() == external_bytes
     assert not target.exists()
