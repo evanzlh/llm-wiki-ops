@@ -153,6 +153,15 @@ provenance:
     assert parsed.fields == frozenset({"title", "provenance"})
 
 
+def test_parse_provenance_allows_quoted_colon_space_in_scalar() -> None:
+    parsed = parse_frontmatter(
+        '---\nprovenance:\n  extracted: "ratio: 0.72"\n  inferred: 0.25\n  ambiguous: 0.03\n---\n'
+    )
+    assert parsed.provenance == Provenance(
+        extracted="ratio: 0.72", inferred="0.25", ambiguous="0.03"
+    )
+
+
 @pytest.mark.parametrize(
     ("page", "match"),
     [
@@ -191,6 +200,22 @@ provenance:
         (
             "---\nprovenance:\n  extracted: *value\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
             "YAML.*tag.*anchor.*alias",
+        ),
+        (
+            "---\nprovenance:\n  extracted:0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar)",
+        ),
+        (
+            "---\nprovenance:\n  extracted:\t0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar)",
+        ),
+        (
+            "---\nprovenance:\n  extracted:extra: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar)",
         ),
     ],
 )

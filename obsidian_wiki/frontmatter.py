@@ -192,6 +192,23 @@ def _document_lines(text: str) -> tuple[list[str], int]:
     return lines, closing
 
 
+def _parse_provenance_field(line: str) -> tuple[str, str]:
+    field = line[2:]
+    delimiter = field.find(":")
+    if delimiter < 0 or (
+        delimiter + 1 < len(field) and field[delimiter + 1] != " "
+    ):
+        raise FrontmatterError("provenance field has malformed mapping delimiter")
+
+    key = field[:delimiter].strip()
+    raw = _strip_comment(field[delimiter + 1 :]).strip()
+    quoted = bool(raw) and raw[0] in "'\""
+    value = _scalar(raw)
+    if not quoted and ": " in raw:
+        raise FrontmatterError("provenance scalar has an unquoted mapping delimiter")
+    return key, value
+
+
 def _parse_provenance(
     lines: list[str], index: int, closing: int
 ) -> tuple[Provenance, int]:
@@ -208,15 +225,13 @@ def _parse_provenance(
         if not line.startswith("  ") or len(line) == 2 or line[2].isspace():
             raise FrontmatterError("provenance indentation must use exactly two spaces")
 
-        child, raw = line[2:].split(":", 1) if ":" in line[2:] else ("", "")
-        key = child.strip()
+        key, value = _parse_provenance_field(line)
         if not key:
             raise FrontmatterError("malformed provenance field")
         if key not in _PROVENANCE_FIELDS:
             raise FrontmatterError(f"provenance has unknown field: {key!r}")
         if key in values:
             raise FrontmatterError(f"provenance has duplicate field: {key!r}")
-        value = _scalar(raw)
         if not value:
             raise FrontmatterError(f"provenance has empty field: {key!r}")
         values[key] = value
