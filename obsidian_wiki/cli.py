@@ -783,17 +783,6 @@ def _doctor_project_check(project_dir: Path) -> dict[str, str]:
     }
 
 
-def _nearest_portable_config() -> Path | None:
-    current = Path.cwd().resolve()
-    while True:
-        candidate = current / ".obsidian-wiki/config.toml"
-        if candidate.exists() or candidate.is_symlink():
-            return candidate
-        if current.parent == current:
-            return None
-        current = current.parent
-
-
 def _refuse_portable_git_workflow() -> bool:
     portable_config = nearest_portable_config(Path.cwd())
     if portable_config is None:
@@ -1822,7 +1811,7 @@ def cmd_cache_hash(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    portable_candidate = _nearest_portable_config()
+    portable_candidate = nearest_portable_config(Path.cwd())
     resolution_errors: list[ConfigError] = []
     runtime = _resolve_runtime(error_sink=resolution_errors)
     if runtime is None:

@@ -6,12 +6,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import obsidian_wiki.cli as cli
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import skills_dir
-from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.config import ConfigError, load_portable_config
 from obsidian_wiki.frontmatter import (
     FrontmatterError,
     Provenance,
@@ -1866,6 +1868,34 @@ def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> Non
     assert proc.returncode == 1
     assert proc.stdout == ""
     assert proc.stderr.strip() == "error: check requires a portable repository"
+
+
+def test_cmd_check_uses_shared_portable_config_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    discovered: list[Path] = []
+    candidate = tmp_path / ".obsidian-wiki" / "config.toml"
+    before = tuple(tmp_path.iterdir())
+    monkeypatch.chdir(tmp_path)
+
+    def discover(cwd: Path) -> Path:
+        discovered.append(cwd)
+        return candidate
+
+    def resolution_failure(*, error_sink: list[ConfigError]) -> None:
+        error_sink.append(ConfigError("portable config is invalid"))
+        return None
+
+    monkeypatch.setattr(cli, "nearest_portable_config", discover)
+    monkeypatch.setattr(cli, "_resolve_runtime", resolution_failure)
+
+    assert cli.cmd_check(SimpleNamespace()) == 1
+
+    captured = capsys.readouterr()
+    assert discovered == [tmp_path]
+    assert captured.out == ""
+    assert captured.err == "error: portable config is invalid\n"
+    assert tuple(tmp_path.iterdir()) == before
 
 
 def test_checker_rejects_noncanonical_configured_skills_path(tmp_path: Path) -> None:
