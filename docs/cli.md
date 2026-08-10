@@ -226,23 +226,84 @@ it with `transaction list --json`, then deliberately `retry`, `restore`,
 `abort`, or `discard` according to its status. A completed transaction remains
 available for restore until discarded.
 
-Transaction JSON failures use one error envelope. Conceptually, it has
-top-level `status`, `error` (`code` and `message`), and `"recovery"` fields.
-The error code is `config-error`, `manifest-error`, or `transaction-error`.
-When the record cannot be validated or trusted, recovery is inspection-only:
-its transaction ID, status, and preferred action are null, it offers no
-alternatives, and it points to `obsidian-wiki transaction list --json`.
+Transaction JSON failures use this exact envelope shape (values shown are an
+example):
 
-For human transaction failures, stdout is empty. Stderr is ordered as the
-error, an optional trusted transaction status, the inspect command, the
-preferred action and its requirements, then alternatives and their
-requirements. Displayed untrusted control characters are escaped, and the CLI
-does not invent commands for an untrusted record.
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "transaction-error",
+    "message": "..."
+  },
+  "recovery": {
+    "transaction_id": "tx-1",
+    "transaction_status": "failed",
+    "inspect_command": "obsidian-wiki transaction list --json",
+    "preferred_action": {
+      "command": "obsidian-wiki transaction retry tx-1",
+      "reason": "...",
+      "requires": ["..."]
+    },
+    "alternatives": [
+      {
+        "command": "obsidian-wiki transaction restore tx-1",
+        "reason": "...",
+        "requires": ["..."]
+      }
+    ]
+  }
+}
+```
 
-`obsidian-wiki transaction list --json` remains a top-level array. Each record
-adds `recommended_action` and `allowed_actions`, whose actions include a
-command, reason, and prerequisites. Human `transaction list` output includes
-the recommended command too.
+The top-level `recovery` object always has the five keys shown above.
+`error.code` is `config-error`, `manifest-error`, or `transaction-error`, but
+the code does not determine whether recovery actions are trusted. Recovery
+trust comes only from a validated retained record reloaded after the failure.
+Configuration, `begin`, `list`, and other no-ID failures are inspection-only,
+as are corrupt or unreadable records: `transaction_id`, `transaction_status`,
+and `preferred_action` are null, `alternatives` is empty, and `inspect_command`
+remains `obsidian-wiki transaction list --json`. A `manifest-error` during
+`commit` or `retry` can still include mutating guidance when its named retained
+record reloads and validates.
+
+For human transaction failures, stdout is empty. Within the transaction
+failure block, stderr is ordered as the error, an optional trusted transaction
+status, the inspect command, the preferred action and its requirements, then
+alternatives and their requirements. An ambient stale-install warning and hint
+may precede that block. Displayed untrusted control characters are escaped,
+and the CLI does not invent commands for an untrusted record.
+
+`obsidian-wiki transaction list --json` remains a top-level array. Its record
+additions have this shape:
+
+```json
+[
+  {
+    "transaction_id": "tx-1",
+    "status": "failed",
+    "recommended_action": {
+      "command": "obsidian-wiki transaction retry tx-1",
+      "reason": "...",
+      "requires": ["..."]
+    },
+    "allowed_actions": [
+      {
+        "command": "obsidian-wiki transaction retry tx-1",
+        "reason": "...",
+        "requires": ["..."]
+      }
+    ]
+  }
+]
+```
+
+`recommended_action` is an action object or null; `allowed_actions` is an
+array of action objects. Failure envelopes call the corresponding fields
+`recovery.preferred_action` and `recovery.alternatives`. For a trusted record,
+`allowed_actions` contains the preferred/recommended action followed by every
+alternative. Human `transaction list` output includes the recommended command
+too.
 
 Use the status/action matrix rather than guessing after a failure:
 
@@ -254,11 +315,10 @@ Use the status/action matrix rather than guessing after a failure:
 | `complete` | `discard` after accepting the result. | `restore` while affected files match recorded postimages. |
 | `restored` | `discard` after reviewing the restore. | A second, idempotent `restore`. |
 
-Every action includes its reason and prerequisites. Only a validated retained
-record can yield mutating guidance; corrupt or untrusted records, manifest
-failures, and configuration failures are inspection-only. Guidance never
+Every action includes its `reason` and `requires` prerequisites. Guidance never
 executes recovery, prompts, or invokes Git: after checking the prerequisites,
-the user explicitly runs the chosen command.
+the user explicitly runs the chosen command. No action is automatically
+executed.
 
 Transaction JSON parse errors are structured with the same envelope. Use full
 option names for transaction commands: their parsers do not accept long-option

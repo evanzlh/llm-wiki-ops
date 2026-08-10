@@ -3284,6 +3284,13 @@ def test_transaction_cli_corrupt_manifest_marker_reports_manifest_error(
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "manifest-error"
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
     assert result.stdout == json.dumps(payload, ensure_ascii=True) + "\n"
 
 
@@ -3325,6 +3332,19 @@ def test_transaction_cli_corrupt_manifest_shard_reports_manifest_error(
     assert captured.err == ""
     payload = json.loads(captured.out)
     assert payload["error"]["code"] == "manifest-error"
+    reloaded = manager.load("tx-1")
+    assert reloaded.status == "failed"
+    guidance = transaction_guidance_module.guidance_for_record(reloaded)
+    assert payload["recovery"] == guidance.as_dict()
+    assert payload["recovery"]["transaction_id"] == "tx-1"
+    assert payload["recovery"]["transaction_status"] == "failed"
+    serialized_actions = [
+        payload["recovery"]["preferred_action"],
+        *payload["recovery"]["alternatives"],
+    ]
+    assert [action["command"] for action in serialized_actions] == [
+        action.command for action in guidance.allowed_actions
+    ]
     assert captured.out == json.dumps(payload, ensure_ascii=True) + "\n"
 
 

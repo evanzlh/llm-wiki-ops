@@ -33,6 +33,18 @@ def skill_text(name: str) -> str:
     return (ROOT / ".skills" / name / "SKILL.md").read_text(encoding="utf-8")
 
 
+def markdown_section(text: str, heading: str) -> str:
+    marker = f"{heading}\n"
+    start = text.index(marker) + len(marker)
+    level = len(heading) - len(heading.lstrip("#"))
+    candidates = [
+        index
+        for sublevel in range(2, level + 1)
+        if (index := text.find(f"\n{'#' * sublevel} ", start)) >= 0
+    ]
+    return text[start : min(candidates, default=len(text))]
+
+
 def test_every_write_skill_routes_portable_writes_to_transactions() -> None:
     for name in WRITE_SKILLS:
         text = skill_text(name)
@@ -130,17 +142,53 @@ def test_query_read_only_contract_allows_only_local_hot_freshness_state() -> Non
 
 def test_cli_and_configuration_docs_cover_portable_context_and_recovery() -> None:
     cli = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    setup = markdown_section(cli, "## Setup & inspection")
     for required in (
         "obsidian-wiki info --json --pretty",
         "portable-context-overridden",
         "context_warnings",
-        '"recovery"',
+    ):
+        assert required in setup
+
+    transactions = markdown_section(
+        cli, "## Portable transactions and local hot state"
+    )
+    for required in (
+        "`recovery`",
+        '"status"',
+        '"error"',
+        '"code"',
+        '"message"',
+        '"transaction_id"',
+        '"transaction_status"',
+        '"inspect_command"',
+        "preferred_action",
+        "alternatives",
+        "command",
+        "reason",
+        "requires",
         "recommended_action",
         "allowed_actions",
+        "config-error",
+        "manifest-error",
+        "transaction-error",
+        "validated retained record",
         "obsidian-wiki transaction list --json",
     ):
-        assert required in cli
+        assert required in transactions
 
     configuration = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
-    for required in ("same vault", "sync", "sync-setup", "branch and pull request"):
-        assert required in configuration
+    explicit = markdown_section(
+        configuration, "### Explicit selections from a Portable Repository CWD"
+    )
+    for required in (
+        "same vault",
+        "sync",
+        "sync-setup",
+        "branch and pull request",
+        "dangling symlink",
+        "no `.env` or global fallback",
+        "does not parse or load",
+        "cannot block the explicit selection",
+    ):
+        assert required in explicit

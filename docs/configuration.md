@@ -29,10 +29,10 @@ warns. The warning does not change the command's exit status.
 Lexical portable discovery recognizes an ordinary
 `.obsidian-wiki/config.toml` file, a valid symlink, and a dangling symlink.
 For an explicit override, the CLI discovers the shadowed portable entry only
-to report its location; it does not parse or load that TOML solely to warn, so
-an invalid shadowed config cannot block step 0. Without an override, the
-nearest portable entry is authoritative. A dangling or invalid entry fails
-closed: there is no `.env` or global fallback.
+to report its location; it does not parse or load that TOML solely to warn. An
+invalid shadowed config cannot block the explicit selection. Without an
+override, the nearest portable entry is authoritative. A dangling or invalid
+entry fails closed: there is no `.env` or global fallback.
 
 `obsidian-wiki info --vault PATH` (or `@name`) is a read-only invocation
 preview. It does not mutate a profile symlink or configuration and does not
