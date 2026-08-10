@@ -390,6 +390,10 @@ def _parse_relationships_block(
             index += 1
             continue
         if not line[0].isspace():
+            if line.startswith("-"):
+                raise _relationship_error(
+                    "item indentation must use exactly two spaces"
+                )
             break
 
         indentation = _relationship_indentation(line)
@@ -431,6 +435,8 @@ def _parse_relationships_block(
 
     if current is not None:
         relationships.append(_relationship(current))
+    if not relationships:
+        raise _relationship_error("block must contain at least one item")
     return tuple(relationships), index
 
 

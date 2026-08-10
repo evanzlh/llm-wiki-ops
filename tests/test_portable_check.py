@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ from obsidian_wiki.frontmatter import (
     Provenance,
     Relationship,
     parse_frontmatter,
+    parse_relationships,
 )
 from obsidian_wiki.operations import OperationChange, write_operation
 from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
@@ -352,8 +354,6 @@ def test_parse_relationships_preserves_quoted_colons_and_unicode_whitespace() ->
 
 
 def test_parse_relationships_entry_point_ignores_unrelated_block_scalar() -> None:
-    from obsidian_wiki.frontmatter import parse_relationships
-
     page = '''---
 summary: >-
   This is deliberately outside the restricted parser grammar.
@@ -370,8 +370,6 @@ relationships:
 
 
 def test_parse_relationships_entry_point_distinguishes_absent_and_empty() -> None:
-    from obsidian_wiki.frontmatter import parse_relationships
-
     assert parse_relationships("---\ntitle: A\n---\n") is None
     assert parse_relationships("---\nrelationships: [] # comment\n---\n") == ()
 
@@ -388,10 +386,40 @@ def test_parse_relationships_entry_point_distinguishes_absent_and_empty() -> Non
 def test_parse_relationships_entry_point_rejects_invalid_relationships(
     page: str,
 ) -> None:
-    from obsidian_wiki.frontmatter import parse_relationships
-
     with pytest.raises(FrontmatterError, match="relationships|duplicate"):
         parse_relationships(page)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "---\nrelationships:\n---\n",
+        "---\nrelationships:\n  # none\n---\n",
+        '---\nrelationships:\n- target: "[[a]]"\n  type: uses\n---\n',
+        '''---
+relationships:
+  - target: "[[a]]"
+    type: uses
+- target: "[[b]]"
+  type: contradicts
+---
+''',
+    ],
+    ids=["bare", "comment-only", "zero-indented-first", "zero-indented-extra"],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_blocks_reject_empty_or_zero_indented_items(
+    page: str, parser: Callable[[str], object]
+) -> None:
+    with pytest.raises(
+        FrontmatterError,
+        match="relationships.*(?:malformed|list|indent|item)",
+    ):
+        parser(page)
 
 
 @pytest.mark.parametrize(
