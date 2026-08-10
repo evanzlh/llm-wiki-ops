@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 _PROVENANCE_FIELDS = frozenset({"extracted", "inferred", "ambiguous"})
 _RELATIONSHIP_FIELDS = frozenset({"target", "type"})
+_RELATIONSHIP_FORBIDDEN_PLAIN_STARTS = frozenset(",]}%@`")
 
 
 class FrontmatterError(ValueError):
@@ -193,7 +194,7 @@ def _document_lines(text: str) -> tuple[list[str], int]:
     return lines, closing
 
 
-def _provenance_uncommented_region(value: str) -> str:
+def _restricted_uncommented_region(value: str) -> str:
     quote: str | None = None
     index = 0
     while index < len(value):
@@ -218,6 +219,19 @@ def _provenance_uncommented_region(value: str) -> str:
     return value
 
 
+def _validate_restricted_margins(value: str, owner: str) -> None:
+    uncommented = _restricted_uncommented_region(value)
+    leading_width = len(uncommented) - len(uncommented.lstrip())
+    trailing_width = len(uncommented) - len(uncommented.rstrip())
+    margins = uncommented[:leading_width]
+    if trailing_width:
+        margins += uncommented[-trailing_width:]
+    if any(char != " " for char in margins):
+        if "\t" in margins:
+            raise FrontmatterError(f"{owner} contains a structural tab")
+        raise FrontmatterError(f"{owner} has unsupported structural whitespace")
+
+
 def _parse_provenance_field(line: str) -> tuple[str, str]:
     field = line[2:]
     delimiter = field.find(":")
@@ -233,16 +247,7 @@ def _parse_provenance_field(line: str) -> tuple[str, str]:
         raise FrontmatterError("provenance field has unsupported structural whitespace")
 
     raw_region = field[delimiter + 1 :]
-    uncommented = _provenance_uncommented_region(raw_region)
-    leading_width = len(uncommented) - len(uncommented.lstrip())
-    trailing_width = len(uncommented) - len(uncommented.rstrip())
-    margins = uncommented[:leading_width]
-    if trailing_width:
-        margins += uncommented[-trailing_width:]
-    if any(char != " " for char in margins):
-        if "\t" in margins:
-            raise FrontmatterError("provenance field contains a structural tab")
-        raise FrontmatterError("provenance field has unsupported structural whitespace")
+    _validate_restricted_margins(raw_region, "provenance field")
 
     key = key_region.strip(" ")
     raw = _strip_comment(raw_region).strip(" ")
@@ -303,6 +308,100 @@ def _relationship_error(message: str) -> FrontmatterError:
     return FrontmatterError(f"relationships {message}")
 
 
+def _relationship_key(key_region: str) -> bool:
+    ascii_trimmed = key_region.strip(" ")
+    if ascii_trimmed == "relationships":
+        return True
+
+    normalized = key_region.strip()
+    if normalized == "relationships":
+        raise _relationship_error("key has unsupported structural whitespace")
+
+    quoted = {'"relationships"', "'relationships'"}
+    if normalized in quoted:
+        raise _relationship_error("reserved key has an unsupported quoted spelling")
+
+    decorated = normalized
+    has_property = False
+    while decorated.startswith(("!", "&")):
+        separator = next(
+            (
+                index
+                for index, char in enumerate(decorated)
+                if char.isspace()
+            ),
+            None,
+        )
+        if separator is None:
+            break
+        has_property = True
+        decorated = decorated[separator:].strip()
+    if has_property and (decorated == "relationships" or decorated in quoted):
+        raise _relationship_error(
+            "reserved key has an unsupported tagged or anchored spelling"
+        )
+    return False
+
+
+def _check_indented_relationship_key(line: str) -> None:
+    if ":" not in line:
+        return
+    key_region = line.split(":", 1)[0]
+    leading_width = len(key_region) - len(key_region.lstrip())
+    leading = key_region[:leading_width]
+    if any(char != " " for char in leading):
+        _relationship_key(key_region)
+
+
+def _relationship_scalar(raw_region: str, key: str) -> str:
+    try:
+        raw = _strip_comment(raw_region).strip(" ")
+    except FrontmatterError as exc:
+        raise _relationship_error(f"field {key!r} scalar: {exc}") from exc
+
+    if not raw:
+        return raw
+
+    quoted = raw[0] in "'\""
+    if not quoted:
+        if raw[0] in "|>":
+            raise _relationship_error(
+                f"field {key!r} scalar uses an unsupported block scalar header"
+            )
+        if raw[0] in _RELATIONSHIP_FORBIDDEN_PLAIN_STARTS:
+            raise _relationship_error(
+                f"field {key!r} scalar starts with a forbidden YAML indicator"
+            )
+        if raw[0] in "-?:" and (
+            len(raw) == 1 or raw[1].isspace()
+        ):
+            raise _relationship_error(
+                f"field {key!r} scalar starts with a separated YAML indicator"
+            )
+
+    try:
+        value = _scalar(raw)
+    except FrontmatterError as exc:
+        raise _relationship_error(f"field {key!r} scalar: {exc}") from exc
+
+    if not quoted:
+        if any(
+            char == ":" and (
+                index + 1 == len(raw) or raw[index + 1].isspace()
+            )
+            for index, char in enumerate(raw)
+        ):
+            raise _relationship_error(
+                f"field {key!r} scalar has an unquoted mapping delimiter"
+            )
+
+    if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in raw):
+        raise _relationship_error(
+            f"field {key!r} scalar contains an unsupported control character"
+        )
+    return value
+
+
 def _relationship_field(line: str) -> tuple[str, str]:
     delimiter = line.find(":")
     if delimiter < 0 or (
@@ -319,29 +418,9 @@ def _relationship_field(line: str) -> tuple[str, str]:
         raise _relationship_error("field has unsupported structural whitespace")
 
     raw_region = line[delimiter + 1 :]
-    uncommented = _provenance_uncommented_region(raw_region)
-    leading_width = len(uncommented) - len(uncommented.lstrip())
-    trailing_width = len(uncommented) - len(uncommented.rstrip())
-    margins = uncommented[:leading_width]
-    if trailing_width:
-        margins += uncommented[-trailing_width:]
-    if any(char != " " for char in margins):
-        if "\t" in margins:
-            raise _relationship_error("field contains a structural tab")
-        raise _relationship_error("field has unsupported structural whitespace")
+    _validate_restricted_margins(raw_region, "relationships field")
 
-    raw = _strip_comment(raw_region).strip(" ")
-    quoted = bool(raw) and raw[0] in "'\""
-    try:
-        value = _scalar(raw)
-    except FrontmatterError as exc:
-        raise _relationship_error(f"field {key!r}: {exc}") from exc
-    if not quoted and any(
-        char == ":" and (index + 1 == len(raw) or raw[index + 1].isspace())
-        for index, char in enumerate(raw)
-    ):
-        raise _relationship_error("scalar has an unquoted mapping delimiter")
-    return key, value
+    return key, _relationship_scalar(raw_region, key)
 
 
 def _relationship(values: dict[str, str]) -> Relationship:
@@ -448,18 +527,7 @@ def _relationships_inline(raw_region: str) -> tuple[Relationship, ...] | None:
             raise _relationship_error("mapping delimiter must not use a tab")
         raise _relationship_error("has a malformed mapping delimiter")
 
-    uncommented = _provenance_uncommented_region(raw_region)
-    leading_width = len(uncommented) - len(uncommented.lstrip())
-    trailing_width = len(uncommented) - len(uncommented.rstrip())
-    margins = uncommented[:leading_width]
-    if trailing_width:
-        margins += uncommented[-trailing_width:]
-    if any(char != " " for char in margins):
-        if "\t" in margins:
-            raise _relationship_error("inline value contains a structural tab")
-        raise _relationship_error(
-            "inline value has unsupported structural whitespace"
-        )
+    _validate_restricted_margins(raw_region, "relationships inline value")
 
     try:
         raw = _strip_comment(raw_region).strip(" ")
@@ -486,14 +554,18 @@ def parse_frontmatter(text: str) -> Frontmatter:
         if not line.strip() or line.lstrip().startswith("#"):
             index += 1
             continue
-        if line[0].isspace() or ":" not in line:
+        if line[0].isspace():
+            _check_indented_relationship_key(line)
             raise FrontmatterError(f"malformed frontmatter line {index + 1}")
-        key, raw_region = line.split(":", 1)
-        key = key.strip()
+        if ":" not in line:
+            raise FrontmatterError(f"malformed frontmatter line {index + 1}")
+        key_region, raw_region = line.split(":", 1)
+        is_relationship = _relationship_key(key_region)
+        key = key_region.strip()
         if not key or key in seen:
             raise FrontmatterError(f"duplicate or empty frontmatter key: {key!r}")
         seen.add(key)
-        if key == "relationships":
+        if is_relationship:
             relationships = _relationships_inline(raw_region)
             if relationships is None:
                 relationships, index = _parse_relationships_block(
@@ -549,15 +621,19 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
 
     while index < closing:
         line = lines[index]
-        if not line.strip() or line.lstrip().startswith("#") or line[0].isspace():
+        if not line.strip() or line.lstrip().startswith("#"):
+            index += 1
+            continue
+        if line[0].isspace():
+            _check_indented_relationship_key(line)
             index += 1
             continue
         if ":" not in line:
             index += 1
             continue
 
-        key, raw_region = line.split(":", 1)
-        if key.strip() != "relationships":
+        key_region, raw_region = line.split(":", 1)
+        if not _relationship_key(key_region):
             index += 1
             continue
         if seen:

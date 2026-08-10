@@ -231,6 +231,131 @@ relationships:
 
 
 @pytest.mark.parametrize(
+    "leaf",
+    [
+        "|",
+        "|-",
+        ">",
+        ">-",
+        "@bad",
+        "%bad",
+        "`bad`",
+        ",bad",
+        "]bad",
+        "}bad",
+        "- thing",
+        "? thing",
+        ": thing",
+        "bad\x01value",
+        "bad\x80value",
+        '"unterminated',
+    ],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_leaves_reject_yaml_control_syntax(
+    leaf: str, parser: Callable[[str], object]
+) -> None:
+    page = f"---\nrelationships:\n  - target: {leaf}\n    type: uses\n---\n"
+
+    with pytest.raises(
+        FrontmatterError,
+        match="relationships.*(?:scalar|syntax|indicator|control|quote|header|unsupported)",
+    ):
+        parser(page)
+
+
+def test_relationship_leaves_preserve_quoted_and_valid_plain_scalars() -> None:
+    page = '''---
+relationships:
+  - target: "@bad"
+    type: "ratio: value\u00a0with\u2003Unicode"
+  - target: -thing
+    type: ?thing
+  - target: :thing
+    type: uses
+---
+'''
+    expected = (
+        Relationship(target="@bad", type="ratio: value\u00a0with\u2003Unicode"),
+        Relationship(target="-thing", type="?thing"),
+        Relationship(target=":thing", type="uses"),
+    )
+
+    assert parse_frontmatter(page).relationships == expected
+    assert parse_relationships(page) == expected
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "\trelationships",
+        "\u00a0relationships",
+        "relationships\t",
+        "relationships\u00a0",
+        '"relationships"',
+        "'relationships'",
+        "!!str relationships",
+        "&key relationships",
+        "!!str &key relationships",
+        "&key !!str relationships",
+    ],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_key_rejects_unsupported_reserved_equivalents(
+    key: str, parser: Callable[[str], object]
+) -> None:
+    with pytest.raises(
+        FrontmatterError,
+        match="relationships.*(?:key|whitespace|quoted|tag|anchor|reserved|unsupported)",
+    ):
+        parser(f"---\n{key}: []\n---\n")
+
+
+@pytest.mark.parametrize(
+    "equivalent",
+    ['"relationships"', "'relationships'", "!!str relationships", "&key relationships"],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_key_rejects_reserved_equivalent_duplicate(
+    equivalent: str, parser: Callable[[str], object]
+) -> None:
+    page = f"---\nrelationships: []\n{equivalent}: []\n---\n"
+
+    with pytest.raises(FrontmatterError, match="relationships.*(?:key|reserved)"):
+        parser(page)
+
+
+def test_relationship_key_ignores_unrelated_generic_keys() -> None:
+    page = '''---
+my-relationships: ok
+relationships:
+  - target: "[[concepts/attention]]"
+    type: uses
+-meta: ok
+---
+'''
+    expected = (Relationship(target="[[concepts/attention]]", type="uses"),)
+    parsed = parse_frontmatter(page)
+
+    assert parsed.relationships == expected
+    assert parsed.scalars["my-relationships"] == "ok"
+    assert parsed.scalars["-meta"] == "ok"
+    assert parse_relationships(page) == expected
+
+
+@pytest.mark.parametrize(
     "page",
     [
         """---
