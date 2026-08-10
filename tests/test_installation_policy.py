@@ -13,8 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
+    ignored = {
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "UV_NO_CACHE",
+        "UV_OFFLINE",
+        "UV_REFRESH",
+        "UV_REFRESH_PACKAGE",
+        "UV_REINSTALL",
+        "UV_REINSTALL_PACKAGE",
+    }
+    env = {
+        key: value
+        for key, value in env.items()
+        if key not in ignored and not key.startswith("GIT_")
+    }
     env["PYTHONNOUSERSITE"] = "1"
     env.update(
         HOME=str(tmp_path / "home"),
@@ -25,18 +38,47 @@ def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-def test_uv_tool_environment_ignores_parent_python_paths(
+def test_uv_tool_environment_ignores_parent_behavior_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")
     monkeypatch.setenv("PYTHONHOME", "/inherited/python/home")
     monkeypatch.delenv("PYTHONNOUSERSITE", raising=False)
+    for key in (
+        "UV_NO_CACHE",
+        "UV_OFFLINE",
+        "UV_REFRESH",
+        "UV_REFRESH_PACKAGE",
+        "UV_REINSTALL",
+        "UV_REINSTALL_PACKAGE",
+    ):
+        monkeypatch.setenv(key, "1")
+    monkeypatch.setenv("GIT_DIR", "/inherited/git/dir")
+    monkeypatch.setenv("GIT_WORK_TREE", "/inherited/git/work-tree")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.setenv("UV_INDEX_URL", "https://index.example.invalid/simple")
+    monkeypatch.setenv("INSTALLATION_POLICY_UNRELATED", "retained")
 
     env = _uv_tool_environment(tmp_path)
 
     assert "PYTHONPATH" not in env
     assert "PYTHONHOME" not in env
     assert env["PYTHONNOUSERSITE"] == "1"
+    assert not {
+        "UV_NO_CACHE",
+        "UV_OFFLINE",
+        "UV_REFRESH",
+        "UV_REFRESH_PACKAGE",
+        "UV_REINSTALL",
+        "UV_REINSTALL_PACKAGE",
+    } & env.keys()
+    assert not any(key.startswith("GIT_") for key in env)
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["UV_TOOL_DIR"] == str(tmp_path / "tools")
+    assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "cache")
+    assert env["UV_INDEX_URL"] == "https://index.example.invalid/simple"
+    assert env["INSTALLATION_POLICY_UNRELATED"] == "retained"
 
 
 def test_unsupported_install_entrypoints_are_absent() -> None:
@@ -173,10 +215,52 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     shutil.copytree(
         ROOT,
         source,
-        ignore=shutil.ignore_patterns(".venv", "dist", "build", "__pycache__"),
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", "dist", "build", "__pycache__"
+        ),
         symlinks=True,
     )
     env = _uv_tool_environment(tmp_path)
+    git_dir = source / ".git"
+    assert not git_dir.exists(), "source copy unexpectedly retained Git metadata"
+    subprocess.run(
+        ["git", "init"],
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    assert git_dir.is_dir() and not git_dir.is_symlink()
+    assert git_dir.resolve().is_relative_to(source.resolve())
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Installation Policy Test",
+            "-c",
+            "user.email=installation-policy@example.invalid",
+            "commit",
+            "-m",
+            "test: establish source baseline",
+        ],
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
     subprocess.run(
         SOURCE_INSTALL_COMMAND.split(),
         cwd=source,
@@ -195,6 +279,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     subprocess.run(
         ["git", "add", ".skills/wiki-ingest/SKILL.md"],
         cwd=source,
+        env=env,
         text=True,
         capture_output=True,
         check=True,
@@ -214,6 +299,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
             ".skills/wiki-ingest/SKILL.md",
         ],
         cwd=source,
+        env=env,
         text=True,
         capture_output=True,
         check=True,
@@ -311,6 +397,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     subprocess.run(
         ["git", "init"],
         cwd=portable,
+        env=env,
         text=True,
         capture_output=True,
         check=True,
