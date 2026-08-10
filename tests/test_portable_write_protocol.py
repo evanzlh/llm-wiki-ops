@@ -126,3 +126,21 @@ def test_query_read_only_contract_allows_only_local_hot_freshness_state() -> Non
     query = skill_text("wiki-query")
     assert "local ignored hot freshness state is derived state, not wiki content" in query
     assert "does not permit a compiled-page write" in query
+
+
+def test_cli_and_configuration_docs_cover_portable_context_and_recovery() -> None:
+    cli = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    for required in (
+        "obsidian-wiki info --json --pretty",
+        "portable-context-overridden",
+        "context_warnings",
+        '"recovery"',
+        "recommended_action",
+        "allowed_actions",
+        "obsidian-wiki transaction list --json",
+    ):
+        assert required in cli
+
+    configuration = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    for required in ("same vault", "sync", "sync-setup", "branch and pull request"):
+        assert required in configuration

@@ -17,6 +17,32 @@ Every discovered source is authoritative. A missing named profile or invalid
 portable, `.env`, or global config fails closed instead of falling through to a
 different vault.
 
+### Explicit selections from a Portable Repository CWD
+
+An explicit filesystem `PATH` or `@name` still wins resolution for that
+invocation. If its CWD also lexically discovers a portable config,
+config-aware commands that participate in runtime reporting add the
+informational `portable-context-overridden` warning because the selected
+invocation no longer has portable semantics. Selecting the same vault still
+warns. The warning does not change the command's exit status.
+
+Lexical portable discovery recognizes an ordinary
+`.obsidian-wiki/config.toml` file, a valid symlink, and a dangling symlink.
+For an explicit override, the CLI discovers the shadowed portable entry only
+to report its location; it does not parse or load that TOML solely to warn, so
+an invalid shadowed config cannot block step 0. Without an override, the
+nearest portable entry is authoritative. A dangling or invalid entry fails
+closed: there is no `.env` or global fallback.
+
+`obsidian-wiki info --vault PATH` (or `@name`) is a read-only invocation
+preview. It does not mutate a profile symlink or configuration and does not
+switch the default vault.
+
+The `sync` and `sync-setup` commands are stricter. From a Portable Repository
+CWD they refuse before mutation, even when `--vault` selects a Personal-mode
+vault, so an explicit selection cannot bypass its ordinary branch and pull request
+workflow boundary. Outside portable context, Personal-mode sync behavior is unchanged.
+
 After resolving, skills also read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists. That's where you put owner-specific conventions — domain vocabulary, ingest preferences, writing style, project scoping — which override framework defaults for every skill.
 
 Both `~/.obsidian-wiki/config` and `.env` use the same `KEY=value` format. Start from [`.env.example`](../.env.example).

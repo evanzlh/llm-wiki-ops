@@ -50,6 +50,43 @@ Portable setup accepts a missing or empty target, or one containing only an ordi
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
 
+### Inspect runtime context
+
+`info` is a read-only, per-invocation view of the runtime context and the CLI
+installation. It never changes the default vault, a profile symlink, or any
+configuration file. Select a vault or profile only for this invocation with
+`info --vault PATH|@name`:
+
+```bash
+obsidian-wiki info
+obsidian-wiki info --vault /other/vault
+obsidian-wiki info --vault @research
+obsidian-wiki info --json --pretty
+```
+
+Human output has two sections, `Runtime context` and `CLI installation`.
+Machine output is one JSON document with top-level `runtime`, `installation`,
+and `warnings` fields; `--pretty` only formats that document. Runtime status is
+`resolved`, `unconfigured`, or `error`. An unconfigured machine has exit 0 and
+setup guidance, so `info` remains available before setup. An invalid selected
+configuration produces `runtime.status: "error"` and exit 1. JSON writes no
+human text to stderr; human warnings are written to stderr.
+
+### Portable-context override warnings
+
+`doctor`, `lint`, `trust-record`, `trust-check`, `query`, and `context-pack`
+honor an explicit vault or `@profile` selection even when their CWD discovers a
+Portable Repository. Their JSON reports add a `context_warnings` array with
+the informational `portable-context-overridden` warning; it is additive to the
+command's normal report. This includes selecting the same vault explicitly:
+the selection still bypasses portable semantics. Human output writes one
+warning and its hint to stderr. The warning neither changes the command's
+business or strict exit status nor contributes to numeric `doctor` warnings.
+
+`info` presents the same condition in its top-level `warnings` array rather
+than a command report. Omit the explicit selection when you intend to retain
+the portable repository semantics.
+
 ## Legacy-to-portable migration
 
 Migration is intentionally separate from `setup`. It accepts only a repository
@@ -189,15 +226,43 @@ it with `transaction list --json`, then deliberately `retry`, `restore`,
 `abort`, or `discard` according to its status. A completed transaction remains
 available for restore until discarded.
 
+Transaction JSON failures use one error envelope. Conceptually, it has
+top-level `status`, `error` (`code` and `message`), and `"recovery"` fields.
+The error code is `config-error`, `manifest-error`, or `transaction-error`.
+When the record cannot be validated or trusted, recovery is inspection-only:
+its transaction ID, status, and preferred action are null, it offers no
+alternatives, and it points to `obsidian-wiki transaction list --json`.
+
+For human transaction failures, stdout is empty. Stderr is ordered as the
+error, an optional trusted transaction status, the inspect command, the
+preferred action and its requirements, then alternatives and their
+requirements. Displayed untrusted control characters are escaped, and the CLI
+does not invent commands for an untrusted record.
+
+`obsidian-wiki transaction list --json` remains a top-level array. Each record
+adds `recommended_action` and `allowed_actions`, whose actions include a
+command, reason, and prerequisites. Human `transaction list` output includes
+the recommended command too.
+
 Use the status/action matrix rather than guessing after a failure:
 
-| Status | Valid next action |
-|---|---|
-| `active` | Continue candidate review, declare deletions, then `commit`; or `abort`. |
-| `promoting` | An interrupted promotion; run `restore`. Do not retry, abort, or discard it. |
-| `failed` | Inspect retained state, then deliberately `retry`, `restore`, `abort`, or `discard`. |
-| `complete` | Keep for recovery, `restore` while postimages still match, or `discard`. |
-| `restored` | A second `restore` is a no-op; `discard` removes retained recovery state. |
+| Status | Preferred recovery | Alternative recovery |
+|---|---|---|
+| `active` | `commit` after fixing the cause and reviewing the candidate. | `abort`. |
+| `promoting` | `restore` only. | None. |
+| `failed` | `retry` after fixing the cause and rechecking preimages. | `restore`, `abort`, or `discard`. |
+| `complete` | `discard` after accepting the result. | `restore` while affected files match recorded postimages. |
+| `restored` | `discard` after reviewing the restore. | A second, idempotent `restore`. |
+
+Every action includes its reason and prerequisites. Only a validated retained
+record can yield mutating guidance; corrupt or untrusted records, manifest
+failures, and configuration failures are inspection-only. Guidance never
+executes recovery, prompts, or invokes Git: after checking the prerequisites,
+the user explicitly runs the chosen command.
+
+Transaction JSON parse errors are structured with the same envelope. Use full
+option names for transaction commands: their parsers do not accept long-option
+abbreviations such as `--j` for `--json`.
 
 Every successful commit writes one immutable operation page last:
 
@@ -324,8 +389,12 @@ See [Configuration → Syncing your vault to GitHub](configuration.md#syncing-yo
 
 These sync commands are for Personal-mode vault repositories. Portable
 repositories use the transaction commands above and a human-controlled branch
-and pull-request workflow. Do not run `sync` or `sync-setup` for a Portable
-Repository; transaction and hot-state commands never commit or push.
+and pull-request workflow. From a Portable Repository CWD, `sync` and
+`sync-setup` refuse before any mutation even with an explicit `--vault`; it
+cannot bypass that branch-and-pull-request boundary. Outside portable context,
+Personal-mode `sync` and `sync-setup` retain their existing auto-stage,
+commit, push, and setup behavior. Transaction and hot-state commands never
+commit or push.
 
 ## Trust ledger
 
