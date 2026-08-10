@@ -288,3 +288,56 @@ local_state = ".obsidian-wiki/local"
     assert proc.returncode == 0, proc.stderr
     assert "portable.md" in proc.stdout
     assert "global.md" not in proc.stdout
+
+
+def test_context_pack_json_reports_portable_context_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "knowledge"
+    portable_vault = root / "wiki"
+    explicit_vault = tmp_path / "explicit-vault"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / ".skills").mkdir()
+    portable_vault.mkdir()
+    explicit_vault.mkdir()
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (portable_vault / "portable.md").write_text("# Portable\n", encoding="utf-8")
+    (explicit_vault / "explicit.md").write_text("# Explicit\n", encoding="utf-8")
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+
+    overridden = run_cli(
+        home,
+        "context-pack",
+        "explicit",
+        "--vault",
+        str(explicit_vault),
+        "--json",
+        cwd=nested,
+    )
+    portable = run_cli(
+        home,
+        "context-pack",
+        "portable",
+        "--json",
+        cwd=nested,
+    )
+
+    assert overridden.returncode == 0, overridden.stderr
+    overridden_payload = json.loads(overridden.stdout)
+    assert len(overridden_payload["context_warnings"]) == 1
+    assert overridden_payload["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert overridden_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert portable.returncode == 0, portable.stderr
+    assert json.loads(portable.stdout)["context_warnings"] == []

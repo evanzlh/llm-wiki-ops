@@ -381,6 +381,34 @@ def _resolve_runtime(
         return None
 
 
+def _context_warning_payloads(inspection: RuntimeInspection) -> list[dict[str, str]]:
+    return [warning.as_dict() for warning in inspection.warnings]
+
+
+def _emit_context_warnings(inspection: RuntimeInspection) -> None:
+    for warning in inspection.warnings:
+        print(f"warning: {warning.message}", file=sys.stderr)
+        print(f"  {warning.hint}", file=sys.stderr)
+
+
+def _resolved_inspection(
+    vault_arg: str | None,
+) -> tuple[RuntimeInspection, ResolvedConfig] | None:
+    inspection = _inspect_cli_runtime(vault_arg)
+    if inspection.runtime is None:
+        error = inspection.error or ConfigError("vault not configured")
+        print(f"error: {_runtime_error_detail(error)}", file=sys.stderr)
+        return None
+    return inspection, inspection.runtime
+
+
+def _attach_context_warnings(
+    payload: dict[str, object], inspection: RuntimeInspection
+) -> dict[str, object]:
+    payload["context_warnings"] = _context_warning_payloads(inspection)
+    return payload
+
+
 def _portable_for_vault(vault: Path) -> PortableConfig | None:
     """Return the CWD portable config when it owns the supplied vault."""
     try:
@@ -1047,19 +1075,27 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
     return {"status": _doctor_status(checks), "checks": checks}
 
 
-def run_doctor(
-    *, vault_override: str | None = None, project_dir: str | None = None
+def _doctor_with_context(
+    report: dict[str, object], inspection: RuntimeInspection
 ) -> dict[str, object]:
-    portable_candidate = _nearest_portable_config()
-    resolution_errors: list[ConfigError] = []
-    runtime = _resolve_runtime(vault_override, error_sink=resolution_errors)
-    resolution_error = resolution_errors[0] if resolution_errors else None
+    return _attach_context_warnings(report, inspection)
+
+
+def run_doctor(
+    *,
+    vault_override: str | None = None,
+    project_dir: str | None = None,
+    inspection: RuntimeInspection | None = None,
+) -> dict[str, object]:
+    inspected = inspection or _inspect_cli_runtime(vault_override)
+    runtime = inspected.runtime
+    portable_candidate = inspected.portable_config
     if (
         runtime is not None
         and runtime.mode == "portable"
         and runtime.portable is not None
     ):
-        return _run_portable_doctor(runtime.portable)
+        return _doctor_with_context(_run_portable_doctor(runtime.portable), inspected)
     if portable_candidate is not None and vault_override is None:
         try:
             _assert_single_link_ordinary_file(
@@ -1073,15 +1109,18 @@ def run_doctor(
                 implementation=IMPLEMENTATION_ID,
             )
         except (ConfigError, ValueError) as exc:
-            return _portable_doctor_error(portable_candidate, str(exc))
-        return _portable_doctor_error(
-            portable_candidate,
-            "portable configuration was discovered but did not resolve",
+            return _doctor_with_context(
+                _portable_doctor_error(portable_candidate, str(exc)), inspected
+            )
+        return _doctor_with_context(
+            _portable_doctor_error(
+                portable_candidate,
+                "portable configuration was discovered but did not resolve",
+            ),
+            inspected,
         )
-    if resolution_error is not None and (
-        vault_override is not None or not _is_absent_runtime_config(resolution_error)
-    ):
-        return _doctor_resolution_error(resolution_error)
+    if inspected.status == "error" and inspected.error is not None:
+        return _doctor_with_context(_doctor_resolution_error(inspected.error), inspected)
 
     checks: list[dict[str, str]] = []
 
@@ -1294,10 +1333,13 @@ def run_doctor(
                 hint="pass an existing directory",
             )
 
-    return {
-        "status": _doctor_status(checks),
-        "checks": checks,
-    }
+    return _doctor_with_context(
+        {
+            "status": _doctor_status(checks),
+            "checks": checks,
+        },
+        inspected,
+    )
 
 
 def _print_doctor(report: dict[str, object]) -> None:
@@ -1994,13 +2036,19 @@ def cmd_ast_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    report = run_doctor(vault_override=args.vault, project_dir=args.project)
+    inspection = _inspect_cli_runtime(args.vault)
+    report = run_doctor(
+        vault_override=args.vault,
+        project_dir=args.project,
+        inspection=inspection,
+    )
     if args.json:
         if args.pretty:
             print(json.dumps(report, indent=2))
         else:
             print(json.dumps(report))
     else:
+        _emit_context_warnings(inspection)
         _print_doctor(report)
     statuses = {check["status"] for check in report["checks"]}
     if "fail" in statuses or (args.strict and "warn" in statuses):
@@ -2132,9 +2180,10 @@ def _schema_options(
 def cmd_lint(args: argparse.Namespace) -> int:
     from obsidian_wiki.lint import lint_vault
 
-    runtime = _resolve_runtime(args.vault)
-    if runtime is None:
+    resolved = _resolved_inspection(args.vault)
+    if resolved is None:
         return 1
+    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
@@ -2159,12 +2208,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    report = _attach_context_warnings(report, inspection)
     if args.json:
         if args.pretty:
             print(json.dumps(report, indent=2))
         else:
             print(json.dumps(report))
     else:
+        _emit_context_warnings(inspection)
         _print_lint(report)
     if report["status"] == "fail" or (args.strict and report["status"] == "warn"):
         return 1
@@ -2180,9 +2231,10 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
         write_trust_ledger,
     )
 
-    runtime = _resolve_runtime(args.vault)
-    if runtime is None:
+    resolved = _resolved_inspection(args.vault)
+    if resolved is None:
         return 1
+    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
@@ -2253,9 +2305,11 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
             "required_trust_fields": list(schema["required_trust_fields"]),
         },
     }
+    result = _attach_context_warnings(result, inspection)
     if args.json:
         print(json.dumps(result, indent=2 if args.pretty else None))
     else:
+        _emit_context_warnings(inspection)
         print(f"recorded {result['recorded_pages']} reviewed page(s) in {path}")
         print(
             "not applicable (excluded from trust review): "
@@ -2282,9 +2336,10 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
 def cmd_trust_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.trust import check_trust_ledger
 
-    runtime = _resolve_runtime(args.vault)
-    if runtime is None:
+    resolved = _resolved_inspection(args.vault)
+    if resolved is None:
         return 1
+    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
@@ -2306,9 +2361,11 @@ def cmd_trust_check(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    report = _attach_context_warnings(report, inspection)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None))
     else:
+        _emit_context_warnings(inspection)
         print(f"obsidian-wiki trust-check: {report['status']}")
         for name, count in report["counts"].items():
             print(f"{name}: {count}")
@@ -2338,20 +2395,25 @@ def _print_query(result: dict[str, object]) -> None:
 def cmd_query(args: argparse.Namespace) -> int:
     from obsidian_wiki.graphrag import query
 
-    runtime = _resolve_runtime(args.vault)
-    if runtime is None:
+    resolved = _resolved_inspection(args.vault)
+    if resolved is None:
         return 1
+    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
 
-    result = query(vault, args.question, top_n=args.top, max_should_read=args.max_read)
+    result = _attach_context_warnings(
+        query(vault, args.question, top_n=args.top, max_should_read=args.max_read),
+        inspection,
+    )
     if args.json:
         if args.pretty:
             print(json.dumps(result, indent=2))
         else:
             print(json.dumps(result))
     else:
+        _emit_context_warnings(inspection)
         _print_query(result)
     return 0
 
@@ -2363,9 +2425,10 @@ def cmd_context_pack(args: argparse.Namespace) -> int:
         render_markdown,
     )
 
-    runtime = _resolve_runtime(args.vault)
-    if runtime is None:
+    resolved = _resolved_inspection(args.vault)
+    if resolved is None:
         return 1
+    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
@@ -2381,9 +2444,11 @@ def cmd_context_pack(args: argparse.Namespace) -> int:
     except ContextError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    pack = _attach_context_warnings(pack, inspection)
     if args.json:
         print(json.dumps(pack, indent=2 if args.pretty else None))
     else:
+        _emit_context_warnings(inspection)
         print(render_markdown(pack), end="")
     return 0
 

@@ -197,6 +197,41 @@ OBSIDIAN_ALLOWED_LIFECYCLES = ["active"]
     assert "concepts/global.md" not in report["findings"]["missing_summaries"]
     assert "active" in report["schema"]["allowed_lifecycles"]
     assert report["schema"]["source"] == f"config:{portable_config.resolve()}"
+    assert report["context_warnings"] == []
+
+
+def test_lint_cli_reports_explicit_portable_context_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "knowledge"
+    portable_vault = root / "wiki"
+    explicit_vault = tmp_path / "explicit-vault"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / ".skills").mkdir()
+    portable_vault.mkdir()
+    _page(explicit_vault, "concepts/explicit.md")
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+
+    proc = _run_at(home, nested, "lint", str(explicit_vault), "--json")
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert len(payload["context_warnings"]) == 1
+    assert payload["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert payload["context_warnings"][0]["selected_mode"] == "explicit"
 
 
 def test_lint_vault_legacy_pages_without_trust_schema_warn_by_default(tmp_path: Path) -> None:

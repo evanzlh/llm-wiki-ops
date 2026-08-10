@@ -82,6 +82,7 @@ def test_query_cli_uses_configured_vault(tmp_path: Path) -> None:
     assert proc.returncode == 0
     data = json.loads(proc.stdout)
     assert any(item["page"] == "transformer.md" for item in data["candidates"])
+    assert data["context_warnings"] == []
 
 
 def test_query_cli_requires_vault_when_unconfigured(tmp_path: Path) -> None:
@@ -121,6 +122,52 @@ def test_query_cli_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> Non
     pages = {item["page"] for item in json.loads(proc.stdout)["candidates"]}
     assert "portable-result.md" in pages
     assert "global-result.md" not in pages
+    assert json.loads(proc.stdout)["context_warnings"] == []
+
+
+def test_query_cli_reports_explicit_portable_context_override_in_json_and_human_output(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, _portable_vault = _portable_root(tmp_path)
+    explicit_vault = tmp_path / "explicit-vault"
+    _page(
+        explicit_vault,
+        "explicit-result",
+        title="Runtime Resolver",
+        summary="Explicit vault result.",
+    )
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+
+    json_proc = _run(
+        home,
+        "query",
+        "runtime resolver",
+        "--vault",
+        str(explicit_vault),
+        "--json",
+        cwd=nested,
+    )
+
+    assert json_proc.returncode == 0, json_proc.stderr
+    payload = json.loads(json_proc.stdout)
+    assert len(payload["context_warnings"]) == 1
+    assert payload["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert payload["context_warnings"][0]["selected_mode"] == "explicit"
+
+    human_proc = _run(
+        home,
+        "query",
+        "runtime resolver",
+        "--vault",
+        str(explicit_vault),
+        cwd=nested,
+    )
+
+    assert human_proc.returncode == 0, human_proc.stderr
+    assert human_proc.stderr.count("warning: explicit vault selection overrides") == 1
+    assert "portable-context-overridden" not in human_proc.stdout
 
 
 def test_query_cli_invalid_portable_config_never_falls_back_global(

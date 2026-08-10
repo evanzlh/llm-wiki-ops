@@ -291,6 +291,33 @@ def test_doctor_portable_mode_ignores_global_config_and_agent_installs(
     assert str(root / "wiki") in json.dumps(report)
     assert str(global_vault) not in json.dumps(report)
     assert not (root / "wiki/hot.md").exists()
+    assert report["context_warnings"] == []
+
+
+def test_doctor_explicit_portable_context_warning_is_additive_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    explicit_vault = tmp_path / "explicit-vault"
+    _make_vault(explicit_vault)
+    _write_config(home, explicit_vault)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    args = ("doctor", "--vault", str(explicit_vault), "--json", "--strict")
+
+    overridden = _run(home, *args, cwd=nested)
+    baseline = _run(home, *args, cwd=outside)
+
+    assert overridden.returncode == baseline.returncode
+    overridden_report = json.loads(overridden.stdout)
+    baseline_report = json.loads(baseline.stdout)
+    assert overridden_report["status"] == baseline_report["status"]
+    assert overridden_report["checks"] == baseline_report["checks"]
+    assert len(overridden_report["context_warnings"]) == 1
+    assert overridden_report["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert overridden_report["context_warnings"][0]["selected_mode"] == "explicit"
+    assert baseline_report["context_warnings"] == []
 
 
 def test_doctor_portable_mode_does_not_require_global_config(tmp_path: Path) -> None:

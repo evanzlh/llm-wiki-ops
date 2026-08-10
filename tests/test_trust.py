@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.trust import (
     build_trust_ledger,
@@ -57,7 +58,9 @@ def _write_ledger(vault: Path) -> Path:
     return path
 
 
-def _run_cli(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    home: Path, *args: str, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     return subprocess.run(
@@ -65,6 +68,7 @@ def _run_cli(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -937,6 +941,80 @@ def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
     payload = json.loads(check.stdout)
     assert payload["status"] == "pass"
     assert payload["counts"]["reviewed"] == 1
+
+
+def test_trust_cli_context_warnings_are_transient_and_additive(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "knowledge"
+    portable_vault = root / "wiki"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / ".skills").mkdir()
+    _page(portable_vault, "concepts/portable.md")
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
+    no_override_record = _run_cli(
+        home,
+        "trust-record",
+        "--all",
+        "--reviewed-at",
+        "2026-07-12T17:38:39+07:00",
+        "--approved",
+        "--json",
+        cwd=nested,
+    )
+    record_args = (
+        "trust-record",
+        str(portable_vault),
+        "--all",
+        "--reviewed-at",
+        "2026-07-12T17:38:39+07:00",
+        "--approved",
+        "--json",
+    )
+
+    record = _run_cli(home, *record_args, cwd=nested)
+
+    assert no_override_record.returncode == 0, no_override_record.stderr
+    assert json.loads(no_override_record.stdout)["context_warnings"] == []
+    assert record.returncode == 0, record.stderr
+    record_payload = json.loads(record.stdout)
+    assert len(record_payload["context_warnings"]) == 1
+    assert record_payload["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert record_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    ledger_path = portable_vault / "_meta" / "trust-ledger.json"
+    assert "context_warnings" not in json.loads(ledger_path.read_text(encoding="utf-8"))
+
+    no_override = _run_cli(home, "trust-check", "--json", cwd=nested)
+    before = ledger_path.read_bytes()
+    overridden = _run_cli(
+        home,
+        "trust-check",
+        str(portable_vault),
+        "--json",
+        cwd=nested,
+    )
+
+    assert no_override.returncode == 0, no_override.stderr
+    assert json.loads(no_override.stdout)["context_warnings"] == []
+    assert overridden.returncode == 0, overridden.stderr
+    overridden_payload = json.loads(overridden.stdout)
+    assert len(overridden_payload["context_warnings"]) == 1
+    assert overridden_payload["context_warnings"][0]["code"] == "portable-context-overridden"
+    assert overridden_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert ledger_path.read_bytes() == before
 
 
 def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_path: Path) -> None:
