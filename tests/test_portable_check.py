@@ -11,7 +11,12 @@ import pytest
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import skills_dir
 from obsidian_wiki.config import load_portable_config
-from obsidian_wiki.frontmatter import FrontmatterError, Provenance, parse_frontmatter
+from obsidian_wiki.frontmatter import (
+    FrontmatterError,
+    Provenance,
+    Relationship,
+    parse_frontmatter,
+)
 from obsidian_wiki.operations import OperationChange, write_operation
 from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
 from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
@@ -177,6 +182,216 @@ def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
     )
     assert parsed.scalars["title"] == "ratio: 0.72"
     assert parsed.lists["sources"] == ("ratio: 0.72",)
+
+
+def test_parse_relationships_accepts_compact_and_expanded_items_in_any_field_order() -> None:
+    parsed = parse_frontmatter(
+        '''---
+relationships:
+  - type: uses
+    target: "[[concepts/attention]]"
+  - # expanded form
+    target: '[[concepts/lstm]]' # supported target
+    type: contradicts
+---
+'''
+    )
+
+    assert parsed.relationships == (
+        Relationship(target="[[concepts/attention]]", type="uses"),
+        Relationship(target="[[concepts/lstm]]", type="contradicts"),
+    )
+    assert parsed.fields == frozenset({"relationships"})
+
+
+def test_parse_relationships_empty_inline_list_is_present() -> None:
+    parsed = parse_frontmatter("---\nrelationships: [] # comment\n---\n")
+
+    assert parsed.relationships == ()
+    assert parsed.fields == frozenset({"relationships"})
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        """---
+provenance:
+  extracted: 0.72
+  inferred: 0.25
+  ambiguous: 0.03
+provenance:
+  extracted: 0.8
+  inferred: 0.1
+  ambiguous: 0.1
+---
+""",
+        """---
+relationships: []
+relationships:
+  - target: "[[concepts/attention]]"
+    type: uses
+---
+""",
+    ],
+)
+def test_parse_nested_fields_reject_duplicate_top_level_keys(page: str) -> None:
+    with pytest.raises(FrontmatterError, match="duplicate"):
+        parse_frontmatter(page)
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            'relationships:\n  - target: "[[concepts/attention]]"',
+            "relationships.*missing.*type",
+        ),
+        (
+            'relationships:\n  - target: "[[concepts/attention]]"\n    type: uses\n    weight: high',
+            "relationships.*unknown.*weight",
+        ),
+        (
+            'relationships:\n  - target: one\n    target: two\n    type: uses',
+            "relationships.*duplicate.*target",
+        ),
+        (
+            'relationships:\n  - target: one\n    type:',
+            "relationships.*empty.*type",
+        ),
+        (
+            'relationships:\n   - target: one\n    type: uses',
+            "relationships.*indent",
+        ),
+        (
+            'relationships:\n\t- target: one\n    type: uses',
+            "relationships.*tab",
+        ),
+        (
+            'relationships:\n\u00a0\u00a0- target: one\n    type: uses',
+            "relationships.*whitespace",
+        ),
+        (
+            'relationships: [{target: one, type: uses}]',
+            "relationships.*inline",
+        ),
+        (
+            'relationships:\n  - target: &item one\n    type: uses',
+            "relationships.*(?:tag|anchor|alias)",
+        ),
+        (
+            'relationships:\n  - target: *item\n    type: uses',
+            "relationships.*(?:tag|anchor|alias)",
+        ),
+        (
+            'relationships:\n  - target: !!str one\n    type: uses',
+            "relationships.*(?:tag|anchor|alias)",
+        ),
+        (
+            'relationships:\n  - target: [one]\n    type: uses',
+            "relationships.*flow",
+        ),
+        (
+            'relationships:\n  - target: {name: one}\n    type: uses',
+            "relationships.*flow",
+        ),
+        (
+            'relationships:\n  - target:one\n    type: uses',
+            "relationships.*delimiter",
+        ),
+        (
+            'relationships:\n  - target:\tone\n    type: uses',
+            "relationships.*(?:delimiter|tab)",
+        ),
+        (
+            'relationships:\n  - target: \tone\n    type: uses',
+            "relationships.*tab",
+        ),
+        (
+            'relationships:\n  - target: one: nested\n    type: uses',
+            "relationships.*mapping delimiter",
+        ),
+        (
+            'relationships:\n  - target: one:\tnested\n    type: uses',
+            "relationships.*mapping delimiter",
+        ),
+        (
+            'relationships:\n  - target: one:\n    type: uses',
+            "relationships.*mapping delimiter",
+        ),
+        (
+            'relationships:\n    target: one\n    type: uses',
+            "relationships.*(?:continuation|item)",
+        ),
+        (
+            'relationships:\n  -target: one\n    type: uses',
+            "relationships.*item",
+        ),
+        (
+            'relationships:\n  - target: one\n      type: uses',
+            "relationships.*indent",
+        ),
+    ],
+)
+def test_parse_relationships_rejects_invalid_structure(body: str, match: str) -> None:
+    with pytest.raises(FrontmatterError, match=match):
+        parse_frontmatter(f"---\n{body}\n---\n")
+
+
+def test_parse_relationships_preserves_quoted_colons_and_unicode_whitespace() -> None:
+    parsed = parse_frontmatter(
+        '---\nrelationships:\n  - target: "topic: detail\u00a0and\u2003more"\n'
+        "    type: 'uses: strongly\u00a0today'\n---\n"
+    )
+
+    assert parsed.relationships == (
+        Relationship(
+            target="topic: detail\u00a0and\u2003more",
+            type="uses: strongly\u00a0today",
+        ),
+    )
+
+
+def test_parse_relationships_entry_point_ignores_unrelated_block_scalar() -> None:
+    from obsidian_wiki.frontmatter import parse_relationships
+
+    page = '''---
+summary: >-
+  This is deliberately outside the restricted parser grammar.
+  It may contain: mapping-like text.
+relationships:
+  - target: "[[concepts/attention]]"
+    type: uses
+---
+'''
+
+    assert parse_relationships(page) == (
+        Relationship(target="[[concepts/attention]]", type="uses"),
+    )
+
+
+def test_parse_relationships_entry_point_distinguishes_absent_and_empty() -> None:
+    from obsidian_wiki.frontmatter import parse_relationships
+
+    assert parse_relationships("---\ntitle: A\n---\n") is None
+    assert parse_relationships("---\nrelationships: [] # comment\n---\n") == ()
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "---\nrelationships: []\nrelationships: []\n---\n",
+        "---\nrelationships: null\n---\n",
+        "---\nrelationships:\n  - target: one\n---\n",
+        "---\nrelationships: []\n  - target: one\n    type: uses\n---\n",
+    ],
+)
+def test_parse_relationships_entry_point_rejects_invalid_relationships(
+    page: str,
+) -> None:
+    from obsidian_wiki.frontmatter import parse_relationships
+
+    with pytest.raises(FrontmatterError, match="relationships|duplicate"):
+        parse_relationships(page)
 
 
 @pytest.mark.parametrize(
