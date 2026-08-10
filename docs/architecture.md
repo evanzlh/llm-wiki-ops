@@ -73,6 +73,26 @@ refreshes only inventory-owned framework content and preserves owner files.
 Linux and macOS are the first-release CLI support boundary, but no OS-specific
 absolute path is committed.
 
+CLI compatibility and tracked framework assets use this two-step portable CLI upgrade protocol.
+On a branch, a maintainer first changes the tracked `requires_cli` setting to a
+reviewed PEP 440 constraint that accepts the installed version; only then does
+the maintainer refresh managed assets, validate the repository, and review the
+result:
+
+```bash
+git switch -c upgrade-portable-cli
+# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+```
+
+Every collaborator must install a CLI version that satisfies the updated
+repository contract. `repo upgrade-skills` does not bypass compatibility checks
+and does not automatically rewrite `requires_cli`, so the version-contract
+change and asset refresh remain distinct Git changes. Validate and review both,
+then commit them together through the repository workflow.
+
 The tracked `.gitattributes` managed block disables clone-specific text
 conversion while retaining text diff/merge behavior for common knowledge and
 configuration formats. Consequently a contributor's `core.autocrlf` setting

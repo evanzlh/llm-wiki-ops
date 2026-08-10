@@ -39,10 +39,28 @@ obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
 obsidian-wiki check
-obsidian-wiki repo upgrade-skills  # after installing a newer framework CLI
 ```
 
 Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, install the CLI as a uv tool from their own framework clone, run `obsidian-wiki doctor`, and use the tracked repository-local skills from their preferred agent. The knowledge repository contains no `.venv` or vendored CLI.
+
+When upgrading the framework, use this two-step portable CLI upgrade protocol.
+On a branch, first install the new CLI and deliberately edit the tracked
+`requires_cli` value in `.obsidian-wiki/config.toml` to a reviewed PEP 440
+constraint that accepts the installed version. Then refresh the managed files,
+validate the repository, and review every change:
+
+```bash
+git switch -c upgrade-portable-cli
+# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+```
+
+Every collaborator must install a CLI version that satisfies the repository's
+updated constraint. `repo upgrade-skills` does not bypass compatibility checks
+and does not automatically rewrite `requires_cli`; commit the reviewed config
+and managed-file diff through the normal pull-request workflow.
 
 Portable agents stage writes in ignored local transaction workspaces and promote reviewed candidates into the working tree. Ordinary writes leave `wiki/index.md` and `wiki/log.md` stable, keep `wiki/hot.md` local and ignored, and append an immutable operation page. Transaction commands do not commit or push; review the Git diff and publish through your normal branch and pull-request workflow. See [Architecture](docs/architecture.md#portable-write-lifecycle) and the [CLI transaction reference](docs/cli.md#portable-transactions-and-local-hot-state).
 

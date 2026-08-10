@@ -36,8 +36,11 @@ obsidian-wiki doctor --strict          # exit non-zero on warnings too
 
 cd ./team-knowledge
 obsidian-wiki check
-obsidian-wiki repo upgrade-skills      # run after installing a newer CLI
 ```
+
+For framework CLI upgrades, follow the
+[compatibility and managed-skills protocol](#upgrade-portable-cli-compatibility-and-managed-skills)
+below; the quick reference intentionally does not skip its `requires_cli` step.
 
 Portable setup writes only inside `DIR`: repository-relative TOML, vault
 scaffolding, canonical skills, regular Markdown adapters, and bootstrap files.
@@ -49,6 +52,29 @@ first-release CLI support boundary.
 Portable setup accepts a missing or empty target, or one containing only an ordinary `.git` directory; it preserves that directory and rejects arbitrary non-portable content. It does not run `git init`, commit, or configure a remote: for a new repository, run setup first and then `git init`; use `repo migrate` for legacy layouts.
 
 Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
+
+### Upgrade portable CLI compatibility and managed skills
+
+After installing a newer framework CLI, use this two-step portable CLI upgrade protocol
+on a branch. First, deliberately edit the tracked `requires_cli` setting in
+`.obsidian-wiki/config.toml` to a reviewed PEP 440 constraint that accepts the
+installed version. Then refresh managed files, run deterministic validation,
+and review the working-tree diff:
+
+```bash
+git switch -c upgrade-portable-cli
+# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+```
+
+Every collaborator must install a CLI version that satisfies the updated
+repository constraint. `repo upgrade-skills` validates compatibility before
+writing; it does not bypass an incompatible `requires_cli` constraint and does
+not automatically rewrite `requires_cli`. The command also does not commit or
+push, so review and commit both the constraint and managed-file changes before
+publishing them through the normal pull-request workflow.
 
 ### Inspect runtime context
 

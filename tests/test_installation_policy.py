@@ -120,6 +120,74 @@ def test_bilingual_readmes_disclose_the_fork_and_only_source_install() -> None:
         assert "setup.sh" not in text
 
 
+def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> None:
+    english_paths = (
+        "README.md",
+        "docs/installation.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/architecture.md",
+    )
+    marker = "two-step portable CLI upgrade protocol"
+    for relative in english_paths:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert marker in text, relative
+        protocol = text.split(marker, 1)[1]
+        section_ends = [
+            index
+            for heading in ("\n## ", "\n### ")
+            if (index := protocol.find(heading)) >= 0
+        ]
+        if section_ends:
+            protocol = protocol[: min(section_ends)]
+        protocol = " ".join(protocol.split())
+        for required in (
+            "`requires_cli`",
+            "PEP 440",
+            "branch",
+            "collaborator",
+            "does not bypass",
+            "does not automatically rewrite",
+            "commit",
+        ):
+            assert required in protocol, (relative, required)
+        constraint = protocol.index("`requires_cli`")
+        upgrade = protocol.index("obsidian-wiki repo upgrade-skills")
+        check = protocol.index("obsidian-wiki check")
+        diff = protocol.index("git diff")
+        assert constraint < upgrade < check < diff, relative
+
+    chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
+    marker_zh = "两步便携式 CLI 升级协议"
+    assert marker_zh in chinese
+    protocol_zh = chinese.split(marker_zh, 1)[1].split("\n## ", 1)[0]
+    protocol_zh = " ".join(protocol_zh.split())
+    for required in (
+        "`requires_cli`",
+        "PEP 440",
+        "分支",
+        "协作者",
+        "不会绕过",
+        "不会自动改写",
+        "提交",
+    ):
+        assert required in protocol_zh, required
+    constraint = protocol_zh.index("`requires_cli`")
+    upgrade = protocol_zh.index("obsidian-wiki repo upgrade-skills")
+    check = protocol_zh.index("obsidian-wiki check")
+    diff = protocol_zh.index("git diff")
+    assert constraint < upgrade < check < diff
+
+
+def test_cli_quick_reference_does_not_skip_requires_cli_upgrade_step() -> None:
+    cli = (ROOT / "docs/cli.md").read_text(encoding="utf-8")
+    quick_reference = cli.split(
+        "### Upgrade portable CLI compatibility and managed skills", 1
+    )[0]
+
+    assert "obsidian-wiki repo upgrade-skills" not in quick_reference
+
+
 def test_fork_policy_is_explicit() -> None:
     policy = (ROOT / "docs/fork.md").read_text(encoding="utf-8")
     assert "independently" in policy

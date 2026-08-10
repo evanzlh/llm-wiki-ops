@@ -86,15 +86,26 @@ fresh clone. The CLI exposes computed absolute values such as
 files. Portable setup does not create or consult an extra repository `.env`.
 
 The tracked `.obsidian-wiki/managed-skills.json` is the ownership boundary for
-framework-managed skill directories. After installing a newer CLI, refresh the
-repository copy with:
+framework-managed skill directories. After installing a newer CLI, follow this
+two-step portable CLI upgrade protocol on a branch. First, deliberately edit
+the tracked `requires_cli` value to a reviewed PEP 440 constraint that accepts
+the installed version. Second, refresh the managed files, validate the
+repository, and inspect the entire tracked change:
 
 ```bash
+git switch -c upgrade-portable-cli
+# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
 obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
 ```
 
-The command preserves unlisted owner skills and text outside managed bootstrap
-markers.
+Every collaborator must install a CLI version that satisfies the updated
+repository constraint. The command preserves unlisted owner skills and text
+outside managed bootstrap markers. It does not bypass compatibility checks and
+does not automatically rewrite `requires_cli`; both steps remain explicit,
+reviewable repository changes. After validation and diff review, commit the
+constraint and managed-file refresh together.
 
 ### Portable tracked and ignored state
 

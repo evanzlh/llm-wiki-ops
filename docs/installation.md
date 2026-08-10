@@ -68,13 +68,25 @@ obsidian-wiki query "what decisions shaped this project?"
 
 Repository-local skills and bootstrap files are tracked with the knowledge repository. See [Agent Compatibility](agents.md) for how each agent discovers them and [Configuration](configuration.md) for portable precedence.
 
-After installing a newer framework CLI, refresh only the managed repository
-skills and adapters, review the diff, and commit it on a branch:
+After installing a newer framework CLI, use this two-step portable CLI upgrade protocol.
+Do the work on a branch. First, deliberately update the tracked `requires_cli`
+value in `.obsidian-wiki/config.toml` to a reviewed PEP 440 constraint that
+accepts the installed version. Second, refresh only the managed repository
+skills and adapters, validate the result, and review the complete diff:
 
 ```bash
+git switch -c upgrade-portable-cli
+# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
 obsidian-wiki repo upgrade-skills
-git status --short
+obsidian-wiki check
+git diff
 ```
+
+Every collaborator must install a CLI version that satisfies the repository's
+updated constraint before using portable commands. `repo upgrade-skills` does
+not bypass compatibility checks and does not automatically rewrite
+`requires_cli`; the config and managed-file changes remain ordinary tracked
+changes. Review and commit them through the branch and pull-request workflow.
 
 ## Migrate a co-located legacy repository
 

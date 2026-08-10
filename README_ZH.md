@@ -39,10 +39,27 @@ obsidian-wiki setup --portable ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
 obsidian-wiki check
-obsidian-wiki repo upgrade-skills  # 安装新版框架 CLI 后运行
 ```
 
 在 Obsidian 中将 `team-knowledge/wiki/` 作为 Vault 打开。每位协作者都从自己的框架 clone 用 uv tool 安装 CLI；clone 知识库仓库后运行 `obsidian-wiki doctor`，再通过偏好的 Agent 使用受版本管理的仓库内 Skills。知识库仓库不包含 `.venv` 或内置 CLI 副本。
+
+升级框架时，请遵循这个两步便携式 CLI 升级协议。首先在分支上安装新版
+CLI，并审慎修改受版本管理的 `.obsidian-wiki/config.toml` 中的
+`requires_cli`，将其设为接受当前已安装版本、经过审查的 PEP 440 约束。
+然后刷新受管理文件、校验仓库并审查全部变更：
+
+```bash
+git switch -c upgrade-portable-cli
+# 修改 .obsidian-wiki/config.toml，使 requires_cli 接受已安装的版本。
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+```
+
+每位协作者都必须安装满足仓库更新后约束的 CLI 版本。
+`repo upgrade-skills` 不会绕过兼容性检查，也不会自动改写
+`requires_cli`；请通过常规 Pull Request 工作流提交审查后的配置与受管理
+文件 diff。
 
 便携模式下，Agent 会在被忽略的本地事务工作区中暂存写入，再将已审查的候选内容提升到工作树。普通写入会保持 `wiki/index.md` 与 `wiki/log.md` 稳定，将 `wiki/hot.md` 保持为被忽略的本地状态，并追加一个不可变操作页面。事务命令不会提交或推送；请审查 Git diff，并通过常规分支和 Pull Request 工作流发布。详见 [架构](docs/architecture.md#portable-write-lifecycle)与 [CLI 事务参考](docs/cli.md#portable-transactions-and-local-hot-state)。
 
