@@ -3,14 +3,41 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+_PROVENANCE_FIELDS = frozenset({"extracted", "inferred", "ambiguous"})
+
+
 class FrontmatterError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Provenance:
+    extracted: str
+    inferred: str
+    ambiguous: str
+
+
+@dataclass(frozen=True)
+class Relationship:
+    target: str
+    type: str
 
 
 @dataclass(frozen=True)
 class Frontmatter:
     scalars: dict[str, str]
     lists: dict[str, tuple[str, ...]]
+    provenance: Provenance | None = None
+    relationships: tuple[Relationship, ...] | None = None
+
+    @property
+    def fields(self) -> frozenset[str]:
+        fields = set(self.scalars) | set(self.lists)
+        if self.provenance is not None:
+            fields.add("provenance")
+        if self.relationships is not None:
+            fields.add("relationships")
+        return frozenset(fields)
 
 
 def _starts_quote(value: str, index: int, *, inline: bool) -> bool:
@@ -155,16 +182,68 @@ def _inline_list(value: str) -> tuple[str, ...]:
     return tuple(items)
 
 
-def parse_frontmatter(text: str) -> Frontmatter:
+def _document_lines(text: str) -> tuple[list[str], int]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         raise FrontmatterError("frontmatter opening delimiter is missing")
     closing = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
     if closing is None:
         raise FrontmatterError("frontmatter closing delimiter is missing")
+    return lines, closing
+
+
+def _parse_provenance(
+    lines: list[str], index: int, closing: int
+) -> tuple[Provenance, int]:
+    values: dict[str, str] = {}
+    while index < closing:
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            index += 1
+            continue
+        if not line[0].isspace():
+            break
+        if line.startswith("\t"):
+            raise FrontmatterError("provenance indentation must not use tabs")
+        if not line.startswith("  ") or len(line) == 2 or line[2].isspace():
+            raise FrontmatterError("provenance indentation must use exactly two spaces")
+
+        child, raw = line[2:].split(":", 1) if ":" in line[2:] else ("", "")
+        key = child.strip()
+        if not key:
+            raise FrontmatterError("malformed provenance field")
+        if key not in _PROVENANCE_FIELDS:
+            raise FrontmatterError(f"provenance has unknown field: {key!r}")
+        if key in values:
+            raise FrontmatterError(f"provenance has duplicate field: {key!r}")
+        value = _scalar(raw)
+        if not value:
+            raise FrontmatterError(f"provenance has empty field: {key!r}")
+        values[key] = value
+        index += 1
+
+    missing = _PROVENANCE_FIELDS - set(values)
+    if missing:
+        raise FrontmatterError(
+            f"provenance is missing required field: {sorted(missing)[0]!r}"
+        )
+    return (
+        Provenance(
+            extracted=values["extracted"],
+            inferred=values["inferred"],
+            ambiguous=values["ambiguous"],
+        ),
+        index,
+    )
+
+
+def parse_frontmatter(text: str) -> Frontmatter:
+    lines, closing = _document_lines(text)
 
     scalars: dict[str, str] = {}
     lists: dict[str, tuple[str, ...]] = {}
+    provenance: Provenance | None = None
+    seen: set[str] = set()
     index = 1
     while index < closing:
         line = lines[index]
@@ -175,9 +254,15 @@ def parse_frontmatter(text: str) -> Frontmatter:
             raise FrontmatterError(f"malformed frontmatter line {index + 1}")
         key, raw = line.split(":", 1)
         key = key.strip()
-        if not key or key in scalars or key in lists:
+        if not key or key in seen:
             raise FrontmatterError(f"duplicate or empty frontmatter key: {key!r}")
+        seen.add(key)
         raw = _strip_comment(raw).strip()
+        if key == "provenance":
+            if raw:
+                raise FrontmatterError("provenance must be a block mapping")
+            provenance, index = _parse_provenance(lines, index + 1, closing)
+            continue
         if raw == "":
             values: list[str] = []
             index += 1
@@ -202,4 +287,9 @@ def parse_frontmatter(text: str) -> Frontmatter:
         else:
             scalars[key] = _scalar(raw)
         index += 1
-    return Frontmatter(scalars=scalars, lists=lists)
+    return Frontmatter(
+        scalars=scalars,
+        lists=lists,
+        provenance=provenance,
+        relationships=None,
+    )

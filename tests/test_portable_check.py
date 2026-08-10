@@ -11,7 +11,7 @@ import pytest
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import skills_dir
 from obsidian_wiki.config import load_portable_config
-from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
+from obsidian_wiki.frontmatter import FrontmatterError, Provenance, parse_frontmatter
 from obsidian_wiki.operations import OperationChange, write_operation
 from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
 from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
@@ -136,6 +136,69 @@ def test_parse_empty_inline_list() -> None:
     assert parsed.lists["tags"] == ()
 
 
+def test_parse_provenance_block_in_any_field_order() -> None:
+    parsed = parse_frontmatter(
+        """---
+title: A
+provenance:
+  ambiguous: 0.03
+  extracted: 0.72 # directly supported
+  inferred: "0.25"
+---
+"""
+    )
+    assert parsed.provenance == Provenance(
+        extracted="0.72", inferred="0.25", ambiguous="0.03"
+    )
+    assert parsed.fields == frozenset({"title", "provenance"})
+
+
+@pytest.mark.parametrize(
+    ("page", "match"),
+    [
+        (
+            "---\nprovenance:\n  extracted: 0.72\n  inferred: 0.25\n---\n",
+            "provenance.*missing.*ambiguous",
+        ),
+        (
+            "---\nprovenance:\n  extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n  source: x\n---\n",
+            "provenance.*unknown",
+        ),
+        (
+            "---\nprovenance:\n  extracted: 0.72\n  extracted: 0.25\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*duplicate.*extracted",
+        ),
+        (
+            "---\nprovenance:\n  extracted:\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*empty.*extracted",
+        ),
+        (
+            "---\nprovenance:\n   extracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*indent",
+        ),
+        (
+            "---\nprovenance:\n\textracted: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*tab",
+        ),
+        (
+            "---\nprovenance:\n  extracted: {value: 1.0}\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "flow collection",
+        ),
+        (
+            "---\nprovenance:\n  extracted: &value 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "YAML.*tag.*anchor.*alias",
+        ),
+        (
+            "---\nprovenance:\n  extracted: *value\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "YAML.*tag.*anchor.*alias",
+        ),
+    ],
+)
+def test_parse_provenance_rejects_invalid_structure(page: str, match: str) -> None:
+    with pytest.raises(FrontmatterError, match=match):
+        parse_frontmatter(page)
+
+
 @pytest.mark.parametrize(
     "page",
     [
@@ -155,9 +218,9 @@ def test_malformed_block_list_indentation_is_rejected(indent: str) -> None:
         parse_frontmatter(page)
 
 
-def test_nested_mapping_is_not_interpreted_as_frontmatter() -> None:
+def test_arbitrary_nested_mapping_is_not_interpreted_as_frontmatter() -> None:
     with pytest.raises(FrontmatterError, match="malformed"):
-        parse_frontmatter("---\nprovenance:\n  source: sources/a.md\n---\n")
+        parse_frontmatter("---\nmetadata:\n  source: sources/a.md\n---\n")
 
 
 @pytest.mark.parametrize(
