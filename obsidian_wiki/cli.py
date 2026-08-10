@@ -2397,34 +2397,35 @@ def _print_info(payload: dict[str, object]) -> None:
     print("Runtime context")
     for key in ("status", "mode", "source", "vault", "guidance", "error"):
         if key in runtime:
-            print(f"{key}: {runtime[key]}")
+            print(f"  {key}: {runtime[key]}")
     portable = runtime.get("portable")
     if portable is not None:
         assert isinstance(portable, dict)
-        print(f"repository: {portable['root']}")
+        print(f"  repository: {portable['root']}")
         sources = portable["sources"]
         assert isinstance(sources, list)
         for source in sources:
-            print(f"source: {source}")
-        print(f"skills: {portable['skills']}")
-        print(f"local state: {portable['local_state']}")
+            print(f"  source: {source}")
+        print(f"  skills: {portable['skills']}")
+        print(f"  local state: {portable['local_state']}")
 
     print()
     print("CLI installation")
-    print(f"version: {installation['version']}")
-    print(f"bundled skills: {installation['bundled_skills']}")
-    print(f"skills root: {installation['skills']}")
-    print(f"bootstrap: {installation['bootstrap'] or '(not found)'}")
-    print(f"global config: {installation['global_config']}")
+    print(f"  version: {installation['version']}")
+    print(f"  bundled skills: {installation['bundled_skills']}")
+    print(f"  skills root: {installation['skills']}")
+    print(f"  bootstrap: {installation['bootstrap'] or '(not found)'}")
+    print(f"  global config: {installation['global_config']}")
     global_default = installation["global_default"]
     assert isinstance(global_default, dict)
-    print(f"global vault: {global_default['vault'] or '(unset)'}")
+    print(f"  global vault: {global_default['vault'] or '(unset)'}")
     agent_installs = installation["agent_installs"]
     assert isinstance(agent_installs, list)
+    print("  agent installs:")
     for record in agent_installs:
         assert isinstance(record, dict)
         print(
-            f"{record['label']}: {record['installed']}/{record['bundled']} "
+            f"    {record['label']}: {record['installed']}/{record['bundled']} "
             f"({record['status']})"
         )
 

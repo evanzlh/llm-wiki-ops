@@ -163,6 +163,36 @@ def test_info_human_output_separates_runtime_installation_and_warning(
     assert result.stderr.count("portable context") == 1
 
 
+def test_info_human_output_uses_indented_section_layout(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    config = write_portable(project)
+
+    result = run_info(home, project)
+
+    assert result.returncode == 0
+    lines = result.stdout.splitlines()
+    assert lines[:10] == [
+        "Runtime context",
+        "  status: resolved",
+        "  mode: portable",
+        f"  source: {config.resolve()}",
+        f"  vault: {(project / 'wiki').resolve()}",
+        f"  repository: {project.resolve()}",
+        f"  source: {(project / 'sources').resolve()}",
+        f"  source: {(project / 'imports').resolve()}",
+        f"  skills: {(project / '.skills').resolve()}",
+        f"  local state: {(project / '.obsidian-wiki' / 'local').resolve()}",
+    ]
+    assert lines[10] == ""
+    assert lines[11] == "CLI installation"
+    assert all(line.startswith("  ") for line in lines[12:19])
+    assert lines[14].startswith("  skills root: ")
+    assert lines[18] == "  agent installs:"
+    assert lines[19:]
+    assert all(line.startswith("    ") for line in lines[19:])
+
+
 @pytest.mark.parametrize(
     ("name", "setup", "arg", "expected_mode"),
     [
