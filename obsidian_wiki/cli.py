@@ -1983,13 +1983,20 @@ def _render_transaction_failure(
 
 
 def _transaction_source(config: PortableConfig, raw: str) -> Path:
-    source = Path(raw).expanduser()
-    if source.is_absolute():
-        return source
-    cwd_candidate = (Path.cwd() / source).absolute()
-    if cwd_candidate.exists() or cwd_candidate.is_symlink():
-        return cwd_candidate
-    return (config.root / source).absolute()
+    from obsidian_wiki.transaction import TransactionError
+
+    try:
+        source = Path(raw).expanduser()
+        if source.is_absolute():
+            return source
+        cwd_candidate = (Path.cwd() / source).absolute()
+        if cwd_candidate.exists() or cwd_candidate.is_symlink():
+            return cwd_candidate
+        return (config.root / source).absolute()
+    except (OSError, RuntimeError) as exc:
+        raise TransactionError(
+            f"cannot resolve transaction source path {raw!r}: {exc}"
+        ) from exc
 
 
 def _record_payload(record) -> dict[str, object]:
@@ -3095,6 +3102,18 @@ def cmd_repo_migrate(args: argparse.Namespace) -> int:
 
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
+class _ArgumentParseError(Exception):
+    def __init__(self, parser: argparse.ArgumentParser, message: str) -> None:
+        super().__init__(message)
+        self.parser = parser
+        self.message = message
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise _ArgumentParseError(self, message)
+
+
 def _add_json_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON"
@@ -3172,7 +3191,7 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _ArgumentParser(
         prog="obsidian-wiki",
         description="Install the LLM-Wiki agent skills into your AI coding agents.",
     )
@@ -3244,12 +3263,15 @@ def build_parser() -> argparse.ArgumentParser:
     transaction = sub.add_parser(
         "transaction",
         help="stage, promote, and recover portable repository writes",
+        allow_abbrev=False,
     )
     transaction_sub = transaction.add_subparsers(
         dest="transaction_command", required=True
     )
     transaction_begin = transaction_sub.add_parser(
-        "begin", help="begin one local portable write transaction"
+        "begin",
+        help="begin one local portable write transaction",
+        allow_abbrev=False,
     )
     transaction_begin.add_argument(
         "--source",
@@ -3263,13 +3285,17 @@ def build_parser() -> argparse.ArgumentParser:
     transaction_begin.set_defaults(func=cmd_transaction_begin)
 
     transaction_list = transaction_sub.add_parser(
-        "list", help="list active and retained recovery transactions"
+        "list",
+        help="list active and retained recovery transactions",
+        allow_abbrev=False,
     )
     _add_json_args(transaction_list)
     transaction_list.set_defaults(func=cmd_transaction_list)
 
     transaction_delete = transaction_sub.add_parser(
-        "delete", help="declare one vault-relative page removal"
+        "delete",
+        help="declare one vault-relative page removal",
+        allow_abbrev=False,
     )
     transaction_delete.add_argument("transaction_id")
     transaction_delete.add_argument("path", help="vault-relative knowledge page path")
@@ -3287,7 +3313,9 @@ def build_parser() -> argparse.ArgumentParser:
         ("discard", "discard retained recovery state", cmd_transaction_discard),
         ("abort", "abort active or failed staged work", cmd_transaction_abort),
     ):
-        command = transaction_sub.add_parser(name, help=help_text)
+        command = transaction_sub.add_parser(
+            name, help=help_text, allow_abbrev=False
+        )
         command.add_argument("transaction_id")
         _add_json_args(command)
         command.set_defaults(func=function)
@@ -3788,9 +3816,6 @@ def _add_setup_args(sp: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from contextlib import redirect_stderr
-    from io import StringIO
-
     from obsidian_wiki.portable_manifest import ManifestError
     from obsidian_wiki.transaction import TransactionError
 
@@ -3803,29 +3828,25 @@ def main(argv: list[str] | None = None) -> int:
         argv = ["setup", *argv]
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
-    if transaction_json_parse:
-        parse_stderr = StringIO()
-        try:
-            with redirect_stderr(parse_stderr):
-                args = parser.parse_args(argv)
-        except SystemExit as exc:
-            if exc.code != 2:
-                raise
-            lines = parse_stderr.getvalue().strip().splitlines()
-            detail = lines[-1] if lines else "invalid transaction arguments"
-            marker = ": error: "
-            if marker in detail:
-                detail = detail.split(marker, 1)[1]
+    try:
+        args = parser.parse_args(argv)
+    except _ArgumentParseError as exc:
+        if transaction_json_parse:
             parse_args = argparse.Namespace(
                 json=True,
                 pretty=pretty_intent,
             )
             return _render_transaction_failure(
                 parse_args,
-                TransactionError(f"invalid transaction arguments: {detail}"),
+                TransactionError(
+                    f"invalid transaction arguments: {exc.message}"
+                ),
             )
-    else:
-        args = parser.parse_args(argv)
+        exc.parser.print_usage(sys.stderr)
+        exc.parser.exit(
+            2,
+            f"{exc.parser.prog}: error: {exc.message}\n",
+        )
     if not getattr(args, "func", None):
         parser.print_help()
         return 0

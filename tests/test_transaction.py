@@ -3147,6 +3147,62 @@ def test_transaction_cli_json_failures_outside_portable_mode_are_structured(
     assert result.stdout == json.dumps(payload, ensure_ascii=False) + "\n"
 
 
+def test_transaction_begin_json_unknown_user_source_is_structured(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+    missing_user = f"~obsidian_wiki_no_such_user_{os.getpid()}/file.md"
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "begin",
+        "--source",
+        missing_user,
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "transaction-error"
+    assert missing_user in payload["error"]["message"]
+    assert payload["recovery"]["transaction_id"] is None
+    assert result.stdout == json.dumps(payload, ensure_ascii=True) + "\n"
+
+
+def test_transaction_begin_json_cwd_race_is_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _root, config = make_config(tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "_portable_command_config",
+        lambda _command: config,
+    )
+
+    def fail_cwd(_cls):
+        raise OSError("cwd disappeared after config resolution")
+
+    monkeypatch.setattr(cli_module.Path, "cwd", classmethod(fail_cwd))
+
+    result = cli_module.cmd_transaction_begin(
+        argparse.Namespace(sources=["relative.md"], json=True, pretty=False)
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["error"]["code"] == "transaction-error"
+    assert "relative.md" in payload["error"]["message"]
+    assert "cwd disappeared" in payload["error"]["message"]
+    assert captured.out == json.dumps(payload, ensure_ascii=True) + "\n"
+
+
 def test_transaction_cli_active_commit_failure_reports_trusted_guidance(
     tmp_path: Path,
 ) -> None:
@@ -3375,6 +3431,103 @@ def test_transaction_cli_json_parse_errors_are_structured(
         assert result.stdout.startswith("{\n")
 
 
+@pytest.mark.parametrize("abbreviation", ["--j", "--js", "--jso", "--p", "--pr"])
+def test_transaction_cli_rejects_long_option_abbreviations(
+    tmp_path: Path, abbreviation: str
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(
+        tmp_path / "home", cwd, "transaction", "list", abbreviation
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("usage: obsidian-wiki")
+    assert f"unrecognized arguments: {abbreviation}" in result.stderr
+
+
+@pytest.mark.parametrize("abbreviation", ["--j", "--js", "--jso", "--p", "--pr"])
+def test_exact_json_keeps_machine_mode_when_abbreviation_is_rejected(
+    tmp_path: Path, abbreviation: str
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(
+        tmp_path / "home",
+        cwd,
+        "transaction",
+        "list",
+        "--json",
+        abbreviation,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "transaction-error"
+    assert f"unrecognized arguments: {abbreviation}" in payload["error"]["message"]
+
+
+def test_long_option_abbreviation_remains_enabled_outside_transaction() -> None:
+    args = cli_module.build_parser().parse_args(["info", "--j"])
+
+    assert args.command == "info"
+    assert args.json is True
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_prog", "message"),
+    [
+        (
+            ["transaction", "commit"],
+            "obsidian-wiki transaction commit",
+            "the following arguments are required: transaction_id",
+        ),
+        (
+            ["transaction", "bogus"],
+            "obsidian-wiki transaction",
+            "invalid choice: 'bogus'",
+        ),
+    ],
+)
+def test_transaction_parse_error_carries_exact_nested_parser(
+    arguments: list[str], expected_prog: str, message: str
+) -> None:
+    parser = cli_module.build_parser()
+
+    with pytest.raises(cli_module._ArgumentParseError) as exc_info:
+        parser.parse_args(arguments)
+
+    assert exc_info.value.parser.prog == expected_prog
+    assert message in exc_info.value.message
+
+
+def test_transaction_json_parse_never_replaces_process_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    expected_stderr = sys.stderr
+    original_parse_args = argparse.ArgumentParser.parse_args
+    stderr_identity: list[bool] = []
+
+    def guarded_parse_args(parser, *args, **kwargs):
+        stderr_identity.append(sys.stderr is expected_stderr)
+        return original_parse_args(parser, *args, **kwargs)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", guarded_parse_args)
+
+    result = cli_module.main(["transaction", "commit", "--json"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert stderr_identity == [True]
+    assert captured.err == ""
+    assert json.loads(captured.out)["error"]["code"] == "transaction-error"
+
+
 def test_transaction_cli_human_parse_error_keeps_argparse_usage(
     tmp_path: Path,
 ) -> None:
@@ -3387,6 +3540,22 @@ def test_transaction_cli_human_parse_error_keeps_argparse_usage(
     assert result.stdout == ""
     assert result.stderr.startswith("usage: obsidian-wiki transaction commit")
     assert "the following arguments are required: transaction_id" in result.stderr
+
+
+def test_transaction_cli_unknown_human_error_uses_transaction_parser_prog(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, "transaction", "bogus")
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("usage: obsidian-wiki transaction")
+    assert "obsidian-wiki transaction: error: argument transaction_command" in (
+        result.stderr
+    )
 
 
 def test_transaction_cli_json_parse_detection_ignores_post_separator_help(
