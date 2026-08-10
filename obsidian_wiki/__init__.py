@@ -10,7 +10,7 @@ IMPLEMENTATION_ID = "evanzlh/obsidian-wiki"
 UPSTREAM_URL = "https://github.com/Ar9av/obsidian-wiki"
 FORK_BASE_COMMIT = "5ef66b6bec8b26bab6594ac37fb4d8371469fbab"
 SOURCE_INSTALL_COMMAND = "uv tool install --link-mode copy ."
-SOURCE_REINSTALL_COMMAND = "uv tool install --force --link-mode copy ."
+SOURCE_REINSTALL_COMMAND = "uv tool install --force --reinstall --link-mode copy ."
 
 try:
     __version__ = version("obsidian-wiki")

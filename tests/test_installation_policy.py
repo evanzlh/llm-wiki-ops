@@ -56,6 +56,13 @@ def test_build_metadata_is_retained_for_uv_source_install() -> None:
     assert '".skills" = "obsidian_wiki/_data/skills"' in pyproject
 
 
+def test_source_reinstall_command_refreshes_cached_builds() -> None:
+    assert (
+        SOURCE_REINSTALL_COMMAND
+        == "uv tool install --force --reinstall --link-mode copy ."
+    )
+
+
 def test_bilingual_readmes_disclose_the_fork_and_only_source_install() -> None:
     english = (ROOT / "README.md").read_text(encoding="utf-8")
     chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
@@ -119,6 +126,7 @@ def test_no_unsupported_install_guidance_remains() -> None:
         "uv tool install git+",
         "uv tool install .",
         "uv tool install --force .",
+        "uv tool install --force --link-mode copy .",
     )
     offenders = {
         path.relative_to(ROOT).as_posix(): token
@@ -146,6 +154,7 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
         "uv tool install git+",
         "uv tool install .",
         "uv tool install --force .",
+        "uv tool install --force --link-mode copy .",
     )
     offenders = {
         path.relative_to(ROOT).as_posix(): token
@@ -170,6 +179,48 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     env = _uv_tool_environment(tmp_path)
     subprocess.run(
         SOURCE_INSTALL_COMMAND.split(),
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=180,
+    )
+    marker = "<!-- source-reinstall-marker: cached-build-refresh -->"
+    source_skill = source / ".skills" / "wiki-ingest" / "SKILL.md"
+    source_skill.write_text(
+        source_skill.read_text(encoding="utf-8") + f"\n{marker}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", ".skills/wiki-ingest/SKILL.md"],
+        cwd=source,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Installation Policy Test",
+            "-c",
+            "user.email=installation-policy@example.invalid",
+            "commit",
+            "-m",
+            "test: update source skill marker",
+            "--only",
+            ".skills/wiki-ingest/SKILL.md",
+        ],
+        cwd=source,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        SOURCE_REINSTALL_COMMAND.split(),
         cwd=source,
         env=env,
         text=True,
@@ -211,6 +262,18 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     assert skills_path.is_relative_to(tool_dir), (
         f"bundled skills resolved outside isolated tool dir: {skills_path}"
     )
+    bundled_files = [
+        path
+        for path in skills_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    ]
+    assert bundled_files, f"no regular bundled skill files found below {skills_path}"
+    hard_linked = {
+        path.relative_to(skills_path).as_posix(): path.stat().st_nlink
+        for path in bundled_files
+        if path.stat().st_nlink != 1
+    }
+    assert hard_linked == {}, f"bundled skill files have multiple links: {hard_linked}"
     bundled = subprocess.run(
         [executable, "list"],
         cwd=tmp_path,
@@ -221,3 +284,50 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=30,
     )
     assert "wiki-ingest" in bundled.stdout.splitlines()
+    assert marker in (skills_path / "wiki-ingest" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    portable = tmp_path / "portable"
+    setup = subprocess.run(
+        [executable, "setup", "--portable", str(portable)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    assert "Portable repository scaffolded" in setup.stdout
+    doctor = subprocess.run(
+        [executable, "doctor"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    assert "obsidian-wiki doctor: pass" in doctor.stdout
+    subprocess.run(
+        ["git", "init"],
+        cwd=portable,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    check = subprocess.run(
+        [executable, "check"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    assert "portable check: pass (0 errors, 0 warnings)" in check.stdout
+    home = Path(env["HOME"])
+    assert not (home / ".obsidian-wiki").exists()
+    assert not any(
+        (home / agent / "skills").exists() for agent in (".claude", ".codex", ".agents")
+    )

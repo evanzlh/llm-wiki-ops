@@ -33,7 +33,7 @@ Run these commands in the clone used to build the tool:
 
 ```bash
 git pull
-uv tool install --force --link-mode copy .
+uv tool install --force --reinstall --link-mode copy .
 ```
 
 ## Create a portable repository

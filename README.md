@@ -30,7 +30,7 @@ cd obsidian-wiki
 uv tool install --link-mode copy .
 ```
 
-The installed CLI does not depend on the clone remaining in place. To upgrade, pull the clone and run `uv tool install --force --link-mode copy .`.
+The installed CLI does not depend on the clone remaining in place. To upgrade, pull the clone and run `uv tool install --force --reinstall --link-mode copy .`.
 
 ## Start a portable team wiki
 

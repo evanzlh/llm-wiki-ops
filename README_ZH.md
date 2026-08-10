@@ -30,7 +30,7 @@ cd obsidian-wiki
 uv tool install --link-mode copy .
 ```
 
-安装后的 CLI 不依赖 clone 目录继续存在。升级时，在 clone 目录中拉取更新，然后运行 `uv tool install --force --link-mode copy .`。
+安装后的 CLI 不依赖 clone 目录继续存在。升级时，在 clone 目录中拉取更新，然后运行 `uv tool install --force --reinstall --link-mode copy .`。
 
 ## 创建便携式团队知识库
 

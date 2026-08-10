@@ -8,7 +8,7 @@ This is early. The skills work, but there's room to make the brain smarter: bett
 2. Add a `SKILL.md` with YAML frontmatter (`name`, `description`) and markdown instructions
 3. From the framework clone, rebuild the non-editable installed CLI so the updated `.skills/` tree is bundled:
    ```bash
-   uv tool install --force --link-mode copy .
+   uv tool install --force --reinstall --link-mode copy .
    ```
 4. Run `obsidian-wiki setup` to refresh personal-mode agent directories, or create a disposable portable repository with `obsidian-wiki setup --portable <path>`
 5. Test by saying something to your agent that matches the description
