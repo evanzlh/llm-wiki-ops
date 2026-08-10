@@ -55,7 +55,11 @@ from obsidian_wiki.portable import (
     setup_portable_repo,
     upgrade_portable_skills,
 )
-from obsidian_wiki.runtime_context import RuntimeInspection, inspect_runtime
+from obsidian_wiki.runtime_context import (
+    RuntimeInspection,
+    inspect_runtime,
+    nearest_portable_config,
+)
 
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
@@ -790,6 +794,19 @@ def _nearest_portable_config() -> Path | None:
         current = current.parent
 
 
+def _refuse_portable_git_workflow() -> bool:
+    portable_config = nearest_portable_config(Path.cwd())
+    if portable_config is None:
+        return False
+    print(
+        "error: portable repositories use branch and pull-request workflows; "
+        "configure remotes and publish changes with Git "
+        f"(portable config: {portable_config})",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _portable_doctor_error(config_path: Path, error: str) -> dict[str, object]:
     checks: list[dict[str, str]] = []
     _doctor_add(
@@ -1477,6 +1494,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_sync_setup(args: argparse.Namespace) -> int:
+    if _refuse_portable_git_workflow():
+        return 1
     runtime = _resolve_runtime(args.vault)
     if runtime is None:
         return 1
@@ -1502,6 +1521,8 @@ def cmd_sync_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
+    if _refuse_portable_git_workflow():
+        return 1
     runtime = _resolve_runtime(args.vault)
     if runtime is None:
         return 1

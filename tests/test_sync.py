@@ -12,6 +12,7 @@ import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import main
+from obsidian_wiki import sync as sync_module
 from obsidian_wiki.sync import configure_sync, get_remote, run_sync
 
 
@@ -171,6 +172,13 @@ local_state = ".obsidian-wiki/local"
     [
         ("sync",),
         ("sync-setup", "https://example.invalid/knowledge.git"),
+        ("sync", "--vault", "wiki"),
+        (
+            "sync-setup",
+            "https://example.invalid/knowledge.git",
+            "--vault",
+            "../personal-vault",
+        ),
     ],
 )
 def test_portable_sync_commands_refuse_automatic_git_workflow(
@@ -184,6 +192,17 @@ def test_portable_sync_commands_refuse_automatic_git_workflow(
     note.write_text("pending\n", encoding="utf-8")
     before_head = _git(root, "rev-parse", "HEAD").stdout.strip()
     before_status = _git(root, "status", "--porcelain=v1").stdout
+    before_remotes = _git(root, "remote", "-v").stdout
+    monkeypatch.setattr(
+        sync_module,
+        "run_sync",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("run_sync invoked")),
+    )
+    monkeypatch.setattr(
+        sync_module,
+        "configure_sync",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("configure_sync invoked")),
+    )
     monkeypatch.chdir(root)
 
     result = main(list(arguments))
@@ -196,5 +215,44 @@ def test_portable_sync_commands_refuse_automatic_git_workflow(
     assert _git(root, "rev-parse", "HEAD").stdout.strip() == before_head
     assert _git(root, "status", "--porcelain=v1").stdout == before_status
     assert _git(root, "diff", "--cached", "--quiet").returncode == 0
-    assert _git(root, "remote").stdout.strip() == ""
+    assert _git(root, "remote", "-v").stdout == before_remotes
+    assert not (root / "wiki/.git").exists()
+
+
+def test_portable_sync_refuses_explicit_vault_with_dangling_config_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _portable_repository(tmp_path)
+    config = root / ".obsidian-wiki/config.toml"
+    config.unlink()
+    config.symlink_to(root / "missing-config.toml")
+    note = root / "wiki/note.md"
+    note.write_text("pending\n", encoding="utf-8")
+    before_head = _git(root, "rev-parse", "HEAD").stdout.strip()
+    before_status = _git(root, "status", "--porcelain=v1").stdout
+    before_remotes = _git(root, "remote", "-v").stdout
+    monkeypatch.setattr(
+        sync_module,
+        "run_sync",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("run_sync invoked")),
+    )
+    monkeypatch.setattr(
+        sync_module,
+        "configure_sync",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("configure_sync invoked")),
+    )
+    monkeypatch.chdir(root)
+
+    result = main(["sync", "--vault", "../personal-vault"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "portable repositories use branch and pull-request workflows" in (
+        captured.out + captured.err
+    )
+    assert _git(root, "rev-parse", "HEAD").stdout.strip() == before_head
+    assert _git(root, "status", "--porcelain=v1").stdout == before_status
+    assert _git(root, "remote", "-v").stdout == before_remotes
     assert not (root / "wiki/.git").exists()
