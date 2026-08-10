@@ -869,6 +869,134 @@ def test_setup_rejects_unrelated_nonempty_target_without_changes(
     assert snapshot_tree(root) == before
 
 
+def test_setup_scaffolds_git_only_target_without_mutating_git_metadata(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    git_dir = root / ".git"
+    objects = git_dir / "objects"
+    objects.mkdir(parents=True)
+    config = git_dir / "config"
+    config.write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
+    git_dir.chmod(0o750)
+    config.chmod(0o640)
+    before_tree = snapshot_tree(git_dir)
+    before_metadata = {
+        path: (path.lstat().st_ino, stat.S_IMODE(path.lstat().st_mode))
+        for path in (git_dir, config)
+    }
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert (root / ".obsidian-wiki/config.toml").is_file()
+    assert (root / "wiki").is_dir()
+    assert snapshot_tree(git_dir) == before_tree
+    assert {
+        path: (path.lstat().st_ino, stat.S_IMODE(path.lstat().st_mode))
+        for path in (git_dir, config)
+    } == before_metadata
+
+
+def test_setup_rejects_git_plus_owner_content_without_changes(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "README.md").write_text("owner content\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="not a portable") as exc_info:
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert "missing/empty" in str(exc_info.value)
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("git_kind", ["file", "symlink"])
+def test_setup_rejects_non_directory_git_only_target(
+    git_kind: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    git_entry = root / ".git"
+    if git_kind == "file":
+        git_entry.write_text("gitdir: ../worktree.git\n", encoding="utf-8")
+    else:
+        external = tmp_path / "external-git"
+        external.mkdir()
+        git_entry.symlink_to(external, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match=r"\.git.*ordinary directory"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_git_only_target_merge_failure_restores_exact_original(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    git_dir = root / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text("owner git metadata\n", encoding="utf-8")
+    before = snapshot_tree(root)
+    original_replace = Path.replace
+    staged_moves = 0
+    failure_raised = False
+
+    def fail_third_staged_move(self: Path, target: Path) -> Path:
+        nonlocal staged_moves, failure_raised
+        target = Path(target)
+        if (
+            self.parent.parent == root.parent
+            and self.parent.name.startswith(f".{root.name}.obsidian-wiki-")
+            and target.parent == root
+        ):
+            staged_moves += 1
+            if staged_moves == 3 and not failure_raised:
+                failure_raised = True
+                raise OSError("simulated staged merge failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_third_staged_move)
+
+    with pytest.raises(OSError, match="simulated staged merge failure"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert failure_raised
+    assert snapshot_tree(root) == before
+    assert not list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+
+
+def test_setup_cli_scaffolds_git_only_target_and_validators_pass(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "repo"
+    git_env = os.environ.copy()
+    git_env["HOME"] = str(home)
+    initialized = subprocess.run(
+        ["git", "init", "--quiet", str(root)],
+        env=git_env,
+        text=True,
+        capture_output=True,
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    assert {path.name for path in root.iterdir()} == {".git"}
+
+    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    doctor = run_cli(home, root, "doctor")
+    check = run_cli(home, root, "check")
+
+    assert setup.returncode == 0, setup.stderr
+    assert doctor.returncode == 0, doctor.stderr
+    assert check.returncode == 0, check.stderr
+    assert (root / ".git").is_dir()
+    assert not (home / ".obsidian-wiki").exists()
+
+
 def test_existing_portable_rerun_preserves_owner_config_and_unmanaged_files(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

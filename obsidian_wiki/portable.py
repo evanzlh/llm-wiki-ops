@@ -2333,6 +2333,71 @@ def upgrade_portable_skills(
         return current_names
 
 
+class _PortableSetupRollbackError(OSError):
+    """A staged setup failed and could not restore every moved entry."""
+
+
+def _commit_staged_git_only_repo(root: Path, staging: Path) -> None:
+    """Move a validated staged tree around an existing opaque ``.git`` tree."""
+    if not _is_git_only_target(root):
+        raise ValueError(
+            "portable repository target changed before staged commit; expected only "
+            f"an ordinary .git directory: {root}"
+        )
+
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for staged_entry in sorted(staging.iterdir(), key=lambda path: path.name):
+            target = root / staged_entry.name
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(
+                    f"portable staged setup collides with existing target: {target}"
+                )
+            staged_entry.replace(target)
+            moved.append((target, staged_entry))
+    except BaseException as original_error:
+        rollback_errors: list[str] = []
+        for target, staged_entry in reversed(moved):
+            try:
+                if staged_entry.exists() or staged_entry.is_symlink():
+                    raise OSError(f"rollback destination already exists: {staged_entry}")
+                if not target.exists() and not target.is_symlink():
+                    raise OSError(f"moved target disappeared: {target}")
+                target.replace(staged_entry)
+            except BaseException as rollback_error:
+                rollback_errors.append(f"{target}: {rollback_error}")
+        if rollback_errors:
+            raise _PortableSetupRollbackError(
+                "portable setup rollback is incomplete; preserved staged evidence at "
+                f"{staging}; original error: {original_error}; rollback errors: "
+                + "; ".join(rollback_errors)
+            ) from original_error
+        raise
+
+
+def _is_git_only_target(root: Path) -> bool:
+    """Return whether *root* contains exactly one ordinary ``.git`` directory."""
+    try:
+        entries = tuple(root.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    if len(entries) != 1 or entries[0].name != ".git":
+        return False
+
+    git_entry = entries[0]
+    try:
+        metadata = git_entry.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"portable repository .git must be an ordinary directory: {git_entry}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(
+            f"portable repository .git must be an ordinary directory: {git_entry}"
+        )
+    return True
+
+
 def setup_portable_repo(
     root: Path,
     *,
@@ -2351,11 +2416,15 @@ def setup_portable_repo(
 
     target_existed = root.is_dir()
     target_is_empty = target_existed and not any(root.iterdir())
-    if target_existed and not target_is_empty:
+    target_is_git_only = (
+        target_existed and not target_is_empty and _is_git_only_target(root)
+    )
+    if target_existed and not target_is_empty and not target_is_git_only:
         config_path = root / ".obsidian-wiki/config.toml"
         if not config_path.exists() and not config_path.is_symlink():
             raise ValueError(
-                f"existing target is not a portable repository: {root}"
+                f"existing target is not a portable repository: {root}; accepted "
+                "initial states are missing/empty or only an ordinary .git directory"
             )
         _assert_ordinary_file(root, config_path, "configuration")
         _assert_single_link_ordinary_file(root, config_path, "configuration")
@@ -2396,10 +2465,16 @@ def setup_portable_repo(
     try:
         _populate_portable_repo(staging, version=version, source_skills=source)
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
-        if target_is_empty:
-            root.rmdir()
-            removed_empty_target = True
-        staging.replace(root)
+        if target_is_git_only:
+            _commit_staged_git_only_repo(root, staging)
+            staging.rmdir()
+        else:
+            if target_is_empty:
+                root.rmdir()
+                removed_empty_target = True
+            staging.replace(root)
+    except _PortableSetupRollbackError:
+        raise
     except BaseException:
         if staging.exists() and staging.parent == root.parent:
             shutil.rmtree(staging)
