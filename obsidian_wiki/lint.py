@@ -8,6 +8,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
+from obsidian_wiki.frontmatter import FrontmatterError, parse_relationships
 from obsidian_wiki.trust import (
     ALLOWED_LIFECYCLES,
     TRUST_LEDGER_RELATIVE_PATH,
@@ -42,11 +43,6 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 _FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*):", re.MULTILINE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
-_RELATIONSHIP_LIST_FIELD_RE = re.compile(
-    r"^\s*-\s*(type|target):\s*(.*?)\s*$"
-)
-_RELATIONSHIP_ITEM_START_RE = re.compile(r"^\s*-\s*(?:#.*)?$")
-_RELATIONSHIP_FIELD_RE = re.compile(r"^\s+(type|target):\s*(.*?)\s*$")
 
 
 def _slug(text: str) -> str:
@@ -89,58 +85,15 @@ def _parse_frontmatter_values(frontmatter: str) -> dict[str, str]:
     return values
 
 
-def _relationship_scalar(raw: str) -> str:
-    value = raw.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1].strip()
-    return value.split(" #", 1)[0].strip()
-
-
-def _parse_relationships(frontmatter: str) -> list[dict[str, str]]:
-    relationships: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    in_relationships = False
-    for line in frontmatter.splitlines():
-        if line.startswith("relationships:") and not line.startswith((" ", "\t")):
-            in_relationships = True
-            inline = line.split(":", 1)[1].strip()
-            if inline in {"[]", "null", "~"}:
-                return []
-            if inline:
-                relationships.append({"parse_error": "inline_relationships_not_supported"})
-                return relationships
-            continue
-        if in_relationships and line and not line.startswith((" ", "\t")):
-            break
-        if not in_relationships:
-            continue
-        item_match = _RELATIONSHIP_LIST_FIELD_RE.match(line)
-        if item_match:
-            if current is not None:
-                relationships.append(current)
-            current = {item_match.group(1): _relationship_scalar(item_match.group(2))}
-            continue
-        if _RELATIONSHIP_ITEM_START_RE.match(line):
-            if current is not None:
-                relationships.append(current)
-            current = {}
-            continue
-        field_match = _RELATIONSHIP_FIELD_RE.match(line)
-        if field_match and current is not None:
-            key = field_match.group(1)
-            if key in current:
-                current["parse_error"] = f"duplicate_relationship_{key}"
-            else:
-                current[key] = _relationship_scalar(field_match.group(2))
-            continue
-        if line.strip() and not line.lstrip().startswith("#"):
-            if current is None:
-                current = {"parse_error": "malformed_relationship_entry"}
-            else:
-                current.setdefault("parse_error", "malformed_relationship_entry")
-    if current is not None:
-        relationships.append(current)
-    return relationships
+def _typed_relationships(text: str) -> list[dict[str, str]]:
+    try:
+        relationships = parse_relationships(text)
+    except FrontmatterError:
+        return [{"parse_error": "malformed_relationship_entry"}]
+    return [
+        {"target": relationship.target, "type": relationship.type}
+        for relationship in relationships or ()
+    ]
 
 
 def _normalise_node_id(raw: str) -> str:
@@ -177,7 +130,7 @@ def _parse_page(path: Path, vault: Path) -> dict[str, Any]:
         "summary": values.get("summary", "").strip(),
         "fields": fields,
         "links": links,
-        "relationships": _parse_relationships(frontmatter),
+        "relationships": _typed_relationships(text),
     }
 
 

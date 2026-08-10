@@ -301,6 +301,58 @@ def test_owner_schema_accepts_extensions_optional_trust_and_reports_source(tmp_p
     }
 
 
+def test_folded_summary_before_typed_relationships_is_parsed_compatibly(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    alpha = _page(vault, "concepts/alpha.md", links=["beta"])
+    _page(vault, "concepts/beta.md", links=["alpha"])
+    alpha.write_text(
+        alpha.read_text().replace(
+            "summary: Short summary.",
+            "summary: >-\n"
+            "  Folded summary text\n"
+            "  remains visible to lint.\n"
+            "relationships:\n"
+            '  - target: "[[concepts/beta]]"\n'
+            "    type: related_to",
+        )
+    )
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert "concepts/alpha.md" not in report["findings"]["missing_summaries"]
+    assert report["findings"]["typed_relationship_issues"] == []
+
+
+def test_unknown_relationship_field_is_one_malformed_typed_issue(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    alpha = _page(vault, "concepts/alpha.md", links=["beta"])
+    _page(vault, "concepts/beta.md", links=["alpha"])
+    alpha.write_text(
+        alpha.read_text().replace(
+            "summary: Short summary.",
+            "summary: Short summary.\n"
+            "relationships:\n"
+            '  - target: "[[concepts/beta]]"\n'
+            "    type: related_to\n"
+            "    weight: 5",
+        )
+    )
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["typed_relationship_issues"] == [
+        {
+            "page": "concepts/alpha.md",
+            "index": 0,
+            "issue": "malformed_relationship_entry",
+        }
+    ]
+
+
 def test_invalid_configured_required_trust_field_fails_closed_for_all_cli_paths(
     tmp_path: Path,
 ) -> None:
@@ -358,7 +410,7 @@ def test_empty_relationship_cli_extension_cannot_hide_missing_relation_type(
     baseline = _run(home, "lint", str(vault), "--json")
     assert baseline.returncode == 0
     assert json.loads(baseline.stdout)["findings"]["typed_relationship_issues"] == [
-        {"page": "concepts/alpha.md", "index": 0, "issue": "invalid_type", "type": ""}
+        {"page": "concepts/alpha.md", "index": 0, "issue": "malformed_relationship_entry"}
     ]
 
     for value in ("", "   "):
