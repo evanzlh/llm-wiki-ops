@@ -520,7 +520,7 @@ def _validate_relationship_comment_controls(value: str) -> None:
 
 def _relationship_control_only_line(line: str) -> bool:
     return _has_forbidden_relationship_control(line) and all(
-        char == " " or _has_forbidden_relationship_control(char) for char in line
+        char.isspace() or _has_forbidden_relationship_control(char) for char in line
     )
 
 
@@ -829,10 +829,10 @@ def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
             index += 1
             continue
 
-        unrelated_indented_block = False
         if line.startswith("#"):
             index += 1
             continue
+        unrelated_indented_block = False
 
         stripped = line.strip()
         if stripped.startswith("?") and (

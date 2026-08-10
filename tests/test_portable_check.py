@@ -469,6 +469,26 @@ def test_relationship_parser_ignores_unrelated_nested_legacy_mapping() -> None:
 
 
 @pytest.mark.parametrize(
+    "intervening",
+    [
+        pytest.param("\n", id="blank"),
+        pytest.param("# root comment\n", id="root-comment"),
+        pytest.param("\n# root comment\n\n", id="blank-and-root-comment"),
+    ],
+)
+def test_relationship_parser_preserves_unrelated_nested_scope_across_comments(
+    intervening: str,
+) -> None:
+    page = (
+        "---\nmetadata:\n  value: legacy\n"
+        f"{intervening}"
+        "  relationships: []\n---\n"
+    )
+
+    assert parse_relationships(page) is None
+
+
+@pytest.mark.parametrize(
     "control",
     [
         pytest.param("\x0b", id="vertical-tab"),
@@ -478,16 +498,22 @@ def test_relationship_parser_ignores_unrelated_nested_legacy_mapping() -> None:
     ],
 )
 @pytest.mark.parametrize(
+    "surrounding_whitespace",
+    [pytest.param("", id="ascii"), pytest.param("\u00a0\u2003", id="unicode")],
+)
+@pytest.mark.parametrize(
     "parser",
     [parse_frontmatter, parse_relationships],
     ids=["full", "relationships-only"],
 )
 def test_relationship_blocks_reject_control_only_whitespace_lines(
-    control: str, parser: Callable[[str], object]
+    control: str,
+    surrounding_whitespace: str,
+    parser: Callable[[str], object],
 ) -> None:
     page = (
         "---\nrelationships:\n"
-        f"  {control}\n"
+        f"  {surrounding_whitespace}{control}\n"
         "  - target: one\n    type: uses\n---\n"
     )
 
