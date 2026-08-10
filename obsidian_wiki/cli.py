@@ -121,15 +121,24 @@ def list_skills() -> list[str]:
     return sorted(p.name for p in skills_dir().iterdir() if p.is_dir())
 
 
-def _installed_skill_names(root: Path) -> set[str]:
+def _installed_skill_names(
+    root: Path,
+    *,
+    warning_sink: list[dict[str, str]] | None = None,
+) -> set[str]:
     """Return installed skills backed by a readable regular SKILL.md."""
     installed: set[str] = set()
     for entry in root.iterdir():
         skill_file = entry / "SKILL.md"
-        if not entry.is_dir() or not skill_file.is_file():
+        try:
+            if not entry.is_dir() or not skill_file.is_file():
+                continue
+            with skill_file.open("rb") as stream:
+                stream.read(1)
+        except OSError as exc:
+            if warning_sink is not None:
+                warning_sink.append(_agent_skill_inspection_warning(skill_file, exc))
             continue
-        with skill_file.open("rb") as stream:
-            stream.read(1)
         installed.add(entry.name)
     return installed
 
@@ -563,6 +572,24 @@ def _agent_skills_inspection_warning(root: Path, error: OSError) -> dict[str, st
     }
 
 
+def _agent_skill_inspection_warning(
+    skill_file: Path, error: OSError
+) -> dict[str, str]:
+    return {
+        "code": "installation-agent-skill-unreadable",
+        "message": f"could not inspect installed skill at {skill_file}: {error}",
+        "hint": "check permissions and re-run: obsidian-wiki setup",
+    }
+
+
+def _bundled_skills_inspection_warning(error: OSError) -> dict[str, str]:
+    return {
+        "code": "installation-bundled-skills-unreadable",
+        "message": f"could not inspect bundled skills: {error}",
+        "hint": SOURCE_REINSTALL_HINT,
+    }
+
+
 def _deduplicate_warnings(
     warnings: list[dict[str, str]],
 ) -> list[dict[str, str]]:
@@ -582,7 +609,11 @@ def _stale_install_warnings(
     setup_version: str | None | object = _STALE_SETUP_VERSION_UNSET,
 ) -> list[dict[str, str]]:
     """Collect at most one warning about an incomplete global installation."""
-    if not GLOBAL_CONFIG.is_file():
+    try:
+        config_present = GLOBAL_CONFIG.is_file()
+    except OSError as exc:
+        return [_global_config_inspection_warning(exc)]
+    if not config_present:
         return [
             {
                 "code": "setup-not-run",
@@ -615,8 +646,18 @@ def _stale_install_warnings(
 
     # Even if the version matches, check that ~/.claude/skills has the full set.
     claude_skills_dir = HOME / ".claude" / "skills"
-    if claude_skills_dir.is_dir():
-        bundled_set = set(list_skills()) if bundled is None else bundled
+    try:
+        claude_skills_present = claude_skills_dir.is_dir()
+    except OSError as exc:
+        return [_agent_skills_inspection_warning(claude_skills_dir, exc)]
+    if claude_skills_present:
+        if bundled is None:
+            try:
+                bundled_set = set(list_skills())
+            except OSError as exc:
+                return [_bundled_skills_inspection_warning(exc)]
+        else:
+            bundled_set = bundled
         try:
             installed = _installed_skill_names(claude_skills_dir)
         except OSError as exc:
@@ -2400,11 +2441,20 @@ def _agent_install_payload(
     records: list[dict[str, object]] = []
     for rel, label, _subset in GLOBAL_AGENT_DIRS:
         root = HOME / rel
-        root_is_dir = root.is_dir()
+        root_metadata_failed = False
+        try:
+            root_is_dir = root.is_dir()
+        except OSError as exc:
+            root_is_dir = True
+            root_metadata_failed = True
+            if warning_sink is not None:
+                warning_sink.append(_agent_skills_inspection_warning(root, exc))
         installed: set[str] = set()
-        if root_is_dir:
+        if root_is_dir and not root_metadata_failed:
             try:
-                installed = _installed_skill_names(root)
+                installed = _installed_skill_names(
+                    root, warning_sink=warning_sink
+                )
             except OSError as exc:
                 if warning_sink is not None:
                     warning_sink.append(_agent_skills_inspection_warning(root, exc))
@@ -2440,13 +2490,7 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
     except OSError as exc:
         bundled = []
         skill_root = None
-        warnings.append(
-            {
-                "code": "installation-bundled-skills-unreadable",
-                "message": f"could not inspect bundled skills: {exc}",
-                "hint": SOURCE_REINSTALL_HINT,
-            }
-        )
+        warnings.append(_bundled_skills_inspection_warning(exc))
     bundled_set = set(bundled)
     try:
         boot = bootstrap_dir()
@@ -2460,7 +2504,11 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
             }
         )
 
-    config_present = GLOBAL_CONFIG.is_file()
+    try:
+        config_present = GLOBAL_CONFIG.is_file()
+    except OSError as exc:
+        config_present = False
+        warnings.append(_global_config_inspection_warning(exc))
     vault: str | None = None
     setup_version: str | None = None
     remote: str | None = None

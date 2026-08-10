@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -516,3 +517,126 @@ def test_stale_warning_and_agent_payload_share_skill_validity(
     assert record["missing"] == ["broken", "empty", "link-to-file"]
     assert warning_codes(warnings) == ["agent-skills-missing"]
     assert warnings[0]["message"].startswith("3 skill(s) missing")
+
+
+def test_cmd_info_contains_global_config_metadata_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    original_is_file = Path.is_file
+
+    def metadata_failure(path: Path) -> bool:
+        if path == config:
+            raise PermissionError("global config metadata denied")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", metadata_failure)
+    json_args = argparse.Namespace(
+        vault=str(tmp_path / "explicit-vault"), json=True, pretty=False
+    )
+
+    returncode = cli.cmd_info(json_args)
+    captured = capsys.readouterr()
+
+    assert returncode == 0
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert warning_codes(data["warnings"]) == [
+        "installation-global-config-invalid"
+    ]
+
+    human_args = argparse.Namespace(
+        vault=str(tmp_path / "explicit-vault"), json=False, pretty=False
+    )
+    returncode = cli.cmd_info(human_args)
+    captured = capsys.readouterr()
+
+    assert returncode == 0
+    assert "Traceback" not in captured.err
+    assert captured.err.count("warning: could not inspect global config") == 1
+
+
+def test_agent_root_metadata_failure_is_structured_and_stale_check_is_resilient(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    root = home / ".claude" / "skills"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".claude/skills", "test agent", None)],
+    )
+    original_is_dir = Path.is_dir
+
+    def metadata_failure(path: Path) -> bool:
+        if path == root:
+            raise PermissionError("agent root metadata denied")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", metadata_failure)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["agent_installs"][0]["status"] == "partial"
+    assert warning_codes(warnings) == ["installation-agent-skills-unreadable"]
+
+    cli._check_stale()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert captured.err.count("warning: could not inspect agent skills") == 1
+
+
+def test_unreadable_skill_entry_does_not_poison_valid_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    root = home / ".claude" / "skills"
+    for name in ("alpha", "bad", "gamma"):
+        skill = root / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    bad_skill = root / "bad" / "SKILL.md"
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".claude/skills", "test agent", None)],
+    )
+    original_open = Path.open
+
+    def read_failure(path: Path, *args, **kwargs):
+        if path == bad_skill:
+            raise PermissionError("SKILL.md denied")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", read_failure)
+    bundled = {"alpha", "bad", "gamma"}
+    inspection_warnings: list[dict[str, str]] = []
+
+    record = cli._agent_install_payload(
+        bundled, warning_sink=inspection_warnings
+    )[0]
+    stale_warnings = cli._stale_install_warnings(bundled)
+
+    assert record["installed"] == 2
+    assert record["missing"] == ["bad"]
+    assert record["status"] == "partial"
+    assert warning_codes(inspection_warnings) == [
+        "installation-agent-skill-unreadable"
+    ]
+    assert str(bad_skill) in inspection_warnings[0]["message"]
+    assert warning_codes(stale_warnings) == ["agent-skills-missing"]
+    assert stale_warnings[0]["message"].startswith("1 skill(s) missing")
