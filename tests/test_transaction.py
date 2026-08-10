@@ -3389,6 +3389,53 @@ def test_transaction_cli_human_parse_error_keeps_argparse_usage(
     assert "the following arguments are required: transaction_id" in result.stderr
 
 
+def test_transaction_cli_json_parse_detection_ignores_post_separator_help(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(
+        tmp_path / "home",
+        cwd,
+        "transaction",
+        "commit",
+        "--json",
+        "tx",
+        "--",
+        "--help",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "transaction-error"
+    assert payload["recovery"]["preferred_action"] is None
+
+
+def test_transaction_cli_post_separator_json_keeps_human_argparse_error(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(
+        tmp_path / "home",
+        cwd,
+        "transaction",
+        "delete",
+        "tx",
+        "path",
+        "--",
+        "--json",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("usage: obsidian-wiki")
+    assert "unrecognized arguments" in result.stderr
+
+
 def test_transaction_cli_json_help_keeps_argparse_success(tmp_path: Path) -> None:
     cwd = tmp_path / "ordinary"
     cwd.mkdir()

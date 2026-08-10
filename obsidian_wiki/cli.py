@@ -3734,12 +3734,18 @@ def main(argv: list[str] | None = None) -> int:
         argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")
     ):
         argv = ["setup", *argv]
+    try:
+        separator = argv.index("--")
+    except ValueError:
+        option_tokens = argv
+    else:
+        option_tokens = argv[:separator]
     transaction_json_parse = (
-        bool(argv)
-        and argv[0] == "transaction"
-        and "--json" in argv
-        and "-h" not in argv
-        and "--help" not in argv
+        bool(option_tokens)
+        and option_tokens[0] == "transaction"
+        and "--json" in option_tokens
+        and "-h" not in option_tokens
+        and "--help" not in option_tokens
     )
     if transaction_json_parse:
         parse_stderr = StringIO()
@@ -3756,7 +3762,7 @@ def main(argv: list[str] | None = None) -> int:
                 detail = detail.split(marker, 1)[1]
             parse_args = argparse.Namespace(
                 json=True,
-                pretty="--pretty" in argv,
+                pretty="--pretty" in option_tokens,
             )
             return _render_transaction_failure(
                 parse_args,
