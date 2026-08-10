@@ -722,7 +722,7 @@ def validate_operation(path: Path, *, vault: Path | None = None) -> OperationCha
         parsed = parse_frontmatter(text)
     except (OperationError, FrontmatterError) as exc:
         raise OperationError(f"operation frontmatter is invalid: {exc}") from exc
-    fields = set(parsed.scalars) | set(parsed.lists)
+    fields = parsed.fields
     if fields != _FRONTMATTER_FIELDS:
         raise OperationError("operation frontmatter fields are invalid")
     if parsed.scalars.get("category") != "journal" or parsed.lists.get("tags") != (

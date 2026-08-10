@@ -177,7 +177,7 @@ def _validate_candidate_bytes(
         frontmatter = parse_frontmatter(text)
     except FrontmatterError as exc:
         raise TransactionError(f"invalid candidate frontmatter: {exc}") from exc
-    fields = set(frontmatter.scalars) | set(frontmatter.lists)
+    fields = frontmatter.fields
     missing = sorted(_REQUIRED_FRONTMATTER - fields)
     if missing:
         raise TransactionError(
@@ -1567,7 +1567,7 @@ class TransactionManager:
                         raise TransactionError(
                             f"invalid knowledge page frontmatter: {relative}: {exc}"
                         ) from exc
-                    fields = set(frontmatter.scalars) | set(frontmatter.lists)
+                    fields = frontmatter.fields
                     missing = sorted(_REQUIRED_FRONTMATTER - fields)
                     if missing:
                         raise TransactionError(

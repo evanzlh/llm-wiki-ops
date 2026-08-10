@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki import cli as cli_module
 from obsidian_wiki import migration as migration_module
 from obsidian_wiki.cli import main, skills_dir
 from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.frontmatter import Provenance, Relationship, parse_frontmatter
 from obsidian_wiki.migration import MigrationError, analyze_migration, apply_migration
+from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 
 
@@ -854,6 +856,51 @@ def test_apply_preserves_markdown_body_bytes_and_normalizes_scalar_sources(
     migrated = page.read_bytes()
     assert migrated.split(b"---\r\n", 2)[2] == body
     assert b"sources:\r\n  - sources/a.md\r\n" in migrated
+
+
+def test_apply_preserves_supported_nested_frontmatter_and_output_is_valid(
+    tmp_path: Path,
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    nested = '''provenance:
+  extracted: 0.72
+  inferred: 0.25
+  ambiguous: 0.03
+relationships:
+  - target: "[[concepts/a]]"
+    type: related-to
+'''
+    page.write_text(
+        page.read_text(encoding="utf-8").replace("---\n# A\n", nested + "---\n# A\n"),
+        encoding="utf-8",
+    )
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(plan, installed_version=__version__, source_skills=skills_dir())
+
+    migrated = page.read_bytes()
+    assert migrated.count(nested.encode("utf-8")) == 1
+    parsed = parse_frontmatter(migrated.decode("utf-8"))
+    assert parsed.provenance == Provenance("0.72", "0.25", "0.03")
+    assert parsed.relationships == (
+        Relationship(target="[[concepts/a]]", type="related-to"),
+    )
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "."], check=True, capture_output=True
+    )
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    report = check_portable_repo(config)
+    assert report == {
+        "status": "pass",
+        "errors": 0,
+        "warnings": 0,
+        "issues": [],
+    }
 
 
 def test_apply_rebuilds_shard_edges_from_actual_page_frontmatter(

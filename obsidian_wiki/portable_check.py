@@ -395,7 +395,7 @@ def _check_pages(
                 CheckIssue("frontmatter-invalid", repo_path, _scrub(config.root, exc))
             )
             continue
-        fields = set(parsed.scalars) | set(parsed.lists)
+        fields = parsed.fields
         missing = sorted(_REQUIRED_FIELDS - fields)
         if missing:
             issues.append(

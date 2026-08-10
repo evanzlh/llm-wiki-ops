@@ -897,6 +897,32 @@ def test_commit_promotes_candidate_and_updates_manifest(
     assert manager.load("tx-1").status == "complete"
 
 
+def test_commit_accepts_supported_nested_frontmatter(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    nested_page = PAGE.replace(
+        "---\n# A\n",
+        '''provenance:
+  extracted: 0.72
+  inferred: 0.25
+  ambiguous: 0.03
+relationships:
+  - target: "[[concepts/a]]"
+    type: related-to
+---
+# A
+''',
+    )
+    candidate_page(record, "concepts/a.md", nested_page)
+
+    manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert (config.vault / "concepts/a.md").read_text(encoding="utf-8") == nested_page
+
+
 def test_default_operation_writer_records_operation_last(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     manager = TransactionManager(config)

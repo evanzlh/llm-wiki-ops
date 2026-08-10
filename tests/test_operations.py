@@ -219,3 +219,25 @@ def test_final_target_replacement_quarantines_owned_inode(
     assert not target.with_name("owned-alias.md").exists()
     tombstones = list(tmp_path.glob(".operation-cleanup-*"))
     assert any(b"# Operation tx-1" in path.read_bytes() for path in tombstones)
+
+
+def test_validate_operation_rejects_supported_nested_frontmatter(tmp_path: Path) -> None:
+    change = OperationChange(
+        "tx-1", "2026-08-07T07:30:00Z", ("sources/a.md",), (), (), ()
+    )
+    path = write_operation(tmp_path, change, suffix="a81f")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "---\n# Operation tx-1\n",
+            "provenance:\n"
+            "  extracted: 0.72\n"
+            "  inferred: 0.25\n"
+            "  ambiguous: 0.03\n"
+            "---\n"
+            "# Operation tx-1\n",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OperationError, match="frontmatter fields"):
+        validate_operation(path, vault=tmp_path)

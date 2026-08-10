@@ -1008,6 +1008,35 @@ def test_valid_portable_repo_passes(tmp_path: Path) -> None:
     }
 
 
+def test_valid_portable_repo_accepts_supported_nested_frontmatter(
+    tmp_path: Path,
+) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "---\n# A\n",
+            '''provenance:
+  extracted: 0.72
+  inferred: 0.25
+  ambiguous: 0.03
+relationships:
+  - target: "[[concepts/a]]"
+    type: related-to
+---
+# A
+''',
+        ),
+        encoding="utf-8",
+    )
+
+    assert check_portable_repo(config) == {
+        "status": "pass",
+        "errors": 0,
+        "warnings": 0,
+        "issues": [],
+    }
+
+
 def test_check_is_read_only(tmp_path: Path) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
 
