@@ -298,6 +298,8 @@ def _ancestors(path: Path) -> Iterator[Path]:
 
 
 def _vault_path(raw: str, *, relative_to: Path, home: Path) -> Path:
+    if "\x00" in raw:
+        raise ConfigError("invalid vault path: embedded NUL character")
     native_value = Path(raw)
     windows_value = PureWindowsPath(raw)
     if windows_value.drive and not windows_value.is_absolute():
@@ -317,7 +319,10 @@ def _vault_path(raw: str, *, relative_to: Path, home: Path) -> Path:
         candidate = Path(raw)
         if not candidate.is_absolute():
             candidate = relative_to / candidate
-    return _safe_resolve(candidate)
+    try:
+        return _safe_resolve(candidate)
+    except ValueError as exc:
+        raise ConfigError(f"invalid vault path: {exc}") from exc
 
 
 def _resolved_legacy(

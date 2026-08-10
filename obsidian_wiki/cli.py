@@ -2434,7 +2434,7 @@ def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
 
 
 def _agent_install_payload(
-    bundled: set[str],
+    bundled: set[str] | None,
     *,
     warning_sink: list[dict[str, str]] | None = None,
 ) -> list[dict[str, object]]:
@@ -2458,23 +2458,31 @@ def _agent_install_payload(
             except OSError as exc:
                 if warning_sink is not None:
                     warning_sink.append(_agent_skills_inspection_warning(root, exc))
-        present = installed & bundled
-        missing = bundled - installed
-        status = (
-            "not-installed"
-            if not root_is_dir
-            else "complete"
-            if not missing
-            else "partial"
-        )
+        if bundled is None:
+            installed_count: int | None = None
+            bundled_count: int | None = None
+            missing: list[str] | None = None
+            status = "not-installed" if not root_is_dir else "unknown"
+        else:
+            present = installed & bundled
+            missing = sorted(bundled - installed)
+            installed_count = len(present)
+            bundled_count = len(bundled)
+            status = (
+                "not-installed"
+                if not root_is_dir
+                else "complete"
+                if not missing
+                else "partial"
+            )
         records.append(
             {
                 "label": label,
                 "path": str(root),
                 "status": status,
-                "installed": len(present),
-                "bundled": len(bundled),
-                "missing": sorted(missing),
+                "installed": installed_count,
+                "bundled": bundled_count,
+                "missing": missing,
             }
         )
     return records
@@ -2485,13 +2493,13 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
 
     warnings: list[dict[str, str]] = []
     try:
-        bundled = list_skills()
+        bundled: list[str] | None = list_skills()
         skill_root: str | None = str(skills_dir())
     except OSError as exc:
-        bundled = []
+        bundled = None
         skill_root = None
         warnings.append(_bundled_skills_inspection_warning(exc))
-    bundled_set = set(bundled)
+    bundled_set = set(bundled) if bundled is not None else None
     try:
         boot = bootstrap_dir()
     except OSError as exc:
@@ -2545,13 +2553,16 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
             "setup_version": setup_version,
             "sync_remote": remote,
         },
-        "bundled_skills": len(bundled),
+        "bundled_skills": len(bundled) if bundled is not None else None,
         "agent_installs": _agent_install_payload(
             bundled_set, warning_sink=warnings
         ),
     }
     warnings.extend(
-        _stale_install_warnings(bundled_set, setup_version=setup_version)
+        _stale_install_warnings(
+            bundled_set if bundled_set is not None else set(),
+            setup_version=setup_version,
+        )
     )
     return payload, _deduplicate_warnings(warnings)
 
@@ -2580,7 +2591,11 @@ def _print_info(payload: dict[str, object]) -> None:
     print()
     print("CLI installation")
     print(f"  version: {installation['version']}")
-    print(f"  bundled skills: {installation['bundled_skills']}")
+    bundled_skills = installation["bundled_skills"]
+    print(
+        "  bundled skills: "
+        f"{bundled_skills if bundled_skills is not None else '(unknown)'}"
+    )
     print(f"  skills root: {installation['skills']}")
     print(f"  bootstrap: {installation['bootstrap'] or '(not found)'}")
     print(f"  global config: {installation['global_config']}")
@@ -2592,9 +2607,15 @@ def _print_info(payload: dict[str, object]) -> None:
     print("  agent installs:")
     for record in agent_installs:
         assert isinstance(record, dict)
+        installed = record["installed"]
+        bundled = record["bundled"]
+        counts = (
+            "?/?"
+            if installed is None or bundled is None
+            else f"{installed}/{bundled}"
+        )
         print(
-            f"    {record['label']}: {record['installed']}/{record['bundled']} "
-            f"({record['status']})"
+            f"    {record['label']}: {counts} ({record['status']})"
         )
 
 

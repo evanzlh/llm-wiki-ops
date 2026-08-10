@@ -640,3 +640,94 @@ def test_unreadable_skill_entry_does_not_poison_valid_siblings(
     assert str(bad_skill) in inspection_warnings[0]["message"]
     assert warning_codes(stale_warnings) == ["agent-skills-missing"]
     assert stale_warnings[0]["message"].startswith("1 skill(s) missing")
+
+
+def test_info_json_contains_malformed_global_vault_for_explicit_and_global_runtime(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    config = home / ".obsidian-wiki" / "config"
+    config.parent.mkdir(parents=True)
+    config.write_text('OBSIDIAN_VAULT_PATH="bad\x00vault"\n', encoding="utf-8")
+
+    explicit = run_info(
+        home,
+        cwd,
+        "--vault",
+        str(tmp_path / "explicit-vault"),
+        "--json",
+    )
+
+    assert explicit.returncode == 0
+    assert explicit.stderr == ""
+    assert "\x00" not in explicit.stdout
+    explicit_payload = payload(explicit)
+    assert explicit_payload["runtime"]["status"] == "resolved"
+    assert warning_codes(explicit_payload["warnings"]) == [
+        "installation-global-config-invalid"
+    ]
+
+    selected = run_info(home, cwd, "--json")
+
+    assert selected.returncode == 1
+    assert selected.stderr == ""
+    assert "\x00" not in selected.stdout
+    selected_payload = payload(selected)
+    assert selected_payload["runtime"]["status"] == "error"
+    assert "invalid vault path" in selected_payload["runtime"]["error"]
+    assert warning_codes(selected_payload["warnings"]) == [
+        "installation-global-config-invalid"
+    ]
+
+
+def test_bundled_inventory_failure_marks_existing_agent_status_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    root = home / ".agent" / "skills"
+    skill = root / "existing"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# Existing\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".agent/skills", "test agent", None)],
+    )
+
+    def inventory_failure() -> list[str]:
+        raise PermissionError("bundled inventory denied")
+
+    monkeypatch.setattr(cli, "list_skills", inventory_failure)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["bundled_skills"] is None
+    assert warning_codes(warnings) == ["installation-bundled-skills-unreadable"]
+    assert installation["agent_installs"] == [
+        {
+            "label": "test agent",
+            "path": str(root),
+            "status": "unknown",
+            "installed": None,
+            "bundled": None,
+            "missing": None,
+        }
+    ]
+
+    cli._print_info(
+        {
+            "runtime": {"status": "unconfigured"},
+            "installation": installation,
+            "warnings": warnings,
+        }
+    )
+    captured = capsys.readouterr()
+    assert "  bundled skills: (unknown)" in captured.out
+    assert "    test agent: ?/? (unknown)" in captured.out

@@ -62,6 +62,32 @@ def test_load_global_config_uses_canonical_shell_parser_and_normalizes_vault(
     }
 
 
+def test_load_global_config_translates_malformed_vault_path_to_config_error(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    path = home / ".obsidian-wiki" / "config"
+    path.parent.mkdir(parents=True)
+    path.write_text('OBSIDIAN_VAULT_PATH="bad\x00vault"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="invalid vault path") as exc_info:
+        config_module.load_global_config(path, home=home)
+
+    assert str(path.resolve()) in str(exc_info.value)
+    assert "\x00" not in str(exc_info.value)
+
+
+def test_explicit_malformed_vault_path_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="invalid vault path"):
+        resolve_config(
+            "bad\x00vault",
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
 def test_load_resolves_paths_against_repository_root(tmp_path: Path) -> None:
     path = write_portable(tmp_path)
     config = load_portable_config(path, installed_version="2026.8", implementation=IMPLEMENTATION_ID)
