@@ -213,6 +213,23 @@ def test_parse_relationships_empty_inline_list_is_present() -> None:
     assert parsed.fields == frozenset({"relationships"})
 
 
+def test_relationship_block_preserves_hyphenated_top_level_field() -> None:
+    page = '''---
+relationships:
+  - target: "[[concepts/attention]]"
+    type: uses
+-meta: ok
+---
+'''
+
+    parsed = parse_frontmatter(page)
+    expected = (Relationship(target="[[concepts/attention]]", type="uses"),)
+
+    assert parsed.relationships == expected
+    assert parsed.scalars["-meta"] == "ok"
+    assert parse_relationships(page) == expected
+
+
 @pytest.mark.parametrize(
     "page",
     [
@@ -396,6 +413,8 @@ def test_parse_relationships_entry_point_rejects_invalid_relationships(
         "---\nrelationships:\n---\n",
         "---\nrelationships:\n  # none\n---\n",
         '---\nrelationships:\n- target: "[[a]]"\n  type: uses\n---\n',
+        '---\nrelationships:\n-\ttarget: "[[a]]"\n  type: uses\n---\n',
+        '---\nrelationships:\n-\u00a0target: "[[a]]"\n  type: uses\n---\n',
         '''---
 relationships:
   - target: "[[a]]"
@@ -405,7 +424,14 @@ relationships:
 ---
 ''',
     ],
-    ids=["bare", "comment-only", "zero-indented-first", "zero-indented-extra"],
+    ids=[
+        "bare",
+        "comment-only",
+        "zero-indented-first",
+        "zero-indented-tab-marker",
+        "zero-indented-unicode-marker",
+        "zero-indented-extra",
+    ],
 )
 @pytest.mark.parametrize(
     "parser",

@@ -390,7 +390,7 @@ def _parse_relationships_block(
             index += 1
             continue
         if not line[0].isspace():
-            if line.startswith("-"):
+            if line == "-" or (line.startswith("-") and line[1].isspace()):
                 raise _relationship_error(
                     "item indentation must use exactly two spaces"
                 )
