@@ -349,6 +349,11 @@ def _resolved_legacy(
     )
 
 
+def load_global_config(path: Path, *, home: Path) -> ResolvedConfig:
+    """Load one global legacy config independently of CWD resolution."""
+    return _resolved_legacy(path, "global", home=_safe_resolve(home))
+
+
 def resolve_config(
     vault_arg: str | None = None,
     *,

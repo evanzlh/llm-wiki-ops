@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_wiki.config as config_module
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import ConfigError, load_portable_config, resolve_config
 
@@ -34,6 +35,31 @@ OBSIDIAN_LINK_FORMAT = "wikilink"
 def write_legacy(path: Path, vault: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
+
+
+def test_load_global_config_uses_canonical_shell_parser_and_normalizes_vault(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    path = home / ".obsidian-wiki" / "config"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "export OBSIDIAN_VAULT_PATH='vaults/personal' # selected vault\n"
+        "OBSIDIAN_WIKI_VERSION='2026.8' # setup version\n",
+        encoding="utf-8",
+    )
+
+    result = config_module.load_global_config(path, home=home)
+
+    assert result.mode == "global"
+    assert result.source == str(path.resolve())
+    assert result.vault == (path.parent / "vaults" / "personal").resolve()
+    assert result.values == {
+        "OBSIDIAN_VAULT_PATH": str(
+            (path.parent / "vaults" / "personal").resolve()
+        ),
+        "OBSIDIAN_WIKI_VERSION": "2026.8",
+    }
 
 
 def test_load_resolves_paths_against_repository_root(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ import os
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from obsidian_wiki.config import (
     ConfigError,
     PortableConfig,
     ResolvedConfig,
+    load_global_config,
     load_portable_config,
     resolve_config,
 )
@@ -117,6 +119,19 @@ def bootstrap_dir() -> Path | None:
 
 def list_skills() -> list[str]:
     return sorted(p.name for p in skills_dir().iterdir() if p.is_dir())
+
+
+def _installed_skill_names(root: Path) -> set[str]:
+    """Return installed skills backed by a readable regular SKILL.md."""
+    installed: set[str] = set()
+    for entry in root.iterdir():
+        skill_file = entry / "SKILL.md"
+        if not entry.is_dir() or not skill_file.is_file():
+            continue
+        with skill_file.open("rb") as stream:
+            stream.read(1)
+        installed.add(entry.name)
+    return installed
 
 
 # ── Skill installation ───────────────────────────────────────────────────────
@@ -529,8 +544,42 @@ def scaffold_vault(vault_path: Path) -> bool:
     return created
 
 
+_STALE_SETUP_VERSION_UNSET = object()
+
+
+def _global_config_inspection_warning(error: BaseException) -> dict[str, str]:
+    return {
+        "code": "installation-global-config-invalid",
+        "message": f"could not inspect global config {GLOBAL_CONFIG}: {error}",
+        "hint": "fix the global config or run: obsidian-wiki setup",
+    }
+
+
+def _agent_skills_inspection_warning(root: Path, error: OSError) -> dict[str, str]:
+    return {
+        "code": "installation-agent-skills-unreadable",
+        "message": f"could not inspect agent skills at {root}: {error}",
+        "hint": "check permissions and re-run: obsidian-wiki setup",
+    }
+
+
+def _deduplicate_warnings(
+    warnings: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    unique: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for warning in warnings:
+        identity = (warning["code"], warning["message"], warning["hint"])
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(warning)
+    return unique
+
+
 def _stale_install_warnings(
     bundled: set[str] | None = None,
+    *,
+    setup_version: str | None | object = _STALE_SETUP_VERSION_UNSET,
 ) -> list[dict[str, str]]:
     """Collect at most one warning about an incomplete global installation."""
     if not GLOBAL_CONFIG.is_file():
@@ -542,13 +591,22 @@ def _stale_install_warnings(
             }
         ]
 
-    setup_version = _read_config_value("OBSIDIAN_WIKI_VERSION")
-    if setup_version and setup_version != __version__:
+    if setup_version is _STALE_SETUP_VERSION_UNSET:
+        try:
+            inspected_setup_version: str | None = _read_config_value(
+                "OBSIDIAN_WIKI_VERSION"
+            )
+        except (OSError, UnicodeError) as exc:
+            return [_global_config_inspection_warning(exc)]
+    else:
+        assert setup_version is None or isinstance(setup_version, str)
+        inspected_setup_version = setup_version
+    if inspected_setup_version and inspected_setup_version != __version__:
         return [
             {
                 "code": "setup-version-stale",
                 "message": (
-                    f"obsidian-wiki upgraded {setup_version} → {version_label()} "
+                    f"obsidian-wiki upgraded {inspected_setup_version} → {version_label()} "
                     "but setup hasn't been re-run."
                 ),
                 "hint": "run: obsidian-wiki setup",
@@ -559,7 +617,10 @@ def _stale_install_warnings(
     claude_skills_dir = HOME / ".claude" / "skills"
     if claude_skills_dir.is_dir():
         bundled_set = set(list_skills()) if bundled is None else bundled
-        installed = {p.name for p in claude_skills_dir.iterdir() if p.is_dir()}
+        try:
+            installed = _installed_skill_names(claude_skills_dir)
+        except OSError as exc:
+            return [_agent_skills_inspection_warning(claude_skills_dir, exc)]
         missing = bundled_set - installed
         if missing:
             return [
@@ -2331,20 +2392,27 @@ def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
     return payload
 
 
-def _agent_install_payload(bundled: set[str]) -> list[dict[str, object]]:
+def _agent_install_payload(
+    bundled: set[str],
+    *,
+    warning_sink: list[dict[str, str]] | None = None,
+) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for rel, label, _subset in GLOBAL_AGENT_DIRS:
         root = HOME / rel
-        installed = (
-            {path.name for path in root.iterdir() if path.is_dir() or path.is_symlink()}
-            if root.is_dir()
-            else set()
-        )
+        root_is_dir = root.is_dir()
+        installed: set[str] = set()
+        if root_is_dir:
+            try:
+                installed = _installed_skill_names(root)
+            except OSError as exc:
+                if warning_sink is not None:
+                    warning_sink.append(_agent_skills_inspection_warning(root, exc))
         present = installed & bundled
         missing = bundled - installed
         status = (
             "not-installed"
-            if not root.is_dir()
+            if not root_is_dir
             else "complete"
             if not missing
             else "partial"
@@ -2365,27 +2433,79 @@ def _agent_install_payload(bundled: set[str]) -> list[dict[str, object]]:
 def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
     from obsidian_wiki.sync import get_remote
 
-    bundled = list_skills()
+    warnings: list[dict[str, str]] = []
+    try:
+        bundled = list_skills()
+        skill_root: str | None = str(skills_dir())
+    except OSError as exc:
+        bundled = []
+        skill_root = None
+        warnings.append(
+            {
+                "code": "installation-bundled-skills-unreadable",
+                "message": f"could not inspect bundled skills: {exc}",
+                "hint": SOURCE_REINSTALL_HINT,
+            }
+        )
     bundled_set = set(bundled)
-    config = _read_config()
-    vault = config.get("OBSIDIAN_VAULT_PATH")
-    remote = get_remote(Path(vault).expanduser()) if vault else None
-    boot = bootstrap_dir()
+    try:
+        boot = bootstrap_dir()
+    except OSError as exc:
+        boot = None
+        warnings.append(
+            {
+                "code": "installation-bootstrap-unreadable",
+                "message": f"could not inspect bootstrap files: {exc}",
+                "hint": SOURCE_REINSTALL_HINT,
+            }
+        )
+
+    config_present = GLOBAL_CONFIG.is_file()
+    vault: str | None = None
+    setup_version: str | None = None
+    remote: str | None = None
+    if config_present:
+        try:
+            global_config = load_global_config(GLOBAL_CONFIG, home=HOME)
+        except (ConfigError, OSError, UnicodeError) as exc:
+            warnings.append(_global_config_inspection_warning(exc))
+        else:
+            vault = str(global_config.vault)
+            setup_version = global_config.values.get("OBSIDIAN_WIKI_VERSION")
+            try:
+                remote = get_remote(global_config.vault)
+            except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+                warnings.append(
+                    {
+                        "code": "installation-sync-inspection-failed",
+                        "message": (
+                            f"could not inspect Git remote for {global_config.vault}: "
+                            f"{exc}"
+                        ),
+                        "hint": "check Git availability and vault permissions",
+                    }
+                )
+
     payload: dict[str, object] = {
         "version": version_label(),
-        "skills": str(skills_dir()),
+        "skills": skill_root,
         "bootstrap": str(boot) if boot is not None else None,
         "global_config": str(GLOBAL_CONFIG),
         "global_default": {
-            "configured": GLOBAL_CONFIG.is_file(),
+            "configured": config_present,
             "vault": vault,
-            "setup_version": config.get("OBSIDIAN_WIKI_VERSION"),
+            "setup_version": setup_version,
             "sync_remote": remote,
         },
         "bundled_skills": len(bundled),
-        "agent_installs": _agent_install_payload(bundled_set),
+        "agent_installs": _agent_install_payload(
+            bundled_set, warning_sink=warnings
+        ),
     }
-    return payload, _stale_install_warnings(bundled_set)
+    warnings.extend(
+        _stale_install_warnings(bundled_set, setup_version=setup_version)
+    )
+    return payload, _deduplicate_warnings(warnings)
 
 
 def _print_info(payload: dict[str, object]) -> None:

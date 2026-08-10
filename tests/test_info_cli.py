@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import IMPLEMENTATION_ID
+import obsidian_wiki.cli as cli
+import obsidian_wiki.sync as sync
+from obsidian_wiki import IMPLEMENTATION_ID, __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +60,11 @@ def run_info(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[s
 
 def payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
+
+
+def warning_codes(warnings: object) -> list[str]:
+    assert isinstance(warnings, list)
+    return [warning["code"] for warning in warnings]
 
 
 def test_info_json_reports_portable_runtime_and_global_installation(
@@ -254,3 +261,258 @@ def test_info_json_has_no_human_rendering_glyphs_or_headings(tmp_path: Path) -> 
     assert result.returncode == 0
     for token in ("⚠️", "✅", "Runtime context", "CLI installation"):
         assert token not in result.stdout
+
+
+def test_info_invalid_utf8_global_config_preserves_json_and_human_contracts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    config = home / ".obsidian-wiki" / "config"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b"OBSIDIAN_VAULT_PATH=\xff\n")
+    args = ("--vault", str(tmp_path / "explicit-vault"))
+
+    json_result = run_info(home, cwd, *args, "--json")
+
+    assert json_result.returncode == 0
+    assert json_result.stderr == ""
+    data = payload(json_result)
+    assert data["runtime"]["status"] == "resolved"
+    assert data["installation"]["global_default"] == {
+        "configured": True,
+        "vault": None,
+        "setup_version": None,
+        "sync_remote": None,
+    }
+    assert warning_codes(data["warnings"]) == [
+        "installation-global-config-invalid"
+    ]
+
+    human_result = run_info(home, cwd, *args)
+
+    assert human_result.returncode == 0
+    assert "Traceback" not in human_result.stderr
+    assert human_result.stderr.count("warning: could not inspect global config") == 1
+
+
+def test_installation_payload_parses_global_shell_syntax_and_normalizes_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = home / ".obsidian-wiki" / "config"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "export OBSIDIAN_VAULT_PATH='vaults/default' # personal vault\n"
+        f"OBSIDIAN_WIKI_VERSION='{__version__}' # current CLI\n",
+        encoding="utf-8",
+    )
+    expected_vault = (config.parent / "vaults" / "default").resolve()
+    inspected: list[Path] = []
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        sync, "get_remote", lambda vault: inspected.append(vault) or "git@example/wiki"
+    )
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["global_default"] == {
+        "configured": True,
+        "vault": str(expected_vault),
+        "setup_version": __version__,
+        "sync_remote": "git@example/wiki",
+    }
+    assert inspected == [expected_vault]
+    assert warnings == []
+
+
+def test_installation_payload_contains_invalid_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = home / ".obsidian-wiki" / "config"
+    config.parent.mkdir(parents=True)
+    config.write_text("OBSIDIAN_VAULT_PATH='unterminated\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["global_default"] == {
+        "configured": True,
+        "vault": None,
+        "setup_version": None,
+        "sync_remote": None,
+    }
+    assert warning_codes(warnings) == ["installation-global-config-invalid"]
+    assert "unterminated quoted value" in warnings[0]["message"]
+    assert warnings[0]["hint"] == "fix the global config or run: obsidian-wiki setup"
+
+
+@pytest.mark.parametrize(
+    "inspection_error",
+    [
+        PermissionError("global config denied"),
+        UnicodeError("global config decode failed"),
+    ],
+    ids=["filesystem", "decode"],
+)
+def test_installation_payload_contains_expected_global_inspection_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inspection_error: BaseException,
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+
+    def fail_inspection(_path: Path, *, home: Path):
+        raise inspection_error
+
+    monkeypatch.setattr(cli, "load_global_config", fail_inspection)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["global_default"]["configured"] is True
+    assert installation["global_default"]["vault"] is None
+    assert warning_codes(warnings) == ["installation-global-config-invalid"]
+    assert str(inspection_error) in warnings[0]["message"]
+
+
+def test_installation_payload_contains_git_inspection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+
+    def missing_git(_vault: Path) -> str | None:
+        raise FileNotFoundError("git executable not found")
+
+    monkeypatch.setattr(sync, "get_remote", missing_git)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["global_default"]["sync_remote"] is None
+    assert warning_codes(warnings) == ["installation-sync-inspection-failed"]
+    assert "git executable not found" in warnings[0]["message"]
+    assert warnings[0]["hint"] == "check Git availability and vault permissions"
+
+
+def test_installation_payload_does_not_swallow_programming_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+
+    def programmer_error(_vault: Path) -> str | None:
+        raise TypeError("unexpected programmer error")
+
+    monkeypatch.setattr(sync, "get_remote", programmer_error)
+
+    with pytest.raises(TypeError, match="unexpected programmer error"):
+        cli._installation_payload()
+
+
+def test_agent_install_payload_requires_readable_skill_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    root = home / ".agent" / "skills"
+    good = root / "good"
+    good.mkdir(parents=True)
+    (good / "SKILL.md").write_text("# Good\n", encoding="utf-8")
+    (root / "empty").mkdir()
+    regular_file = root / "ordinary.txt"
+    regular_file.write_text("not a skill\n", encoding="utf-8")
+    (root / "link-to-file").symlink_to(regular_file)
+    (root / "broken").symlink_to(root / "missing")
+    linked_target = tmp_path / "linked-skill"
+    linked_target.mkdir()
+    (linked_target / "SKILL.md").write_text("# Linked\n", encoding="utf-8")
+    (root / "linked").symlink_to(linked_target, target_is_directory=True)
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".agent/skills", "test agent", None)],
+    )
+    bundled = {"good", "linked", "empty", "link-to-file", "broken"}
+
+    partial = cli._agent_install_payload(bundled)[0]
+    complete = cli._agent_install_payload({"good", "linked"})[0]
+
+    assert partial["installed"] == 2
+    assert partial["missing"] == ["broken", "empty", "link-to-file"]
+    assert partial["status"] == "partial"
+    assert complete["installed"] == 2
+    assert complete["missing"] == []
+    assert complete["status"] == "complete"
+
+
+def test_agent_directory_permission_error_becomes_installation_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    blocked = home / ".agent" / "skills"
+    blocked.mkdir(parents=True)
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".agent/skills", "test agent", None)],
+    )
+    original_iterdir = Path.iterdir
+
+    def permission_error(path: Path):
+        if path == blocked:
+            raise PermissionError("agent directory denied")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", permission_error)
+
+    installation, warnings = cli._installation_payload()
+
+    assert installation["agent_installs"][0]["status"] == "partial"
+    assert warning_codes(warnings) == ["installation-agent-skills-unreadable"]
+    assert str(blocked) in warnings[0]["message"]
+    assert "agent directory denied" in warnings[0]["message"]
+
+
+def test_stale_warning_and_agent_payload_share_skill_validity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    config = write_legacy(home / ".obsidian-wiki" / "config", tmp_path / "vault")
+    root = home / ".claude" / "skills"
+    good = root / "good"
+    good.mkdir(parents=True)
+    (good / "SKILL.md").write_text("# Good\n", encoding="utf-8")
+    (root / "empty").mkdir()
+    regular_file = root / "ordinary.txt"
+    regular_file.write_text("not a skill\n", encoding="utf-8")
+    (root / "link-to-file").symlink_to(regular_file)
+    (root / "broken").symlink_to(root / "missing")
+    monkeypatch.setattr(cli, "HOME", home)
+    monkeypatch.setattr(cli, "GLOBAL_CONFIG", config)
+    monkeypatch.setattr(
+        cli,
+        "GLOBAL_AGENT_DIRS",
+        [(".claude/skills", "test agent", None)],
+    )
+    bundled = {"good", "empty", "link-to-file", "broken"}
+
+    record = cli._agent_install_payload(bundled)[0]
+    warnings = cli._stale_install_warnings(bundled)
+
+    assert record["missing"] == ["broken", "empty", "link-to-file"]
+    assert warning_codes(warnings) == ["agent-skills-missing"]
+    assert warnings[0]["message"].startswith("3 skill(s) missing")
