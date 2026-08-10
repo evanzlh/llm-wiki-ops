@@ -53,6 +53,7 @@ from obsidian_wiki.portable import (
     setup_portable_repo,
     upgrade_portable_skills,
 )
+from obsidian_wiki.runtime_context import RuntimeInspection, inspect_runtime
 
 HOME = Path.home()
 GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
@@ -528,38 +529,58 @@ def scaffold_vault(vault_path: Path) -> bool:
     return created
 
 
-def _check_stale() -> None:
-    """Warn if the installed version doesn't match when setup last ran, or if skills are missing."""
+def _stale_install_warnings(
+    bundled: set[str] | None = None,
+) -> list[dict[str, str]]:
+    """Collect at most one warning about an incomplete global installation."""
     if not GLOBAL_CONFIG.is_file():
-        print(
-            f"⚠️  {version_label()} is installed but setup has never been run.\n"
-            f"   Run: obsidian-wiki setup --vault /path/to/your/vault",
-            file=sys.stderr,
-        )
-        return
+        return [
+            {
+                "code": "setup-not-run",
+                "message": f"{version_label()} is installed but setup has never been run.",
+                "hint": "run: obsidian-wiki setup --vault /path/to/your/vault",
+            }
+        ]
 
     setup_version = _read_config_value("OBSIDIAN_WIKI_VERSION")
     if setup_version and setup_version != __version__:
-        print(
-            f"⚠️  obsidian-wiki upgraded {setup_version} → {version_label()} but setup hasn't been re-run.\n"
-            f"   New skills won't be available until you run: obsidian-wiki setup",
-            file=sys.stderr,
-        )
-        return
+        return [
+            {
+                "code": "setup-version-stale",
+                "message": (
+                    f"obsidian-wiki upgraded {setup_version} → {version_label()} "
+                    "but setup hasn't been re-run."
+                ),
+                "hint": "run: obsidian-wiki setup",
+            }
+        ]
 
     # Even if the version matches, check that ~/.claude/skills has the full set.
     claude_skills_dir = HOME / ".claude" / "skills"
     if claude_skills_dir.is_dir():
-        bundled = set(list_skills())
+        bundled_set = set(list_skills()) if bundled is None else bundled
         installed = {p.name for p in claude_skills_dir.iterdir() if p.is_dir()}
-        missing = bundled - installed
+        missing = bundled_set - installed
         if missing:
-            print(
-                f"⚠️  {len(missing)} skill(s) missing from ~/.claude/skills/ "
-                f"(e.g. {', '.join(sorted(missing)[:3])}{', ...' if len(missing) > 3 else ''}).\n"
-                f"   Run: obsidian-wiki setup",
-                file=sys.stderr,
-            )
+            return [
+                {
+                    "code": "agent-skills-missing",
+                    "message": (
+                        f"{len(missing)} skill(s) missing from ~/.claude/skills/ "
+                        f"(e.g. {', '.join(sorted(missing)[:3])}"
+                        f"{', ...' if len(missing) > 3 else ''})."
+                    ),
+                    "hint": "run: obsidian-wiki setup",
+                }
+            ]
+    return []
+
+
+def _check_stale() -> None:
+    """Render stale-install warnings for commands without structured output."""
+    for warning in _stale_install_warnings():
+        print(f"warning: {warning['message']}", file=sys.stderr)
+        print(f"  {warning['hint']}", file=sys.stderr)
 
 
 def _doctor_add(
@@ -2271,46 +2292,163 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_info(args: argparse.Namespace) -> int:
-    bundled = list_skills()
-    print(version_label())
-    print(f"skills:    {skills_dir()}")
-    boot = bootstrap_dir()
-    print(f"bootstrap: {boot if boot else '(not found)'}")
-    print(
-        f"config:    {GLOBAL_CONFIG}{'' if GLOBAL_CONFIG.exists() else ' (not written yet)'}"
+def _inspect_cli_runtime(vault_arg: str | None = None) -> RuntimeInspection:
+    return inspect_runtime(
+        vault_arg,
+        cwd=Path.cwd(),
+        home=HOME,
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
     )
-    if GLOBAL_CONFIG.exists():
-        vp = _read_config_value("OBSIDIAN_VAULT_PATH")
-        setup_ver = _read_config_value("OBSIDIAN_WIKI_VERSION")
-        print(f"vault:     {vp or '(unset)'}")
-        print(f"setup ran: {setup_ver or '(never)'}")
-        if vp:
-            from obsidian_wiki.sync import get_remote
 
-            remote = get_remote(Path(vp).expanduser())
-            print(
-                f"sync:      {remote if remote else '(not configured — run: obsidian-wiki sync-setup <url>)'}"
-            )
-    print(f"bundled skills: {len(bundled)}")
-    print()
-    print("Agent skill install status:")
-    bundled_set = set(bundled)
+
+def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
+    runtime = inspection.runtime
+    if runtime is None:
+        payload: dict[str, object] = {"status": inspection.status}
+        if inspection.status == "error":
+            assert inspection.error is not None
+            payload["error"] = _runtime_error_detail(inspection.error)
+        if inspection.guidance is not None:
+            payload["guidance"] = inspection.guidance
+        return payload
+
+    payload = {
+        "status": "resolved",
+        "mode": runtime.mode,
+        "source": runtime.source,
+        "vault": str(runtime.vault),
+        "portable": None,
+    }
+    if runtime.portable is not None:
+        portable = runtime.portable
+        payload["portable"] = {
+            "root": str(portable.root),
+            "sources": [str(source) for source in portable.sources],
+            "skills": str(portable.skills),
+            "local_state": str(portable.local_state),
+        }
+    return payload
+
+
+def _agent_install_payload(bundled: set[str]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
     for rel, label, _subset in GLOBAL_AGENT_DIRS:
-        agent_dir = HOME / rel
-        if not agent_dir.is_dir():
-            print(f"  {label}: not installed")
-            continue
-        installed = {p.name for p in agent_dir.iterdir() if p.is_dir()}
-        wiki_installed = installed & bundled_set
-        missing = bundled_set - installed
-        status = "✅" if not missing else "⚠️ "
-        print(f"  {status} {label}: {len(wiki_installed)}/{len(bundled_set)}", end="")
-        if missing:
-            print("  (run: obsidian-wiki setup)", end="")
-        print()
-    _check_stale()
-    return 0
+        root = HOME / rel
+        installed = (
+            {path.name for path in root.iterdir() if path.is_dir() or path.is_symlink()}
+            if root.is_dir()
+            else set()
+        )
+        present = installed & bundled
+        missing = bundled - installed
+        status = (
+            "not-installed"
+            if not root.is_dir()
+            else "complete"
+            if not missing
+            else "partial"
+        )
+        records.append(
+            {
+                "label": label,
+                "path": str(root),
+                "status": status,
+                "installed": len(present),
+                "bundled": len(bundled),
+                "missing": sorted(missing),
+            }
+        )
+    return records
+
+
+def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
+    from obsidian_wiki.sync import get_remote
+
+    bundled = list_skills()
+    bundled_set = set(bundled)
+    config = _read_config()
+    vault = config.get("OBSIDIAN_VAULT_PATH")
+    remote = get_remote(Path(vault).expanduser()) if vault else None
+    boot = bootstrap_dir()
+    payload: dict[str, object] = {
+        "version": version_label(),
+        "skills": str(skills_dir()),
+        "bootstrap": str(boot) if boot is not None else None,
+        "global_config": str(GLOBAL_CONFIG),
+        "global_default": {
+            "configured": GLOBAL_CONFIG.is_file(),
+            "vault": vault,
+            "setup_version": config.get("OBSIDIAN_WIKI_VERSION"),
+            "sync_remote": remote,
+        },
+        "bundled_skills": len(bundled),
+        "agent_installs": _agent_install_payload(bundled_set),
+    }
+    return payload, _stale_install_warnings(bundled_set)
+
+
+def _print_info(payload: dict[str, object]) -> None:
+    runtime = payload["runtime"]
+    installation = payload["installation"]
+    assert isinstance(runtime, dict)
+    assert isinstance(installation, dict)
+
+    print("Runtime context")
+    for key in ("status", "mode", "source", "vault", "guidance", "error"):
+        if key in runtime:
+            print(f"{key}: {runtime[key]}")
+    portable = runtime.get("portable")
+    if portable is not None:
+        assert isinstance(portable, dict)
+        print(f"repository: {portable['root']}")
+        sources = portable["sources"]
+        assert isinstance(sources, list)
+        for source in sources:
+            print(f"source: {source}")
+        print(f"skills: {portable['skills']}")
+        print(f"local state: {portable['local_state']}")
+
+    print()
+    print("CLI installation")
+    print(f"version: {installation['version']}")
+    print(f"bundled skills: {installation['bundled_skills']}")
+    print(f"skills root: {installation['skills']}")
+    print(f"bootstrap: {installation['bootstrap'] or '(not found)'}")
+    print(f"global config: {installation['global_config']}")
+    global_default = installation["global_default"]
+    assert isinstance(global_default, dict)
+    print(f"global vault: {global_default['vault'] or '(unset)'}")
+    agent_installs = installation["agent_installs"]
+    assert isinstance(agent_installs, list)
+    for record in agent_installs:
+        assert isinstance(record, dict)
+        print(
+            f"{record['label']}: {record['installed']}/{record['bundled']} "
+            f"({record['status']})"
+        )
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    inspection = _inspect_cli_runtime(args.vault)
+    installation, install_warnings = _installation_payload()
+    warnings = [warning.as_dict() for warning in inspection.warnings] + install_warnings
+    payload: dict[str, object] = {
+        "runtime": _runtime_payload(inspection),
+        "installation": installation,
+        "warnings": warnings,
+    }
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        _print_info(payload)
+        if inspection.status == "error":
+            assert inspection.error is not None
+            print(f"error: {_runtime_error_detail(inspection.error)}", file=sys.stderr)
+        for warning in warnings:
+            print(f"warning: {warning['message']}", file=sys.stderr)
+            print(f"  {warning['hint']}", file=sys.stderr)
+    return 1 if inspection.status == "error" else 0
 
 
 def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
@@ -2547,6 +2685,10 @@ def build_parser() -> argparse.ArgumentParser:
     lp.set_defaults(func=cmd_list)
 
     ip = sub.add_parser("info", help="show install paths, version, and config")
+    ip.add_argument(
+        "--vault", metavar="PATH", help="preview PATH or @name for this invocation"
+    )
+    _add_json_args(ip)
     ip.set_defaults(func=cmd_info)
 
     rp = sub.add_parser("repo", help="maintain a portable repository")

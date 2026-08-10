@@ -340,7 +340,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     skills_lines = [
         line.partition(":")[2].strip()
         for line in info.stdout.splitlines()
-        if line.startswith("skills:")
+        if line.strip().startswith("skills root:")
     ]
     assert len(skills_lines) == 1, info.stdout
     skills_path = Path(skills_lines[0]).resolve()
