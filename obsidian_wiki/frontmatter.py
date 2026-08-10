@@ -185,13 +185,45 @@ def _inline_list(value: str) -> tuple[str, ...]:
 
 
 def _document_lines(text: str) -> tuple[list[str], int]:
-    lines = text.splitlines()
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if not lines or lines[0].strip() != "---":
         raise FrontmatterError("frontmatter opening delimiter is missing")
     closing = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
     if closing is None:
         raise FrontmatterError("frontmatter closing delimiter is missing")
     return lines, closing
+
+
+def _top_level_mapping(line: str) -> tuple[str, str] | None:
+    quote: str | None = None
+    verbatim_tag = False
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif quote == "'":
+            if char == quote:
+                if index + 1 < len(line) and line[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif verbatim_tag:
+            if char == ">":
+                verbatim_tag = False
+        elif char in "'\"":
+            quote = char
+        elif char == "!" and index + 1 < len(line) and line[index + 1] == "<":
+            verbatim_tag = True
+            index += 1
+        elif char == ":":
+            return line[:index], line[index + 1 :]
+        index += 1
+    return None
 
 
 def _restricted_uncommented_region(value: str) -> str:
@@ -308,7 +340,86 @@ def _relationship_error(message: str) -> FrontmatterError:
     return FrontmatterError(f"relationships {message}")
 
 
-def _relationship_key(key_region: str) -> bool:
+def _decode_quoted_key(value: str) -> str | None:
+    if len(value) < 2 or value[-1] != value[0] or value[0] not in "'\"":
+        return None
+
+    decoded: list[str] = []
+    index = 1
+    closing = len(value) - 1
+    while index < closing:
+        char = value[index]
+        if value[0] == "'":
+            if char == "'":
+                if index + 1 >= closing or value[index + 1] != "'":
+                    return None
+                decoded.append("'")
+                index += 2
+                continue
+            decoded.append(char)
+            index += 1
+            continue
+
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= closing:
+            return None
+        escape = value[index + 1]
+        if escape in {'"', "\\"}:
+            decoded.append(escape)
+            index += 2
+            continue
+        widths = {"x": 2, "u": 4, "U": 8}
+        width = widths.get(escape)
+        if width is None or index + 2 + width > closing:
+            return None
+        digits = value[index + 2 : index + 2 + width]
+        try:
+            decoded.append(chr(int(digits, 16)))
+        except (ValueError, OverflowError):
+            return None
+        index += 2 + width
+    return "".join(decoded)
+
+
+def _key_scalar_value(value: str) -> str | None:
+    if value.startswith(("'", '"')):
+        return _decode_quoted_key(value)
+    return value
+
+
+def _strip_key_properties(value: str) -> tuple[str, bool]:
+    decorated = value
+    has_property = False
+    while decorated.startswith(("!", "&")):
+        if decorated.startswith("!<"):
+            closing = decorated.find(">", 2)
+            if closing < 0:
+                break
+            separator = closing + 1
+            if separator == len(decorated) or not decorated[separator].isspace():
+                break
+        else:
+            separator = next(
+                (
+                    index
+                    for index, char in enumerate(decorated)
+                    if char.isspace()
+                ),
+                None,
+            )
+            if separator is None:
+                break
+        has_property = True
+        decorated = decorated[separator:].strip()
+    return decorated, has_property
+
+
+def _relationship_key(
+    key_region: str, relationship_aliases: set[str] | None = None
+) -> bool:
     ascii_trimmed = key_region.strip(" ")
     if ascii_trimmed == "relationships":
         return True
@@ -317,43 +428,73 @@ def _relationship_key(key_region: str) -> bool:
     if normalized == "relationships":
         raise _relationship_error("key has unsupported structural whitespace")
 
-    quoted = {'"relationships"', "'relationships'"}
-    if normalized in quoted:
+    if _key_scalar_value(normalized) == "relationships":
         raise _relationship_error("reserved key has an unsupported quoted spelling")
 
-    decorated = normalized
-    has_property = False
-    while decorated.startswith(("!", "&")):
-        separator = next(
-            (
-                index
-                for index, char in enumerate(decorated)
-                if char.isspace()
-            ),
-            None,
-        )
-        if separator is None:
-            break
-        has_property = True
-        decorated = decorated[separator:].strip()
-    if has_property and (decorated == "relationships" or decorated in quoted):
+    decorated, has_property = _strip_key_properties(normalized)
+    if has_property and _key_scalar_value(decorated) == "relationships":
         raise _relationship_error(
             "reserved key has an unsupported tagged or anchored spelling"
         )
+
+    if (
+        relationship_aliases is not None
+        and normalized.startswith("*")
+        and normalized[1:] in relationship_aliases
+    ):
+        raise _relationship_error("reserved key has an unsupported alias spelling")
     return False
 
 
 def _check_indented_relationship_key(line: str) -> None:
-    if ":" not in line:
+    mapping = _top_level_mapping(line)
+    if mapping is None:
         return
-    key_region = line.split(":", 1)[0]
+    key_region, _ = mapping
     leading_width = len(key_region) - len(key_region.lstrip())
     leading = key_region[:leading_width]
     if any(char != " " for char in leading):
         _relationship_key(key_region)
 
 
+def _relationship_anchor(raw_region: str) -> str | None:
+    raw = _restricted_uncommented_region(raw_region).strip()
+    if not raw.startswith("&"):
+        return None
+    separator = next(
+        (index for index, char in enumerate(raw) if char.isspace()), None
+    )
+    if separator is None:
+        return None
+    name = raw[1:separator]
+    target, _ = _strip_key_properties(raw[separator:].strip())
+    if name and _key_scalar_value(target) == "relationships":
+        return name
+    return None
+
+
+def _relationship_block_scalar(raw_region: str) -> bool:
+    raw = _restricted_uncommented_region(raw_region).strip()
+    return bool(raw) and raw[0] in "|>"
+
+
+def _has_forbidden_relationship_control(value: str) -> bool:
+    return any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value)
+
+
+def _validate_relationship_controls(value: str) -> None:
+    if _has_forbidden_relationship_control(value):
+        raise _relationship_error("contains an unsupported control character")
+
+
+def _validate_relationship_comment_controls(value: str) -> None:
+    uncommented = _restricted_uncommented_region(value)
+    if len(uncommented) < len(value):
+        _validate_relationship_controls(value[len(uncommented) :])
+
+
 def _relationship_scalar(raw_region: str, key: str) -> str:
+    _validate_relationship_comment_controls(raw_region)
     try:
         raw = _strip_comment(raw_region).strip(" ")
     except FrontmatterError as exc:
@@ -395,7 +536,7 @@ def _relationship_scalar(raw_region: str, key: str) -> str:
                 f"field {key!r} scalar has an unquoted mapping delimiter"
             )
 
-    if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in raw):
+    if _has_forbidden_relationship_control(raw):
         raise _relationship_error(
             f"field {key!r} scalar contains an unsupported control character"
         )
@@ -465,7 +606,11 @@ def _parse_relationships_block(
 
     while index < closing:
         line = lines[index]
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not line.strip():
+            index += 1
+            continue
+        if line.lstrip().startswith("#"):
+            _validate_relationship_controls(line)
             index += 1
             continue
         if not line[0].isspace():
@@ -474,6 +619,8 @@ def _parse_relationships_block(
                     "item indentation must use exactly two spaces"
                 )
             break
+
+        _validate_relationship_comment_controls(line)
 
         indentation = _relationship_indentation(line)
         if indentation == 2:
@@ -528,6 +675,7 @@ def _relationships_inline(raw_region: str) -> tuple[Relationship, ...] | None:
         raise _relationship_error("has a malformed mapping delimiter")
 
     _validate_restricted_margins(raw_region, "relationships inline value")
+    _validate_relationship_comment_controls(raw_region)
 
     try:
         raw = _strip_comment(raw_region).strip(" ")
@@ -557,9 +705,10 @@ def parse_frontmatter(text: str) -> Frontmatter:
         if line[0].isspace():
             _check_indented_relationship_key(line)
             raise FrontmatterError(f"malformed frontmatter line {index + 1}")
-        if ":" not in line:
+        mapping = _top_level_mapping(line)
+        if mapping is None:
             raise FrontmatterError(f"malformed frontmatter line {index + 1}")
-        key_region, raw_region = line.split(":", 1)
+        key_region, raw_region = mapping
         is_relationship = _relationship_key(key_region)
         key = key_region.strip()
         if not key or key in seen:
@@ -616,24 +765,62 @@ def parse_frontmatter(text: str) -> Frontmatter:
 def parse_relationships(text: str) -> tuple[Relationship, ...] | None:
     lines, closing = _document_lines(text)
     relationships: tuple[Relationship, ...] | None = None
+    relationship_aliases: set[str] = set()
+    unrelated_block_scalar = False
     seen = False
     index = 1
 
     while index < closing:
         line = lines[index]
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not line.strip():
             index += 1
             continue
         if line[0].isspace():
-            _check_indented_relationship_key(line)
-            index += 1
-            continue
-        if ":" not in line:
+            if unrelated_block_scalar:
+                index += 1
+                continue
+            stripped = line.strip()
+            if stripped.startswith("?") and (
+                len(stripped) == 1 or stripped[1].isspace()
+            ):
+                candidate = stripped[1:].strip()
+                if candidate and _relationship_key(candidate, relationship_aliases):
+                    raise _relationship_error(
+                        "key uses an unsupported explicit spelling"
+                    )
+            mapping = _top_level_mapping(line)
+            if mapping is not None and _relationship_key(
+                mapping[0], relationship_aliases
+            ):
+                raise _relationship_error("key must not be indented at the root")
             index += 1
             continue
 
-        key_region, raw_region = line.split(":", 1)
-        if not _relationship_key(key_region):
+        unrelated_block_scalar = False
+        if line.startswith("#"):
+            index += 1
+            continue
+
+        stripped = line.strip()
+        if stripped.startswith("?") and (
+            len(stripped) == 1 or stripped[1].isspace()
+        ):
+            candidate = stripped[1:].strip()
+            if candidate and _relationship_key(candidate, relationship_aliases):
+                raise _relationship_error("key uses an unsupported explicit spelling")
+            index += 1
+            continue
+
+        mapping = _top_level_mapping(line)
+        if mapping is None:
+            index += 1
+            continue
+        key_region, raw_region = mapping
+        if not _relationship_key(key_region, relationship_aliases):
+            alias = _relationship_anchor(raw_region)
+            if alias is not None:
+                relationship_aliases.add(alias)
+            unrelated_block_scalar = _relationship_block_scalar(raw_region)
             index += 1
             continue
         if seen:

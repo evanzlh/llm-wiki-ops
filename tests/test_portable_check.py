@@ -302,6 +302,9 @@ relationships:
         "&key relationships",
         "!!str &key relationships",
         "&key !!str relationships",
+        r'"\x72elationships"',
+        r'"\u0072elationships"',
+        "!<tag:yaml.org,2002:str> relationships",
     ],
 )
 @pytest.mark.parametrize(
@@ -321,7 +324,14 @@ def test_relationship_key_rejects_unsupported_reserved_equivalents(
 
 @pytest.mark.parametrize(
     "equivalent",
-    ['"relationships"', "'relationships'", "!!str relationships", "&key relationships"],
+    [
+        '"relationships"',
+        "'relationships'",
+        "!!str relationships",
+        "&key relationships",
+        r'"\x72elationships"',
+        "!<tag:yaml.org,2002:str> relationships",
+    ],
 )
 @pytest.mark.parametrize(
     "parser",
@@ -338,8 +348,12 @@ def test_relationship_key_rejects_reserved_equivalent_duplicate(
 
 
 def test_relationship_key_ignores_unrelated_generic_keys() -> None:
-    page = '''---
+    page = r'''---
 my-relationships: ok
+"\x72elationship": []
+"\u0072elationship": []
+!!str relationship: []
+!<tag:yaml.org,2002:str> relationship: []
 relationships:
   - target: "[[concepts/attention]]"
     type: uses
@@ -352,7 +366,93 @@ relationships:
     assert parsed.relationships == expected
     assert parsed.scalars["my-relationships"] == "ok"
     assert parsed.scalars["-meta"] == "ok"
+    assert parsed.lists[r'"\x72elationship"'] == ()
+    assert parsed.lists[r'"\u0072elationship"'] == ()
+    assert parsed.lists["!!str relationship"] == ()
+    assert parsed.lists["!<tag:yaml.org,2002:str> relationship"] == ()
     assert parse_relationships(page) == expected
+
+
+def test_relationship_key_rejects_root_indentation_in_compatibility_parser() -> None:
+    page = "---\n relationships: []\n---\n"
+
+    with pytest.raises(FrontmatterError, match="relationships.*(?:indent|key|root)"):
+        parse_relationships(page)
+
+
+def test_relationship_key_rejects_alias_in_compatibility_parser() -> None:
+    page = "---\nanchor: &rel relationships\n*rel: []\n---\n"
+
+    with pytest.raises(FrontmatterError, match="relationships.*alias"):
+        parse_relationships(page)
+
+
+def test_relationship_key_rejects_alias_duplicate_in_compatibility_parser() -> None:
+    page = (
+        "---\nanchor: &rel relationships\nrelationships: []\n*rel: []\n---\n"
+    )
+
+    with pytest.raises(FrontmatterError, match="relationships.*(?:alias|duplicate)"):
+        parse_relationships(page)
+
+
+def test_relationship_key_rejects_explicit_form_in_compatibility_parser() -> None:
+    page = "---\n? relationships\n: []\n---\n"
+
+    with pytest.raises(FrontmatterError, match="relationships.*explicit"):
+        parse_relationships(page)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "relationships:\n  - target: one # invalid{control}\n    type: uses",
+        "relationships:\n  # invalid{control}\n  - target: one\n    type: uses",
+        "relationships:\n# invalid{control}\n  - target: one\n    type: uses",
+        "relationships: [] # invalid{control}",
+        "relationships:\n  - # invalid{control}\n    target: one\n    type: uses",
+    ],
+    ids=[
+        "field-trailing",
+        "full-line",
+        "root-full-line",
+        "inline-list",
+        "item-marker",
+    ],
+)
+@pytest.mark.parametrize(
+    "control",
+    [
+        pytest.param("\x01", id="c0"),
+        pytest.param("\x0b", id="c0-line-separator"),
+        pytest.param("\x80", id="c1"),
+        pytest.param("\x85", id="c1-line-separator"),
+        pytest.param("\x7f", id="del"),
+    ],
+)
+@pytest.mark.parametrize(
+    "parser",
+    [parse_frontmatter, parse_relationships],
+    ids=["full", "relationships-only"],
+)
+def test_relationship_comments_reject_control_characters(
+    body: str,
+    control: str,
+    parser: Callable[[str], object],
+) -> None:
+    page = f"---\n{body.format(control=control)}\n---\n"
+
+    with pytest.raises(FrontmatterError, match="relationships.*control"):
+        parser(page)
+
+
+def test_relationship_parser_ignores_controls_in_unrelated_legacy_content() -> None:
+    page = (
+        "---\nsummary: legacy # invalid\x01\x0b\x80\x85\x7f\n"
+        "details: >-\n  # legacy\x01\x0b\x80\x85\x7f\nrelationships: []\n---\n"
+    )
+
+    assert parse_relationships(page) == ()
 
 
 @pytest.mark.parametrize(
@@ -500,6 +600,7 @@ def test_parse_relationships_entry_point_ignores_unrelated_block_scalar() -> Non
 summary: >-
   This is deliberately outside the restricted parser grammar.
   It may contain: mapping-like text.
+  relationships: []
 relationships:
   - target: "[[concepts/attention]]"
     type: uses
