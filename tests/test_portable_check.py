@@ -162,6 +162,14 @@ def test_parse_provenance_allows_quoted_colon_space_in_scalar() -> None:
     )
 
 
+def test_parse_generic_scalars_and_lists_still_allow_colon_space() -> None:
+    parsed = parse_frontmatter(
+        "---\ntitle: ratio: 0.72\nsources:\n  - ratio: 0.72\n---\n"
+    )
+    assert parsed.scalars["title"] == "ratio: 0.72"
+    assert parsed.lists["sources"] == ("ratio: 0.72",)
+
+
 @pytest.mark.parametrize(
     ("page", "match"),
     [
@@ -210,12 +218,24 @@ def test_parse_provenance_allows_quoted_colon_space_in_scalar() -> None:
             "provenance.*(?:malformed|delimiter|scalar)",
         ),
         (
+            "---\nprovenance:\n  extracted: \t0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|tab)",
+        ),
+        (
+            "---\nprovenance:\n  extracted\t: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|tab)",
+        ),
+        (
             "---\nprovenance:\n  extracted:extra: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
             "provenance.*(?:malformed|delimiter|scalar)",
         ),
         (
             "---\nprovenance:\n  extracted: extra: 0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
             "provenance.*(?:malformed|delimiter|scalar)",
+        ),
+        (
+            "---\nprovenance:\n  extracted: extra:\t0.72\n  inferred: 0.25\n  ambiguous: 0.03\n---\n",
+            "provenance.*(?:malformed|delimiter|scalar|tab)",
         ),
     ],
 )

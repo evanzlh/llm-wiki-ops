@@ -200,11 +200,23 @@ def _parse_provenance_field(line: str) -> tuple[str, str]:
     ):
         raise FrontmatterError("provenance field has malformed mapping delimiter")
 
-    key = field[:delimiter].strip()
-    raw = _strip_comment(field[delimiter + 1 :]).strip()
+    key_region = field[:delimiter]
+    if "\t" in key_region:
+        raise FrontmatterError("provenance field contains a structural tab")
+
+    raw_region = field[delimiter + 1 :]
+    leading_width = len(raw_region) - len(raw_region.lstrip(" \t"))
+    if "\t" in raw_region[:leading_width]:
+        raise FrontmatterError("provenance field contains a structural tab")
+
+    key = key_region.strip()
+    raw = _strip_comment(raw_region).strip()
     quoted = bool(raw) and raw[0] in "'\""
     value = _scalar(raw)
-    if not quoted and ": " in raw:
+    if not quoted and any(
+        char == ":" and index + 1 < len(raw) and raw[index + 1] in " \t"
+        for index, char in enumerate(raw)
+    ):
         raise FrontmatterError("provenance scalar has an unquoted mapping delimiter")
     return key, value
 
