@@ -1855,21 +1855,41 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def _portable_command_config(command: str) -> PortableConfig:
     try:
+        cwd = Path.cwd()
+    except OSError as exc:
+        raise ConfigError(
+            f"{command} requires a portable repository: "
+            f"cannot resolve current working directory: {exc}"
+        ) from exc
+    try:
         runtime = resolve_config(
-            cwd=Path.cwd(),
+            cwd=cwd,
             home=HOME,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
     except ConfigError as exc:
         raise ConfigError(f"{command} requires a portable repository: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"{command} requires a portable repository: "
+            f"cannot resolve portable configuration from {cwd}: {exc}"
+        ) from exc
     if runtime.mode != "portable" or runtime.portable is None:
         raise ConfigError(f"{command} requires a portable repository")
     return runtime.portable
 
 
-def _json_print(payload: object, *, pretty: bool = False) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None))
+def _json_print(
+    payload: object, *, pretty: bool = False, ensure_ascii: bool = False
+) -> None:
+    print(
+        json.dumps(
+            payload,
+            ensure_ascii=ensure_ascii,
+            indent=2 if pretty else None,
+        )
+    )
 
 
 def _transaction_manager():
@@ -1887,6 +1907,13 @@ def _transaction_error_code(error: Exception) -> str:
     if isinstance(error, ManifestError):
         return "manifest-error"
     if isinstance(error, TransactionError):
+        seen = {id(error)}
+        cause = error.__cause__
+        while cause is not None and id(cause) not in seen:
+            if isinstance(cause, ManifestError):
+                return "manifest-error"
+            seen.add(id(cause))
+            cause = cause.__cause__
         return "transaction-error"
     raise TypeError(f"unsupported transaction error: {type(error).__name__}")
 
@@ -1902,9 +1929,18 @@ def _trusted_recovery_guidance(manager, transaction_id: str | None):
         return inspection_only_guidance()
     try:
         record = manager.load(transaction_id)
-    except (TransactionError, OSError, UnicodeError, ValueError):
+    except (TransactionError, OSError, UnicodeError):
         return inspection_only_guidance()
     return guidance_for_record(record)
+
+
+def _terminal_safe_text(value: object) -> str:
+    return "".join(
+        character
+        if character.isprintable()
+        else character.encode("unicode_escape").decode("ascii")
+        for character in str(value)
+    )
 
 
 def _render_transaction_failure(
@@ -1924,10 +1960,10 @@ def _render_transaction_failure(
         "recovery": guidance.as_dict(),
     }
     if args.json:
-        _json_print(payload, pretty=args.pretty)
+        _json_print(payload, pretty=args.pretty, ensure_ascii=True)
         return 1
 
-    print(f"error: {error}", file=sys.stderr)
+    print(f"error: {_terminal_safe_text(error)}", file=sys.stderr)
     if guidance.transaction_status is not None:
         print(
             f"transaction status: {guidance.transaction_status}",
@@ -1956,11 +1992,7 @@ def _transaction_source(config: PortableConfig, raw: str) -> Path:
     return (config.root / source).absolute()
 
 
-def _record_payload(record, *, guidance=None) -> dict[str, object]:
-    from obsidian_wiki.transaction_guidance import guidance_for_record
-
-    if guidance is None:
-        guidance = guidance_for_record(record)
+def _record_payload(record) -> dict[str, object]:
     return {
         "transaction_id": record.transaction_id,
         "status": record.status,
@@ -1970,15 +2002,24 @@ def _record_payload(record, *, guidance=None) -> dict[str, object]:
         "candidate_vault": str(record.candidate_vault),
         "snapshots": str(record.workspace / "snapshots"),
         "deletions": list(record.deletions),
-        "recommended_action": (
-            guidance.preferred_action.as_dict()
-            if guidance.preferred_action is not None
-            else None
-        ),
-        "allowed_actions": [
-            action.as_dict() for action in guidance.allowed_actions
-        ],
     }
+
+
+def _list_record_payload(record, guidance) -> dict[str, object]:
+    payload = _record_payload(record)
+    payload.update(
+        {
+            "recommended_action": (
+                guidance.preferred_action.as_dict()
+                if guidance.preferred_action is not None
+                else None
+            ),
+            "allowed_actions": [
+                action.as_dict() for action in guidance.allowed_actions
+            ],
+        }
+    )
+    return payload
 
 
 def _commit_payload(result) -> dict[str, object]:
@@ -2027,7 +2068,7 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
         (record, guidance_for_record(record)) for record in records
     ]
     payload = [
-        _record_payload(record, guidance=guidance)
+        _list_record_payload(record, guidance)
         for record, guidance in guided_records
     ]
     if args.json:
@@ -3680,6 +3721,9 @@ def _add_setup_args(sp: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from contextlib import redirect_stderr
+    from io import StringIO
+
     from obsidian_wiki.portable_manifest import ManifestError
     from obsidian_wiki.transaction import TransactionError
 
@@ -3690,7 +3734,36 @@ def main(argv: list[str] | None = None) -> int:
         argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")
     ):
         argv = ["setup", *argv]
-    args = parser.parse_args(argv)
+    transaction_json_parse = (
+        bool(argv)
+        and argv[0] == "transaction"
+        and "--json" in argv
+        and "-h" not in argv
+        and "--help" not in argv
+    )
+    if transaction_json_parse:
+        parse_stderr = StringIO()
+        try:
+            with redirect_stderr(parse_stderr):
+                args = parser.parse_args(argv)
+        except SystemExit as exc:
+            if exc.code != 2:
+                raise
+            lines = parse_stderr.getvalue().strip().splitlines()
+            detail = lines[-1] if lines else "invalid transaction arguments"
+            marker = ": error: "
+            if marker in detail:
+                detail = detail.split(marker, 1)[1]
+            parse_args = argparse.Namespace(
+                json=True,
+                pretty="--pretty" in argv,
+            )
+            return _render_transaction_failure(
+                parse_args,
+                TransactionError(f"invalid transaction arguments: {detail}"),
+            )
+    else:
+        args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         parser.print_help()
         return 0

@@ -2940,6 +2940,16 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     )
     assert begun.returncode == 0, begun.stderr
     begin_payload = json.loads(begun.stdout)
+    assert set(begin_payload) == {
+        "transaction_id",
+        "status",
+        "started_at",
+        "source_ids",
+        "workspace",
+        "candidate_vault",
+        "snapshots",
+        "deletions",
+    }
     transaction_id = begin_payload["transaction_id"]
     candidate_vault = Path(begin_payload["candidate_vault"])
     assert candidate_vault.is_dir()
@@ -2948,6 +2958,11 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert listed.returncode == 0, listed.stderr
     listed_payload = json.loads(listed.stdout)
     assert isinstance(listed_payload, list)
+    assert set(listed_payload[0]) == {
+        *begin_payload,
+        "recommended_action",
+        "allowed_actions",
+    }
     assert listed_payload[0]["status"] == "active"
     assert listed_payload[0]["workspace"]
     assert listed_payload[0]["recommended_action"] == {
@@ -3181,6 +3196,258 @@ def test_transaction_cli_corrupt_record_only_reports_inspection_guidance(
         "preferred_action": None,
         "alternatives": [],
     }
+
+
+def test_trusted_recovery_guidance_does_not_hide_programmer_value_error() -> None:
+    class BrokenManager:
+        def load(self, _transaction_id: str):
+            raise ValueError("programmer regression")
+
+    with pytest.raises(ValueError, match="^programmer regression$"):
+        cli_module._trusted_recovery_guidance(BrokenManager(), "tx-1")
+
+
+def test_transaction_cli_corrupt_manifest_marker_reports_manifest_error(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    (config.vault / ".manifest.json").write_text("{}\n", encoding="utf-8")
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "begin",
+        "--source",
+        str(source),
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "manifest-error"
+    assert result.stdout == json.dumps(payload, ensure_ascii=True) + "\n"
+
+
+def test_transaction_error_code_handles_cyclic_cause_chain() -> None:
+    error = TransactionError("cycle")
+    error.__cause__ = error
+
+    assert cli_module._transaction_error_code(error) == "transaction-error"
+
+
+def test_transaction_cli_corrupt_manifest_shard_reports_manifest_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manifest = ShardedManifest(config)
+    manifest.upsert(source, pages=[])
+    shard = manifest.entry_path("sources/a.md")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+    original_promote = manager._promote_candidate
+
+    def corrupt_shard_during_promotion(candidate_value, target_value, *args) -> None:
+        original_promote(candidate_value, target_value, *args)
+        shard.write_text("{not json\n", encoding="utf-8")
+
+    monkeypatch.setattr(manager, "_promote_candidate", corrupt_shard_during_promotion)
+    monkeypatch.setattr(cli_module, "_transaction_manager", lambda: manager)
+
+    result = cli_module.cmd_transaction_commit(
+        argparse.Namespace(transaction_id="tx-1", json=True, pretty=False)
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["error"]["code"] == "manifest-error"
+    assert captured.out == json.dumps(payload, ensure_ascii=True) + "\n"
+
+
+def test_transaction_json_failure_escapes_surrogate_path_bytes(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    command = [
+        os.fsencode(sys.executable),
+        b"-m",
+        b"obsidian_wiki.cli",
+        b"transaction",
+        b"begin",
+        b"--source",
+        b"sources/missing-\xff.md",
+        b"--json",
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=os.fsencode(root),
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == b""
+    decoded = result.stdout.decode("utf-8", errors="strict")
+    payload = json.loads(decoded)
+    assert payload["error"]["code"] == "transaction-error"
+    assert "\udcff" in payload["error"]["message"]
+    assert b"\\udcff" in result.stdout
+
+
+def test_transaction_human_failure_escapes_terminal_control_characters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    unsafe_path = "concepts/badé\npreferred: forged\x1b[31m.md"
+    candidate_page(record, unsafe_path)
+    monkeypatch.setattr(cli_module, "_transaction_manager", lambda: manager)
+
+    result = cli_module.cmd_transaction_delete(
+        argparse.Namespace(
+            transaction_id="tx-1",
+            path=unsafe_path,
+            json=False,
+            pretty=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert "\x1b" not in captured.err
+    assert "badé" in captured.err
+    assert "\\npreferred: forged\\x1b[31m.md" in captured.err
+    assert [
+        line for line in captured.err.splitlines() if line.startswith("preferred:")
+    ] == [
+        "preferred: obsidian-wiki transaction commit tx-1 — "
+        "commit after fixing the original cause and reviewing the candidate"
+    ]
+    assert "inspect: obsidian-wiki transaction list --json" in captured.err
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("transaction", "commit", "--json"),
+        ("transaction", "list", "--json", "--unknown"),
+        ("transaction", "commit", "--json", "--pretty"),
+    ],
+)
+def test_transaction_cli_json_parse_errors_are_structured(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, *arguments)
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "transaction-error"
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
+    assert result.stdout.endswith("\n")
+    if "--pretty" in arguments:
+        assert result.stdout.startswith("{\n")
+
+
+def test_transaction_cli_human_parse_error_keeps_argparse_usage(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(tmp_path / "home", cwd, "transaction", "commit")
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("usage: obsidian-wiki transaction commit")
+    assert "the following arguments are required: transaction_id" in result.stderr
+
+
+def test_transaction_cli_json_help_keeps_argparse_success(tmp_path: Path) -> None:
+    cwd = tmp_path / "ordinary"
+    cwd.mkdir()
+
+    result = run_cli(
+        tmp_path / "home",
+        cwd,
+        "transaction",
+        "commit",
+        "--json",
+        "--help",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith("usage: obsidian-wiki transaction commit")
+    assert "transaction_id" in result.stdout
+
+
+def test_transaction_cli_json_deleted_cwd_failure_is_structured(
+    tmp_path: Path,
+) -> None:
+    deleted_cwd = tmp_path / "deleted-cwd"
+    deleted_cwd.mkdir()
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    script = """
+import os
+import sys
+from obsidian_wiki.cli import main
+
+os.chdir(sys.argv[1])
+os.rmdir(sys.argv[1])
+raise SystemExit(main(sys.argv[2:]))
+"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(deleted_cwd),
+            "transaction",
+            "list",
+            "--json",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "config-error"
+    assert "current working directory" in payload["error"]["message"]
+    assert result.stdout == json.dumps(payload, ensure_ascii=True) + "\n"
 
 
 def test_transaction_cli_human_missing_transaction_is_stderr_only(
