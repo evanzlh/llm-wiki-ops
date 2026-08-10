@@ -1,4 +1,8 @@
+import json
 from pathlib import Path
+
+from obsidian_wiki.transaction import TransactionRecord
+from obsidian_wiki.transaction_guidance import guidance_for_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +47,12 @@ def markdown_section(text: str, heading: str) -> str:
         if (index := text.find(f"\n{'#' * sublevel} ", start)) >= 0
     ]
     return text[start : min(candidates, default=len(text))]
+
+
+def fenced_json_after(text: str, label: str) -> object:
+    labeled = text.split(label, 1)[1]
+    fenced = labeled.split("```json\n", 1)[1].split("\n```", 1)[0]
+    return json.loads(fenced)
 
 
 def test_every_write_skill_routes_portable_writes_to_transactions() -> None:
@@ -192,3 +202,51 @@ def test_cli_and_configuration_docs_cover_portable_context_and_recovery() -> Non
         "cannot block the explicit selection",
     ):
         assert required in explicit
+
+
+def test_cli_transaction_json_examples_match_recovery_guidance() -> None:
+    cli = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    transactions = markdown_section(
+        cli, "## Portable transactions and local hot state"
+    )
+    failure = fenced_json_after(
+        transactions, "Transaction JSON failures use this exact envelope shape"
+    )
+    listed = fenced_json_after(
+        transactions,
+        "`obsidian-wiki transaction list --json` remains a top-level array.",
+    )
+
+    assert isinstance(failure, dict)
+    assert failure["status"] == "error"
+    recovery = failure["recovery"]
+    assert isinstance(recovery, dict)
+    assert isinstance(listed, list) and len(listed) == 1
+    listed_record = listed[0]
+    assert isinstance(listed_record, dict)
+    assert recovery["transaction_id"] == listed_record["transaction_id"]
+    assert recovery["transaction_status"] == listed_record["status"]
+
+    record = TransactionRecord(
+        transaction_id=recovery["transaction_id"],
+        status=recovery["transaction_status"],
+        started_at="2026-08-10T00:00:00+00:00",
+        source_ids=("sources/a.md",),
+        workspace=Path("workspace"),
+        candidate_vault=Path("candidate"),
+        preimages={"concepts/a.md": "sha256:abc"},
+        deletions=("concepts/old.md",),
+    )
+    guidance = guidance_for_record(record)
+    serialized = guidance.as_dict()
+
+    assert len(recovery["alternatives"]) == len(serialized["alternatives"])
+    assert recovery["preferred_action"] == serialized["preferred_action"]
+    assert recovery["alternatives"] == serialized["alternatives"]
+    allowed_actions = [
+        serialized["preferred_action"],
+        *serialized["alternatives"],
+    ]
+    assert len(listed_record["allowed_actions"]) == len(allowed_actions)
+    assert listed_record["recommended_action"] == serialized["preferred_action"]
+    assert listed_record["allowed_actions"] == allowed_actions

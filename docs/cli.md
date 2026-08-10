@@ -238,18 +238,21 @@ example):
   },
   "recovery": {
     "transaction_id": "tx-1",
-    "transaction_status": "failed",
+    "transaction_status": "active",
     "inspect_command": "obsidian-wiki transaction list --json",
     "preferred_action": {
-      "command": "obsidian-wiki transaction retry tx-1",
-      "reason": "...",
-      "requires": ["..."]
+      "command": "obsidian-wiki transaction commit tx-1",
+      "reason": "commit after fixing the original cause and reviewing the candidate",
+      "requires": [
+        "the original failure cause is removed",
+        "the candidate vault has been reviewed"
+      ]
     },
     "alternatives": [
       {
-        "command": "obsidian-wiki transaction restore tx-1",
-        "reason": "...",
-        "requires": ["..."]
+        "command": "obsidian-wiki transaction abort tx-1",
+        "reason": "abandon the active staged work",
+        "requires": ["the candidate is no longer needed"]
       }
     ]
   }
@@ -281,17 +284,28 @@ additions have this shape:
 [
   {
     "transaction_id": "tx-1",
-    "status": "failed",
+    "status": "active",
     "recommended_action": {
-      "command": "obsidian-wiki transaction retry tx-1",
-      "reason": "...",
-      "requires": ["..."]
+      "command": "obsidian-wiki transaction commit tx-1",
+      "reason": "commit after fixing the original cause and reviewing the candidate",
+      "requires": [
+        "the original failure cause is removed",
+        "the candidate vault has been reviewed"
+      ]
     },
     "allowed_actions": [
       {
-        "command": "obsidian-wiki transaction retry tx-1",
-        "reason": "...",
-        "requires": ["..."]
+        "command": "obsidian-wiki transaction commit tx-1",
+        "reason": "commit after fixing the original cause and reviewing the candidate",
+        "requires": [
+          "the original failure cause is removed",
+          "the candidate vault has been reviewed"
+        ]
+      },
+      {
+        "command": "obsidian-wiki transaction abort tx-1",
+        "reason": "abandon the active staged work",
+        "requires": ["the candidate is no longer needed"]
       }
     ]
   }
