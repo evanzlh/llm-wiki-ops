@@ -139,6 +139,85 @@ class TestRunSync:
         assert "nothing to commit" in message
 
 
+def _personal_cli_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, str]:
+    project = tmp_path / "project"
+    project.mkdir()
+    personal_vault = tmp_path / "personal-vault"
+    personal_vault.mkdir()
+    config = project / ".env"
+    config.write_text(
+        f"OBSIDIAN_VAULT_PATH={personal_vault}\n",
+        encoding="utf-8",
+    )
+    config_before = config.read_text(encoding="utf-8")
+    monkeypatch.chdir(project)
+    return personal_vault.resolve(), config, config_before
+
+
+def test_personal_sync_cli_reaches_helper_outside_portable_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    personal_vault, config, config_before = _personal_cli_context(
+        tmp_path, monkeypatch
+    )
+    invocations: list[Path] = []
+
+    def fake_run_sync(vault_path: Path) -> tuple[int, str]:
+        invocations.append(vault_path)
+        return 0, "personal sync complete"
+
+    monkeypatch.setattr(sync_module, "run_sync", fake_run_sync)
+
+    result = main(["sync"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "personal sync complete\n"
+    assert "portable repositories use branch and pull-request workflows" not in (
+        captured.out + captured.err
+    )
+    assert invocations == [personal_vault]
+    assert config.read_text(encoding="utf-8") == config_before
+    assert list(personal_vault.iterdir()) == []
+
+
+def test_personal_sync_setup_cli_reaches_helper_outside_portable_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    personal_vault, config, config_before = _personal_cli_context(
+        tmp_path, monkeypatch
+    )
+    remote = "https://example.invalid/personal.git"
+    invocations: list[tuple[Path, str]] = []
+
+    def fake_configure_sync(vault_path: Path, remote_url: str) -> list[str]:
+        invocations.append((vault_path, remote_url))
+        return ["Personal sync configured"]
+
+    monkeypatch.setattr(sync_module, "configure_sync", fake_configure_sync)
+
+    result = main(["sync-setup", remote])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == (
+        "✅  Personal sync configured\n"
+        "✅  Run `obsidian-wiki sync` any time to commit and push vault changes.\n"
+    )
+    assert "portable repositories use branch and pull-request workflows" not in (
+        captured.out + captured.err
+    )
+    assert invocations == [(personal_vault, remote)]
+    assert config.read_text(encoding="utf-8") == config_before
+    assert list(personal_vault.iterdir()) == []
+
+
 def _portable_repository(tmp_path: Path) -> Path:
     root = tmp_path / "knowledge"
     (root / ".obsidian-wiki").mkdir(parents=True)
