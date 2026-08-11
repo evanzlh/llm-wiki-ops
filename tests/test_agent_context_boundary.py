@@ -346,7 +346,7 @@ def test_legacy_digest_capture_removes_partial_new_output_on_write_failure(
     assert not output.exists()
 
 
-def test_legacy_digest_capture_closes_and_removes_output_on_initial_fstat_failure(
+def test_legacy_digest_capture_closes_but_does_not_unlink_on_initial_fstat_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output = tmp_path / "catalog.json"
@@ -375,7 +375,32 @@ def test_legacy_digest_capture_closes_and_removes_output_on_initial_fstat_failur
     assert output_descriptor is not None
     with pytest.raises(OSError):
         real_fstat(output_descriptor)
-    assert not output.exists()
+    assert output.read_bytes() == b""
+
+
+def test_legacy_digest_capture_does_not_remove_regular_replacement_before_lstat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"attacker replacement")
+    real_lstat = capture_tool.Path.lstat
+    replaced = False
+
+    def replace_before_lstat(path: Path) -> os.stat_result:
+        nonlocal replaced
+        if path == output and not replaced:
+            replacement.replace(output)
+            replaced = True
+        return real_lstat(path)
+
+    monkeypatch.setattr(capture_tool.Path, "lstat", replace_before_lstat)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._write_new_output(output, b"expected")
+
+    assert replaced
+    assert output.read_bytes() == b"attacker replacement"
 
 
 def test_legacy_digest_capture_fstat_failure_does_not_remove_replacement(
@@ -444,6 +469,39 @@ def test_legacy_digest_capture_rejects_read_path_replaced_by_symlink(
         return content
 
     monkeypatch.setattr(capture_tool.os, "read", replace_after_read)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._read_existing_output(output)
+
+    assert replaced
+    assert output.is_symlink()
+    assert target.read_bytes() == b"wrong"
+
+
+def test_legacy_digest_capture_rejects_read_path_replaced_during_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    target = tmp_path / "target.json"
+    output.write_bytes(b"expected")
+    target.write_bytes(b"wrong")
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+    probe.unlink()
+    real_close = capture_tool.os.close
+    replaced = False
+
+    def close_then_replace(descriptor: int) -> None:
+        nonlocal replaced
+        real_close(descriptor)
+        output.unlink()
+        output.symlink_to(target)
+        replaced = True
+
+    monkeypatch.setattr(capture_tool.os, "close", close_then_replace)
 
     with pytest.raises(ValueError, match="changed|ordinary"):
         capture_tool._read_existing_output(output)
