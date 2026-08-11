@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import posixpath
 from pathlib import PurePosixPath, PureWindowsPath
 import re
@@ -105,20 +105,32 @@ def _issue(
     issues.append(ValidationIssue(code, path, message, target))
 
 
-def _valid_date_or_aware_timestamp(value: str) -> bool:
+def parse_date_or_aware_timestamp(value: str) -> datetime:
+    """Parse a valid page date/timestamp into an aware UTC datetime."""
+
     if _DATE_RE.fullmatch(value):
-        try:
-            date.fromisoformat(value)
-        except ValueError:
-            return False
-        return True
+        parsed_date = date.fromisoformat(value)
+        return datetime(
+            parsed_date.year,
+            parsed_date.month,
+            parsed_date.day,
+            tzinfo=timezone.utc,
+        )
     if not _TIMESTAMP_RE.match(value):
-        return False
+        raise ValueError("not an ISO date or timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    timestamp = datetime.fromisoformat(normalized)
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("timestamp is not timezone-aware")
+    return timestamp.astimezone(timezone.utc)
+
+
+def _valid_date_or_aware_timestamp(value: str) -> bool:
     try:
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parse_date_or_aware_timestamp(value)
     except ValueError:
         return False
-    return timestamp.tzinfo is not None and timestamp.utcoffset() is not None
+    return True
 
 
 def _expected_category(path: str) -> Optional[str]:

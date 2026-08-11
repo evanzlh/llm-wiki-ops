@@ -613,6 +613,108 @@ def test_hot_inputs_bounds_and_sorts_pages_and_operations_deterministically(
     ]
 
 
+def test_hot_inputs_page_limit_uses_absolute_updated_time(
+    config_fixture: PortableConfig,
+) -> None:
+    config = config_fixture
+    _write_page(
+        config,
+        "concepts/lexically-newest.md",
+        title="Lexically newest",
+        summary="Earlier after normalizing its offset.",
+        updated="2026-08-11T00:30:00+14:00",
+    )
+    _write_page(
+        config,
+        "concepts/date-only.md",
+        title="Date only",
+        summary="Midnight UTC.",
+        updated="2026-08-11",
+    )
+    _write_page(
+        config,
+        "concepts/actually-newest.md",
+        title="Actually newest",
+        summary="Later after normalizing its offset.",
+        updated="2026-08-10T23:45:00-12:00",
+    )
+
+    payload = hot_inputs(config, page_limit=2, operation_limit=0)
+
+    assert [page["path"] for page in payload["pages"]] == [
+        "concepts/actually-newest.md",
+        "concepts/date-only.md",
+    ]
+    assert [page["updated"] for page in payload["pages"]] == [
+        "2026-08-10T23:45:00-12:00",
+        "2026-08-11",
+    ]
+
+
+def test_hot_inputs_same_instant_uses_path_as_deterministic_tie_breaker(
+    config_fixture: PortableConfig,
+) -> None:
+    config = config_fixture
+    _write_page(
+        config,
+        "concepts/alpha.md",
+        title="Alpha",
+        summary="UTC spelling.",
+        updated="2026-08-11T00:00:00Z",
+    )
+    _write_page(
+        config,
+        "references/zulu.md",
+        title="Zulu",
+        summary="Equivalent offset spelling.",
+        updated="2026-08-10T12:00:00-12:00",
+    )
+
+    payload = hot_inputs(config, page_limit=2, operation_limit=0)
+
+    assert [page["path"] for page in payload["pages"]] == [
+        "references/zulu.md",
+        "concepts/alpha.md",
+    ]
+
+
+def test_hot_inputs_cli_pages_limit_uses_absolute_updated_time(
+    config_fixture: PortableConfig,
+    tmp_path: Path,
+) -> None:
+    config = config_fixture
+    _write_page(
+        config,
+        "concepts/apparent.md",
+        title="Apparent",
+        summary="Lexically later but chronologically earlier.",
+        updated="2026-08-11T00:30:00+14:00",
+    )
+    _write_page(
+        config,
+        "concepts/actual.md",
+        title="Actual",
+        summary="Chronologically later.",
+        updated="2026-08-10T23:45:00-12:00",
+    )
+
+    result = run_cli(
+        tmp_path / "home",
+        config.root,
+        "hot",
+        "inputs",
+        "--pages",
+        "1",
+        "--operations",
+        "0",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [page["path"] for page in json.loads(result.stdout)["pages"]] == [
+        "concepts/actual.md"
+    ]
+
+
 def test_hot_inputs_accepts_zero_limits(config_fixture: PortableConfig) -> None:
     config = config_fixture
     _write_page(

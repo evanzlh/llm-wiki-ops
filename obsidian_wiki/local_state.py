@@ -10,6 +10,7 @@ import secrets
 import stat
 import tempfile
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -17,7 +18,10 @@ from .config import PortableConfig
 from .frontmatter import parse_frontmatter
 from .git_support import discover_git_root, git_branch_id
 from .operations import OperationError, validate_operation_text
-from .transaction_validation import validate_page_metadata
+from .transaction_validation import (
+    parse_date_or_aware_timestamp,
+    validate_page_metadata,
+)
 
 
 class LocalStateError(RuntimeError):
@@ -628,7 +632,7 @@ def _authoritative_snapshot(
 
     digest = _fingerprint_digest()
     first = True
-    summaries: list[tuple[str, str, dict[str, str]]] = []
+    summaries: list[tuple[datetime, str, dict[str, str]]] = []
     records: list[tuple[str, str, dict[str, object]]] = []
     source_roots = tuple(
         _contained_relative(config.root, source, "configured source root").as_posix()
@@ -695,7 +699,11 @@ def _authoritative_snapshot(
                 "summary": parsed.scalars.get("summary", ""),
                 "updated": parsed.scalars["updated"],
             }
-            item = (summary["updated"], summary["path"], summary)
+            item = (
+                parse_date_or_aware_timestamp(summary["updated"]),
+                summary["path"],
+                summary,
+            )
             if page_limit != 0:
                 if len(summaries) < page_limit:
                     heapq.heappush(summaries, item)
