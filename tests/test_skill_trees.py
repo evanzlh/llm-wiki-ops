@@ -172,9 +172,16 @@ def test_folded_description_preserves_captured_bytes_and_digest(tmp_path: Path) 
     assert tree.digest == skill_trees._digest("example", tree.entries)
 
 
-@pytest.mark.parametrize("indicator", [">", ">-", ">+"])
+@pytest.mark.parametrize(
+    ("indicator", "expected"),
+    [
+        (">", "First line. Second line.\n"),
+        (">-", "First line. Second line."),
+        (">+", "First line. Second line.\n"),
+    ],
+)
 def test_accepts_supported_folded_description_indicators(
-    tmp_path: Path, indicator: str
+    tmp_path: Path, indicator: str, expected: str
 ) -> None:
     skill = tmp_path / "example"
     skill.mkdir()
@@ -188,7 +195,119 @@ def test_accepts_supported_folded_description_indicators(
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     tree = discover_skill_collection(tmp_path).skills[0]
-    assert tree.description == "First line. Second line."
+    assert tree.description == expected
+
+
+@pytest.mark.parametrize("comment", ["#", "  #", "\t#"])
+@pytest.mark.parametrize(
+    "commented_metadata",
+    ["description: >", "other: >", "other:key: >"],
+)
+def test_full_line_comments_cannot_declare_block_metadata(
+    tmp_path: Path, comment: str, commented_metadata: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + comment
+        + " "
+        + commented_metadata
+        + "\ndescription: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Use this skill."
+    )
+
+
+@pytest.mark.parametrize(
+    ("indicator", "content", "expected"),
+    [
+        (">", "  First.\n  Second.\n", "First. Second.\n"),
+        (">-", "  First.\n  Second.\n", "First. Second."),
+        (">+", "  First.\n  Second.\n", "First. Second.\n"),
+        (">", "  First.\n\n  Second.\n", "First.\nSecond.\n"),
+        (">-", "  First.\n\n  Second.\n", "First.\nSecond."),
+        (">+", "  First.\n\n  Second.\n", "First.\nSecond.\n"),
+        (">", "  First.\n\n\n  Second.\n", "First.\n\nSecond.\n"),
+        (">-", "  First.\n\n\n  Second.\n", "First.\n\nSecond."),
+        (">+", "  First.\n\n\n  Second.\n", "First.\n\nSecond.\n"),
+        (">", "  First.\n\n\n", "First.\n"),
+        (">-", "  First.\n\n\n", "First."),
+        (">+", "  First.\n\n\n", "First.\n\n\n"),
+    ],
+)
+def test_folded_description_preserves_paragraphs_and_chomping(
+    tmp_path: Path, indicator: str, content: str, expected: str
+) -> None:
+    original = (
+        "---\nname: example\ndescription: "
+        + indicator
+        + "\n"
+        + content
+        + "---\n"
+    ).encode("utf-8")
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(original)
+
+    from obsidian_wiki import skill_trees
+
+    tree = skill_trees.discover_skill_collection(tmp_path).skills[0]
+    captured = next(entry for entry in tree.entries if entry.path == "SKILL.md")
+
+    assert tree.description == expected
+    assert captured.content == original
+    assert tree.digest == skill_trees._digest("example", tree.entries)
+
+
+def test_rejects_more_indented_folded_description_content(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >\n"
+        "  Ordinary content.\n"
+        "    More-indented content.\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="more-indented"):
+        discover_skill_collection(tmp_path)
+
+
+def test_reports_invalid_utf8_skill_bytes_separately(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(
+        b"---\nname: example\ndescription: Use this skill.\n---\n\xff"
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="invalid UTF-8 SKILL.md"):
+        discover_skill_collection(tmp_path)
+
+
+def test_reports_frontmatter_syntax_separately_from_utf8(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: 'unterminated\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="invalid skill frontmatter") as error:
+        discover_skill_collection(tmp_path)
+    assert "UTF-8" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -511,7 +630,7 @@ def test_folded_description_header_accepts_inline_comment(tmp_path: Path) -> Non
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     assert discover_skill_collection(tmp_path).skills[0].description == (
-        "Fold this line. And this line."
+        "Fold this line. And this line.\n"
     )
 
 
@@ -682,7 +801,7 @@ def test_exact_and_ascii_space_skill_frontmatter_delimiters_are_supported(
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     assert discover_skill_collection(tmp_path).skills[0].description == (
-        "Folded description."
+        "Folded description.\n"
     )
 
 
@@ -765,7 +884,7 @@ def test_skill_metadata_accepts_only_real_newlines_and_preserves_bytes(
 
     tree = discover_skill_collection(tmp_path).skills[0]
     captured = next(entry for entry in tree.entries if entry.path == "SKILL.md")
-    assert tree.description == "Folded description."
+    assert tree.description == "Folded description.\n"
     assert captured.content == original
 
 
@@ -785,7 +904,7 @@ def test_unicode_separator_inside_folded_content_remains_content(
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     assert discover_skill_collection(tmp_path).skills[0].description == (
-        "Keep" + separator + "inside."
+        "Keep" + separator + "inside.\n"
     )
 
 
@@ -847,14 +966,17 @@ def test_non_ascii_whitespace_inside_folded_content_is_preserved(tmp_path: Path)
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     assert discover_skill_collection(tmp_path).skills[0].description == (
-        "Keep\u00a0this content."
+        "Keep\u00a0this content.\n"
     )
 
 
 def test_discovers_every_current_bundled_skill_with_nonempty_description() -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
 
-    root = Path(__file__).resolve().parents[1] / ".skills"
+    repository = Path(__file__).resolve().parents[1]
+    source_root = repository / ".skills"
+    installed_root = repository / "obsidian_wiki" / "_data" / "skills"
+    root = source_root if source_root.is_dir() else installed_root
     collection = discover_skill_collection(root, ignore_source_artifacts=True)
 
     assert collection.names == tuple(

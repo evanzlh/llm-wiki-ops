@@ -260,11 +260,44 @@ def _has_nested_skill_block_metadata(raw_region: str) -> bool:
         nested_region = _strip_comment(nested_raw_region).lstrip(" ")
 
 
-def _normalized_skill_frontmatter(text: str) -> str:
-    """Adapt the bundled skill description subset for the strict parser."""
+def _fold_skill_description(content: list[str], indicator: str) -> str:
+    """Decode the supported YAML folded-scalar subset."""
+    trailing_blanks = 0
+    for line in reversed(content):
+        if line:
+            break
+        trailing_blanks += 1
+
+    significant = (
+        content[: len(content) - trailing_blanks] if trailing_blanks else content
+    )
+    folded: list[str] = []
+    blank_run = 0
+    for line in significant:
+        if not line:
+            blank_run += 1
+            continue
+        if folded:
+            folded.append("\n" * blank_run if blank_run else " ")
+        elif blank_run:
+            folded.append("\n" * blank_run)
+        folded.append(line)
+        blank_run = 0
+    body = "".join(folded)
+    if not body:
+        raise FrontmatterError("folded skill description is empty")
+    if indicator == ">-":
+        return body
+    if indicator == ">+":
+        return body + "\n" * (trailing_blanks + 1)
+    return body + "\n"
+
+
+def _normalized_skill_frontmatter(text: str) -> tuple[str, str | None]:
+    """Return strict-parser input and any decoded folded description."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if not lines or not _skill_frontmatter_delimiter(lines[0]):
-        return text
+        return text, None
     closing = next(
         (
             index
@@ -274,13 +307,14 @@ def _normalized_skill_frontmatter(text: str) -> str:
         None,
     )
     if closing is None:
-        return text
+        return text, None
 
     description_lines: list[int] = []
     folded_line: int | None = None
+    folded_indicator: str | None = None
     for index in range(1, closing):
         line = lines[index]
-        if not line or line.startswith((" ", "\t")):
+        if not line or line.lstrip().startswith("#") or line.startswith((" ", "\t")):
             continue
         mapping = _top_level_mapping(line)
         if mapping is None:
@@ -321,6 +355,7 @@ def _normalized_skill_frontmatter(text: str) -> str:
             description_lines.append(index)
             if value in _SUPPORTED_DESCRIPTION_BLOCKS:
                 folded_line = index
+                folded_indicator = value
             else:
                 raise FrontmatterError("unsupported folded skill description style")
             continue
@@ -334,7 +369,8 @@ def _normalized_skill_frontmatter(text: str) -> str:
     if len(description_lines) > 1:
         raise FrontmatterError("duplicate skill description")
     if folded_line is None:
-        return text
+        return text, None
+    assert folded_indicator is not None
 
     content: list[str] = []
     indentation: int | None = None
@@ -356,23 +392,22 @@ def _normalized_skill_frontmatter(text: str) -> str:
             )
         if indentation is None:
             indentation = leading
-        if leading != indentation:
+        elif leading > indentation:
+            raise FrontmatterError(
+                "folded skill description has unsupported more-indented content"
+            )
+        elif leading < indentation:
             raise FrontmatterError("folded skill description has bad indentation")
         content.append(line[leading:])
         end += 1
 
     if indentation is None:
         raise FrontmatterError("folded skill description is empty")
-    folded = " ".join(
-        part.strip(" ") for part in content if part.strip(" ")
-    ).strip(" ")
-    if not folded:
-        raise FrontmatterError("folded skill description is empty")
-    quoted = folded.replace("'", "''")
+    folded = _fold_skill_description(content, folded_indicator)
     normalized = lines[:folded_line]
-    normalized.append("description: '" + quoted + "'")
+    normalized.append("description: '__folded_skill_description__'")
     normalized.extend(lines[end:])
-    return "\n".join(normalized) + "\n"
+    return "\n".join(normalized) + "\n", folded
 
 
 def discover_skill_collection(
@@ -426,11 +461,19 @@ def discover_skill_collection(
             raise _error(skill_file, "SKILL.md must be an ordinary file")
         try:
             skill_text = skill_entry.content.decode("utf-8")
-            frontmatter = parse_frontmatter(_normalized_skill_frontmatter(skill_text))
-        except (FrontmatterError, UnicodeDecodeError) as exc:
-            raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
+        except UnicodeDecodeError as exc:
+            raise _error(skill_file, "invalid UTF-8 SKILL.md: {}".format(exc)) from exc
+        try:
+            normalized, folded_description = _normalized_skill_frontmatter(skill_text)
+            frontmatter = parse_frontmatter(normalized)
+        except FrontmatterError as exc:
+            raise _error(skill_file, "invalid skill frontmatter: {}".format(exc)) from exc
         name = frontmatter.scalars.get("name", "")
-        description = frontmatter.scalars.get("description", "")
+        description = (
+            folded_description
+            if folded_description is not None
+            else frontmatter.scalars.get("description", "")
+        )
         if not name or not description:
             raise _error(skill_file, "frontmatter name and description are required")
         if name != directory.name:
