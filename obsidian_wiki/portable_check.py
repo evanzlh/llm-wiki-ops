@@ -38,8 +38,9 @@ from .skill_inventory import (
 )
 from .skill_trees import (
     SkillCollection,
-    compare_skill_collections,
+    SkillEntry,
     discover_skill_collection,
+    snapshot_ordinary_tree,
 )
 
 
@@ -822,10 +823,6 @@ def _load_managed_inventory(
     return True
 
 
-def _drift_path(agent_relative: str, name: str, path: str) -> str:
-    return (PurePosixPath(agent_relative) / name / path).as_posix()
-
-
 def _skill_tree_error(root: Path, error: object) -> str:
     message = _scrub(root, error)
     lowered = message.lower()
@@ -836,38 +833,20 @@ def _skill_tree_error(root: Path, error: object) -> str:
     return message
 
 
-def _missing_mirror_path(
-    mirror_root: Path, canonical: SkillCollection
-) -> Path | None:
-    """Return a safely confirmed missing required path after discovery failed."""
-    try:
-        root_metadata = mirror_root.lstat()
-    except FileNotFoundError:
-        return mirror_root
-    except OSError:
-        return None
-    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
-        return None
-    for name in canonical.names:
-        skill_root = mirror_root / name
-        try:
-            skill_metadata = skill_root.lstat()
-        except FileNotFoundError:
-            return skill_root
-        except OSError:
-            return None
-        if stat.S_ISLNK(skill_metadata.st_mode) or not stat.S_ISDIR(
-            skill_metadata.st_mode
-        ):
-            return None
-        skill_file = skill_root / "SKILL.md"
-        try:
-            skill_file.lstat()
-        except FileNotFoundError:
-            return skill_file
-        except OSError:
-            return None
-    return None
+def _canonical_root_entries(canonical: SkillCollection) -> tuple[SkillEntry, ...]:
+    entries: list[SkillEntry] = []
+    for skill in canonical.skills:
+        entries.append(SkillEntry(skill.name, "directory", False, b""))
+        entries.extend(
+            SkillEntry(
+                f"{skill.name}/{entry.path}",
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in skill.entries
+        )
+    return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
 def _check_skill_mirrors(
@@ -875,57 +854,68 @@ def _check_skill_mirrors(
     canonical: SkillCollection,
     issues: list[CheckIssue],
 ) -> None:
+    canonical_entries = {
+        entry.path: entry for entry in _canonical_root_entries(canonical)
+    }
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         mirror_root = config.root / agent_relative
-        try:
-            mirror = discover_skill_collection(mirror_root)
-        except (OSError, ValueError) as exc:
-            missing = _missing_mirror_path(mirror_root, canonical)
-            if missing is not None:
-                issues.append(
-                    CheckIssue(
-                        "skill-mirror-missing",
-                        _rel(config.root, missing),
-                        "canonical skill entry is missing from the agent mirror",
-                    )
+        if _has_symlink_component(config.root, mirror_root):
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-unsafe",
+                    agent_relative,
+                    "agent mirror path contains a symlink component",
                 )
-            else:
-                issues.append(
-                    CheckIssue(
-                        "skill-mirror-unsafe",
-                        agent_relative,
-                        _skill_tree_error(config.root, exc),
-                    )
-                )
+            )
             continue
-        added, changed, removed = compare_skill_collections(canonical, mirror)
-        for name, paths in sorted(added.items()):
-            for path in paths:
-                issues.append(
-                    CheckIssue(
-                        "skill-mirror-missing",
-                        _drift_path(agent_relative, name, path),
-                        "canonical skill entry is missing from the agent mirror",
-                    )
+        try:
+            mirror_snapshot = snapshot_ordinary_tree(mirror_root)
+        except FileNotFoundError:
+            mirror_snapshot = ()
+        except (OSError, ValueError) as exc:
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-unsafe",
+                    agent_relative,
+                    _skill_tree_error(config.root, exc),
                 )
-        for name, paths in sorted(changed.items()):
-            for path in paths:
+            )
+            continue
+        if _has_symlink_component(config.root, mirror_root):
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-unsafe",
+                    agent_relative,
+                    "agent mirror path gained a symlink component during scan",
+                )
+            )
+            continue
+        mirror_entries = {entry.path: entry for entry in mirror_snapshot}
+        for path in sorted(set(canonical_entries) - set(mirror_entries)):
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-missing",
+                    (PurePosixPath(agent_relative) / path).as_posix(),
+                    "canonical skill entry is missing from the agent mirror",
+                )
+            )
+        for path in sorted(set(canonical_entries) & set(mirror_entries)):
+            if canonical_entries[path] != mirror_entries[path]:
                 issues.append(
                     CheckIssue(
                         "skill-mirror-changed",
-                        _drift_path(agent_relative, name, path),
+                        (PurePosixPath(agent_relative) / path).as_posix(),
                         "agent mirror entry differs from the canonical skill entry",
                     )
                 )
-        for name, paths in sorted(removed.items()):
-            for path in paths:
-                issues.append(
-                    CheckIssue(
-                        "skill-mirror-extra",
-                        _drift_path(agent_relative, name, path),
-                        "agent mirror entry is absent from canonical skills",
-                    )
+        for path in sorted(set(mirror_entries) - set(canonical_entries)):
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-extra",
+                    (PurePosixPath(agent_relative) / path).as_posix(),
+                    "agent mirror entry is absent from canonical skills",
                 )
+            )
 
 
 def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> None:

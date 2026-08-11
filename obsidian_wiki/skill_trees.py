@@ -485,6 +485,25 @@ def discover_skill_collection(
     return SkillCollection(tuple(skills))
 
 
+def snapshot_ordinary_tree(root: Path) -> tuple[SkillEntry, ...]:
+    """Snapshot a raw ordinary tree without imposing skill metadata semantics."""
+    root_metadata = root.lstat()
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(
+        root_metadata.st_mode
+    ):
+        raise _error(root, "tree root must be an ordinary directory")
+    entries: list[SkillEntry] = []
+    for child in sorted(root.iterdir(), key=lambda item: item.name):
+        _snapshot_entry(
+            child,
+            child.name,
+            entries,
+            ignore_source_artifacts=False,
+        )
+    _validate_directory_unchanged(root, root_metadata)
+    return tuple(sorted(entries, key=lambda entry: entry.path))
+
+
 def _materialize_path(root: Path, relative: str) -> Path:
     parts = relative.split("/")
     if not relative or any(part in {"", ".", ".."} for part in parts):

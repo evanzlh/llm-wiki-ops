@@ -1571,6 +1571,79 @@ def test_check_reports_complete_mirror_drift(
     assert str(root) not in json.dumps(report)
 
 
+def test_check_rejects_agent_mirror_with_symlinked_ancestor(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    external = tmp_path / "external-claude"
+    shutil.copytree(root / ".claude", external)
+    shutil.rmtree(root / ".claude")
+    (root / ".claude").symlink_to(external, target_is_directory=True)
+
+    report = check_portable_repo(config)
+
+    assert "skill-mirror-unsafe" in issue_codes(report)
+    assert str(external) not in json.dumps(report)
+
+
+def test_check_rejects_ancestor_symlink_inserted_after_mirror_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    external = tmp_path / "external-claude"
+    shutil.copytree(root / ".claude", external)
+    from obsidian_wiki import portable_check
+
+    original_snapshot = portable_check.snapshot_ordinary_tree
+    swapped = False
+
+    def swap_ancestor_after_snapshot(path: Path):
+        nonlocal swapped
+        snapshot = original_snapshot(path)
+        if not swapped and path == root / ".claude/skills":
+            swapped = True
+            shutil.rmtree(root / ".claude")
+            (root / ".claude").symlink_to(external, target_is_directory=True)
+        return snapshot
+
+    monkeypatch.setattr(
+        portable_check, "snapshot_ordinary_tree", swap_ancestor_after_snapshot
+    )
+
+    report = check_portable_repo(config)
+
+    assert "skill-mirror-unsafe" in issue_codes(report)
+    assert str(external) not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("root-file", "skill-mirror-extra"),
+        ("empty-directory", "skill-mirror-extra"),
+        ("invalid-frontmatter", "skill-mirror-changed"),
+    ],
+)
+def test_ordinary_mirror_drift_is_not_classified_as_unsafe(
+    tmp_path: Path, mutation: str, expected_code: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    mirror_root = root / ".claude/skills"
+    if mutation == "root-file":
+        (mirror_root / "README.md").write_text("extra\n", encoding="utf-8")
+    elif mutation == "empty-directory":
+        (mirror_root / "extra-empty").mkdir()
+    else:
+        (mirror_root / "wiki-ingest/SKILL.md").write_text(
+            "not valid frontmatter\n", encoding="utf-8"
+        )
+
+    report = check_portable_repo(config)
+
+    assert expected_code in issue_codes(report)
+    assert "skill-mirror-unsafe" not in issue_codes(report)
+
+
 def test_managed_canonical_edit_is_warning_when_mirrors_match(
     tmp_path: Path,
 ) -> None:

@@ -45,6 +45,61 @@ def test_discovers_metadata_and_preserves_unicode_binary_and_executable(tmp_path
     ]
 
 
+def test_snapshot_ordinary_tree_preserves_raw_files_empty_dirs_and_modes(
+    tmp_path: Path,
+) -> None:
+    from obsidian_wiki.skill_trees import snapshot_ordinary_tree
+
+    (tmp_path / "README.md").write_text("ordinary root file\n", encoding="utf-8")
+    (tmp_path / "empty/nested").mkdir(parents=True)
+    skill = tmp_path / "broken-skill"
+    skill.mkdir()
+    skill_file = skill / "SKILL.md"
+    skill_file.write_text("not valid frontmatter\n", encoding="utf-8")
+    skill_file.chmod(0o755)
+
+    entries = snapshot_ordinary_tree(tmp_path)
+
+    assert [
+        (entry.path, entry.kind, entry.executable, entry.content)
+        for entry in entries
+    ] == [
+        ("README.md", "file", False, b"ordinary root file\n"),
+        ("broken-skill", "directory", False, b""),
+        (
+            "broken-skill/SKILL.md",
+            "file",
+            True,
+            b"not valid frontmatter\n",
+        ),
+        ("empty", "directory", False, b""),
+        ("empty/nested", "directory", False, b""),
+    ]
+
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "hardlink", "special"])
+def test_snapshot_ordinary_tree_rejects_unsafe_entries(
+    tmp_path: Path, entry_kind: str
+) -> None:
+    from obsidian_wiki.skill_trees import snapshot_ordinary_tree
+
+    external = tmp_path.parent / f"external-{entry_kind}"
+    external.write_bytes(b"external")
+    entry = tmp_path / entry_kind
+    try:
+        if entry_kind == "symlink":
+            entry.symlink_to(external)
+        elif entry_kind == "hardlink":
+            os.link(external, entry)
+        else:
+            os.mkfifo(entry)
+    except OSError as exc:
+        pytest.skip(f"{entry_kind} unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="symbolic|multiply-linked|special"):
+        snapshot_ordinary_tree(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     [

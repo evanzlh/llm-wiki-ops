@@ -758,3 +758,23 @@ def test_doctor_portable_mode_rejects_unsafe_managed_paths_without_fallback(
     details = json.dumps(report).lower()
     assert "symlink" in details if entry_kind == "symlink" else "hard link" in details
     assert str(global_vault) not in json.dumps(report)
+
+
+def test_doctor_rejects_agent_mirror_with_symlinked_ancestor(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    external = tmp_path / "external-claude"
+    shutil.copytree(root / ".claude", external)
+    shutil.rmtree(root / ".claude")
+    (root / ".claude").symlink_to(external, target_is_directory=True)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    report = json.loads(proc.stdout)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["project-skills"]["status"] == "fail"
+    assert "skill-mirror-unsafe" in checks["project-skills"]["detail"]
+    assert str(external) not in json.dumps(report)
