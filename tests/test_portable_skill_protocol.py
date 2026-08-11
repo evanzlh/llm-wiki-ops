@@ -737,7 +737,7 @@ def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
     )
     for required in (
         "obsidian-wiki transaction list --json --pretty",
-        "selected list record's `status`, `source_ids`, `candidate_vault`, `deletions`, and `recovery`",
+        "selected list record's `status`, `source_ids`, `candidate_vault`, `deletions`, `recommended_action`, and `allowed_actions`",
         "runtime-only absolute `candidate_vault`",
         "candidate_pages`, `deletions`, `issues`, and `warnings`",
         "never begin an empty or replacement transaction",
@@ -749,6 +749,41 @@ def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
         assert required in portable
     assert "obsidian-wiki transaction begin" not in portable
     assert "transaction show" not in portable
+
+
+def test_stage_commit_distinguishes_list_fields_from_failure_recovery() -> None:
+    relative = ".skills/wiki-stage-commit/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    list_step = " ".join(portable.split("\n1.", 1)[1].split("\n2.", 1)[0].split())
+    assert "`recovery`" not in list_step
+    for field in (
+        "`status`",
+        "`source_ids`",
+        "`candidate_vault`",
+        "`deletions`",
+        "`recommended_action`",
+        "`allowed_actions`",
+    ):
+        assert field in list_step
+
+    recovery_step = " ".join(portable.split("\n3.", 1)[1].split("\n4.", 1)[0].split())
+    for required in (
+        "failure response envelope's `recovery.preferred_action`",
+        "rerun `obsidian-wiki transaction list --json --pretty`",
+        "cross-check the refreshed record's `recommended_action` and `allowed_actions`",
+        "only then perform",
+    ):
+        assert required in recovery_step
+    assert recovery_step.index("failure response envelope's `recovery.preferred_action`") < (
+        recovery_step.index("rerun `obsidian-wiki transaction list --json --pretty`")
+    ) < recovery_step.index(
+        "cross-check the refreshed record's `recommended_action` and `allowed_actions`"
+    ) < recovery_step.index("only then perform")
 
 
 def test_import_snapshot_candidate_uses_relative_unicode_source_id(tmp_path: Path) -> None:
