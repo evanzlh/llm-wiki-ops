@@ -262,7 +262,7 @@ def test_block_header_near_misses_remain_plain_scalars(tmp_path: Path) -> None:
         "description: Use a > comparison: literal.\n"
         "quoted: '>'\n"
         'double_quoted: "|"\n'
-        "other:key: >\n"
+        "other: 'key: >'\n"
         "---\n\n"
         "# Body\n\n'other:key': >\n  Not frontmatter.\n",
         encoding="utf-8",
@@ -282,6 +282,66 @@ def test_block_header_near_misses_remain_plain_scalars(tmp_path: Path) -> None:
     ],
 )
 def test_literal_colon_indicator_text_is_not_a_block_header(
+    tmp_path: Path, description: str, expected: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: " + description + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == expected
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "other:key: >",
+        "a:b:c: >",
+        "other:key: > # inline comment",
+        "other:'quoted:key': >",
+        'other:"quoted:key": > # inline comment',
+    ],
+)
+def test_rejects_nested_mapping_suffix_with_block_metadata(
+    tmp_path: Path, metadata: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + metadata
+        + "\ndescription: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="ambiguous|block field"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        (
+            "Compare mappings a:b: > is literal text.",
+            "Compare mappings a:b: > is literal text.",
+        ),
+        (
+            "'Compare mappings a:b: >'",
+            "Compare mappings a:b: >",
+        ),
+        (
+            '"Compare mappings a:b: >"',
+            "Compare mappings a:b: >",
+        ),
+    ],
+)
+def test_nested_colons_in_literal_description_remain_scalar(
     tmp_path: Path, description: str, expected: str
 ) -> None:
     skill = tmp_path / "example"

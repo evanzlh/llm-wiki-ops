@@ -247,6 +247,22 @@ def _skill_frontmatter_delimiter(line: str) -> bool:
     return True
 
 
+def _has_nested_skill_block_metadata(raw_region: str) -> bool:
+    nested_region = _strip_comment(raw_region).lstrip(" ")
+    while True:
+        mapping = _top_level_mapping(nested_region)
+        if mapping is None:
+            return False
+        _key_region, nested_raw_region = mapping
+        block_value = _skill_block_value(nested_raw_region)
+        if block_value is not None:
+            value, _ascii_structure = block_value
+            return not any(
+                _structural_whitespace(character) for character in value
+            )
+        nested_region = _strip_comment(nested_raw_region).lstrip(" ")
+
+
 def _normalized_skill_frontmatter(text: str) -> str:
     """Adapt the bundled skill description subset for the strict parser."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -295,6 +311,8 @@ def _normalized_skill_frontmatter(text: str) -> str:
             else:
                 raise FrontmatterError("unsupported folded skill description style")
             continue
+        if _has_nested_skill_block_metadata(raw_region):
+            raise FrontmatterError("ambiguous unsupported skill metadata block field")
         if key == "description" and all(
             character == " " for character in key_structure
         ):
