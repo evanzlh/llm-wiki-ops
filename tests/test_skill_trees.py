@@ -505,6 +505,109 @@ def test_exact_and_ascii_space_skill_frontmatter_delimiters_are_supported(
     )
 
 
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x85", "\u2028", "\u2029"])
+def test_non_newline_separator_cannot_terminate_opening_delimiter(
+    tmp_path: Path, separator: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---"
+        + separator
+        + "\nname: example\ndescription: >\n  Content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="delimiter|whitespace"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x85", "\u2028", "\u2029"])
+def test_non_newline_separator_is_rejected_in_block_header_structure(
+    tmp_path: Path, separator: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >"
+        + separator
+        + "\n  Content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="header|whitespace"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x85", "\u2028", "\u2029"])
+def test_non_newline_separator_is_rejected_in_folded_indentation(
+    tmp_path: Path, separator: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >\n  "
+        + separator
+        + "Content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="indentation|whitespace"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_skill_metadata_accepts_only_real_newlines_and_preserves_bytes(
+    tmp_path: Path, newline: str
+) -> None:
+    original = newline.join(
+        [
+            "---",
+            "name: example",
+            "description: >",
+            "  Folded description.",
+            "---",
+            "",
+        ]
+    ).encode("utf-8")
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(original)
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    tree = discover_skill_collection(tmp_path).skills[0]
+    captured = next(entry for entry in tree.entries if entry.path == "SKILL.md")
+    assert tree.description == "Folded description."
+    assert captured.content == original
+
+
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"])
+def test_unicode_separator_inside_folded_content_remains_content(
+    tmp_path: Path, separator: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >\n  Keep"
+        + separator
+        + "inside.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Keep" + separator + "inside."
+    )
+
+
 @pytest.mark.parametrize(
     "header",
     [

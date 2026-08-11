@@ -199,7 +199,7 @@ def _digest(name: str, entries: tuple[SkillEntry, ...]) -> str:
 
 
 def _structural_whitespace(character: str) -> bool:
-    return character in " \t\v\f" or unicodedata.category(character) in {
+    return character in " \t\v\f\x85" or unicodedata.category(character) in {
         "Zs",
         "Zl",
         "Zp",
@@ -249,7 +249,7 @@ def _skill_frontmatter_delimiter(line: str) -> bool:
 
 def _normalized_skill_frontmatter(text: str) -> str:
     """Adapt the bundled skill description subset for the strict parser."""
-    lines = text.splitlines()
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if not lines or not _skill_frontmatter_delimiter(lines[0]):
         return text
     closing = next(
