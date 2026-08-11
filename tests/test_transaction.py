@@ -4188,6 +4188,33 @@ def test_candidate_semantics_accepts_dates_aware_timestamps_and_source_subset() 
     assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == []
 
 
+def test_page_timestamp_parser_preserves_sortable_boundary_aware_values() -> None:
+    earliest = transaction_validation_module.parse_date_or_aware_timestamp(
+        "0001-01-01T00:00:00+23:59"
+    )
+    latest = transaction_validation_module.parse_date_or_aware_timestamp(
+        "9999-12-31T23:59:59-23:59"
+    )
+
+    assert sorted((latest, earliest)) == [earliest, latest]
+    assert earliest.isoformat() == "0001-01-01T00:00:00+23:59"
+    assert latest.isoformat() == "9999-12-31T23:59:59-23:59"
+
+
+def test_page_metadata_accepts_boundary_aware_timestamps() -> None:
+    page = _prospective_page(
+        "concepts/boundary.md",
+        created="0001-01-01T00:00:00+23:59",
+        updated="9999-12-31T23:59:59-23:59",
+    )
+
+    assert validate_page_metadata(
+        page.path,
+        page.text,
+        allowed_source_ids=("sources/a.md",),
+    ) == ()
+
+
 @pytest.mark.parametrize(
     "source_id",
     [

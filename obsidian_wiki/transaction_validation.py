@@ -106,7 +106,7 @@ def _issue(
 
 
 def parse_date_or_aware_timestamp(value: str) -> datetime:
-    """Parse a valid page date/timestamp into an aware UTC datetime."""
+    """Parse a page date/timestamp into an aware, absolute-time-sortable value."""
 
     if _DATE_RE.fullmatch(value):
         parsed_date = date.fromisoformat(value)
@@ -122,7 +122,7 @@ def parse_date_or_aware_timestamp(value: str) -> datetime:
     timestamp = datetime.fromisoformat(normalized)
     if timestamp.tzinfo is None or timestamp.utcoffset() is None:
         raise ValueError("timestamp is not timezone-aware")
-    return timestamp.astimezone(timezone.utc)
+    return timestamp
 
 
 def _valid_date_or_aware_timestamp(value: str) -> bool:

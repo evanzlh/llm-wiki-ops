@@ -678,6 +678,33 @@ def test_hot_inputs_same_instant_uses_path_as_deterministic_tie_breaker(
     ]
 
 
+def test_hot_inputs_bounds_boundary_aware_timestamps_deterministically(
+    config_fixture: PortableConfig,
+) -> None:
+    config = config_fixture
+    _write_page(
+        config,
+        "concepts/earliest.md",
+        title="Earliest",
+        summary="Lower datetime boundary with a positive offset.",
+        updated="0001-01-01T00:00:00+23:59",
+    )
+    _write_page(
+        config,
+        "concepts/latest.md",
+        title="Latest",
+        summary="Upper datetime boundary with a negative offset.",
+        updated="9999-12-31T23:59:59-23:59",
+    )
+
+    first = hot_inputs(config, page_limit=1, operation_limit=0)
+    second = hot_inputs(config, page_limit=1, operation_limit=0)
+
+    assert first == second
+    assert [page["path"] for page in first["pages"]] == ["concepts/latest.md"]
+    assert first["pages"][0]["updated"] == "9999-12-31T23:59:59-23:59"
+
+
 def test_hot_inputs_cli_pages_limit_uses_absolute_updated_time(
     config_fixture: PortableConfig,
     tmp_path: Path,
