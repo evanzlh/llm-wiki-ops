@@ -1,7 +1,7 @@
 # Agent Context Isolation and Full Skill Mirrors Design
 
 **Date:** 2026-08-12
-**Status:** Approved in conversation; awaiting written-spec review
+**Status:** Approved
 **Target baseline:** `feat/portable-repo-mode` at `7596215`
 
 ## Problem
