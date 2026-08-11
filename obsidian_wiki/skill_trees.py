@@ -237,16 +237,26 @@ def _skill_block_value(raw_region: str) -> tuple[str, bool] | None:
     return value, all(character == " " for character in structural)
 
 
+def _skill_frontmatter_delimiter(line: str) -> bool:
+    if line.strip() != "---":
+        return False
+    if line.strip(" ") != "---":
+        raise FrontmatterError(
+            "skill frontmatter delimiter has non-ASCII structural whitespace"
+        )
+    return True
+
+
 def _normalized_skill_frontmatter(text: str) -> str:
     """Adapt the bundled skill description subset for the strict parser."""
     lines = text.splitlines()
-    if not lines or lines[0].strip(" ") != "---":
+    if not lines or not _skill_frontmatter_delimiter(lines[0]):
         return text
     closing = next(
         (
             index
             for index, line in enumerate(lines[1:], start=1)
-            if line.strip(" ") == "---"
+            if _skill_frontmatter_delimiter(line)
         ),
         None,
     )

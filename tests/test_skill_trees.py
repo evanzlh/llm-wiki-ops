@@ -450,6 +450,62 @@ def test_quoted_block_like_other_field_remains_scalar(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "delimiter",
+    ["\t---", "---\t", "\u00a0---", "---\u00a0", "\u2003---", "---\u2003"],
+)
+@pytest.mark.parametrize("position", ["opening", "closing"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "name: example\ndescription: >",
+        "name: example\ndescription: |",
+        "name: example\nother: >\ndescription: Use this skill.",
+    ],
+)
+def test_rejects_non_ascii_skill_frontmatter_delimiter_structure(
+    tmp_path: Path, delimiter: str, position: str, metadata: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    opening = delimiter if position == "opening" else "---"
+    closing = delimiter if position == "closing" else "---"
+    (skill / "SKILL.md").write_text(
+        opening + "\n" + metadata + "\n" + closing + "\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="delimiter|whitespace|frontmatter"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("opening", "closing"),
+    [("---", "---"), (" ---", "--- "), ("  ---  ", " --- ")],
+)
+def test_exact_and_ascii_space_skill_frontmatter_delimiters_are_supported(
+    tmp_path: Path, opening: str, closing: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        opening
+        + "\nname: example\ndescription: >\n"
+        + "  Folded description.\n"
+        + closing
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Folded description."
+    )
+
+
+@pytest.mark.parametrize(
     "header",
     [
         "description:\u00a0>",
