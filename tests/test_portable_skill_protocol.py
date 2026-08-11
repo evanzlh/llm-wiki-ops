@@ -312,3 +312,162 @@ def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
         assert forbidden not in portable, (
             f"{relative}: contains legacy action {forbidden!r}"
         )
+
+
+def test_portable_url_ingest_uses_repository_snapshot_and_parent_transaction() -> None:
+    relative = ".skills/wiki-ingest/references/url-sources.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository URL flow",
+        relative=relative,
+        next_heading="Personal mode URL flow",
+    )
+    for required in (
+        "strictly below a configured `sources` root",
+        "`origin_url` metadata",
+        "repository-relative Source ID",
+        "one parent-owned transaction",
+        "candidate knowledge pages only",
+        "A live URL must never appear in `sources`",
+        "`misc/` is Personal-only",
+        "`sources: []` is invalid",
+        "Do not write directly to the live vault, manifest, `index.md`, `log.md`, or `hot.md`",
+        "Portable Repository completion",
+    ):
+        assert required in portable, f"{relative}: missing {required!r}"
+
+    main = _text(".skills/wiki-ingest/SKILL.md")
+    assert "Portable Repository URL flow" in main
+    assert "parent-owned Portable Repository completion" in main
+
+
+def test_large_folder_workers_are_analysis_only_and_parent_owns_completion() -> None:
+    text = _text(".skills/wiki-ingest/SKILL.md")
+    section = text.split("### Step 0: Batch Planning for Large Folders", 1)[1].split(
+        "### Ingesting Git Repositories", 1
+    )[0]
+    for required in (
+        "parent resolves config and mode",
+        "owner `AGENTS.md`",
+        "analysis-only workers",
+        "distilled page proposals",
+        "source mappings",
+        "one source closure",
+        "single transaction",
+        "Personal central writes",
+    ):
+        assert required in section, f"large-folder flow missing {required!r}"
+    for forbidden in (
+        "Step 1 onward",
+        "complete independently",
+        "Ingest these files into the wiki at",
+    ):
+        assert forbidden not in section, f"large-folder flow contains {forbidden!r}"
+
+
+def test_pageindex_reference_separates_portable_analysis_from_personal_runtime() -> None:
+    relative = ".skills/wiki-ingest/references/pageindex.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository mode",
+        relative=relative,
+        next_heading="Personal mode",
+    )
+    for required in (
+        "skip PageIndex",
+        "analysis-only output",
+        "repository-root CWD",
+        "transient analysis input",
+        "small, reviewable Markdown or plain-text snapshot",
+        "origin URL or identifier",
+        "relevant extracted text",
+        "content hash when available",
+        "page citations",
+        "candidate `sources` cites only the snapshot's repository-relative Source ID",
+        "Binary PDFs, images, and attachments are Personal-only",
+        "never Portable Source IDs",
+        "unsupported in Portable mode or use Personal mode",
+        "does not export values into the parent shell",
+        "Do not change CWD, source `.env`, or edit any manifest",
+    ):
+        assert required in portable, f"{relative}: missing {required!r}"
+    for forbidden in (
+        "authoritative PDF",
+        "original repository-relative Source ID of an ordinary PDF",
+    ):
+        assert forbidden not in portable, f"{relative}: binary source authority {forbidden!r}"
+    for pattern in (
+        re.compile(r"^[ \t]*cd\s", re.MULTILINE),
+        re.compile(r"^[ \t]*set -a", re.MULTILINE),
+        re.compile(r"\$PAGEINDEX_(?:REPO|WORKSPACE|MODEL)"),
+    ):
+        assert pattern.search(portable) is None, f"{relative}: unsafe Portable command"
+
+    main = _text(".skills/wiki-ingest/SKILL.md")
+    pageindex = main.split("### Long-PDF preprocessing", 1)[1].split(
+        "### Academic papers", 1
+    )[0]
+    assert "Portable Repository mode" in pageindex
+    assert "Personal mode" in pageindex
+
+
+def test_academic_attachments_are_mode_gated() -> None:
+    text = _text(".skills/wiki-ingest/SKILL.md")
+    academic = text.split("### Academic papers", 1)[1].split("### Step 1b", 1)[0]
+    portable = academic.split("**Portable Repository mode", 1)[1].split(
+        "**Personal mode", 1
+    )[0]
+    for required in (
+        "small, reviewable Markdown or plain-text snapshot",
+        "strictly below a configured repository `sources` root",
+        "origin URL or identifier",
+        "relevant extracted text",
+        "content hash when available",
+        "page citations",
+        "candidate `sources` cites only the snapshot's repository-relative Source ID",
+        "Binary PDFs, images, and attachments are Personal-only",
+        "never Portable Source IDs",
+        "unsupported in Portable mode or use Personal mode",
+        "Markdown candidate pages only",
+        "candidate_vault/attachments",
+        "non-Markdown candidate",
+    ):
+        assert required in portable, f"academic Portable flow missing {required!r}"
+    for forbidden in (
+        "cite its repository-relative Source ID",
+        "save `attachments/",
+    ):
+        assert forbidden not in portable
+
+
+def test_personal_ingest_commands_use_concrete_resolved_values() -> None:
+    main_relative = ".skills/wiki-ingest/SKILL.md"
+    main = _text(main_relative)
+    personal = _h2_section(main, "Personal mode completion", relative=main_relative)
+    for required in (
+        "<resolved-vault-path>/hot.md",
+        "<resolved-qmd-cli> update",
+        "qmd://<resolved-qmd-wiki-collection>/",
+        "config resolution does not export these values into the parent shell",
+    ):
+        assert required in personal, f"{main_relative}: missing {required!r}"
+    for forbidden in (
+        "$OBSIDIAN_VAULT_PATH",
+        "$QMD_WIKI_COLLECTION",
+        "${QMD_CLI:-qmd}",
+    ):
+        assert forbidden not in personal, f"{main_relative}: shell assumption {forbidden!r}"
+
+    url = _text(".skills/wiki-ingest/references/url-sources.md")
+    assert "$OBSIDIAN_VAULT_PATH" not in url
+
+    for required in (
+        "<resolved-vault-path>/_raw/",
+        "search `<resolved-vault-path>`",
+    ):
+        assert required in main, f"{main_relative}: missing {required!r}"
+    for forbidden in (
+        "OBSIDIAN_VAULT_PATH/_raw/",
+        "search `OBSIDIAN_VAULT_PATH`",
+    ):
+        assert forbidden not in main, f"{main_relative}: unresolved path prose {forbidden!r}"

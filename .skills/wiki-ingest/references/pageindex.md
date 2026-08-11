@@ -19,22 +19,50 @@ Use this branch when **all** hold (otherwise read the PDF directly with page ran
 If `PAGEINDEX_REPO` is unset, the repo is missing, or the run errors, **fall back** to
 reading the PDF directly. Never block an ingest on PageIndex.
 
-## Step 1 — Build the TOC tree
+## Portable Repository mode
+
+The default is to skip PageIndex. A local or downloaded binary PDF may be read with page ranges, or passed to PageIndex, only as transient analysis input.
+Config resolution supplies concrete runtime paths in agent memory but does not export values into the parent shell.
+
+Before the Portable transaction, create a small, reviewable Markdown or plain-text snapshot strictly below a configured source root.
+It records the origin URL or identifier, the relevant extracted text, a content hash when available, and precise page citations.
+The candidate `sources` cites only the snapshot's repository-relative Source ID.
+Binary PDFs, images, and attachments are Personal-only and are never Portable Source IDs.
+Do not copy the binary into the repository, vault, manifest, or candidate.
+If an adequate text snapshot cannot be produced, report the ingest as unsupported in Portable mode or use Personal mode.
+
+PageIndex may be used only for analysis-only output. Keep the repository-root CWD.
+Treat a generated structure tree as disposable local analysis: read it to choose page ranges, but do not put its path in candidate frontmatter, copy it into the vault, or treat it as a second authoritative source.
+
+Do not change CWD, source `.env`, or edit any manifest. Do not write PageIndex
+results or non-Markdown files below `candidate_vault`. If the resolved tool
+cannot run without those operations, skip PageIndex and continue with direct
+page-range reading. The parent still owns source closure and the single
+Portable transaction.
+
+## Personal mode
+
+The direct PageIndex repo, venv, `.env`, cache, and manifest-audit workflow
+below is Personal-only. Resolve `PAGEINDEX_REPO`, `PAGEINDEX_WORKSPACE`,
+`PAGEINDEX_MODEL`, and the PDF path to concrete values in agent memory first;
+config resolution does not export them into the parent shell.
+
+### Personal Step 1 — Build the TOC tree
 
 PageIndex runs from its own repo + venv and calls an LLM via LiteLLM (configured in
-`$PAGEINDEX_REPO/.env`, e.g. z.ai/glm-4.6 — owned/cheap compute). Run:
+`<resolved-pageindex-repo>/.env`, e.g. z.ai/glm-4.6 — owned/cheap compute). Run:
 
 ```bash
-cd "$PAGEINDEX_REPO"
+cd <resolved-pageindex-repo>
 set -a; source .env; set +a          # load OPENAI_API_KEY + OPENAI_BASE_URL for LiteLLM
 uv run --no-project python run_pageindex.py \
-  --pdf_path "<absolute-path-to.pdf>" \
-  --model "${PAGEINDEX_MODEL:-openai/glm-4.6}" \
+  --pdf_path <resolved-absolute-pdf-path> \
+  --model <resolved-pageindex-model> \
   --if-add-node-summary yes --if-add-doc-description yes
 ```
 
-Output: `$PAGEINDEX_REPO/results/<pdfname>_structure.json` (override location with
-`PAGEINDEX_WORKSPACE`). Shape:
+Output: `<resolved-pageindex-workspace>/<pdfname>_structure.json` (or the
+resolved repo's `results/` default). Shape:
 
 ```json
 {
@@ -49,7 +77,7 @@ Output: `$PAGEINDEX_REPO/results/<pdfname>_structure.json` (override location wi
 ```
 `start_index`/`end_index` are **1-indexed physical PDF pages**.
 
-## Step 2 — Reason, then read only what matters
+### Personal Step 2 — Reason, then read only what matters
 
 1. Read `doc_description` + the top-level node titles/summaries to map the document.
 2. Pick the nodes relevant to the wiki (skip front-matter, indices, bibliographies unless needed).
@@ -62,11 +90,12 @@ Output: `$PAGEINDEX_REPO/results/<pdfname>_structure.json` (override location wi
 This keeps a long book to a handful of targeted reads instead of dumping the whole text into
 context, and gives precise, page-cited provenance.
 
-## Notes
+### Personal Notes
 
 - Cache: the `_structure.json` persists — re-ingesting the same PDF can reuse it (skip Step 1
   if the JSON already exists and the PDF is unchanged).
 - Cost/runtime scales with page count; a full book is minutes of LLM calls. For a quick
   check, PageIndex also works on a small slice if you pre-split the PDF.
-- Record the produced page in the manifest as usual; note `source_type: "document"` and add
-  the `_structure.json` path in a `pageindex` field if useful for audit.
+- Record the produced page in Personal manifest v1 as usual; note
+  `source_type: "document"` and add the `_structure.json` path in a `pageindex`
+  field if useful for audit. This manifest augmentation is never Portable.
