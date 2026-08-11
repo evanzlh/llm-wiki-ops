@@ -256,10 +256,7 @@ def _has_nested_skill_block_metadata(raw_region: str) -> bool:
         _key_region, nested_raw_region = mapping
         block_value = _skill_block_value(nested_raw_region)
         if block_value is not None:
-            value, _ascii_structure = block_value
-            return not any(
-                _structural_whitespace(character) for character in value
-            )
+            return True
         nested_region = _strip_comment(nested_raw_region).lstrip(" ")
 
 
@@ -311,7 +308,7 @@ def _normalized_skill_frontmatter(text: str) -> str:
             else:
                 raise FrontmatterError("unsupported folded skill description style")
             continue
-        if _has_nested_skill_block_metadata(raw_region):
+        if key != "description" and _has_nested_skill_block_metadata(raw_region):
             raise FrontmatterError("ambiguous unsupported skill metadata block field")
         if key == "description" and all(
             character == " " for character in key_structure

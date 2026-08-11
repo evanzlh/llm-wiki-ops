@@ -356,6 +356,63 @@ def test_nested_colons_in_literal_description_remain_scalar(
     assert discover_skill_collection(tmp_path).skills[0].description == expected
 
 
+@pytest.mark.parametrize("comment", ["", " # inline comment"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "other:key: > extra",
+        "other:key: >- extra",
+        "other:key: | text",
+        "a:b:c: > extra",
+    ],
+)
+def test_rejects_nested_block_like_values_with_extra_tokens(
+    tmp_path: Path, metadata: str, comment: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + metadata
+        + comment
+        + "\ndescription: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="ambiguous|block field"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "other:key: '> extra'",
+        'other:key: ">- extra"',
+        "other:key: '| text'",
+        "other: key > extra",
+    ],
+)
+def test_nested_quoted_or_non_indicator_values_remain_scalars(
+    tmp_path: Path, metadata: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + metadata
+        + "\ndescription: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Use this skill."
+    )
+
+
 @pytest.mark.parametrize(
     "description",
     ["'Compare syntax: >'", '"Compare syntax: >"'],
