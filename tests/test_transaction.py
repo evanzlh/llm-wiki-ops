@@ -3054,6 +3054,156 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert git_output(root, "remote", "-v") == before_remotes
 
 
+def test_transaction_validate_parser_accepts_full_json_flags() -> None:
+    args = cli_module.build_parser().parse_args(
+        ["transaction", "validate", "tx-1", "--json", "--pretty"]
+    )
+
+    assert args.transaction_id == "tx-1"
+    assert args.json is True
+    assert args.pretty is True
+
+
+def test_transaction_validate_cli_returns_structured_findings_read_only(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-cli")
+    candidate_page(record, "concepts/a.md", PAGE + "[[missing]]\n")
+    before = {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "validate",
+        "tx-cli",
+        "--json",
+        "--pretty",
+    )
+
+    after = {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert result.stdout.startswith("{\n")
+    assert set(payload) == {
+        "transaction_id",
+        "status",
+        "candidate_pages",
+        "deletions",
+        "issues",
+        "warnings",
+    }
+    assert payload["status"] == "fail"
+    assert payload["issues"][0]["code"] == "broken-link"
+    assert "recovery" not in payload
+    assert before == after
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_transaction_validate_cli_passing_human_output_is_concise(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-pass")
+    candidate_page(record, "concepts/a.md")
+
+    result = run_cli(
+        tmp_path / "home", root, "transaction", "validate", "tx-pass"
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "transaction tx-pass: pass (0 issues)\n"
+
+
+def test_transaction_validate_cli_human_issues_escape_terminal_controls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = TransactionValidationReport(
+        transaction_id="tx-unsafe-output",
+        status="fail",
+        candidate_pages=("concepts/a.md",),
+        deletions=(),
+        issues=(
+            ValidationIssue(
+                "broken-link\nforged-code\x1b[31m",
+                "concepts/a.md\nforged-path\x1b[31m",
+                "broken link\nforged-message\x1b[31m",
+                "missing",
+            ),
+        ),
+    )
+
+    class Manager:
+        def validate(self, transaction_id: str) -> TransactionValidationReport:
+            assert transaction_id == "tx-unsafe-output"
+            return report
+
+    monkeypatch.setattr(cli_module, "_transaction_manager", Manager)
+
+    result = cli_module.cmd_transaction_validate(
+        argparse.Namespace(
+            transaction_id="tx-unsafe-output",
+            json=False,
+            pretty=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.err == ""
+    assert "\x1b" not in captured.out
+    assert captured.out.splitlines() == [
+        "transaction tx-unsafe-output: fail (1 issues)",
+        "broken-link\\nforged-code\\x1b[31m: "
+        "concepts/a.md\\nforged-path\\x1b[31m: "
+        "broken link\\nforged-message\\x1b[31m",
+    ]
+
+
+def test_transaction_validate_cli_invalid_id_uses_structured_error_envelope(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "validate",
+        "missing",
+        "--json",
+        "--pretty",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert result.stdout.startswith("{\n")
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "transaction-error"
+    assert "missing" in payload["error"]["message"]
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
+
+
 def test_transaction_cli_human_list_computes_guidance_once_per_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3131,6 +3281,7 @@ def test_transaction_cli_retries_a_retained_failed_transaction(
         ("transaction", "begin", "--source", "source.md", "--json"),
         ("transaction", "list", "--json"),
         ("transaction", "delete", "tx-1", "concepts/a.md", "--json"),
+        ("transaction", "validate", "tx-1", "--json"),
         ("transaction", "commit", "tx-1", "--json"),
         ("transaction", "retry", "tx-1", "--json"),
         ("transaction", "restore", "tx-1", "--json"),
@@ -3437,6 +3588,7 @@ def test_transaction_human_failure_escapes_terminal_control_characters(
     "arguments",
     [
         ("transaction", "commit", "--json"),
+        ("transaction", "validate", "--json"),
         ("transaction", "list", "--json", "--unknown"),
         ("transaction", "commit", "--json", "--pretty"),
     ],

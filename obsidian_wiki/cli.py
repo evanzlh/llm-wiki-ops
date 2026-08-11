@@ -2111,6 +2111,38 @@ def cmd_transaction_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_transaction_validate(args: argparse.Namespace) -> int:
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        report = manager.validate(args.transaction_id)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
+    payload = report.as_dict()
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(
+            f"transaction {args.transaction_id}: {report.status} "
+            f"({len(report.issues)} issues)"
+        )
+        for issue in report.issues:
+            print(
+                f"{_terminal_safe_text(issue.code)}: "
+                f"{_terminal_safe_text(issue.path)}: "
+                f"{_terminal_safe_text(issue.message)}"
+            )
+    return 1 if report.status == "fail" else 0
+
+
 def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
     from obsidian_wiki.portable_manifest import ManifestError
     from obsidian_wiki.transaction import TransactionError
@@ -3117,6 +3149,7 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
         "begin",
         "list",
         "delete",
+        "validate",
         "commit",
         "retry",
         "restore",
@@ -3290,6 +3323,15 @@ def build_parser() -> argparse.ArgumentParser:
     transaction_delete.add_argument("path", help="vault-relative knowledge page path")
     _add_json_args(transaction_delete)
     transaction_delete.set_defaults(func=cmd_transaction_delete)
+
+    transaction_validate = transaction_sub.add_parser(
+        "validate",
+        help="validate a staged transaction without modifying it",
+        allow_abbrev=False,
+    )
+    transaction_validate.add_argument("transaction_id")
+    _add_json_args(transaction_validate)
+    transaction_validate.set_defaults(func=cmd_transaction_validate)
 
     for name, help_text, function in (
         ("commit", "promote an active transaction", cmd_transaction_commit),
