@@ -539,6 +539,87 @@ def test_read_inventory_rejects_same_inode_rewrite_during_close(
         read_inventory(root)
 
 
+def test_read_inventory_rejects_no_utime_close_rewrite_on_coarse_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    before = path.stat()
+    changed_inventory = ManagedSkillsInventory(
+        skills_version="2026.8.4",
+        managed_skills=("wiki-ingest", "wiki-query"),
+        managed_skill_digests={
+            "wiki-ingest": DIGEST_1,
+            "wiki-query": DIGEST_2,
+        },
+    )
+    changed = render_inventory(changed_inventory).encode("utf-8")
+    assert len(changed) == before.st_size
+    real_close = os.close
+    rewritten = False
+
+    def rewrite_during_first_close(descriptor: int) -> None:
+        nonlocal rewritten
+        real_close(descriptor)
+        if not rewritten:
+            rewritten = True
+            path.write_bytes(changed)
+            assert path.stat().st_ino == before.st_ino
+
+    monkeypatch.setattr(portable.os, "close", rewrite_during_first_close)
+    monkeypatch.setattr(portable, "_stat_timestamp_ns", lambda _stat, _name: 0)
+
+    with pytest.raises(ValueError, match="between independent reads"):
+        read_inventory(root)
+
+
+def test_read_inventory_accepts_stable_rewrite_before_first_byte_after_two_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    before = path.stat()
+    changed_inventory = ManagedSkillsInventory(
+        skills_version="2026.8.4",
+        managed_skills=("wiki-ingest", "wiki-query"),
+        managed_skill_digests={
+            "wiki-ingest": DIGEST_1,
+            "wiki-query": DIGEST_2,
+        },
+    )
+    changed = render_inventory(changed_inventory).encode("utf-8")
+    assert len(changed) == before.st_size
+    real_open = os.open
+    real_read = os.read
+    open_count = 0
+    rewritten = False
+
+    def count_inventory_open(candidate, flags, *args, **kwargs):
+        nonlocal open_count
+        if os.fspath(candidate) == os.fspath(path):
+            open_count += 1
+        return real_open(candidate, flags, *args, **kwargs)
+
+    def rewrite_before_first_byte(descriptor: int, count: int) -> bytes:
+        nonlocal rewritten
+        if not rewritten:
+            rewritten = True
+            path.write_bytes(changed)
+            assert path.stat().st_ino == before.st_ino
+        return real_read(descriptor, count)
+
+    monkeypatch.setattr(portable.os, "open", count_inventory_open)
+    monkeypatch.setattr(portable.os, "read", rewrite_before_first_byte)
+    monkeypatch.setattr(portable, "_stat_timestamp_ns", lambda _stat, _name: 0)
+
+    assert read_inventory(root) == changed_inventory
+    assert open_count == 2
+
+
 def test_read_inventory_rejects_short_read_even_when_json_is_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

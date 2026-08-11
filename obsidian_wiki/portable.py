@@ -247,8 +247,10 @@ def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
-def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> bytes:
-    """Read a contained managed file without following its final symlink."""
+def _read_single_link_ordinary_bytes_once(
+    root: Path, path: Path, label: str
+) -> bytes:
+    """Perform one complete contained, no-follow ordinary-file read."""
     root = _safe_root(root)
     observed = _assert_single_link_ordinary_file(root, path, label)
 
@@ -317,6 +319,22 @@ def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> byte
     ):
         raise ValueError(f"portable {label} changed while being read: {path}")
     return content
+
+
+def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> bytes:
+    """Return bytes confirmed by two independent safe reads of the live path.
+
+    A rewrite completed before the first byte and then stable across both passes is
+    intentionally accepted as the final live content.  Without cooperative locking,
+    that case cannot be distinguished portably from an unchanged file.
+    """
+    first = _read_single_link_ordinary_bytes_once(root, path, label)
+    second = _read_single_link_ordinary_bytes_once(root, path, label)
+    if first != second:
+        raise ValueError(
+            f"portable {label} changed between independent reads: {path}"
+        )
+    return second
 
 
 def _assert_single_link_managed_tree(root: Path, tree: Path, label: str) -> None:
