@@ -34,11 +34,26 @@ If no query is given, default to **recent sessions mode**: ingest the last 5 unp
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
-
-   **Portable Write Protocol branch:** Portable writes are owned by `wiki-ingest`'s Portable Write Protocol in `llm-wiki/SKILL.md`. If resolution selected Portable Repository mode, delegate the selected authoritative session sources to that protocol and do not direct-write pages or central files here. In Personal mode, retain the workflow below unchanged.
-2. Read `$OBSIDIAN_VAULT_PATH/.manifest.json` → know what's already ingested.
-3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists → warm context on recent wiki activity.
+1. **Resolve config and ownership** — follow the Config Resolution Protocol in
+   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
+   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
+   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
+   parent agent resolves config and mode, records the concrete vault and target
+   agent history paths, and reads the owner `AGENTS.md` at the resolved vault.
+2. Select one terminal workflow after the shared analysis and page-preparation steps:
+   **Portable Repository completion** or **Personal mode completion**. Never
+   mix their writes or tracking. The Portable branch implements the canonical
+   Portable Write Protocol locally. Session inventory, scoring, targeted
+   extraction, clustering, page preparation, and answer drafting are read-only.
+   If work is divided, use analysis-only workers: they return ranked sessions,
+   evidence, page proposals, and answer notes but do not resolve mode, create
+   source snapshots, begin transactions, or mutate files. The parent agent owns completion.
+3. **Read mode-appropriate state.** Personal mode reads manifest v1,
+   `index.md`, and optional `hot.md` from the concrete resolved vault. Portable
+   Repository mode may inspect existing knowledge pages and fresh local hot
+   inputs read-only, but selected history files remain transient until the
+   parent creates reviewed source snapshots; never parse manifest v2 as a
+   Personal session map. Personal append mode uses manifest v1. Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
 
 ---
 
@@ -187,7 +202,10 @@ For each extracted blob, determine where it belongs in the wiki:
    - Abstract concept / pattern → `concepts/`
    - Tool / library / person → `entities/`
    - Cross-cutting insight → `synthesis/`
-3. **Write or update the page** with required frontmatter:
+3. **Prepare the page** with required frontmatter. Source identity is selected
+   by the terminal mode: Portable mode uses only the reviewed repository
+   snapshot Source IDs created in its completion branch; Personal mode retains
+   the agent-prefixed session source shown below.
    ```yaml
    ---
    title: <topic>
@@ -200,7 +218,8 @@ For each extracted blob, determine where it belongs in the wiki:
    lifecycle: stable|draft
    ---
    ```
-   Set `sources` with the agent prefix so `memory-bridge` can find it later.
+   In Personal mode, set `sources` with the agent prefix so `memory-bridge` can
+   find it later. Do not use this pseudo-source form in Portable mode.
 4. **Add cross-links** to related wiki pages found in `index.md`.
 
 Distillation rules (same as all ingest skills):
@@ -211,9 +230,10 @@ Distillation rules (same as all ingest skills):
 
 ---
 
-## Step 6: Return Synthesized Answer
+## Step 6: Prepare the Synthesized Answer
 
-After ingesting, immediately synthesize and return an answer from the newly ingested + existing wiki content:
+Draft this answer from the selected evidence and existing wiki content, but do
+not return it until the selected completion branch has finished successfully:
 
 ```
 ## From <agent> history: "<query>"
@@ -239,30 +259,6 @@ If a query was given but no relevant sessions were found, say so explicitly: "No
 
 ---
 
-## Step 7: Update Tracking Files
-
-Update `.manifest.json` for each session file processed:
-```json
-{
-  "<path>": {
-    "ingested_at": "<now>",
-    "source_type": "<agent>_conversation",
-    "modified_at": "<file mtime>",
-    "pages_created": [...],
-    "pages_updated": [...]
-  }
-}
-```
-
-Append to `log.md`:
-```
-- [TIMESTAMP] WIKI-AGENT agent=<agent> query="<query>" sessions_searched=N sessions_ingested=M pages_created=X pages_updated=Y
-```
-
-Update `hot.md` with a one-line summary of what was ingested.
-
----
-
 ## Cross-Agent Use Patterns
 
 These are the primary use cases this skill is designed for:
@@ -285,37 +281,135 @@ These are the primary use cases this skill is designed for:
 **No query — just "catch me up on recent Pi work"**
 → `/wiki-pi` — ingests last 5 Pi sessions and returns a summary
 
-## QMD Refresh After Vault Writes
+## Portable Repository completion
 
-QMD is a search index, not the source of truth. If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step. Run it only after this skill has written or rewritten vault markdown. If QMD refresh fails, do not roll back the vault changes; report the QMD status separately.
+Use this branch only when config resolution selected Portable Repository mode.
+The external history cache and selected session files are transient analysis input,
+never Portable Source IDs. This targeted session slice still requires durable
+repository evidence; the search result alone is not source authority.
 
-Use `$QMD_CLI` if set; otherwise use `qmd`.
+1. **Materialize the selected slice.** For the selected 3–5 sessions (or up to
+   five recent sessions when no query was given), the parent agent creates one
+   small, reviewable UTF-8 Markdown or plain-text snapshot strictly below the configured
+   `sources` root per coherent targeted session slice. Record the target agent identity,
+   session identity, query/relevance, relevant excerpts, source timestamps, and
+   a content hash. Redact secrets, injected/internal reasoning, and private
+   machine context; use repository-relative labels and include no machine-local absolute paths.
+   Preserve valid Unicode in excerpts, filenames, and Source IDs exactly. If an
+   adequate snapshot cannot be created with safe, traceable evidence, stop or use Personal mode.
+   Each candidate `sources` cites only snapshot Source IDs, never agent-prefixed
+   pseudo-sources, external cache paths, or live URLs.
+2. **Compute full source closure before `transaction begin`.** Include every
+   existing `sources` Source ID from pages updated or deleted plus every new
+   targeted snapshot Source ID. The set is immutable.
+3. **Begin once.** Keep the repository root as the command CWD and run
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Record `transaction_id`, runtime-only absolute `candidate_vault`,
+   `started_at`, and Source IDs; do not `cd` into it or persist the path.
+4. **Write candidates.** New pages use `created = updated = started_at`; updates
+   preserve the existing `created` and set `updated = started_at`. Write only
+   final vault-relative knowledge paths with non-empty snapshot-source subsets.
+5. **Declare removals** with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Unsupported
+   non-page/control mutations stop without a live-vault write.
+6. **Validate and commit.** Run
+   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
+   warnings do not block commit. Fix every issue and rerun validation. Commit
+   only a passing report with
+   `obsidian-wiki transaction commit <id> --json --pretty`.
+7. **Use status-aware recovery.** Follow only a trusted
+   `recovery.preferred_action` or a reported alternative whose prerequisites
+   hold. Confirm the retained record with
+   `obsidian-wiki transaction list --json`; its `recommended_action` must agree
+   and the command must be in `allowed_actions`. Fix/revalidate an active
+   preflight failure or run `obsidian-wiki transaction abort <id> --json`. A
+   `promoting` record permits only its reported
+   `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
+   prefer `obsidian-wiki transaction retry <id> --json`; use
+   `obsidian-wiki transaction restore <id> --json` or
+   `obsidian-wiki transaction discard <id> --json` only when allowed and its
+   prerequisites hold. A configuration or begin failure with no trusted transaction ID,
+   or an empty list, has no recovery action. Never replace a transaction while
+   its outcome is ambiguous.
+8. **Refresh local hot context only after commit succeeds or recovery is fully resolved.**
+   Run `obsidian-wiki hot status --json`; if stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
+   the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. **Answer after completion.** Return the synthesized answer only after the selected completion branch finishes.
+   Include selected session identities, snapshot Source IDs, created/updated/
+   removed pages, validation warnings, recovery, hot status, and evidence gaps.
 
-```bash
-${QMD_CLI:-qmd} update
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Keep the
+concrete vault, target history root, QMD CLI, and QMD collection values in
+agent memory: config resolution does not export these values into the parent shell.
+Write the prepared pages directly below `<resolved-vault-path>`, retaining the
+existing `<agent>://<path/to/session>` Personal provenance, using current ISO
+timestamps, and preserving `created` on update.
+
+### Personal direct writes and Git safety
+
+Apply any owner-required Personal Git snapshot to the concrete resolved vault
+before direct writes. Write or merge prepared pages at their final paths below
+`<resolved-vault-path>`; stop before tracking if any write fails.
+
+### Personal manifest v1 and cache
+
+For each selected session file, update
+`<resolved-vault-path>/.manifest.json` as manifest v1 while preserving
+unrelated entries and canonical expanded Personal paths:
+
+```json
+{
+  "<resolved-session-path>": {
+    "ingested_at": "<now>",
+    "source_type": "<agent>_conversation",
+    "modified_at": "<file mtime>",
+    "pages_created": [],
+    "pages_updated": []
+  }
+}
 ```
 
-If the output says vectors are needed or embeddings may be stale, run:
+Record each source mapping with concrete values:
 
 ```bash
-${QMD_CLI:-qmd} embed
+obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
 ```
 
-Verify the collection with either:
+### Personal central files
+
+Update `<resolved-vault-path>/index.md`. Append to
+`<resolved-vault-path>/log.md`:
+
+```text
+- [TIMESTAMP] WIKI-AGENT agent=<agent> query="<query>" sessions_searched=N sessions_ingested=M pages_created=X pages_updated=Y
+```
+
+Read `<resolved-vault-path>/hot.md`, create the `wiki-ingest` template if
+missing, record a one-line conceptual summary, keep three operations, and bump
+`updated`.
+
+### Personal QMD refresh and answer
+
+When the concrete QMD collection is configured, refresh only after all
+Personal writes. Failure does not roll back the vault.
 
 ```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
+<resolved-qmd-cli> update
+<resolved-qmd-cli> embed
+<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
 ```
 
-or, when a specific page path is known:
+Use `embed` only for stale/missing vectors. Then return the prepared synthesized
+answer with selected sessions, page changes, QMD status, and gaps.
 
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<page>.md" -l 5
-```
-
-Record one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
+Do not fall through into Portable Repository completion. Report the Personal
+page, manifest v1, cache, central-file, Personal Git snapshot, and QMD results,
+then stop.

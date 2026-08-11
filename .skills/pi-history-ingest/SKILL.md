@@ -18,17 +18,32 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `PI_HISTORY_PATH` (defaults to `~/.pi/agent/sessions`)
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all pages in the returned `candidate_vault`; suppress the direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If a mutation cannot be represented by candidate knowledge pages or transaction deletions, stop instead of writing live files. In Personal mode, retain the workflow below unchanged.
-2. Read `.manifest.json` at the vault root to check what has already been ingested
-3. Read `index.md` at the vault root to understand what the wiki already contains
+1. **Resolve config and ownership** — follow the Config Resolution Protocol in
+   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
+   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
+   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
+   parent agent resolves config and mode, records concrete vault and Pi session
+   paths, and reads the owner `AGENTS.md` at the resolved vault.
+2. Select one terminal workflow after the shared analysis and page-preparation steps:
+   **Portable Repository completion** or **Personal mode completion**. Never
+   mix their writes or tracking. The Portable branch implements the canonical
+   Portable Write Protocol locally. Shared inventory, active-branch extraction,
+   evidence verification, clustering, and drafting are read-only. If work is
+   divided, use analysis-only workers: they return inventories, evidence
+   ledgers, and page proposals but do not resolve mode, snapshot sources, begin
+   transactions, or mutate files. The parent agent owns completion.
+3. **Read mode-appropriate state.** Personal mode reads manifest v1 and
+   `index.md` from the concrete vault. Portable Repository mode may inspect
+   knowledge pages read-only, but Pi session JSONL remains transient until the
+   parent creates reviewed snapshots; never parse manifest v2 as a Personal
+   source map. Personal append mode uses manifest v1. Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
 
 ## Ingest Modes
 
 ### Append Mode (default)
 
-Check `.manifest.json` for each source file. Only process:
+Personal mode: check manifest v1 for each source file. Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
+In either mode, only process:
 
 - Files not in the manifest (new sessions)
 - Files whose modification time is newer than `ingested_at` in the manifest
@@ -228,42 +243,6 @@ Before writing any page, verify the draft against the evidence ledger:
 4. If a claim cannot be verified, either delete it or mark it `^[inferred]` / `^[ambiguous]` with the supporting source refs; never leave unverifiable content without one of these markers (unmarked implies extracted).
 5. Do not write facts learned from the model's training data or the current agent session unless they are explicitly present in the Pi session evidence.
 
-## Step 5: Update Manifest, Log, and Index
-
-### Update `.manifest.json`
-
-For each processed source file:
-
-- `ingested_at`, `size_bytes`, `modified_at`
-- `source_type`: `pi_session`
-- `project`: inferred project name from decoded `cwd`
-- `pages_created`, `pages_updated`
-
-Add/update a top-level summary block:
-
-```json
-{
-  "pi": {
-    "source_path": "~/.pi/agent/sessions/",
-    "last_ingested": "TIMESTAMP",
-    "sessions_ingested": 12,
-    "sessions_total": 40,
-    "pages_created": 5,
-    "pages_updated": 12
-  }
-}
-```
-
-### Update special files
-
-Update `index.md` and `log.md`:
-
-```
-- [TIMESTAMP] PI_HISTORY_INGEST sessions=N pages_updated=X pages_created=Y mode=append|full
-```
-
-**`hot.md`** — Read `$OBSIDIAN_VAULT_PATH/hot.md` (create from the template in `wiki-ingest` if missing). Update **Recent Activity** with a one-line summary — e.g. "Ingested 12 Pi sessions across 3 projects; surfaced patterns in CLI tooling and API design." Keep the last 3 operations. Update `updated` timestamp.
-
 ## Privacy and Compliance
 
 - Distill and synthesize; avoid raw transcript dumps
@@ -275,37 +254,136 @@ Update `index.md` and `log.md`:
 
 See `references/pi-data-format.md` for field-level parsing notes and extraction guidance.
 
-## QMD Refresh After Vault Writes
+## Portable Repository completion
 
-QMD is a search index, not the source of truth. If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step. Run it only after this skill has written or rewritten vault markdown. If QMD refresh fails, do not roll back the vault changes; report the QMD status separately.
+Use this branch only when config resolution selected Portable Repository mode.
+The external history cache and selected session files are transient analysis input,
+never Portable Source IDs.
 
-Use `$QMD_CLI` if set; otherwise use `qmd`.
+1. **Materialize source authority first.** The parent agent creates one small,
+   reviewable UTF-8 Markdown or plain-text snapshot strictly below the configured
+   `sources` root for each selected Pi active-branch session or coherent slice.
+   Record agent identity, session identity, relevant excerpts with stable entry
+   IDs/line references, source timestamps, and a content hash. Redact secrets,
+   tool payloads, and private identifiers; replace decoded `cwd` values with
+   repository-relative project labels and include no machine-local absolute paths.
+   Preserve valid Unicode in excerpts, filenames, and Source IDs exactly. If an
+   adequate snapshot cannot be created while retaining the verified evidence
+   ledger, stop or use Personal mode. Candidate page `sources` cites only the
+   reviewed snapshot Source IDs, never `.pi` paths or `pi:` evidence comments.
+2. **Compute full source closure before `transaction begin`.** Include every
+   existing `sources` Source ID from pages updated or deleted plus every new
+   snapshot Source ID. The set is immutable after begin.
+3. **Begin once.** Keep the repository root as the command CWD and run
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Record `transaction_id`, runtime-only absolute `candidate_vault`,
+   `started_at`, and Source IDs; do not `cd` into it or persist the path.
+4. **Write verified candidates.** New pages use
+   `created = updated = started_at`; updates preserve the existing `created`
+   and set `updated = started_at`. Write only final vault-relative knowledge
+   paths with a non-empty source subset. Keep nearby `pi:` evidence comments
+   traceable to entry identifiers preserved inside the cited snapshot.
+5. **Declare removals** with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Unsupported
+   non-page/control mutations stop without a live-vault write.
+6. **Validate and commit.** Run
+   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
+   warnings do not block commit. Fix every issue and rerun validation. Commit
+   only a passing report with
+   `obsidian-wiki transaction commit <id> --json --pretty`.
+7. **Use status-aware recovery.** Follow only a trusted
+   `recovery.preferred_action` or a reported alternative whose prerequisites
+   hold. Confirm the retained record with
+   `obsidian-wiki transaction list --json`; its `recommended_action` must agree
+   and the command must be in `allowed_actions`. Fix/revalidate an active
+   preflight failure or run `obsidian-wiki transaction abort <id> --json`. A
+   `promoting` record permits only its reported
+   `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
+   prefer `obsidian-wiki transaction retry <id> --json`; use
+   `obsidian-wiki transaction restore <id> --json` or
+   `obsidian-wiki transaction discard <id> --json` only when allowed and its
+   prerequisites hold. A configuration or begin failure with no trusted transaction ID,
+   or an empty list, has no recovery action. Never replace a transaction while
+   its outcome is ambiguous.
+8. **Refresh local hot context only after commit succeeds or recovery is fully resolved.**
+   Run `obsidian-wiki hot status --json`; if stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
+   the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Report selected sessions, snapshot/evidence coverage, page changes,
+   warnings, recovery, and hot status.
 
-```bash
-${QMD_CLI:-qmd} update
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Keep the
+concrete vault, Pi history, QMD CLI, and QMD collection values in agent memory:
+config resolution does not export these values into the parent shell. Write the prepared pages directly below `<resolved-vault-path>`,
+using current ISO timestamps and preserving `created` on update.
+
+### Personal direct writes and Git safety
+
+Apply any owner-required Personal Git snapshot to the concrete resolved vault
+before direct writes. Write or merge prepared pages at their final paths below
+`<resolved-vault-path>`; preserve the verified `pi:` evidence comments and stop
+before tracking on failure.
+
+### Personal manifest v1 and cache
+
+For each session file, update `<resolved-vault-path>/.manifest.json` as manifest v1
+with `ingested_at`, `size_bytes`, `modified_at`, `source_type: pi_session`,
+decoded project, and page lists. Preserve canonical expanded absolute Personal
+source keys and unrelated entries. Retain:
+
+```json
+{
+  "pi": {
+    "source_path": "<resolved-pi-history-path>",
+    "last_ingested": "TIMESTAMP",
+    "sessions_ingested": 12,
+    "sessions_total": 40,
+    "pages_created": 5,
+    "pages_updated": 12
+  }
+}
 ```
 
-If the output says vectors are needed or embeddings may be stale, run:
+Record each source mapping with concrete values:
 
 ```bash
-${QMD_CLI:-qmd} embed
+obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
 ```
 
-Verify the collection with either:
+### Personal central files
+
+Update `<resolved-vault-path>/index.md`. Append to
+`<resolved-vault-path>/log.md`:
+
+```text
+- [TIMESTAMP] PI_HISTORY_INGEST sessions=N pages_updated=X pages_created=Y mode=append|full
+```
+
+Read `<resolved-vault-path>/hot.md`, create the `wiki-ingest` template if
+missing, summarize the conceptual Pi ingest in **Recent Activity**, keep three
+operations, and bump `updated`.
+
+### Personal QMD refresh
+
+When the concrete QMD collection is configured, refresh only after all
+Personal writes. Failure does not roll back the vault.
 
 ```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
+<resolved-qmd-cli> update
+<resolved-qmd-cli> embed
+<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
 ```
 
-or, when a specific page path is known:
+Use `embed` only for stale/missing vectors and report refreshed, skipped,
+unavailable, or failed status.
 
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<page>.md" -l 5
-```
-
-Record one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
+Do not fall through into Portable Repository completion. Report the Personal
+page, manifest v1, cache, central-file, Personal Git snapshot, and QMD results,
+then stop.

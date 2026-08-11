@@ -40,6 +40,15 @@ PORTABLE_WRITE_SKILLS = (
     ".skills/wiki-synthesize/SKILL.md",
     ".skills/wiki-update/SKILL.md",
 )
+HISTORY_WRITE_SKILLS = (
+    ".skills/claude-history-ingest/SKILL.md",
+    ".skills/codex-history-ingest/SKILL.md",
+    ".skills/copilot-history-ingest/SKILL.md",
+    ".skills/hermes-history-ingest/SKILL.md",
+    ".skills/openclaw-history-ingest/SKILL.md",
+    ".skills/pi-history-ingest/SKILL.md",
+    ".skills/wiki-agent/SKILL.md",
+)
 PORTABLE_COMPLETION_REQUIREMENTS = (
     "obsidian-wiki transaction validate",
     "obsidian-wiki transaction commit",
@@ -312,6 +321,217 @@ def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
         assert forbidden not in portable, (
             f"{relative}: contains legacy action {forbidden!r}"
         )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_history_family_materializes_portable_source_snapshots(relative: str) -> None:
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+
+    for required in (
+        "Select one terminal workflow after the shared analysis and page-preparation steps",
+        "parent agent resolves config and mode",
+        "owner `AGENTS.md`",
+        "analysis-only workers",
+        "Personal append mode uses manifest v1",
+        "Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots",
+    ):
+        assert required in shared_flat, (
+            f"{relative}: missing shared history guard {required!r}"
+        )
+
+    for required in (
+        "external history cache and selected session files are transient analysis input",
+        "never Portable Source IDs",
+        "parent agent creates",
+        "small, reviewable UTF-8 Markdown or plain-text snapshot",
+        "strictly below the configured `sources` root",
+        "agent identity",
+        "session identity",
+        "relevant excerpts",
+        "source timestamps",
+        "content hash",
+        "no machine-local absolute paths",
+        "If an adequate snapshot cannot be created",
+        "stop or use Personal mode",
+        "Compute full source closure",
+        "existing `sources` Source ID",
+        "updated or deleted",
+        "Preserve valid Unicode",
+        "repository root as the command CWD",
+        "do not `cd` into it",
+        "created = updated = started_at",
+        "preserve the existing `created`",
+        "obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty",
+        "obsidian-wiki transaction delete <id> <vault-relative-page.md>",
+        "Review every warning",
+        "Fix every issue",
+        "status-aware recovery",
+        "recovery.preferred_action",
+        "recommended_action",
+        "allowed_actions",
+        "obsidian-wiki transaction abort <id> --json",
+        "obsidian-wiki transaction retry <id> --json",
+        "obsidian-wiki transaction restore <id> --json",
+        "obsidian-wiki transaction discard <id> --json",
+        "no trusted transaction ID",
+        "outcome is ambiguous",
+        "after commit succeeds or recovery is fully resolved",
+        "use only those bounded inputs to write the semantic `hot.md` as the agent",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing Portable history rule {required!r}"
+        )
+
+    snapshot = portable_flat.index(
+        "small, reviewable UTF-8 Markdown or plain-text snapshot"
+    )
+    closure = portable_flat.index("Compute full source closure")
+    begin = portable_flat.index("obsidian-wiki transaction begin")
+    assert snapshot < closure < begin, (
+        f"{relative}: snapshot must precede source closure and transaction begin"
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_history_family_personal_completion_is_concrete_and_terminal(
+    relative: str,
+) -> None:
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+    personal_flat = " ".join(personal.split())
+
+    for forbidden in (
+        "suppress the direct manifest",
+        "delegate the selected authoritative session sources",
+    ):
+        assert forbidden not in shared_flat, (
+            f"{relative}: legacy mode bypass {forbidden!r}"
+        )
+    assert "<agent>://" not in portable_flat, (
+        f"{relative}: Portable branch permits pseudo-source provenance"
+    )
+
+    for required in (
+        "Use this branch only when config resolution selected Personal mode",
+        "Write the prepared pages directly below `<resolved-vault-path>`",
+        "manifest v1",
+        "<resolved-vault-path>/.manifest.json",
+        "obsidian-wiki cache-update <resolved-vault-path>",
+        "<resolved-vault-path>/index.md",
+        "<resolved-vault-path>/log.md",
+        "<resolved-vault-path>/hot.md",
+        "<resolved-qmd-cli> update",
+        "qmd://<resolved-qmd-wiki-collection>/",
+        "Personal Git snapshot",
+        "config resolution does not export these values into the parent shell",
+        "Do not fall through into Portable Repository completion",
+    ):
+        assert required in personal_flat, (
+            f"{relative}: missing Personal history rule {required!r}"
+        )
+    for forbidden in (
+        "$OBSIDIAN_VAULT_PATH",
+        "$QMD_WIKI_COLLECTION",
+        "${QMD_CLI:-qmd}",
+    ):
+        assert forbidden not in personal_flat, (
+            f"{relative}: Personal branch assumes shell export {forbidden!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS[:-1],
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_bulk_history_append_mode_does_not_parse_portable_manifest_as_v1(
+    relative: str,
+) -> None:
+    text = _text(relative)
+    append = text.split("### Append Mode (default)", 1)[1].split(
+        "### Full Mode", 1
+    )[0]
+    append_flat = " ".join(append.split())
+
+    for required in (
+        "Personal mode: check manifest v1",
+        "Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots",
+    ):
+        assert required in append_flat, (
+            f"{relative}: missing mode-specific append rule {required!r}"
+        )
+    assert "Check `.manifest.json`" not in append, (
+        f"{relative}: append mode still assumes Personal manifest shape"
+    )
+
+
+def test_claude_history_helpers_cannot_bypass_parent_completion() -> None:
+    claude = _text(".skills/claude-history-ingest/SKILL.md")
+    manifest_helper = claude.split("### Append Mode", 1)[1].split(
+        "### Pre-extraction", 1
+    )[0]
+    pre_extraction = claude.split("### Pre-extraction", 1)[1].split(
+        "### Conversation Sampling Heuristic", 1
+    )[0]
+    for required in (
+        "Personal mode only",
+        "<resolved-wiki-repository-path>/scripts/manifest.py",
+        "<resolved-vault-path>",
+    ):
+        assert required in manifest_helper, f"Claude helper missing {required!r}"
+    for required in (
+        "Portable Repository mode",
+        "transient analysis input",
+        "analysis-only",
+        "parent agent",
+        "source snapshot",
+        "Personal mode",
+    ):
+        assert required in pre_extraction, (
+            f"Claude pre-extraction helper missing {required!r}"
+        )
+
+
+def test_wiki_agent_targeted_flow_cannot_bypass_parent_completion() -> None:
+    targeted = _h2_section(
+        _text(".skills/wiki-agent/SKILL.md"),
+        "Portable Repository completion",
+        relative=".skills/wiki-agent/SKILL.md",
+        next_heading="Personal mode completion",
+    )
+    for required in (
+        "targeted session slice",
+        "selected 3–5 sessions",
+        "candidate `sources` cites only snapshot Source IDs",
+        "Return the synthesized answer only after the selected completion branch finishes",
+    ):
+        assert required in targeted, f"wiki-agent targeted flow missing {required!r}"
 
 
 def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:

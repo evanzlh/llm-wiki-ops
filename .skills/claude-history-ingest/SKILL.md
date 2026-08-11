@@ -16,35 +16,61 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `CLAUDE_HISTORY_PATH` (defaults to `~/.claude`)
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all pages in the returned `candidate_vault`; suppress the direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If a mutation cannot be represented by candidate knowledge pages or transaction deletions, stop instead of writing live files. In Personal mode, retain the workflow below unchanged.
-2. Read `.manifest.json` at the vault root to check what's already been ingested
-3. Read `index.md` at the vault root to know what the wiki already contains
+1. **Resolve config and ownership** — follow the Config Resolution Protocol in
+   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
+   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
+   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
+   parent agent resolves config and mode, records the concrete runtime vault
+   and Claude-history paths, and reads the owner `AGENTS.md` at the resolved
+   vault before any other work.
+2. Select one terminal workflow after the shared analysis and page-preparation steps:
+   **Portable Repository completion** or **Personal mode completion**. Never
+   mix their page-write or tracking operations. The Portable branch implements
+   the canonical Portable Write Protocol locally. All shared discovery,
+   filtering, extraction, clustering, and drafting is strictly read-only. If
+   batching is useful, use analysis-only workers: they may return session
+   inventories, evidence, and page proposals, but may not resolve mode, create
+   source snapshots, begin transactions, or write vault/tracking files. The
+   parent agent owns completion.
+3. **Read mode-appropriate state.** In Personal mode, read the concrete
+   resolved vault's manifest v1 and `index.md` for delta and merge decisions.
+   In Portable Repository mode, inspect existing knowledge pages read-only and
+   treat Claude cache files as transient inputs until the parent materializes
+   reviewed source snapshots in the Portable completion branch; never parse
+   manifest v2 as a Personal source map. Personal append mode uses manifest v1.
+   Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
 4. **Project Scoping** — read `WIKI_SKIP_PROJECTS` from config (comma-separated substrings). Exclude any project directory whose name contains one of them from **every** step below (scan, delta, sampling, manifest writes). If the user names extra projects to skip this run, add them. Apply the exclusion **once, uniformly** — don't hand-write `grep -v` filters into individual commands, which drifts between the scan and manifest steps.
 
 ## Ingest Modes
 
 ### Append Mode (default)
 
-Check `.manifest.json` for each source file (conversation JSONL, memory file). Only process:
+Personal mode: check manifest v1 for each conversation JSONL or memory file.
+Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
+In either mode, only process:
 
 - Files not in the manifest (new conversations, new memory files, new projects)
 - Files whose modification time is newer than their `ingested_at` in the manifest
 
 This is usually what you want — the user ran a few new sessions and wants to capture the delta.
 
-> **Canonical paths when comparing.** The manifest keys are absolute paths with `~` expanded (see `llm-wiki/SKILL.md` → `.manifest.json`). Before deciding a file is "new", expand its path the same way — otherwise a file already tracked as `~/.claude/...` looks new when you scanned it as `/Users/me/.claude/...` (or vice-versa) and gets re-ingested. The `scripts/manifest.py` helper does this for you:
+> **Personal mode only — Canonical paths when comparing.** Personal manifest
+> v1 keys are absolute paths with `~` expanded (see `llm-wiki/SKILL.md` →
+> `.manifest.json`). Before deciding a file is "new", expand its path the same
+> way. The `scripts/manifest.py` helper does this for you with concrete values
+> retained in agent memory:
 >
 > ```bash
 > # New/modified sources, honoring WIKI_SKIP_PROJECTS + --skip, paths already canonical:
-> python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" delta "$OBSIDIAN_VAULT_PATH" \
->   --scan "$CLAUDE_HISTORY_PATH/projects/*/memory/*.md"
+> python3 <resolved-wiki-repository-path>/scripts/manifest.py delta <resolved-vault-path> \
+>   --scan "<resolved-claude-history-path>/projects/*/memory/*.md"
 > # One-time repair if the manifest already mixes ~ and absolute keys:
-> python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" normalize "$OBSIDIAN_VAULT_PATH" --dry-run
+> python3 <resolved-wiki-repository-path>/scripts/manifest.py normalize <resolved-vault-path> --dry-run
 > ```
 >
-> The helper is optional — if it's unavailable, do the same expansion inline before every manifest lookup and write.
+> The helper is optional and Personal-only. If it is unavailable, do the same
+> expansion inline before every Personal manifest lookup and write. Never run
+> it against Portable manifest v2.
 
 ### Pre-extraction (recommended — run before ingest)
 
@@ -54,14 +80,14 @@ strips all of that and writes compact signal-only JSON to `~/.claude/extracted/`
 **50–200× file-size reduction** (e.g. 12 MB JSONL → 64 KB extracted).  This lets the skill read
 5–10× more conversations per run within the same token budget.
 
-Run it as a pre-step before invoking this skill:
+**Personal mode:** run it as an optional pre-step before invoking this skill:
 
 ```bash
 # First run — extract everything (skip excluded projects)
-python3 "$OBSIDIAN_WIKI_REPO/scripts/extract-jsonl.py" --skip tsg,autom8
+python3 <resolved-wiki-repository-path>/scripts/extract-jsonl.py --skip tsg,autom8
 
 # Incremental — only sessions modified in the last day
-python3 "$OBSIDIAN_WIKI_REPO/scripts/extract-jsonl.py" \
+python3 <resolved-wiki-repository-path>/scripts/extract-jsonl.py \
     --since "$(date -v-1d +%Y-%m-%d)" --skip tsg,autom8
 ```
 
@@ -87,6 +113,13 @@ Extracted files live at `~/.claude/extracted/<project-dir>/<session-id>.json` an
 
 If `extract-jsonl.py` was not run first, fall back to raw JSONL — but note the coverage will be
 shallower because each raw file costs far more tokens to read.
+
+**Portable Repository mode:** extracted files under `~/.claude/extracted/`
+remain transient analysis input, just like the raw history cache. Running the
+helper is analysis-only: it does not create source authority or permit any
+worker to write the repository or vault. Workers return selected excerpts and
+identity metadata to the parent agent; the parent agent alone creates and
+reviews the source snapshot, computes source closure, and owns the transaction.
 
 ### Conversation Sampling Heuristic
 
@@ -377,44 +410,6 @@ On update, leave `lifecycle` and `lifecycle_changed` unchanged — only a human 
 - Use `^[ambiguous]` when the user changed their mind across sessions or when assistant and user contradicted each other and the resolution is unclear.
 - Write a `provenance:` frontmatter block on every new/updated page summarizing the rough mix.
 
-## Step 6: Update Manifest, Journal, and Special Files
-
-### Update `.manifest.json`
-
-For each source file processed, add/update its entry with:
-
-- `ingested_at`, `size_bytes`, `modified_at`
-- `source_type`: one of `"claude_conversation"`, `"claude_memory"`, `"claude_audit_log"`, `"claude_desktop_session"`
-- `project`: the decoded project name
-- `pages_created` and `pages_updated` lists
-
-Also update the `projects` section of the manifest:
-
-```json
-{
-  "project-name": {
-    "source_path": "~/.claude/projects/-Users-...",
-    "vault_path": "projects/project-name",
-    "last_ingested": "TIMESTAMP",
-    "conversations_ingested": 5,
-    "conversations_total": 8,
-    "memory_files_ingested": 3,
-    "desktop_sessions_ingested": 2,
-    "audit_logs_ingested": 2
-  }
-}
-```
-
-### Create journal entry + update special files
-
-Update `index.md` and `log.md` per the standard process:
-
-```
-- [TIMESTAMP] CLAUDE_HISTORY_INGEST projects=N conversations=M desktop_sessions=D audit_logs=A pages_updated=X pages_created=Y mode=append|full
-```
-
-**`hot.md`** — Read `$OBSIDIAN_VAULT_PATH/hot.md` (create from the template in `wiki-ingest` if missing). Update **Recent Activity** with a one-line summary — e.g. "Ingested 5 Claude conversations across 2 projects; surfaced patterns in API design and testing strategy." Keep the last 3 operations. Update **Active Threads** if any ongoing project is now better understood. **Update the `updated:` field in the frontmatter** to the current timestamp — this is easy to forget; the body edit and the frontmatter bump must both happen.
-
 ## Privacy
 
 - Distill and synthesize — don't copy raw conversation text verbatim
@@ -426,37 +421,150 @@ Update `index.md` and `log.md` per the standard process:
 
 See `references/claude-data-format.md` for more details on the data structures.
 
-## QMD Refresh After Vault Writes
+## Portable Repository completion
 
-QMD is a search index, not the source of truth. If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step. Run it only after this skill has written or rewritten vault markdown. If QMD refresh fails, do not roll back the vault changes; report the QMD status separately.
+Use this branch only when config resolution selected Portable Repository mode.
+The external history cache and selected session files are transient analysis input,
+never Portable Source IDs.
 
-Use `$QMD_CLI` if set; otherwise use `qmd`.
+1. **Materialize reviewable source authority before the transaction.** The
+   parent agent creates one small, reviewable UTF-8 Markdown or plain-text snapshot
+   strictly below the configured `sources` root for each selected Claude
+   session or coherent session slice. Each snapshot records the agent identity,
+   session identity, relevant excerpts, source timestamps, and a content hash
+   of the selected external material. Redact secrets and internal reasoning;
+   store repository-relative project labels instead of machine context, and
+   include no machine-local absolute paths. Preserve valid Unicode in excerpts,
+   filenames, and Source IDs exactly; do not transliterate or normalize it.
+   Review every snapshot before using it. If an adequate snapshot cannot be created
+   without binary/private material or lost provenance, stop or use Personal mode.
+   Candidate page `sources` may cite only these snapshot Source IDs, never raw
+   Claude cache paths, helper outputs, live URLs, or pseudo-sources.
+2. **Compute full source closure before `transaction begin`.** Include every
+   existing `sources` Source ID from each page that will be updated or deleted,
+   plus every new snapshot Source ID. The set is immutable after begin.
+3. **Begin once from the repository root.** Keep the repository root as the command CWD.
+   Run
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Record `transaction_id`, the absolute runtime-only `candidate_vault`,
+   `started_at`, and canonical Source IDs; do not `cd` into it or persist the
+   absolute path.
+4. **Write reviewed candidates.** For a new page, set
+   `created = updated = started_at`. For an update, preserve the existing `created`
+   and set `updated = started_at`. Write only final vault-relative knowledge-page
+   paths below `candidate_vault`, with a non-empty `sources` subset of the
+   transaction Source IDs.
+5. **Declare removals.** Use
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>` for every
+   reviewed obsolete page. If the requested change cannot be represented by
+   candidate knowledge pages or declared deletions, report it as unsupported
+   without mutating the live vault.
+6. **Validate and commit.** Run
+   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
+   warnings do not block commit. Fix every issue and rerun validation because
+   issues do block commit. Only after a passing report run
+   `obsidian-wiki transaction commit <id> --json --pretty`.
+7. **Use status-aware recovery.** On a JSON failure, follow only the trusted
+   `recovery.preferred_action` or a listed alternative whose prerequisites hold.
+   Confirm the retained record with `obsidian-wiki transaction list --json`:
+   its `recommended_action` must agree and the chosen command must appear in
+   `allowed_actions`. Fix and revalidate an active preflight failure or run
+   `obsidian-wiki transaction abort <id> --json`; retry/restore/discard are
+   invalid while active. A `promoting` record permits only its reported
+   `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
+   prefer its reported `obsidian-wiki transaction retry <id> --json`; use
+   `obsidian-wiki transaction restore <id> --json` or
+   `obsidian-wiki transaction discard <id> --json` only when listed and its
+   prerequisites hold. A configuration or begin failure with no trusted
+   transaction ID, or an empty list, has no recovery action. Never begin a
+   replacement while an outcome is ambiguous.
+8. **Refresh local hot context only after commit succeeds or recovery is fully resolved.**
+   Run `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
+   the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`. This ignored local write is outside
+   the transaction.
+9. **Report and stop.** Report selected sessions, snapshots, created/updated/
+   removed pages, validation warnings, recovery, and hot-cache status.
 
-```bash
-${QMD_CLI:-qmd} update
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Hold the
+concrete resolved vault, history, repository-helper, QMD CLI, and QMD collection
+values in agent memory: config resolution does not export these values into the parent shell.
+Write the prepared pages directly below `<resolved-vault-path>` and use the
+current ISO timestamp for `created`/`updated`, preserving `created` on update.
+
+### Personal direct writes and Git safety
+
+Apply any owner-required Personal Git snapshot rule against the concrete
+resolved vault before direct writes; do not apply it in Portable mode. Then
+write or merge all prepared project and global pages directly at their final
+paths below `<resolved-vault-path>`. Stop before tracking if any page write
+fails.
+
+### Personal manifest v1 and cache
+
+For each processed Claude conversation, memory, audit log, or desktop session,
+update `<resolved-vault-path>/.manifest.json` as manifest v1 with
+`ingested_at`, `size_bytes`, `modified_at`, source type, decoded project, and
+created/updated page lists. Preserve canonical expanded absolute Personal
+source keys and unrelated manifest entries. Retain the existing project summary:
+
+```json
+{
+  "project-name": {
+    "source_path": "<resolved-claude-history-path>/projects/<encoded-project>",
+    "vault_path": "projects/project-name",
+    "last_ingested": "TIMESTAMP",
+    "conversations_ingested": 5,
+    "conversations_total": 8,
+    "memory_files_ingested": 3,
+    "desktop_sessions_ingested": 2,
+    "audit_logs_ingested": 2
+  }
+}
 ```
 
-If the output says vectors are needed or embeddings may be stale, run:
+Record each source-to-page mapping with concrete values:
 
 ```bash
-${QMD_CLI:-qmd} embed
+obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
 ```
 
-Verify the collection with either:
+### Personal central files
+
+Update `<resolved-vault-path>/index.md` for every created or changed page.
+Append this existing entry to `<resolved-vault-path>/log.md`:
+
+```text
+- [TIMESTAMP] CLAUDE_HISTORY_INGEST projects=N conversations=M desktop_sessions=D audit_logs=A pages_updated=X pages_created=Y mode=append|full
+```
+
+Read `<resolved-vault-path>/hot.md`, creating it from the `wiki-ingest`
+template if missing. Update **Recent Activity** with the conceptual ingest,
+keep the last three operations, update **Active Threads** when useful, and bump
+the frontmatter `updated` timestamp.
+
+### Personal QMD refresh
+
+QMD is a search index, not the source of truth. If the concrete resolved QMD
+collection is empty or unset, skip it. Otherwise run after all Personal vault
+and tracking writes; failure does not roll back the vault changes.
 
 ```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
+<resolved-qmd-cli> update
+<resolved-qmd-cli> embed
+<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
 ```
 
-or, when a specific page path is known:
+Use `embed` only when vectors are stale or missing. Report refreshed,
+skipped/unconfigured, unavailable, or failed status separately.
 
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<page>.md" -l 5
-```
-
-Record one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
+Do not fall through into Portable Repository completion. Report the Personal
+page, manifest v1, central-file, cache, Personal Git snapshot, and QMD results,
+then stop.
