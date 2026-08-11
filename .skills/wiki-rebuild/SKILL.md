@@ -41,6 +41,10 @@ archive or central-file operation, use the guarded flow below. Keep the
 repository root as the command CWD, retain `candidate_vault` only in memory, and
 do not `cd` into it.
 
+If that supported candidate-only rebuild contains no replacement, creation, or
+deletion, report no changes and stop. In this no-op case, do not create an empty
+transaction or operation journal, and do not refresh `hot.md`.
+
 1. Compute complete source closure: the set union of the existing `sources`
    Source IDs from each updated or deleted live page and every Source ID any
    candidate `sources` field will cite. All are repository-relative Source IDs; these

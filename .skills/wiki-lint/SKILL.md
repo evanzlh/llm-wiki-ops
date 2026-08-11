@@ -431,6 +431,10 @@ approved consolidate/fix candidates, keep the repository root as the command
 CWD, retain the absolute `candidate_vault` only in memory, and do not `cd` into
 it.
 
+If the approved consolidate plan contains no page change, report no changes and
+stop. In this no-op case, do not create an empty transaction or operation
+journal, and do not refresh `hot.md`.
+
 1. Compute complete source closure before beginning: the set union of every
    existing `sources` Source IDs from each updated or deleted live page and all
    repository-relative Source IDs any candidate `sources` field will cite. This

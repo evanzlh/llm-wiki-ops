@@ -112,9 +112,16 @@ For each tag found, count how many pages use it. Flag:
 
 ## Portable Repository completion
 
+If the selected intent was Mode 1 audit-only, return the audit report and stop:
+no transaction, no normalization, and no central-file mutation.
+
 Use this branch only after Portable Repository mode was resolved. Keep the
 repository root as the command CWD; keep the absolute `candidate_vault` only in
 memory and do not `cd` into it.
+
+For Mode 2 normalization, if normalization produces no page changes, report no
+changes and stop before source closure. In this no-op case, do not create an
+empty transaction or operation journal, and do not refresh `hot.md`.
 
 Before computing closure, fail closed if the requested logical operation
 requires any `_meta/taxonomy.md` change. In that case the entire logical
@@ -157,9 +164,14 @@ Stop the portable workflow here. Do not continue into Personal mode completion.
 
 ## Personal mode completion
 
-Use this branch only when config resolution selected Personal mode. Continue
-with the normalization, taxonomy, and tracking workflow below. Personal central
-files, QMD refresh, and Git snapshot rules remain active.
+If the selected intent was Mode 1 audit-only, return the audit report and stop:
+no transaction, no normalization, and no central-file mutation.
+
+Use this branch only when config resolution selected Personal mode. For Mode 2
+normalization, if there are no page changes, report no changes and stop without
+tracking or hot-cache writes. Otherwise continue with the normalization,
+taxonomy, and tracking workflow below. Personal central files, QMD refresh, and
+Git snapshot rules remain active.
 
 ## Mode 2: Tag Normalization
 

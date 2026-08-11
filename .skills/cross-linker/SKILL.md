@@ -106,6 +106,11 @@ Use this branch only after Portable Repository mode was resolved. Keep the
 repository root as the command CWD. Keep `candidate_vault` absolute only in
 memory and do not `cd` into it.
 
+If no EXTRACTED or INFERRED link candidate remains and there is no page to
+create, update, or delete, report no changes and stop before source closure.
+In this no-op case, do not create an empty transaction or operation journal,
+and do not refresh `hot.md`.
+
 1. Compute complete source closure before beginning: the set union of every
    existing `sources` Source IDs on each updated or deleted live page and every
    repository-relative Source ID that a candidate `sources` field will cite.
@@ -149,6 +154,8 @@ Stop the portable workflow here. Do not continue into Personal mode completion.
 Use this branch only when config resolution selected Personal mode. Continue
 with Step 4 and the remaining direct-write workflow below. Personal central
 files, QMD refresh, and Git snapshot rules remain active.
+If no EXTRACTED or INFERRED link candidate remains, report no changes and stop;
+do not write tracking files or refresh `hot.md`.
 
 ## Step 4: Apply Links
 

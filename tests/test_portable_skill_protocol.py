@@ -601,6 +601,97 @@ def test_tag_taxonomy_fails_before_partial_portable_mutation() -> None:
         assert required in flat
 
 
+def test_tag_taxonomy_audit_only_stops_at_each_completion_branch() -> None:
+    relative = ".skills/tag-taxonomy/SKILL.md"
+    text = _text(relative)
+    portable = " ".join(
+        _h2_section(
+            text,
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    personal = " ".join(
+        _h2_section(text, "Personal mode completion", relative=relative).split()
+    )
+    for completion in (portable, personal):
+        audit = completion.index("If the selected intent was Mode 1 audit-only")
+        assert audit < completion.index("Mode 2")
+        for required in (
+            "return the audit report and stop",
+            "no transaction",
+            "no normalization",
+            "no central-file mutation",
+        ):
+            assert required in completion
+    assert portable.index("Mode 1 audit-only") < portable.index(
+        "requires any `_meta/taxonomy.md` change"
+    )
+    assert portable.index("Mode 1 audit-only") < portable.index(
+        "obsidian-wiki transaction begin"
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative", "gate"),
+    (
+        (
+            ".skills/cross-linker/SKILL.md",
+            "no EXTRACTED or INFERRED link candidate remains",
+        ),
+        (
+            ".skills/tag-taxonomy/SKILL.md",
+            "normalization produces no page changes",
+        ),
+        (
+            ".skills/wiki-dedup/SKILL.md",
+            "no approved merge produces a page creation, update, or deletion",
+        ),
+        (
+            ".skills/wiki-lint/SKILL.md",
+            "approved consolidate plan contains no page change",
+        ),
+        (
+            ".skills/wiki-rebuild/SKILL.md",
+            "supported candidate-only rebuild contains no replacement, creation, or deletion",
+        ),
+        (
+            ".skills/wiki-synthesize/SKILL.md",
+            "no synthesis page, backlink update, or deletion remains",
+        ),
+    ),
+    ids=(
+        "cross-linker",
+        "tag-taxonomy",
+        "wiki-dedup",
+        "wiki-lint",
+        "wiki-rebuild",
+        "wiki-synthesize",
+    ),
+)
+def test_maintenance_noop_stops_before_transaction(
+    relative: str, gate: str
+) -> None:
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    noop = portable.index(gate)
+    assert noop < portable.index("Compute complete source closure")
+    assert noop < portable.index("obsidian-wiki transaction begin")
+    for required in (
+        "report no changes and stop",
+        "do not create an empty transaction or operation journal",
+        "do not refresh `hot.md`",
+    ):
+        assert required in portable
+
+
 def test_status_portable_manifest_uses_configured_read_only_cache() -> None:
     text = _text(".skills/wiki-status/SKILL.md")
     portable_manifest = text.split(

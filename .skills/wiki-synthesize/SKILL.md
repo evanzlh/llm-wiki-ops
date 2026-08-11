@@ -137,6 +137,10 @@ Use this branch only after Portable Repository mode was resolved. Keep the
 repository root as the command CWD; retain the absolute `candidate_vault` only
 in memory and do not `cd` into it.
 
+If no synthesis page, backlink update, or deletion remains, report no changes
+and stop. In this no-op case, do not create an empty transaction or operation
+journal, and do not refresh `hot.md`.
+
 1. Resolve actual authoritative source files traced from every selected input
    page, then use their Source IDs.
    Compute complete source closure as the set union of the existing `sources`
