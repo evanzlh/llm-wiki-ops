@@ -1,9 +1,21 @@
+import hashlib
+import json
 import re
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import SOURCE_INSTALL_COMMAND
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_INSTALL_COMMAND
+from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.frontmatter import parse_frontmatter
+from obsidian_wiki.transaction import (
+    TransactionError,
+    TransactionManager,
+    validate_candidate_page,
+    validate_candidate_path,
+)
+from obsidian_wiki.trust import validate_trust_metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +61,7 @@ HISTORY_WRITE_SKILLS = (
     ".skills/pi-history-ingest/SKILL.md",
     ".skills/wiki-agent/SKILL.md",
 )
+BULK_HISTORY_WRITE_SKILLS = HISTORY_WRITE_SKILLS[:-1]
 PORTABLE_COMPLETION_REQUIREMENTS = (
     "obsidian-wiki transaction validate",
     "obsidian-wiki transaction commit",
@@ -178,6 +191,81 @@ def _h2_section(
         )
 
     return text[match[2] : end]
+
+
+def _numbered_steps(section: str) -> list[tuple[int, str, str]]:
+    matches = list(
+        re.finditer(
+            r"(?m)^(?P<number>\d+)\. \*\*(?P<title>.+?)\*\*(?P<tail>.*)$",
+            section,
+        )
+    )
+    steps: list[tuple[int, str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(section)
+        body = match.group("tail") + section[match.end() : end]
+        steps.append((int(match.group("number")), match.group("title"), body))
+    return steps
+
+
+def _fenced_block_after(text: str, label: str, language: str) -> str:
+    assert label in text, f"missing fenced-example label {label!r}"
+    remainder = text.split(label, 1)[1]
+    opener = f"```{language}\n"
+    assert opener in remainder, f"{label!r}: missing {language!r} fence"
+    fenced = remainder.split(opener, 1)[1]
+    assert "\n```" in fenced, f"{label!r}: unclosed fence"
+    return fenced.split("\n```", 1)[0] + "\n"
+
+
+def _portable_transaction(tmp_path: Path, source_ids: tuple[str, ...]):
+    root = tmp_path / "knowledge"
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "sources").mkdir()
+    (root / "wiki" / "concepts").mkdir(parents=True)
+    (root / ".skills").mkdir()
+    config_path = root / ".obsidian-wiki" / "config.toml"
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (root / "wiki" / ".manifest.json").write_text(
+        '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n',
+        encoding="utf-8",
+    )
+    sources: list[Path] = []
+    for source_id in source_ids:
+        source = root / source_id
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"reviewed snapshot: {source_id}\n", encoding="utf-8")
+        sources.append(source)
+    config = load_portable_config(
+        config_path,
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+    record = TransactionManager(config).begin(
+        sources,
+        transaction_id="history-contract",
+        started_at="2026-08-11T12:00:00+00:00",
+    )
+    return root, config, record
+
+
+def _write_candidate(record, relative: str, content: str) -> Path:
+    canonical = validate_candidate_path(record.candidate_vault, relative)
+    path = record.candidate_vault / canonical
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def test_h2_section_ignores_fenced_completion_headings() -> None:
@@ -410,6 +498,107 @@ def test_history_family_materializes_portable_source_snapshots(relative: str) ->
     HISTORY_WRITE_SKILLS,
     ids=lambda relative: Path(relative).parent.name,
 )
+def test_history_portable_completion_has_structured_review_and_terminal_order(
+    relative: str,
+) -> None:
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    steps = _numbered_steps(portable)
+    expected_titles = (
+        "Create or select reviewable source snapshots.",
+        "Review and accept every selected snapshot.",
+        "Compute complete source closure.",
+        "Begin exactly once.",
+        "Write candidates.",
+        "Declare removals.",
+        "Validate candidates.",
+        "Commit the passing transaction.",
+        "Use status-aware recovery.",
+        "Refresh local hot context after the terminal gate.",
+        "Report and stop.",
+    )
+    assert [number for number, _, _ in steps[:11]] == list(range(1, 12)), relative
+    assert tuple(title for _, title, _ in steps[:11]) == expected_titles, relative
+    bodies = {title: " ".join(body.split()) for _, title, body in steps}
+
+    review = bodies["Review and accept every selected snapshot."]
+    for required in (
+        "parent agent reviews and accepts every selected snapshot",
+        "rejected, incomplete, unsafe, or cannot be traced",
+        "stop before `transaction begin`",
+    ):
+        assert required in review, f"{relative}: incomplete review gate {required!r}"
+
+    closure = bodies["Compute complete source closure."]
+    for required in (
+        "`live-page sources`",
+        "updated or deleted",
+        "`accepted snapshots`",
+        "newly created, changed existing, or unchanged and reused",
+        "`candidate citations`",
+        "every Source ID that any candidate `sources` field will cite",
+        "set union",
+    ):
+        assert required in closure, f"{relative}: incomplete closure set {required!r}"
+
+    hot = bodies["Refresh local hot context after the terminal gate."]
+    assert "commit succeeds or recovery is fully resolved" in hot, relative
+
+
+def test_changed_existing_snapshot_can_source_a_new_candidate(tmp_path: Path) -> None:
+    live_page_source = "sources/history/codex/session-old/slice-legacy.md"
+    changed_snapshot = "sources/history/codex/session-7/slice-auth.md"
+    reused_snapshot = "sources/history/codex/session-7/slice-retries.md"
+    new_snapshot = "sources/history/codex/session-8/slice-cache.md"
+    complete_closure = (
+        live_page_source,
+        changed_snapshot,
+        reused_snapshot,
+        new_snapshot,
+    )
+    _, _, record = _portable_transaction(tmp_path, complete_closure)
+    page = _write_candidate(
+        record,
+        "concepts/auth-middleware.md",
+        f"""---
+title: Authentication Middleware
+category: concepts
+tags: [authentication]
+sources:
+  - {changed_snapshot}
+summary: Authentication middleware knowledge compiled from an accepted changed snapshot.
+provenance:
+  extracted: 0.80
+  inferred: 0.20
+  ambiguous: 0.00
+base_confidence: 0.42
+lifecycle: draft
+lifecycle_changed: 2026-08-11
+created: 2026-08-11T12:00:00+00:00
+updated: 2026-08-11T12:00:00+00:00
+---
+# Authentication Middleware
+""",
+    )
+
+    incomplete = tuple(
+        source_id for source_id in record.source_ids if source_id != changed_snapshot
+    )
+    with pytest.raises(TransactionError, match="source outside the transaction"):
+        validate_candidate_page(page, incomplete)
+    assert validate_candidate_page(page, record.source_ids) == (changed_snapshot,)
+    assert validate_trust_metadata(page)["lifecycle"] == "draft"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
 def test_history_family_personal_completion_is_concrete_and_terminal(
     relative: str,
 ) -> None:
@@ -587,6 +776,59 @@ def test_bulk_history_portable_completion_excludes_personal_delta_state(
         )
 
 
+@pytest.mark.parametrize(
+    "relative",
+    BULK_HISTORY_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_bulk_history_project_overviews_follow_portable_semantic_paths(
+    relative: str,
+) -> None:
+    shared = _text(relative).split("## Portable Repository completion", 1)[0]
+    shared_flat = " ".join(shared.split())
+    for required in (
+        "`projects/<name>/<name>.md` uses `category: projects`",
+        "Portable Repository mode omits `source_path`",
+        "machine-local or absolute path",
+        "accepted snapshot Source IDs",
+        "Personal manifest v1 may retain the concrete absolute history path",
+    ):
+        assert required in shared_flat, (
+            f"{relative}: project overview rule missing {required!r}"
+        )
+
+
+def test_canonical_project_overview_example_passes_real_validators(
+    tmp_path: Path,
+) -> None:
+    example = _fenced_block_after(
+        _text(".skills/llm-wiki/SKILL.md"),
+        "Each project directory has an overview page structured like this:",
+        "markdown",
+    )
+    parsed = parse_frontmatter(example)
+    assert parsed.scalars["category"] == "projects"
+    assert "source_path" not in parsed.fields
+    assert parsed.scalars["summary"]
+    assert parsed.provenance is not None
+    assert parsed.scalars["lifecycle"] == "draft"
+    date.fromisoformat(parsed.scalars["lifecycle_changed"])
+    source_ids = parsed.lists["sources"]
+
+    _, _, record = _portable_transaction(tmp_path, source_ids)
+    candidate = _write_candidate(
+        record,
+        "projects/my-project/my-project.md",
+        example,
+    )
+    assert validate_candidate_page(candidate, record.source_ids) == tuple(
+        sorted(source_ids)
+    )
+    trust = validate_trust_metadata(candidate)
+    assert trust["confidence"] is not None
+    assert trust["lifecycle"] == "draft"
+
+
 def test_claude_history_helpers_cannot_bypass_parent_completion() -> None:
     claude = _text(".skills/claude-history-ingest/SKILL.md")
     manifest_helper = claude.split("### Append Mode", 1)[1].split(
@@ -650,6 +892,102 @@ def test_wiki_agent_candidate_category_matches_its_semantic_path() -> None:
         assert required in candidate_flat, (
             f"wiki-agent candidate guidance missing {required!r}"
         )
+
+
+def test_wiki_agent_candidate_example_passes_real_validators(tmp_path: Path) -> None:
+    example = _fenced_block_after(
+        _text(".skills/wiki-agent/SKILL.md"),
+        "### Valid Portable concept candidate example",
+        "markdown",
+    )
+    parsed = parse_frontmatter(example)
+    assert parsed.scalars["category"] == "concepts"
+    assert parsed.scalars["summary"]
+    assert parsed.provenance is not None
+    assert parsed.scalars["base_confidence"] == "0.42"
+    assert parsed.scalars["lifecycle"] == "draft"
+    date.fromisoformat(parsed.scalars["lifecycle_changed"])
+    assert "confidence" not in parsed.fields
+    source_ids = parsed.lists["sources"]
+
+    _, _, record = _portable_transaction(tmp_path, source_ids)
+    candidate = _write_candidate(record, "concepts/auth-middleware.md", example)
+    assert validate_candidate_page(candidate, record.source_ids) == tuple(
+        sorted(source_ids)
+    )
+    trust = validate_trust_metadata(candidate)
+    assert trust["confidence"] == 0.42
+    assert trust["lifecycle"] == "draft"
+
+    invalid = candidate.with_name("invalid-lifecycle.md")
+    invalid.write_text(
+        example.replace("lifecycle: draft", "lifecycle: stable"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid lifecycle: stable"):
+        validate_trust_metadata(invalid)
+
+
+def test_wiki_agent_slice_identity_retains_two_queries_for_one_session(
+    tmp_path: Path,
+) -> None:
+    raw = _fenced_block_after(
+        _text(".skills/wiki-agent/SKILL.md"),
+        "### Stable targeted slice identity example",
+        "json",
+    )
+    example = json.loads(raw)
+    assert example["agent"] == example["agent"].lower()
+    assert not Path(example["session"]).is_absolute()
+    slices = example["slices"]
+    assert len(slices) == 2
+    assert slices[0]["query"] != slices[1]["query"]
+
+    source_ids: list[str] = []
+    for item in slices:
+        normalized = " ".join(item["query"].split()).lower()
+        assert item["normalized_query"] == normalized
+        assert item["anchors"] == sorted(item["anchors"])
+        payload = normalized + "\n" + "\n".join(sorted(item["anchors"]))
+        expected_slice = "q-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+        assert item["slice"] == expected_slice
+        expected_source = (
+            f"sources/history/{example['agent']}/{example['session']}/"
+            f"{expected_slice}.md"
+        )
+        assert item["source_id"] == expected_source
+        assert not Path(item["source_id"]).is_absolute()
+        source_ids.append(item["source_id"])
+    assert len(set(source_ids)) == 2
+
+    _, _, record = _portable_transaction(tmp_path, tuple(source_ids))
+    candidate = _write_candidate(
+        record,
+        "synthesis/session-slices.md",
+        """---
+title: Session Slice Comparison
+category: synthesis
+tags: [cross-agent]
+sources:
+"""
+        + "".join(f"  - {source_id}\n" for source_id in source_ids)
+        + """summary: Two distinct query slices from one session remain independently reproducible.
+provenance:
+  extracted: 0.50
+  inferred: 0.50
+  ambiguous: 0.00
+base_confidence: 0.42
+lifecycle: draft
+lifecycle_changed: 2026-08-11
+created: 2026-08-11T12:00:00+00:00
+updated: 2026-08-11T12:00:00+00:00
+---
+# Session Slice Comparison
+""",
+    )
+    assert validate_candidate_page(candidate, record.source_ids) == tuple(
+        sorted(source_ids)
+    )
 
 
 def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:

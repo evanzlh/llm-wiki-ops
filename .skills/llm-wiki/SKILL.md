@@ -89,11 +89,21 @@ Each project directory has an overview page structured like this:
 ```markdown
 ---
 title: My Project
-category: project
+category: projects
 tags: [ai, web, backend]
-source_path: ~/.claude/projects/-Users-name-Documents-projects-my-project
-created: 2026-03-01T00:00:00Z
-updated: 2026-04-06T00:00:00Z
+sources:
+  - sources/project/my-project.md
+summary: A project overview connecting My Project's durable architecture, techniques, and related knowledge.
+provenance:
+  extracted: 0.70
+  inferred: 0.25
+  ambiguous: 0.05
+base_confidence: 0.59
+lifecycle: draft
+lifecycle_changed: 2026-08-11
+tier: supporting
+created: 2026-08-11T12:00:00+00:00
+updated: 2026-08-11T12:00:00+00:00
 ---
 
 # My Project

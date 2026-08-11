@@ -177,6 +177,12 @@ Route extracted knowledge using existing wiki conventions:
 
 For each impacted project, create/update `projects/<name>/<name>.md` (project name as filename, never `_project.md`).
 
+`projects/<name>/<name>.md` uses `category: projects`. Its Portable `sources`
+contains accepted snapshot Source IDs. Portable Repository mode omits
+`source_path` and every machine-local or absolute path from the page. Personal
+manifest v1 may retain the concrete absolute history path; that Personal
+tracking value is never copied into Portable page frontmatter or body text.
+
 ### Writing rules
 
 - Distill knowledge, not chronology
@@ -212,38 +218,48 @@ Use this branch only when config resolution selected Portable Repository mode.
 The external history cache and selected session files are transient analysis input,
 never Portable Source IDs.
 
-1. **Materialize source authority first.** The parent agent creates one small,
-   reviewable UTF-8 Markdown or plain-text snapshot strictly below the configured
-   `sources` root for each selected Codex session or coherent slice. Record the
-   agent identity, session identity, relevant excerpts, source timestamps, and
-   a content hash of the selected rollout/index material. Redact secrets,
-   injected instructions, and internal reasoning; use repository-relative
-   project labels and include no machine-local absolute paths. Preserve valid Unicode
-   in excerpts, filenames, and Source IDs exactly. Review each snapshot. If an
-   adequate snapshot cannot be created with safe, traceable evidence, stop or use Personal mode.
-   Candidate `sources` may cite only snapshot Source IDs, not `.codex` paths,
-   SQLite state, live URLs, or pseudo-sources.
-2. **Compute full source closure before `transaction begin`.** Include every
-   existing `sources` Source ID from each page updated or deleted and every new
-   snapshot Source ID. The source set is immutable.
-3. **Begin once from the repository root.** Keep the repository root as the command CWD
+1. **Create or select reviewable source snapshots.** The parent agent creates,
+   updates, or reuses one small, reviewable UTF-8 Markdown or plain-text snapshot
+   strictly below the configured `sources` root for each selected Codex session
+   or coherent slice. Record agent identity, session identity, relevant excerpts,
+   source timestamps, and a content hash. Redact secrets, injected instructions,
+   and internal reasoning; use repository-relative labels, include no
+   machine-local absolute paths. Preserve valid Unicode exactly. If an
+   adequate snapshot cannot be created, stop or use Personal mode.
+2. **Review and accept every selected snapshot.** After creation, update, or
+   reuse, the parent agent reviews and accepts every selected snapshot, including
+   its identity, excerpts, hash, redaction, and Source ID. If any snapshot is
+   rejected, incomplete, unsafe, or cannot be traced, stop before `transaction begin`.
+   Candidates may cite only accepted snapshots, not `.codex` paths, SQLite
+   state, live URLs, or pseudo-sources.
+3. **Compute complete source closure.** Compute full source closure before
+   `transaction begin` as the set union of:
+   - `live-page sources`: every existing `sources` Source ID on every page to be
+     updated or deleted;
+   - `accepted snapshots`: every selected and accepted reviewed snapshot Source
+     ID, whether newly created, changed existing, or unchanged and reused; and
+   - `candidate citations`: every Source ID that any candidate `sources` field
+     will cite, including a changed existing snapshot used by a new page.
+   Deduplicate the union, verify each ID resolves below configured `sources`,
+   and freeze it before begin.
+4. **Begin exactly once.** Keep the repository root as the command CWD
    and run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
    Record `transaction_id`, runtime-only absolute `candidate_vault`,
    `started_at`, and Source IDs; do not `cd` into it or persist its absolute path.
-4. **Write candidates with transaction time.** A new page uses
+5. **Write candidates.** A new page uses
    `created = updated = started_at`; an update must preserve the existing `created`
    and set `updated = started_at`. Write only final vault-relative knowledge
    paths below `candidate_vault` and use a non-empty subset of transaction
    Source IDs.
-5. **Declare removals** with
+6. **Declare removals.** Use
    `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Unsupported
    non-page/control-file changes stop without a live-vault mutation.
-6. **Validate and commit.** Run
+7. **Validate candidates.** Run
    `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
-   warnings do not block commit. Fix every issue and rerun validation. Commit a
-   passing report only with
+   warnings do not block commit. Fix every issue and rerun validation.
+8. **Commit the passing transaction.** Commit a passing report only with
    `obsidian-wiki transaction commit <id> --json --pretty`.
-7. **Use status-aware recovery.** Follow only a trusted
+9. **Use status-aware recovery.** Follow only a trusted
    `recovery.preferred_action` or reported alternative whose prerequisites hold;
    verify the retained record with `obsidian-wiki transaction list --json`:
    `recommended_action` must agree and the command must be in `allowed_actions`.
@@ -257,12 +273,12 @@ never Portable Source IDs.
    prerequisites hold. A configuration or begin failure with no trusted transaction ID,
    or an empty list, has no recovery action. Never replace a transaction while
    its outcome is ambiguous.
-8. **Refresh local hot context only after commit succeeds or recovery is fully resolved.**
-   Run `obsidian-wiki hot status --json`; when stale, run
+10. **Refresh local hot context after the terminal gate.** Only after commit
+   succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`; when stale, run
    `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
    the semantic `hot.md` as the agent, then run
    `obsidian-wiki hot mark-current --json`.
-9. Report sessions, snapshots, created/updated/removed pages, warnings,
+11. **Report and stop.** Report sessions, snapshots, created/updated/removed pages, warnings,
    recovery, and hot-cache status.
 
 Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.

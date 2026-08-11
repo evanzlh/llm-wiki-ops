@@ -302,6 +302,12 @@ Prefer `repository` (e.g., `owner/repo`) from `session-store.db` over raw `cwd` 
 
 For each project with content, create or update the project overview page at `projects/<name>/<name>.md` — **named after the project, not `_project.md`**. Obsidian's graph view uses the filename as the node label, so `_project.md` makes every project show up as `_project` in the graph. Naming it `<name>.md` gives each project a distinct, readable node name.
 
+`projects/<name>/<name>.md` uses `category: projects`. Its Portable `sources`
+contains accepted snapshot Source IDs. Portable Repository mode omits
+`source_path` and every machine-local or absolute path from the page. Personal
+manifest v1 may retain the concrete absolute history path; that Personal
+tracking value is never copied into Portable page frontmatter or body text.
+
 **Important:** Distill the _knowledge_, not the conversation. Don't write "In a session on March 15, the user asked about X." Write the knowledge itself, with the session as a source attribution.
 
 **Write a `summary:` frontmatter field** on every new/updated page — 1–2 sentences, ≤200 chars, answering "what is this page about?" for a reader who hasn't opened it. `wiki-query`'s cheap retrieval path reads this field to avoid opening page bodies.
@@ -341,37 +347,48 @@ The external history cache and selected session files are transient analysis inp
 never Portable Source IDs. This includes `session-store.db`, per-session state,
 VS Code storage, checkpoints, and extracted memory artifacts.
 
-1. **Materialize source authority first.** The parent agent creates one small,
-   reviewable UTF-8 Markdown or plain-text snapshot strictly below the configured
-   `sources` root for each selected Copilot session or coherent slice. Record
-   agent identity, session identity, relevant excerpts, source timestamps, and
-   a content hash of the selected records. Redact secrets, transformed prompt
-   context, `reasoningOpaque`/`reasoningText`, and private identifiers; replace
-   local `cwd`/file paths with repository-relative labels and include no machine-local absolute paths.
-   Preserve valid Unicode in excerpts, filenames, and Source IDs exactly. If an
-   adequate snapshot cannot be created with safe, traceable evidence, stop or use Personal mode.
-   Candidate pages cite only reviewed snapshot Source IDs, never database/cache
-   paths, live URLs, or pseudo-sources.
-2. **Compute full source closure before `transaction begin`.** Include every
-   existing `sources` Source ID from any page updated or deleted plus every new
-   snapshot Source ID. The source set is immutable.
-3. **Begin exactly once.** Keep the repository root as the command CWD and run
+1. **Create or select reviewable source snapshots.** The parent agent creates,
+   updates, or reuses one small, reviewable UTF-8 Markdown or plain-text snapshot
+   strictly below the configured `sources` root for each selected Copilot session
+   or coherent slice. Record agent identity, session identity, relevant excerpts,
+   source timestamps, and a content hash. Redact secrets, transformed prompt
+   context, `reasoningOpaque`/`reasoningText`, private identifiers, and local
+   paths. Include no machine-local absolute paths. Preserve valid Unicode exactly.
+   If an adequate snapshot cannot be created, stop or use Personal mode.
+2. **Review and accept every selected snapshot.** After creation, update, or
+   reuse, the parent agent reviews and accepts every selected snapshot, including
+   its identity, excerpts, hash, redaction, and Source ID. If any snapshot is
+   rejected, incomplete, unsafe, or cannot be traced, stop before `transaction begin`.
+   Candidates may cite only accepted snapshots, never database/cache paths,
+   live URLs, or pseudo-sources.
+3. **Compute complete source closure.** Compute full source closure before
+   `transaction begin` as the set union of:
+   - `live-page sources`: every existing `sources` Source ID on every page to be
+     updated or deleted;
+   - `accepted snapshots`: every selected and accepted reviewed snapshot Source
+     ID, whether newly created, changed existing, or unchanged and reused; and
+   - `candidate citations`: every Source ID that any candidate `sources` field
+     will cite, including a changed existing snapshot used by a new page.
+   Deduplicate the union, verify each ID resolves below configured `sources`,
+   and freeze it before begin.
+4. **Begin exactly once.** Keep the repository root as the command CWD and run
    `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
    Record `transaction_id`, runtime-only absolute `candidate_vault`,
    `started_at`, and Source IDs; do not `cd` into it or persist the absolute path.
-4. **Write candidates.** A new page uses `created = updated = started_at`; an
+5. **Write candidates.** A new page uses `created = updated = started_at`; an
    update must preserve the existing `created` and set `updated = started_at`.
    Write final vault-relative knowledge pages only, each with a non-empty subset
    of the transaction Source IDs.
-5. **Declare removals** with
+6. **Declare removals.** Use
    `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Stop as
    unsupported if a mutation cannot be expressed as knowledge candidates or
    declared deletions.
-6. **Validate and commit.** Run
+7. **Validate candidates.** Run
    `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
-   warnings do not block commit. Fix every issue and rerun validation. Run
+   warnings do not block commit. Fix every issue and rerun validation.
+8. **Commit the passing transaction.** Run
    `obsidian-wiki transaction commit <id> --json --pretty` only after a pass.
-7. **Use status-aware recovery.** Follow only a trusted
+9. **Use status-aware recovery.** Follow only a trusted
    `recovery.preferred_action` or reported alternative whose prerequisites hold.
    Confirm `recommended_action` with `obsidian-wiki transaction list --json`
    and choose only from `allowed_actions`. Fix/revalidate an active preflight
@@ -385,12 +402,12 @@ VS Code storage, checkpoints, and extracted memory artifacts.
    A configuration or begin failure with no trusted transaction ID, or an
    empty list, has no recovery action. Never replace a transaction whose
    outcome is ambiguous.
-8. **Refresh local hot context only after commit succeeds or recovery is fully resolved.**
-   Run `obsidian-wiki hot status --json`; if stale, run
+10. **Refresh local hot context after the terminal gate.** Only after commit
+   succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`; if stale, run
    `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
    the semantic `hot.md` as the agent, then run
    `obsidian-wiki hot mark-current --json`.
-9. Report sessions, snapshot Source IDs, page changes, warnings, recovery, and
+11. **Report and stop.** Report sessions, snapshot Source IDs, page changes, warnings, recovery, and
    hot-cache status.
 
 Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
