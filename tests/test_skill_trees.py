@@ -274,6 +274,90 @@ def test_block_header_near_misses_remain_plain_scalars(tmp_path: Path) -> None:
     assert tree.description == "Use a > comparison: literal."
 
 
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Compare syntax: > is literal.", "Compare syntax: > is literal."),
+        ("'Compare syntax: > is literal.'", "Compare syntax: > is literal."),
+    ],
+)
+def test_literal_colon_indicator_text_is_not_a_block_header(
+    tmp_path: Path, description: str, expected: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: " + description + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == expected
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "description:\u00a0>",
+        "description:\u2003>",
+        "description: >\u00a0",
+        "description: >\u2003",
+        "description\u00a0: >",
+        "description\u2003: >",
+    ],
+)
+def test_rejects_non_ascii_structural_whitespace_in_block_header(
+    tmp_path: Path, header: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n" + header + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="frontmatter|block|whitespace"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize("indent", ["\u00a0", "\u2003", " \u00a0", " \u2003"])
+def test_rejects_non_ascii_folded_description_indentation(
+    tmp_path: Path, indent: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >\n"
+        + indent
+        + "Content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="frontmatter|indentation|whitespace"):
+        discover_skill_collection(tmp_path)
+
+
+def test_non_ascii_whitespace_inside_folded_content_is_preserved(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: >\n"
+        "  Keep\u00a0this content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Keep\u00a0this content."
+    )
+
+
 def test_discovers_every_current_bundled_skill_with_nonempty_description() -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
 

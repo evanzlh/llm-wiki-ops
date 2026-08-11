@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import unicodedata
 from typing import Literal
 
 from .frontmatter import FrontmatterError, parse_frontmatter
@@ -33,6 +34,7 @@ _SOURCE_IGNORED_FILES = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"}
 )
 _SUPPORTED_DESCRIPTION_BLOCKS = frozenset({">", ">-", ">+"})
+_PLAIN_DESCRIPTION_MAPPING = re.compile(r"^description *:")
 
 
 @dataclass(frozen=True)
@@ -192,13 +194,62 @@ def _digest(name: str, entries: tuple[SkillEntry, ...]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _structural_whitespace(character: str) -> bool:
+    return character in " \t\v\f" or unicodedata.category(character) in {
+        "Zs",
+        "Zl",
+        "Zp",
+    }
+
+
+def _skill_block_header(line: str) -> tuple[str, str, bool] | None:
+    """Recognize an entire top-level mapping value as a block indicator."""
+    separator = line.rfind(":")
+    if separator < 0:
+        return None
+    key_region = line[:separator]
+    value_region = line[separator + 1 :]
+
+    key_end = len(key_region)
+    while key_end and _structural_whitespace(key_region[key_end - 1]):
+        key_end -= 1
+    value_start = 0
+    while value_start < len(value_region) and _structural_whitespace(
+        value_region[value_start]
+    ):
+        value_start += 1
+    value_end = len(value_region)
+    while value_end > value_start and _structural_whitespace(
+        value_region[value_end - 1]
+    ):
+        value_end -= 1
+
+    indicator = value_region[value_start:value_end]
+    if not indicator.startswith((">", "|")) or any(
+        _structural_whitespace(character) for character in indicator
+    ):
+        return None
+    structural = (
+        key_region[key_end:]
+        + value_region[:value_start]
+        + value_region[value_end:]
+    )
+    return key_region[:key_end], indicator, all(
+        character == " " for character in structural
+    )
+
+
 def _normalized_skill_frontmatter(text: str) -> str:
     """Adapt the bundled skill description subset for the strict parser."""
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0].strip(" ") != "---":
         return text
     closing = next(
-        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        (
+            index
+            for index, line in enumerate(lines[1:], start=1)
+            if line.strip(" ") == "---"
+        ),
         None,
     )
     if closing is None:
@@ -208,21 +259,16 @@ def _normalized_skill_frontmatter(text: str) -> str:
     folded_line: int | None = None
     for index in range(1, closing):
         line = lines[index]
-        if not line or line[0].isspace():
+        if not line or line.startswith((" ", "\t")):
             continue
-        block_header: tuple[str, str] | None = None
-        for separator in range(len(line) - 1, -1, -1):
-            if line[separator] != ":":
-                continue
-            candidate = line[separator + 1 :].lstrip(" \t")
-            if candidate.startswith((">", "|")):
-                block_header = (line[:separator], candidate)
-                break
+        block_header = _skill_block_header(line)
         if block_header is not None:
-            key, value = block_header
-            if "\t" in line:
-                raise FrontmatterError("skill metadata block header contains a tab")
-            if key.strip(" ") != "description":
+            key, value, ascii_structure = block_header
+            if not ascii_structure:
+                raise FrontmatterError(
+                    "skill metadata block header has non-ASCII structural whitespace"
+                )
+            if key != "description":
                 raise FrontmatterError("unsupported skill metadata block field")
             description_lines.append(index)
             if value in _SUPPORTED_DESCRIPTION_BLOCKS:
@@ -230,7 +276,7 @@ def _normalized_skill_frontmatter(text: str) -> str:
             else:
                 raise FrontmatterError("unsupported folded skill description style")
             continue
-        if ":" in line and line.split(":", 1)[0].strip(" ") == "description":
+        if _PLAIN_DESCRIPTION_MAPPING.match(line):
             description_lines.append(index)
 
     if len(description_lines) > 1:
@@ -243,25 +289,31 @@ def _normalized_skill_frontmatter(text: str) -> str:
     end = folded_line + 1
     while end < closing:
         line = lines[end]
-        if line and not line[0].isspace():
-            break
-        if line:
-            leading = line[: len(line) - len(line.lstrip())]
-            if "\t" in leading:
-                raise FrontmatterError("folded skill description has bad indentation")
-            current = len(leading)
-            if indentation is None:
-                indentation = current
-            if current != indentation:
-                raise FrontmatterError("folded skill description has bad indentation")
-            content.append(line[current:])
-        else:
+        if not line or all(character == " " for character in line):
             content.append("")
+            end += 1
+            continue
+        leading = 0
+        while leading < len(line) and _structural_whitespace(line[leading]):
+            leading += 1
+        if leading == 0:
+            break
+        if any(character != " " for character in line[:leading]):
+            raise FrontmatterError(
+                "folded skill description has non-ASCII indentation whitespace"
+            )
+        if indentation is None:
+            indentation = leading
+        if leading != indentation:
+            raise FrontmatterError("folded skill description has bad indentation")
+        content.append(line[leading:])
         end += 1
 
     if indentation is None:
         raise FrontmatterError("folded skill description is empty")
-    folded = " ".join(part.strip() for part in content if part.strip()).strip()
+    folded = " ".join(
+        part.strip(" ") for part in content if part.strip(" ")
+    ).strip(" ")
     if not folded:
         raise FrontmatterError("folded skill description is empty")
     quoted = folded.replace("'", "''")
