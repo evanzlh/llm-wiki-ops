@@ -13,8 +13,8 @@ the user explicitly asks for an end-to-end wiki operation.
 
 ## Development commands
 
-- Run focused tests with `uv run pytest tests/test_portable_setup.py -q`.
-- Run the full suite with `PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider`.
+- Run focused tests with `uv run --with pytest python -m pytest tests/test_portable_setup.py -q`.
+- Run the full suite with `PYTHONDONTWRITEBYTECODE=1 uv run --with pytest python -m pytest -q -p no:cacheprovider`.
 - Install the CLI from this clone with `uv tool install --force --reinstall --link-mode copy .`.
 
 ## Documentation

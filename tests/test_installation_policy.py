@@ -297,6 +297,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         symlinks=True,
     )
     env = _uv_tool_environment(tmp_path)
+    canonical_skill_names = sorted(
+        path.name
+        for path in (source / "obsidian_wiki/_data/skills").iterdir()
+        if path.is_dir()
+    )
     git_dir = source / ".git"
     assert not git_dir.exists(), "source copy unexpectedly retained Git metadata"
     subprocess.run(
@@ -447,10 +452,26 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=30,
     )
-    assert "wiki-ingest" in bundled.stdout.splitlines()
+    assert bundled.stdout.splitlines() == canonical_skill_names
     assert marker in (skills_path / "wiki-ingest" / "SKILL.md").read_text(
         encoding="utf-8"
     )
+    bootstrap_root = skills_path.parent / "bootstrap"
+    expected_bootstraps = (
+        "AGENTS.md",
+        "cursor/rules/obsidian-wiki.mdc",
+        "windsurf/rules/obsidian-wiki.md",
+        "kiro/steering/obsidian-wiki.md",
+        "agent/rules/obsidian-wiki.md",
+        "agent/workflows/obsidian-wiki.md",
+        "github/copilot-instructions.md",
+    )
+    assert [
+        relative
+        for relative in expected_bootstraps
+        if not (bootstrap_root / relative).is_file()
+        or (bootstrap_root / relative).is_symlink()
+    ] == []
     portable = tmp_path / "portable"
     setup = subprocess.run(
         [executable, "setup", "--portable", str(portable)],

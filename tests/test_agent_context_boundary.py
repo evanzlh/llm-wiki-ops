@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ import pytest
 
 from obsidian_wiki import cli
 from obsidian_wiki.skill_trees import discover_skill_collection
+from tools import capture_legacy_skill_digests as capture_tool
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,7 @@ def _capture(source: Path, label: str, output: Path) -> subprocess.CompletedProc
         text=True,
         capture_output=True,
         check=False,
+        timeout=30,
     )
 
 
@@ -112,6 +115,19 @@ def test_framework_bootstraps_are_ordinary_development_pointers() -> None:
     assert "Config Resolution Protocol" in runtime
 
 
+def test_framework_development_commands_provision_pytest_explicitly() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert (
+        "uv run --with pytest python -m pytest tests/test_portable_setup.py -q"
+        in agents
+    )
+    assert (
+        "PYTHONDONTWRITEBYTECODE=1 uv run --with pytest python -m pytest -q "
+        "-p no:cacheprovider"
+    ) in agents
+
+
 def test_legacy_digest_capture_is_deterministic_and_idempotent(tmp_path: Path) -> None:
     source = tmp_path / "skills"
     output = tmp_path / "catalog.json"
@@ -164,6 +180,170 @@ def test_legacy_digest_capture_rejects_invalid_label_and_changed_overwrite(
     empty = _capture(source, "   ", tmp_path / "empty.json")
     assert empty.returncode != 0
     assert not (tmp_path / "empty.json").exists()
+
+
+@pytest.mark.parametrize("target_exists", [False, True], ids=["dangling", "live"])
+def test_legacy_digest_capture_rejects_output_symlink(
+    tmp_path: Path, target_exists: bool
+) -> None:
+    source = tmp_path / "skills"
+    expected = tmp_path / "expected.json"
+    target = tmp_path / "target.json"
+    output = tmp_path / "catalog.json"
+    _write_skill(source)
+    assert _capture(source, "baseline", expected).returncode == 0
+    if target_exists:
+        target.write_bytes(expected.read_bytes())
+    try:
+        output.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+
+    result = _capture(source, "baseline", output)
+
+    assert result.returncode != 0
+    assert "ordinary single-link regular file" in result.stderr
+    assert output.is_symlink()
+    if target_exists:
+        assert target.read_bytes() == expected.read_bytes()
+    else:
+        assert not target.exists()
+
+
+def test_legacy_digest_capture_rejects_output_directory(tmp_path: Path) -> None:
+    source = tmp_path / "skills"
+    output = tmp_path / "catalog.json"
+    _write_skill(source)
+    output.mkdir()
+
+    result = _capture(source, "baseline", output)
+
+    assert result.returncode != 0
+    assert "ordinary single-link regular file" in result.stderr
+    assert output.is_dir()
+
+
+def test_legacy_digest_capture_rejects_output_fifo(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("named pipes unavailable")
+    source = tmp_path / "skills"
+    output = tmp_path / "catalog.json"
+    _write_skill(source)
+    try:
+        os.mkfifo(output)
+    except OSError as exc:
+        pytest.skip("named pipes unavailable: {}".format(exc))
+
+    result = _capture(source, "baseline", output)
+
+    assert result.returncode != 0
+    assert "ordinary single-link regular file" in result.stderr
+    assert output.exists()
+
+
+def test_legacy_digest_capture_rejects_multiply_linked_output(tmp_path: Path) -> None:
+    source = tmp_path / "skills"
+    output = tmp_path / "catalog.json"
+    linked = tmp_path / "catalog-linked.json"
+    _write_skill(source)
+    assert _capture(source, "baseline", output).returncode == 0
+    original = output.read_bytes()
+    try:
+        os.link(output, linked)
+    except OSError as exc:
+        pytest.skip("hard links unavailable: {}".format(exc))
+
+    result = _capture(source, "baseline", output)
+
+    assert result.returncode != 0
+    assert "ordinary single-link regular file" in result.stderr
+    assert output.read_bytes() == original
+    assert linked.read_bytes() == original
+
+
+def test_legacy_digest_capture_create_does_not_follow_racing_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "skills"
+    output = tmp_path / "catalog.json"
+    target = tmp_path / "target.json"
+    _write_skill(source)
+    target.write_bytes(b"untouched")
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+    probe.unlink()
+    real_open = capture_tool.os.open
+    raced = False
+
+    def race_output(path: object, flags: int, mode: int = 0o777) -> int:
+        nonlocal raced
+        if not raced and Path(path) == output:
+            output.symlink_to(target)
+            raced = True
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(capture_tool.os, "open", race_output)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(CAPTURE_TOOL),
+            "--source",
+            str(source),
+            "--label",
+            "baseline",
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        capture_tool.main()
+
+    assert raced
+    assert output.is_symlink()
+    assert target.read_bytes() == b"untouched"
+
+
+def test_legacy_digest_capture_removes_partial_new_output_on_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "skills"
+    output = tmp_path / "catalog.json"
+    _write_skill(source)
+    real_write = capture_tool.os.write
+    calls = 0
+
+    def fail_after_partial_write(descriptor: int, content: bytes) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, content[:1])
+        raise OSError("simulated output failure")
+
+    monkeypatch.setattr(capture_tool.os, "write", fail_after_partial_write)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(CAPTURE_TOOL),
+            "--source",
+            str(source),
+            "--label",
+            "baseline",
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        capture_tool.main()
+
+    assert calls == 2
+    assert not output.exists()
 
 
 def test_committed_legacy_catalog_covers_every_bundled_skill() -> None:
