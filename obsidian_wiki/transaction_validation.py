@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 import posixpath
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Optional
 from urllib.parse import SplitResult, urlsplit
@@ -23,7 +23,8 @@ _REQUIRED_FIELDS = (
     "created",
     "updated",
 )
-_SCALAR_FIELDS = ("title", "category", "created", "updated")
+_REQUIRED_SCALAR_FIELDS = ("title", "category", "created", "updated")
+_OPTIONAL_SCALAR_FIELDS = ("summary",)
 _LIST_FIELDS = ("tags", "sources")
 _SEMANTIC_CATEGORIES = frozenset(
     {"concepts", "entities", "skills", "references", "synthesis", "journal", "projects"}
@@ -152,14 +153,36 @@ def _graph_record(path: str) -> _GraphRecord:
     )
 
 
-def _validate_candidate_semantics(
-    page: ProspectivePage,
-    transaction_source_ids: tuple[str, ...],
+def _valid_source_id(source_id: str) -> bool:
+    if not source_id or "\\" in source_id or "\x00" in source_id:
+        return False
+    posix = PurePosixPath(source_id)
+    windows = PureWindowsPath(source_id)
+    return not (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or "." in posix.parts
+        or ".." in posix.parts
+        or posix.as_posix() != source_id
+    )
+
+
+def _source_below_root(source_id: str, source_roots: tuple[str, ...]) -> bool:
+    return any(source_id.startswith(root + "/") for root in source_roots)
+
+
+def _validate_page_metadata(
+    path: str,
+    text: str,
+    allowed_source_ids: Optional[tuple[str, ...]],
     issues: list[ValidationIssue],
+    *,
+    source_roots: Optional[tuple[str, ...]] = None,
 ) -> None:
-    path = _normalise_page_path(page.path)
+    path = _normalise_page_path(path)
     try:
-        frontmatter = parse_frontmatter(page.text)
+        frontmatter = parse_frontmatter(text)
     except FrontmatterError as exc:
         _issue(
             issues,
@@ -179,7 +202,7 @@ def _validate_candidate_semantics(
                 "required frontmatter field is missing: " + field,
             )
 
-    for field in _SCALAR_FIELDS:
+    for field in (*_REQUIRED_SCALAR_FIELDS, *_OPTIONAL_SCALAR_FIELDS):
         if field not in fields:
             continue
         if field in frontmatter.lists:
@@ -190,7 +213,10 @@ def _validate_candidate_semantics(
                 "frontmatter " + field + " must be a scalar",
             )
             continue
-        if not frontmatter.scalars.get(field, "").strip():
+        if (
+            field in _REQUIRED_SCALAR_FIELDS
+            and not frontmatter.scalars.get(field, "").strip()
+        ):
             _issue(
                 issues,
                 "frontmatter-" + field + "-empty",
@@ -259,15 +285,58 @@ def _validate_candidate_semantics(
                 path,
                 "frontmatter sources must not contain duplicates",
             )
-        allowed_sources = set(transaction_source_ids)
-        for source in sorted(set(sources) - allowed_sources):
-            _issue(
-                issues,
-                "frontmatter-sources-foreign",
-                path,
-                "frontmatter source is outside the transaction: " + source,
-                source,
-            )
+        for source in sorted(set(sources)):
+            if not _valid_source_id(source):
+                _issue(
+                    issues,
+                    "frontmatter-source-invalid",
+                    path,
+                    "frontmatter source must be a canonical repository-relative POSIX path: "
+                    + source,
+                    source,
+                )
+            elif source_roots is not None and not _source_below_root(
+                source, source_roots
+            ):
+                _issue(
+                    issues,
+                    "frontmatter-source-root",
+                    path,
+                    "frontmatter source is outside configured source roots: " + source,
+                    source,
+                )
+        if allowed_source_ids is not None:
+            allowed_sources = set(allowed_source_ids)
+            for source in sorted(set(sources) - allowed_sources):
+                _issue(
+                    issues,
+                    "frontmatter-sources-foreign",
+                    path,
+                    "frontmatter source is outside the transaction: " + source,
+                    source,
+                )
+
+
+def validate_page_metadata(
+    path: str,
+    text: str,
+    *,
+    allowed_source_ids: Optional[tuple[str, ...]] = None,
+    source_roots: Optional[tuple[str, ...]] = None,
+) -> tuple[ValidationIssue, ...]:
+    """Validate one portable page's metadata without validating graph links."""
+
+    issues: list[ValidationIssue] = []
+    _validate_page_metadata(
+        path,
+        text,
+        allowed_source_ids,
+        issues,
+        source_roots=source_roots,
+    )
+    return tuple(
+        sorted(issues, key=lambda issue: (issue.path, issue.code, issue.target or ""))
+    )
 
 
 def _markdown_target(target_path: str, source_path: str) -> str:
@@ -580,7 +649,12 @@ def validate_prospective_pages(
     issues: list[ValidationIssue] = []
     for page in pages:
         if page.candidate:
-            _validate_candidate_semantics(page, transaction_source_ids, issues)
+            _validate_page_metadata(
+                page.path,
+                page.text,
+                transaction_source_ids,
+                issues,
+            )
     _validate_graph(pages, issues)
     return tuple(sorted(issues, key=lambda issue: (issue.path, issue.code, issue.target or "")))
 
@@ -589,5 +663,6 @@ __all__ = [
     "ProspectivePage",
     "TransactionValidationReport",
     "ValidationIssue",
+    "validate_page_metadata",
     "validate_prospective_pages",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
 import secrets
@@ -13,7 +14,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import PortableConfig
+from .frontmatter import parse_frontmatter
 from .git_support import discover_git_root, git_branch_id
+from .operations import OperationError, validate_operation_text
+from .transaction_validation import validate_page_metadata
 
 
 class LocalStateError(RuntimeError):
@@ -409,6 +413,48 @@ def _hash_ordinary_file(path: Path, label: str, *, root: Path | None = None) -> 
     return _HASH_PREFIX + digest.hexdigest()
 
 
+def _read_ordinary_bytes(path: Path, label: str, *, root: Path) -> bytes:
+    descriptor, before = _open_ordinary_file(path, label, root=root)
+    try:
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_nlink,
+        ):
+            raise LocalStateError(f"{label} changed while it was being read: {path}")
+    except OSError as exc:
+        raise LocalStateError(f"{label} is unreadable: {path}") from exc
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks)
+
+
+def _read_ordinary_text_bytes(
+    path: Path, label: str, *, root: Path
+) -> tuple[bytes, str]:
+    content = _read_ordinary_bytes(path, label, root=root)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LocalStateError(f"{label} must be UTF-8: {path}") from exc
+    return content, text
+
+
 def _relative_if_below(path: Path, parent: Path) -> Path | None:
     try:
         return path.relative_to(parent)
@@ -427,66 +473,77 @@ def _authoritative_directory(relative: Path) -> bool:
 
 
 def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
+    """Yield authoritative paths in global repository-relative lexical order."""
+
     vault = config.vault
     local_relative = _relative_if_below(config.local_state, vault)
-    selected: list[Path] = []
-    for directory, dirnames, filenames in os.walk(vault, followlinks=False):
-        current = Path(directory)
+
+    def selected_file(relative: Path) -> bool:
+        is_knowledge_page = (
+            len(relative.parts) >= 2
+            and relative.parts[0] in _KNOWLEDGE_CATEGORIES
+            and relative.suffix == ".md"
+        )
+        is_manifest_marker = relative == Path(".manifest.json")
+        is_manifest_shard = (
+            relative.parts[:2] == (".manifest", "sources")
+            and relative.suffix == ".json"
+        )
+        return is_knowledge_page or is_manifest_marker or is_manifest_shard
+
+    def walk(current: Path, current_relative: Path) -> Iterator[Path]:
         _require_ordinary_directory(current, "vault content directory")
-        current_relative = current.relative_to(vault)
+        try:
+            with os.scandir(current) as scanned:
+                entries = list(scanned)
+        except OSError as exc:
+            raise LocalStateError(
+                f"vault content directory is unavailable: {current}"
+            ) from exc
 
-        kept_directories: list[str] = []
-        for name in sorted(dirnames):
-            child_relative = current_relative / name
-            if not _authoritative_directory(child_relative):
-                continue
-            if local_relative is not None and (
-                child_relative == local_relative
-                or local_relative in child_relative.parents
-            ):
-                continue
-            child = current / name
-            try:
-                metadata = child.lstat()
-            except OSError as exc:
-                raise LocalStateError(
-                    f"vault content directory is unavailable: {child}"
-                ) from exc
-            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                raise LocalStateError(
-                    f"vault content directory must be an ordinary directory: {child}"
-                )
-            if _is_reparse(metadata):
-                raise LocalStateError(
-                    f"vault content directory must not be a reparse point: {child}"
-                )
-            kept_directories.append(name)
-        dirnames[:] = kept_directories
-
-        for name in sorted(filenames):
-            relative = current_relative / name
-            if relative == Path(_HOT_NAME):
-                continue
-            if relative.parts[:1] == (".obsidian",):
-                continue
+        ordered: list[tuple[str, bool, Path, Path]] = []
+        for entry in entries:
+            relative = current_relative / entry.name
+            path = current / entry.name
             if local_relative is not None and (
                 relative == local_relative or local_relative in relative.parents
             ):
                 continue
-            is_knowledge_page = (
-                len(relative.parts) >= 2
-                and relative.parts[0] in _KNOWLEDGE_CATEGORIES
-                and relative.suffix == ".md"
-            )
-            is_manifest_marker = relative == Path(".manifest.json")
-            is_manifest_shard = (
-                relative.parts[:2] == (".manifest", "sources")
-                and relative.suffix == ".json"
-            )
-            if is_knowledge_page or is_manifest_marker or is_manifest_shard:
-                selected.append(current / name)
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+                is_directory = stat.S_ISDIR(metadata.st_mode)
+                is_directory_link = stat.S_ISLNK(metadata.st_mode) and entry.is_dir(
+                    follow_symlinks=True
+                )
+            except OSError as exc:
+                raise LocalStateError(
+                    f"vault content directory is unavailable: {path}"
+                ) from exc
+            if is_directory or is_directory_link:
+                if not _authoritative_directory(relative):
+                    continue
+                if (
+                    not is_directory
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or _is_reparse(metadata)
+                ):
+                    raise LocalStateError(
+                        "vault content directory must be an ordinary directory: "
+                        + str(path)
+                    )
+                ordered.append((relative.as_posix() + "/", True, path, relative))
+            elif selected_file(relative):
+                ordered.append((relative.as_posix(), False, path, relative))
 
-    yield from sorted(selected, key=lambda item: item.relative_to(vault).as_posix())
+        for _key, is_directory, path, relative in sorted(
+            ordered, key=lambda item: item[0]
+        ):
+            if is_directory:
+                yield from walk(path, relative)
+            else:
+                yield path
+
+    yield from walk(vault, Path())
 
 
 def _git_identity(config: PortableConfig) -> str | None:
@@ -497,22 +554,200 @@ def _git_identity(config: PortableConfig) -> str | None:
     return identity if identity != "no-git" else None
 
 
+def _file_hash(content: bytes) -> str:
+    return _HASH_PREFIX + hashlib.sha256(content).hexdigest()
+
+
+def _fingerprint_digest() -> Any:
+    digest = hashlib.sha256()
+    digest.update(b'{"files":[')
+    return digest
+
+
+def _add_fingerprint_file(
+    digest: Any, *, first: bool, relative: str, content_hash: str
+) -> bool:
+    if not first:
+        digest.update(b",")
+    digest.update(
+        json.dumps(
+            [relative, content_hash],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    return False
+
+
+def _finish_fingerprint(digest: Any, git_identity: str | None) -> str:
+    digest.update(b'],"git":')
+    digest.update(
+        json.dumps(
+            git_identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    digest.update(b"}")
+    return _HASH_PREFIX + digest.hexdigest()
+
+
+def _below_source_roots(source_id: str, source_roots: tuple[str, ...]) -> bool:
+    return any(source_id.startswith(root + "/") for root in source_roots)
+
+
 def authoritative_fingerprint(config: PortableConfig) -> str:
     """Hash branch identity and all authoritative portable-vault files."""
 
     _validate_vault(config)
-    files = [
-        [
-            _contained_relative(config.root, path, "authoritative file").as_posix(),
-            _hash_ordinary_file(path, "authoritative file", root=config.root),
-        ]
-        for path in _authoritative_files(config)
+    digest = _fingerprint_digest()
+    first = True
+    for path in _authoritative_files(config):
+        first = _add_fingerprint_file(
+            digest,
+            first=first,
+            relative=_contained_relative(
+                config.root, path, "authoritative file"
+            ).as_posix(),
+            content_hash=_hash_ordinary_file(
+                path, "authoritative file", root=config.root
+            ),
+        )
+    return _finish_fingerprint(digest, _git_identity(config))
+
+
+def _authoritative_snapshot(
+    config: PortableConfig,
+    *,
+    page_limit: int,
+    operation_limit: int,
+) -> tuple[str, list[dict[str, str]], list[dict[str, object]]]:
+    """Parse and fingerprint each authoritative file's exact bytes in one pass."""
+
+    digest = _fingerprint_digest()
+    first = True
+    summaries: list[tuple[str, str, dict[str, str]]] = []
+    records: list[tuple[str, str, dict[str, object]]] = []
+    source_roots = tuple(
+        _contained_relative(config.root, source, "configured source root").as_posix()
+        for source in config.sources
+    )
+    for path in _authoritative_files(config):
+        relative = path.relative_to(config.vault)
+        if relative.parts[:2] == ("journal", "operations"):
+            try:
+                content, text = _read_ordinary_text_bytes(
+                    path, "operation page", root=config.root
+                )
+                change = validate_operation_text(relative.as_posix(), text)
+            except OperationError as exc:
+                raise LocalStateError(
+                    f"invalid operation page: {relative.as_posix()}: {exc}"
+                ) from exc
+            outside_source = next(
+                (
+                    source_id
+                    for source_id in change.source_ids
+                    if not _below_source_roots(source_id, source_roots)
+                ),
+                None,
+            )
+            if outside_source is not None:
+                raise LocalStateError(
+                    f"invalid operation page: {relative.as_posix()}: "
+                    "operation Source ID is outside configured source roots: "
+                    + outside_source
+                )
+            record: dict[str, object] = {
+                "transaction_id": change.transaction_id,
+                "completed_at": change.completed_at,
+                "source_ids": list(change.source_ids),
+                "created": list(change.created),
+                "updated": list(change.updated),
+                "removed": list(change.removed),
+            }
+            item = (change.completed_at, relative.as_posix(), record)
+            if operation_limit != 0:
+                if len(records) < operation_limit:
+                    heapq.heappush(records, item)
+                elif item[:2] > records[0][:2]:
+                    heapq.heapreplace(records, item)
+        elif relative.suffix == ".md":
+            content, text = _read_ordinary_text_bytes(
+                path, "knowledge page", root=config.root
+            )
+            issues = validate_page_metadata(
+                relative.as_posix(), text, source_roots=source_roots
+            )
+            if issues:
+                details = "; ".join(
+                    f"{issue.code}: {issue.message}" for issue in issues
+                )
+                raise LocalStateError(
+                    f"invalid knowledge page metadata: {relative.as_posix()}: {details}"
+                )
+            parsed = parse_frontmatter(text)
+            summary = {
+                "path": relative.as_posix(),
+                "title": parsed.scalars["title"],
+                "summary": parsed.scalars.get("summary", ""),
+                "updated": parsed.scalars["updated"],
+            }
+            item = (summary["updated"], summary["path"], summary)
+            if page_limit != 0:
+                if len(summaries) < page_limit:
+                    heapq.heappush(summaries, item)
+                elif item[:2] > summaries[0][:2]:
+                    heapq.heapreplace(summaries, item)
+        else:
+            content = _read_ordinary_bytes(
+                path, "authoritative file", root=config.root
+            )
+        first = _add_fingerprint_file(
+            digest,
+            first=first,
+            relative=_contained_relative(
+                config.root, path, "authoritative file"
+            ).as_posix(),
+            content_hash=_file_hash(content),
+        )
+    fingerprint = _finish_fingerprint(digest, _git_identity(config))
+    pages = [
+        summary for _updated, _path, summary in sorted(summaries, reverse=True)
     ]
-    payload = {"files": files, "git": _git_identity(config)}
-    canonical = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    return _HASH_PREFIX + hashlib.sha256(canonical).hexdigest()
+    operations = [
+        record for _completed_at, _path, record in sorted(records, reverse=True)
+    ]
+    return fingerprint, pages, operations
+
+
+def hot_inputs(
+    config: PortableConfig,
+    *,
+    page_limit: int = 50,
+    operation_limit: int = 10,
+) -> dict[str, object]:
+    """Return deterministic source material for an Agent-written ``hot.md``."""
+
+    if page_limit < 0 or operation_limit < 0:
+        raise LocalStateError("hot input limits must be non-negative")
+    _validate_vault(config)
+    fingerprint, pages, operations = _authoritative_snapshot(
+        config,
+        page_limit=page_limit,
+        operation_limit=operation_limit,
+    )
+    verification = authoritative_fingerprint(config)
+    stable_verification = authoritative_fingerprint(config)
+    if fingerprint != verification or verification != stable_verification:
+        raise LocalStateError("authoritative state changed during hot input verification")
+    return {
+        "fingerprint": fingerprint,
+        "pages": pages,
+        "operations": operations,
+    }
 
 
 def _sidecar_payload(config: PortableConfig) -> dict[str, str] | None:

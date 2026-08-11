@@ -2284,6 +2284,18 @@ def cmd_hot_mark_current(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hot_inputs(args: argparse.Namespace) -> int:
+    from obsidian_wiki.local_state import hot_inputs
+
+    payload = hot_inputs(
+        _portable_command_config("hot inputs"),
+        page_limit=args.pages,
+        operation_limit=args.operations,
+    )
+    _json_print(payload, pretty=args.pretty)
+    return 0
+
+
 def cmd_ast_extract(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -3399,6 +3411,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_args(hot_mark)
     hot_mark.set_defaults(func=cmd_hot_mark_current)
+    hot_inputs_parser = hot_sub.add_parser(
+        "inputs", help="emit deterministic inputs for an Agent-written hot.md"
+    )
+    hot_inputs_parser.add_argument(
+        "--pages",
+        type=int,
+        default=50,
+        help="maximum page summaries to emit (default: 50)",
+    )
+    hot_inputs_parser.add_argument(
+        "--operations",
+        type=int,
+        default=10,
+        help="maximum operation records to emit (default: 10)",
+    )
+    _add_json_args(hot_inputs_parser)
+    hot_inputs_parser.set_defaults(func=cmd_hot_inputs, json=True)
 
     gq = sub.add_parser(
         "graph-query",

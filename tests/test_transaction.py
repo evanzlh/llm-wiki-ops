@@ -31,6 +31,7 @@ from obsidian_wiki.transaction_validation import (
     ProspectivePage,
     TransactionValidationReport,
     ValidationIssue,
+    validate_page_metadata,
     validate_prospective_pages,
 )
 
@@ -4185,6 +4186,87 @@ def test_candidate_semantics_accepts_dates_aware_timestamps_and_source_subset() 
     )
 
     assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == []
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    [
+        "../escape.md",
+        "/absolute.md",
+        r"sources\windows.md",
+        "C:/drive.md",
+        "./sources/dot.md",
+        "sources/./dot.md",
+    ],
+)
+def test_page_metadata_rejects_noncanonical_source_id_syntax(source_id: str) -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources=f"  - {source_id}",
+    )
+
+    assert "frontmatter-source-invalid" in {
+        issue.code for issue in validate_page_metadata(page.path, page.text)
+    }
+
+
+def test_page_metadata_rejects_empty_source_id_during_frontmatter_parsing() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources='  - ""',
+    )
+
+    issues = validate_page_metadata(page.path, page.text)
+
+    assert [issue.code for issue in issues] == ["frontmatter-invalid"]
+    assert "empty item" in issues[0].message
+
+
+def test_page_metadata_validates_configured_source_roots_lexically() -> None:
+    valid = _prospective_page(
+        "concepts/valid.md",
+        sources="  - sources/资料/组会.md",
+    )
+    invalid = _prospective_page(
+        "concepts/invalid.md",
+        sources="  - outside/资料/组会.md",
+    )
+
+    assert validate_page_metadata(
+        valid.path,
+        valid.text,
+        source_roots=("sources",),
+    ) == ()
+    assert [
+        issue.code
+        for issue in validate_page_metadata(
+            invalid.path,
+            invalid.text,
+            source_roots=("sources",),
+        )
+    ] == ["frontmatter-source-root"]
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    ["sources", "sources-other/资料.md"],
+)
+def test_page_metadata_requires_source_id_strictly_below_configured_root(
+    source_id: str,
+) -> None:
+    page = _prospective_page(
+        "concepts/invalid.md",
+        sources=f"  - {source_id}",
+    )
+
+    assert [
+        issue.code
+        for issue in validate_page_metadata(
+            page.path,
+            page.text,
+            source_roots=("sources",),
+        )
+    ] == ["frontmatter-source-root"]
 
 
 def test_project_category_accepts_overviews_and_nested_semantic_pages() -> None:
