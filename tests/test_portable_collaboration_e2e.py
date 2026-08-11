@@ -142,6 +142,33 @@ provenance:
 """
 
 
+_CJK_SOURCE_ID = "sources/meetings/2026-08-06-组会纪要.md"
+_CJK_PAGE = "references/2026-08-06-组会纪要.md"
+
+
+def cjk_candidate_page(started_at: str) -> str:
+    return f"""---
+title: 组会纪要
+category: references
+tags:
+  - collaboration
+sources:
+  - {_CJK_SOURCE_ID}
+created: {started_at}
+updated: {started_at}
+summary: 版本管理决策的组会纪要。
+relationships:
+  - target: "[[index]]"
+    type: related_to
+provenance:
+  extracted: 1.0
+  inferred: 0.0
+  ambiguous: 0.0
+---
+# 组会纪要
+"""
+
+
 def _operation_writer(config: PortableConfig, suffix: str):
     def writer(change):
         return write_operation(
@@ -345,3 +372,206 @@ def test_framework_nested_frontmatter_survives_transaction_and_clone(
         parsed = parse_frontmatter((root / "wiki" / page).read_text(encoding="utf-8"))
         assert parsed.provenance is not None
         assert parsed.relationships is not None
+
+
+def test_cjk_source_id_survives_cache_transaction_operation_and_check(
+    tmp_path: Path,
+) -> None:
+    root = _portable_seed(tmp_path / "知识库")
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "seed@example.invalid")
+    _git(root, "config", "user.name", "Seed")
+    _git(root, "config", "core.autocrlf", "true")
+    assert _git(root, "config", "--get", "core.autocrlf").stdout.strip() == "true"
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "portable seed")
+
+    source = root / _CJK_SOURCE_ID
+    source.parent.mkdir(parents=True)
+    source.write_text("# 组会纪要\n\n版本管理决策。\n", encoding="utf-8")
+
+    cache = _cli(
+        root,
+        "cache-check",
+        "--configured",
+        str(source),
+        "--json",
+    )
+    assert cache.returncode == 0, cache.stdout + cache.stderr
+    assert json.loads(cache.stdout) == {
+        "new": [_CJK_SOURCE_ID],
+        "modified": [],
+        "unchanged": [],
+        "missing": [],
+        "context_warnings": [],
+    }
+
+    begun = _cli(
+        root,
+        "transaction",
+        "begin",
+        "--source",
+        str(source),
+        "--json",
+    )
+    assert begun.returncode == 0, begun.stdout + begun.stderr
+    transaction = json.loads(begun.stdout)
+    assert transaction["started_at"]
+    assert transaction["source_ids"] == [_CJK_SOURCE_ID]
+    candidate_vault = Path(transaction["candidate_vault"])
+    assert candidate_vault.is_absolute()
+    assert candidate_vault.is_dir()
+
+    candidate_text = cjk_candidate_page(transaction["started_at"])
+    candidate_metadata = parse_frontmatter(candidate_text)
+    assert candidate_metadata.scalars["created"] == transaction["started_at"]
+    assert candidate_metadata.scalars["updated"] == transaction["started_at"]
+    assert candidate_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
+    assert str(root.resolve()) not in candidate_text
+    assert str(source.resolve()) not in candidate_text
+    assert str(candidate_vault) not in candidate_text
+
+    candidate = candidate_vault / _CJK_PAGE
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(candidate_text, encoding="utf-8")
+
+    validated = _cli(
+        root,
+        "transaction",
+        "validate",
+        transaction["transaction_id"],
+        "--json",
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    assert json.loads(validated.stdout) == {
+        "transaction_id": transaction["transaction_id"],
+        "status": "pass",
+        "candidate_pages": [_CJK_PAGE],
+        "deletions": [],
+        "issues": [],
+        "warnings": [],
+    }
+
+    committed = _cli(
+        root,
+        "transaction",
+        "commit",
+        transaction["transaction_id"],
+        "--json",
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    commit_payload = json.loads(committed.stdout)
+    assert commit_payload["created"] == [_CJK_PAGE]
+    assert commit_payload["updated"] == []
+    assert commit_payload["removed"] == []
+
+    cache_after_commit = _cli(
+        root,
+        "cache-check",
+        "--configured",
+        _CJK_SOURCE_ID,
+        "--json",
+    )
+    assert cache_after_commit.returncode == 0, (
+        cache_after_commit.stdout + cache_after_commit.stderr
+    )
+    assert json.loads(cache_after_commit.stdout) == {
+        "new": [],
+        "modified": [],
+        "unchanged": [_CJK_SOURCE_ID],
+        "missing": [],
+        "context_warnings": [],
+    }
+
+    checked = _cli(root, "check", "--json")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert json.loads(checked.stdout) == {
+        "status": "pass",
+        "errors": 0,
+        "warnings": 0,
+        "issues": [],
+    }
+
+    shard = (
+        root
+        / "wiki"
+        / ".manifest"
+        / "sources"
+        / "meetings"
+        / "2026-08-06-组会纪要.md.json"
+    )
+    shard_payload = json.loads(shard.read_text(encoding="utf-8"))
+    assert shard_payload["source_id"] == _CJK_SOURCE_ID
+    assert shard_payload["pages"] == [_CJK_PAGE]
+
+    promoted = root / "wiki" / _CJK_PAGE
+    promoted_text = promoted.read_text(encoding="utf-8")
+    assert promoted_text == candidate_text
+    promoted_metadata = parse_frontmatter(promoted_text)
+    assert promoted_metadata.scalars["created"] == transaction["started_at"]
+    assert promoted_metadata.scalars["updated"] == transaction["started_at"]
+    assert promoted_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
+    operation = root / "wiki" / commit_payload["operation_path"]
+    operation_text = operation.read_text(encoding="utf-8")
+    operation_metadata = parse_frontmatter(operation_text)
+    assert operation_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
+    assert f"[[{Path(_CJK_PAGE).with_suffix('').as_posix()}]]" in operation_text
+    assert str(root.resolve()) not in operation_text
+
+    durable_paths = {
+        _CJK_SOURCE_ID,
+        f"wiki/{_CJK_PAGE}",
+        "wiki/.manifest/sources/meetings/2026-08-06-组会纪要.md.json",
+        f"wiki/{commit_payload['operation_path']}",
+    }
+    untracked = set(
+        _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+        .stdout.rstrip("\0")
+        .split("\0")
+    )
+    assert untracked == durable_paths
+    assert not any(path.startswith(".obsidian-wiki/local/") for path in untracked)
+    assert _git(root, "diff", "--quiet", check=False).returncode == 0
+    assert _git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
+    local_transaction = (
+        f".obsidian-wiki/local/transactions/{transaction['transaction_id']}"
+    )
+    ignored = _git(root, "check-ignore", "-q", local_transaction, check=False)
+    assert ignored.returncode == 0
+
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "ingest CJK meeting")
+
+    head_paths = set(
+        _git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD")
+        .stdout.rstrip("\0")
+        .split("\0")
+    )
+    assert durable_paths <= head_paths
+    assert not any(path.startswith(".obsidian-wiki/local/") for path in head_paths)
+    assert _git(root, "status", "--porcelain=v1", "-z").stdout == ""
+
+    durable_files = {
+        _CJK_SOURCE_ID: source,
+        f"wiki/{_CJK_PAGE}": promoted,
+        "wiki/.manifest/sources/meetings/2026-08-06-组会纪要.md.json": shard,
+        f"wiki/{commit_payload['operation_path']}": operation,
+    }
+    for relative, path in durable_files.items():
+        assert _git_bytes(root, "show", f"HEAD:{relative}").stdout == path.read_bytes()
+
+    clone = tmp_path / "知识库克隆"
+    _clone(root, clone)
+    clone_paths = set(
+        _git(clone, "ls-tree", "-r", "--name-only", "-z", "HEAD")
+        .stdout.rstrip("\0")
+        .split("\0")
+    )
+    assert durable_paths <= clone_paths
+    assert not any(path.startswith(".obsidian-wiki/local/") for path in clone_paths)
+    for relative, path in durable_files.items():
+        expected = path.read_bytes()
+        clone_path = clone / relative
+        assert clone_path.is_file()
+        assert clone_path.read_bytes() == expected
+        assert _git_bytes(clone, "show", f"HEAD:{relative}").stdout == expected
