@@ -76,15 +76,26 @@ If contradictions are minor or the topic feels well-covered after Round 2, skip 
 
 **Halt condition:** Stop when depth is achieved or 3 rounds are complete — do not loop indefinitely.
 
+## Shared in-memory filing plan
+
+Prepare one coherent plan for both completion branches. No source, candidate, or live-vault file is written in this phase.
+
+- **reference candidates:** one per accepted major source, with `category: references`, URL/origin, summary, limitations, claim citations, `provenance`, a source-quality-derived `base_confidence`, and `lifecycle: draft`.
+- **concept candidates:** one per substantive concept, with semantic frontmatter, cross-source claims, links to at least two supporting references when available, `provenance`, calibrated `base_confidence`, and `lifecycle: draft`.
+- **entity candidates:** one per significant tool, organization, or person, linked to the concepts and references that establish it, with the same provenance/confidence/lifecycle fields.
+- **master synthesis candidate:** `synthesis/Research: <Topic>.md`, with the sections `Overview`, `Key Findings`, `Core Concepts`, `Entities & Tools`, `Contradictions & Open Questions`, and `Sources Consulted`. Its frontmatter uses `category: synthesis`, research/domain tags, all accepted source IDs, a summary, `provenance`, multi-source `base_confidence`, and `lifecycle: draft`.
+
+Apply the configured link format, merge with existing semantic owners instead of duplicating them, and plan reciprocal links among all four output classes. Keep timestamps unresolved until the selected completion branch supplies transaction `started_at` or the Personal runtime timestamp.
+
 ## Portable Repository completion
 
 Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The network queries are read-only with respect to the vault; only the reviewed source-snapshot and transaction phases below may write.
 
 1. The parent agent materializes each accepted web source as a small, reviewable UTF-8 Markdown source snapshot below a configured `sources` root. Record URL, retrieval time, content hash, excerpts, and page-level citations. Review the snapshot against the research results, preserve valid Unicode filenames and Source IDs, and never persist an absolute runtime path. If adequate evidence cannot be materialized and reviewed, stop before a transaction.
 2. Compute complete authoritative source closure from all accepted snapshots plus the existing Source IDs of pages to replace/delete; use repository-relative IDs, never compiled vault pages. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`, retain its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
-3. Distill the prepared findings into candidate knowledge pages only below `candidate_vault`. Each candidate `sources` cites only accepted snapshot Source IDs as a non-empty subset of the transaction closure. Declare approved removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+3. Materialize the shared in-memory filing plan as candidate knowledge pages only below `candidate_vault`. Each candidate `sources` cites only accepted snapshot Source IDs as a non-empty subset of the transaction closure. Declare approved removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
 4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
-5. On failure, use status-aware recovery: inspect `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; use list/show plus retry, restore, abort, or discard only when allowed. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+5. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then perform an allowed retry, restore, abort, or discard. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
 6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
 
 Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
@@ -93,7 +104,7 @@ Stop the portable workflow here. Do not continue into Personal mode completion.
 
 ## Personal mode completion
 
-Use this branch only when config resolution selected Personal mode. Continue with direct filing and the manifest v1, central-file, QMD, and Personal Git behavior below. Do not fall through into Portable Repository completion.
+Use this branch only when config resolution selected Personal mode. Materialize the shared in-memory filing plan directly in the live vault, then continue with manifest v1, central-file, QMD, and Personal Git behavior below. Do not fall through into Portable Repository completion.
 
 ## Filing — Write Wiki Pages
 

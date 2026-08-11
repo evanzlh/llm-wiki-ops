@@ -590,6 +590,41 @@ def test_daily_update_portable_is_read_only_until_a_page_repair_is_selected() ->
     )
 
 
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".skills/daily-update/SKILL.md",
+        ".skills/wiki-capture/SKILL.md",
+        ".skills/wiki-import/SKILL.md",
+        ".skills/wiki-research/SKILL.md",
+    ),
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_special_transaction_recovery_uses_only_real_cli_surfaces(relative: str) -> None:
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    assert "list/show" not in portable
+    assert "transaction show" not in portable
+    for required in (
+        "failure response envelope's `recovery.preferred_action`",
+        "obsidian-wiki transaction list --json --pretty",
+        "cross-check",
+        "`recommended_action`",
+        "`allowed_actions`",
+        "only then",
+    ):
+        assert required in portable, f"{relative}: missing recovery rule {required!r}"
+    assert portable.index("failure response envelope's `recovery.preferred_action`") < (
+        portable.index("obsidian-wiki transaction list --json --pretty")
+    ) < portable.index("cross-check") < portable.index("only then")
+
+
 def test_capture_portable_materializes_source_before_transaction_and_never_writes_raw() -> None:
     relative = ".skills/wiki-capture/SKILL.md"
     text = _text(relative)
@@ -626,6 +661,50 @@ def test_capture_portable_materializes_source_before_transaction_and_never_write
     assert "Ensure `$OBSIDIAN_RAW_DIR` exists" not in portable
     for forbidden in ("guidance below", "steps below"):
         assert forbidden not in portable
+
+
+def test_capture_shared_submode_skip_and_correction_are_portable_reachable() -> None:
+    relative = ".skills/wiki-capture/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+
+    assert shared_flat.index("Select capture submode") < shared_flat.index("KEEP or SKIP")
+    for required in (
+        "Correction Mode (`--correction`)",
+        "Record exactly one atomic claim pair",
+        "source_text_sha256",
+        "source_pre_sha256",
+        "source_post_sha256",
+        "Never include raw transcript excerpts",
+        "consumer propagation",
+    ):
+        assert required in shared_flat
+
+    skip = portable_flat.index("For SKIP, report and stop")
+    for later in (
+        "small, reviewable UTF-8 Markdown or plain-text snapshot",
+        "Compute complete authoritative source closure",
+        "obsidian-wiki transaction begin",
+        "obsidian-wiki hot status --json",
+    ):
+        assert skip < portable_flat.index(later)
+    for required in (
+        "do not create a source snapshot, transaction, operation journal, or hot refresh",
+        "Portable correction",
+        "existing authoritative Source IDs",
+        "does not create an ordinary conversation snapshot",
+        "authority is insufficient",
+        "fail closed before `transaction begin`",
+    ):
+        assert required in portable_flat
 
 
 def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
@@ -683,6 +762,36 @@ def test_import_portable_materializes_external_bundle_records_before_begin() -> 
     assert "conflict-resolution decision selected during shared read-only preparation" in portable
 
 
+def test_import_candidate_plan_is_shared_read_only_and_reachable_by_both_modes() -> None:
+    relative = ".skills/wiki-import/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    flat = " ".join(shared.split())
+    for required in (
+        "Shared read-only source-specific candidate plan",
+        "adjacency map",
+        "typed edge map",
+        "graph.json",
+        "stub candidates",
+        "OKF",
+        "full-body candidates",
+        "merge",
+        "skip",
+        "overwrite",
+        "No candidate or live-vault file is written",
+    ):
+        assert required in flat
+    assert "shared source-specific candidate plan" in portable
+    assert "shared source-specific candidate plan" in personal
+
+
 def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> None:
     relative = ".skills/wiki-research/SKILL.md"
     portable = " ".join(
@@ -723,6 +832,38 @@ def test_research_portable_checks_hot_before_any_hot_read() -> None:
 
     personal_gate = shared.split("**Personal mode hot context:**", 1)[1]
     assert "Read `<resolved-vault-path>/hot.md` directly" in personal_gate
+
+
+def test_research_filing_plan_is_shared_and_reachable_by_both_modes() -> None:
+    relative = ".skills/wiki-research/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    flat = " ".join(shared.split())
+    for required in (
+        "Shared in-memory filing plan",
+        "reference candidates",
+        "concept candidates",
+        "entity candidates",
+        "master synthesis candidate",
+        "provenance",
+        "base_confidence",
+        "lifecycle: draft",
+        "Overview",
+        "Key Findings",
+        "Contradictions & Open Questions",
+        "Sources Consulted",
+        "No source, candidate, or live-vault file is written",
+    ):
+        assert required in flat
+    assert "shared in-memory filing plan" in portable
+    assert "shared in-memory filing plan" in personal
 
 
 def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:

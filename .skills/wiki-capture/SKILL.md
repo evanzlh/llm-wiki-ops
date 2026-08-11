@@ -28,20 +28,57 @@ This skill has three modes:
 
 Perform this in memory before selecting either completion branch:
 
-1. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An automatic Stop-hook capture should err toward SKIP; an explicit user capture should err toward KEEP.
-2. **Classify the kept content.** Choose the semantic category and matching final path: concept, entity, skill, reference, synthesis, journal, or project knowledge. Cluster related findings by topic and infer project context only from evidence in the conversation.
-3. **Rewrite it as declarative knowledge.** Preserve the substance, evidence, reasoning, implications, and relationships without presenting it as a chat transcript. Prepare required frontmatter and links in memory; make no source or vault write here.
+1. **Select capture submode.** Choose Full, Quick, or Correction (`--correction`) from the request before applying any later rule.
+2. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An automatic Stop-hook capture should err toward SKIP; an explicit user capture should err toward KEEP.
+3. **Classify the kept content.** Choose the semantic category and matching final path: concept, entity, skill, reference, synthesis, journal, or project knowledge. Cluster related findings by topic and infer project context only from evidence in the conversation.
+4. **Rewrite it as declarative knowledge.** Preserve the substance, evidence, reasoning, implications, and relationships without presenting it as a chat transcript. Prepare required frontmatter and links in memory; make no source or vault write here.
+
+## Correction Mode (`--correction`) shared contract
+
+For Correction submode, leave the immutable source untouched and Record exactly one atomic claim pair. `speaker_type` is semantic and independent of a serialized message `role`. Never include raw transcript excerpts.
+
+```yaml
+correction_id: <stable-id>
+source_locator: <immutable file:line or channel/thread/timestamp>
+source_text_sha256: <64 lowercase hex chars>
+serialized_role: <source role, if present>
+speaker_type: user | assistant | teammate | tool_result | slack_member
+original_claim:
+  subject: <exact entity or capability>
+  assertion: <single atomic value>
+corrected_claim:
+  subject: <same exact entity or capability>
+  assertion: <single atomic value or null>
+authority_class: contract | decision | code | test | deploy | runtime | db | narrative
+verification_state: verified | inferred | unverified | contradicted
+asserted_at: <ISO-8601 timestamp>
+effective_at: <ISO-8601 timestamp or null>
+as_of: <ISO-8601 timestamp>
+supersedes: [<original-claim-id>]
+consumer_propagation:
+  kw: open | not_applicable | complete
+  ob: open | not_applicable | complete
+  requirements: open | not_applicable | complete
+  code: open | not_applicable | complete
+  tests: open | not_applicable | complete
+  ai_memory: open | not_applicable | complete
+corrected_at: <ISO-8601 timestamp>
+```
+
+Before any derived write, compute `source_pre_sha256` directly from the authoritative source and require equality with `source_text_sha256`. After all derived consumers are prepared, recompute `source_post_sha256`; require `source_pre_sha256 == source_post_sha256 == source_text_sha256`. Track consumer propagation independently and mark a consumer complete only after verification. Keep secrets, source copies, and raw excerpts out of the correction record.
 
 ## Portable Repository completion
 
 Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD and never write live `_raw/`.
 
-1. Use the completed shared read-only capture decision. For KEEP, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
-2. Compute complete authoritative source closure from accepted snapshots and the existing Source IDs of every updated/deleted page. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`. Keep the absolute `candidate_vault` only in memory. New candidates use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
-3. Write the finished candidate only below `candidate_vault`; its candidate `sources` cites only accepted snapshot Source IDs (a non-empty subset of the transaction closure). Declare removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
-4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
-5. On failure, use status-aware recovery: inspect `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; use list/show plus retry, restore, abort, or discard only when allowed. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
-6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+1. Use the selected submode and completed shared read-only capture decision. For SKIP, report and stop; do not create a source snapshot, transaction, operation journal, or hot refresh.
+2. For kept Full/Quick content, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
+3. **Portable correction:** apply the shared atomic correction contract to the immutable source. Use its existing authoritative Source IDs and the source IDs already cited by affected live pages; this path does not create an ordinary conversation snapshot. If authority is insufficient or the source hash/locator cannot be verified, fail closed before `transaction begin`.
+4. Compute complete authoritative source closure from the source IDs selected by the active submode and the existing Source IDs of every updated/deleted page. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`. Keep the absolute `candidate_vault` only in memory. New candidates use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+5. Write the finished candidate only below `candidate_vault`. For Full/Quick, the candidate `sources` cites only accepted snapshot Source IDs; for Correction, it cites only verified existing authoritative Source IDs. All IDs are from the transaction closure. Correction candidates update every affected derived consumer independently and preserve the immutable source. Declare removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+6. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+7. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then perform an allowed retry, restore, abort, or discard. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+8. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
 
 Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
 
@@ -49,7 +86,7 @@ Stop the portable workflow here. Do not continue into Personal mode completion.
 
 ## Personal mode completion
 
-Use this branch only when config resolution selected Personal mode. The Quick, Correction, and Full workflows below retain direct `_raw/`, manifest v1, central-file, QMD, and Personal Git snapshot behavior. Config resolution provides concrete runtime values; it does not export them into the parent shell. Do not fall through into Portable Repository completion.
+Use this branch only when config resolution selected Personal mode. Apply the shared submode decision. Quick and Full retain direct `_raw/`, manifest v1, central-file, QMD, and Personal Git snapshot behavior. Personal Correction applies the shared atomic correction/hash/consumer-propagation contract, writes the derived correction directly, then updates manifest v1 and `log.md`; it never edits or copies the immutable source. Config resolution provides concrete runtime values; it does not export them into the parent shell. Do not fall through into Portable Repository completion.
 
 ## Quick Mode (`--quick`)
 
