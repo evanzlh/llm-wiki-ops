@@ -45,20 +45,52 @@ You can maintain multiple vaults (each a `~/.obsidian-wiki/config.<name>` file m
 
 **After reading config, always read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists.** It contains owner-specific conventions (domain vocabulary, ingest preferences, writing style, project scoping) that override framework defaults for all skills. Apply it for the duration of the session.
 
+## Portable Write Protocol
+
+When configuration resolves Portable Repository mode, every write skill must
+select its Portable Repository completion branch before any vault mutation and
+must not continue into Personal mode completion:
+
+- Before begin, compute source closure: include every existing Source ID from
+  pages to update or delete plus every new authoritative source. The
+  transaction source set is immutable, and page `sources` must be a non-empty
+  subset of it.
+- Keep the repository root as command CWD. Use the returned absolute
+  `candidate_vault` only in runtime memory, do not `cd` into it, and never
+  persist it in repository content or configuration.
+- Use transaction `started_at` for page timestamps: set both timestamps on a
+  new page, and preserve `created` while updating `updated` on an existing page.
+- Declare removals through the transaction. Validate every candidate, fix all
+  issues, review warnings, and commit only a passing report. On failure, follow
+  only the trusted preferred/recommended action and `allowed_actions` for the
+  retained status; a no-ID failure has no recovery action.
+- The transaction owns manifest shards and operation records; portable writes
+  do not update stable `index.md`/`log.md`, Personal QMD tracking, or Git state.
+- Use `cache-check --configured` instead of assuming a shell-exported vault.
+- Preserve Unicode Source IDs and filenames exactly; do not transliterate or
+  normalize them.
+- Treat `hot.md` as ignored local derived state. Only after commit succeeds or
+  recovery is resolved, check status, gather bounded inputs when stale, let the
+  agent rewrite it, and then mark it current.
+
 ## Vault Structure
+
+Knowledge category directories are shared across modes. Root tracking and
+control paths have mode-specific ownership as noted below; Portable skills
+write only transaction candidates at supported knowledge-page paths.
 
 ```
 $OBSIDIAN_VAULT_PATH/
-├── index.md                # Master index — every page listed, always kept current
-├── log.md                  # Chronological activity log (ingests, updates, lints)
-├── hot.md                  # Session hot cache — ~500-word semantic snapshot of recent activity
-├── .manifest.json          # Tracks every ingested source: path, timestamps, pages produced
-├── _meta/
+├── index.md                # Personal catalog; stable Portable query surface
+├── log.md                  # Personal activity log; stable Portable query surface
+├── hot.md                  # Personal maintained cache; Portable ignored local cache
+├── .manifest.json          # Personal v1; Portable v2 marker with transaction-owned shards
+├── _meta/                   # Personal-managed metadata; not Portable candidates
 │   ├── taxonomy.md         # Controlled tag vocabulary
-│   └── *.base              # Obsidian Bases dashboard definitions (wiki-dashboard skill)
-├── _insights.md            # Graph analysis output (hubs, bridges, dead ends)
-├── _raw/                   # Staging area — drop rough notes here, next ingest promotes them
-├── _readouts/              # Derived narrative readouts saved by wiki-narrate — not knowledge pages
+│   └── *.base              # Obsidian Bases dashboards
+├── _insights.md            # Personal graph output; Portable uses a synthesis page
+├── _raw/                   # Personal staging inbox; not a Portable candidate path
+├── _readouts/              # Personal derived readouts; not knowledge pages
 ├── concepts/               # Abstract ideas, patterns, mental models
 ├── entities/               # Concrete things — people, tools, libraries, companies
 ├── skills/                 # How-to knowledge, techniques, procedures
@@ -135,13 +167,21 @@ The main use case: you're working in some other project and want to sync knowled
 
 ### wiki-update (write to wiki)
 
-1. Resolve config using the Config Resolution Protocol to get `OBSIDIAN_VAULT_PATH`
-2. Scan the current project: README, source structure, git log, package metadata
-3. Distill what's worth remembering (architecture decisions, patterns, trade-offs — not code listings)
-4. Write to `$VAULT/projects/<project-name>.md`, cross-linking to concept/entity pages as needed
-5. Update `.manifest.json`, `index.md`, and `log.md`
+1. Resolve config using the Config Resolution Protocol to get `OBSIDIAN_VAULT_PATH`.
+2. Scan the current project: README, source structure, git log, and package metadata.
+3. Distill what's worth remembering (architecture decisions, patterns, and trade-offs — not code listings).
+4. Complete the write by mode. Portable Repository mode computes source
+   closure and writes final vault-relative candidates through one transaction;
+   Personal mode writes directly to `$VAULT/projects/<project-name>.md` and
+   cross-links concept/entity pages as needed.
+5. Track the result by mode. Portable transaction commit owns manifest v2
+   shards and the immutable operation record; `index.md` and `log.md` stay
+   stable, and the optional local hot flow runs only after commit. Personal
+   mode updates manifest v1, `index.md`, `log.md`, and `hot.md` directly.
 
-On repeat runs, it checks `last_commit_synced` in `.manifest.json` and only processes the delta via `git log <last_commit>..HEAD`.
+On repeat Personal-mode runs, `last_commit_synced` in manifest v1 limits the
+delta via `git log <last_commit>..HEAD`. Portable mode follows `wiki-update`'s
+Source ID and transaction delta rules instead.
 
 ### wiki-query (read from wiki)
 
@@ -176,12 +216,21 @@ See `wiki-query` and `wiki-export` skills for how the filter is applied.
 
 ## Core Principles
 
-- **Compile, don't retrieve.** The wiki is pre-compiled knowledge. Update existing pages — don't append or duplicate.
-- **Track everything.** Update `.manifest.json` after ingesting, `index.md`, `log.md`, and `hot.md` after any write operation.
+- **Compile, don't retrieve.** The wiki is pre-compiled knowledge. Merge new
+  knowledge into existing pages rather than appending duplicates; the resolved
+  mode determines whether that page is a transaction candidate or a direct
+  Personal write.
+- **Track everything by mode.** Personal writes update manifest v1,
+  `index.md`, `log.md`, and `hot.md`. Portable commit owns manifest v2 shards
+  and the immutable operation record; agents do not live-edit those tracking
+  files or stable `index.md`/`log.md`.
 - **Connect with `[[wikilinks]]`.** Every page should link to related pages. This is what makes it a knowledge graph, not a folder of files.
 - **Frontmatter is required.** Every wiki page needs: `title`, `category`, `tags`, `sources`, `created`, `updated`.
 - **Single source of truth.** Visibility tags shape how content is surfaced — they don't duplicate or separate it.
-- **Keep context warm.** `hot.md` is a ~500-word semantic snapshot of recent activity. Every write skill updates it so the next session can pick up where the last one left off without crawling the full vault.
+- **Keep context warm.** Personal writes maintain the ~500-word `hot.md`
+  semantic snapshot. Portable mode treats it as ignored local derived state and
+  uses status → bounded inputs → agent write → mark-current only after
+  commit succeeds or recovery is resolved.
 
 ## Architecture Reference
 
