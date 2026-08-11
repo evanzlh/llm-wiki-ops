@@ -346,6 +346,245 @@ def test_legacy_digest_capture_removes_partial_new_output_on_write_failure(
     assert not output.exists()
 
 
+def test_legacy_digest_capture_closes_and_removes_output_on_initial_fstat_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    real_open = capture_tool.os.open
+    real_fstat = capture_tool.os.fstat
+    output_descriptor = None
+
+    def remember_output(path: object, flags: int, mode: int = 0o777) -> int:
+        nonlocal output_descriptor
+        descriptor = real_open(path, flags, mode)
+        if Path(path) == output:
+            output_descriptor = descriptor
+        return descriptor
+
+    def fail_output_fstat(descriptor: int) -> os.stat_result:
+        if descriptor == output_descriptor:
+            raise OSError("simulated fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(capture_tool.os, "open", remember_output)
+    monkeypatch.setattr(capture_tool.os, "fstat", fail_output_fstat)
+
+    with pytest.raises(ValueError, match="fstat|inspect|output"):
+        capture_tool._write_new_output(output, b"content")
+
+    assert output_descriptor is not None
+    with pytest.raises(OSError):
+        real_fstat(output_descriptor)
+    assert not output.exists()
+
+
+def test_legacy_digest_capture_fstat_failure_does_not_remove_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    target = tmp_path / "target.json"
+    target.write_bytes(b"wrong")
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+    probe.unlink()
+    real_open = capture_tool.os.open
+    real_fstat = capture_tool.os.fstat
+    output_descriptor = None
+
+    def remember_output(path: object, flags: int, mode: int = 0o777) -> int:
+        nonlocal output_descriptor
+        descriptor = real_open(path, flags, mode)
+        if Path(path) == output:
+            output_descriptor = descriptor
+        return descriptor
+
+    def replace_then_fail(descriptor: int) -> os.stat_result:
+        if descriptor == output_descriptor:
+            output.unlink()
+            output.symlink_to(target)
+            raise OSError("simulated fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(capture_tool.os, "open", remember_output)
+    monkeypatch.setattr(capture_tool.os, "fstat", replace_then_fail)
+
+    with pytest.raises(ValueError, match="fstat|inspect|output"):
+        capture_tool._write_new_output(output, b"content")
+
+    assert output.is_symlink()
+    assert target.read_bytes() == b"wrong"
+
+
+def test_legacy_digest_capture_rejects_read_path_replaced_by_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    target = tmp_path / "target.json"
+    output.write_bytes(b"expected")
+    target.write_bytes(b"wrong")
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+    probe.unlink()
+    real_read = capture_tool.os.read
+    replaced = False
+
+    def replace_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        content = real_read(descriptor, size)
+        if content and not replaced:
+            output.unlink()
+            output.symlink_to(target)
+            replaced = True
+        return content
+
+    monkeypatch.setattr(capture_tool.os, "read", replace_after_read)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._read_existing_output(output)
+
+    assert replaced
+    assert output.is_symlink()
+    assert target.read_bytes() == b"wrong"
+
+
+def test_legacy_digest_capture_rejects_write_path_replaced_by_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    target = tmp_path / "target.json"
+    target.write_bytes(b"wrong")
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+    probe.unlink()
+    real_write = capture_tool.os.write
+    replaced = False
+
+    def replace_after_write(descriptor: int, content: bytes) -> int:
+        nonlocal replaced
+        written = real_write(descriptor, content)
+        if not replaced:
+            output.unlink()
+            output.symlink_to(target)
+            replaced = True
+        return written
+
+    monkeypatch.setattr(capture_tool.os, "write", replace_after_write)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._write_new_output(output, b"expected")
+
+    assert replaced
+    assert output.is_symlink()
+    assert target.read_bytes() == b"wrong"
+
+
+def test_legacy_digest_capture_rejects_read_hardlink_added_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    linked = tmp_path / "linked.json"
+    output.write_bytes(b"expected")
+    real_read = capture_tool.os.read
+    linked_after_open = False
+
+    def link_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal linked_after_open
+        content = real_read(descriptor, size)
+        if content and not linked_after_open:
+            try:
+                os.link(output, linked)
+            except OSError as exc:
+                pytest.skip("hard links unavailable: {}".format(exc))
+            linked_after_open = True
+        return content
+
+    monkeypatch.setattr(capture_tool.os, "read", link_after_read)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._read_existing_output(output)
+
+    assert linked_after_open
+    assert output.read_bytes() == b"expected"
+    assert linked.read_bytes() == b"expected"
+
+
+def test_legacy_digest_capture_rejects_write_hardlink_added_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    linked = tmp_path / "linked.json"
+    real_write = capture_tool.os.write
+    linked_after_open = False
+
+    def link_after_write(descriptor: int, content: bytes) -> int:
+        nonlocal linked_after_open
+        written = real_write(descriptor, content)
+        if not linked_after_open:
+            try:
+                os.link(output, linked)
+            except OSError as exc:
+                pytest.skip("hard links unavailable: {}".format(exc))
+            linked_after_open = True
+        return written
+
+    monkeypatch.setattr(capture_tool.os, "write", link_after_write)
+
+    with pytest.raises(ValueError, match="changed|ordinary"):
+        capture_tool._write_new_output(output, b"expected")
+
+    assert linked_after_open
+    assert not output.exists()
+    assert linked.read_bytes() == b"expected"
+
+
+def test_legacy_digest_capture_converts_read_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    output.write_bytes(b"expected")
+    real_close = capture_tool.os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("simulated close failure")
+
+    monkeypatch.setattr(capture_tool.os, "close", close_then_fail)
+
+    with pytest.raises(ValueError, match="close failure"):
+        capture_tool._read_existing_output(output)
+
+
+def test_legacy_digest_capture_preserves_read_error_over_close_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "catalog.json"
+    output.write_bytes(b"expected")
+    real_close = capture_tool.os.close
+
+    def fail_read(descriptor: int, size: int) -> bytes:
+        raise OSError("simulated primary read failure")
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("simulated secondary close failure")
+
+    monkeypatch.setattr(capture_tool.os, "read", fail_read)
+    monkeypatch.setattr(capture_tool.os, "close", close_then_fail)
+
+    with pytest.raises(ValueError, match="primary read failure") as error:
+        capture_tool._read_existing_output(output)
+    assert "secondary close failure" not in str(error.value)
+
+
 def test_committed_legacy_catalog_covers_every_bundled_skill() -> None:
     payload = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1

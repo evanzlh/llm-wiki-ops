@@ -29,6 +29,8 @@ def _read_existing_output(path: Path) -> Optional[bytes]:
         observed = path.lstat()
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise ValueError("could not inspect existing output: {}".format(exc)) from exc
     if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
         raise ValueError("output must be an ordinary single-link regular file")
 
@@ -40,6 +42,9 @@ def _read_existing_output(path: Path) -> Optional[bytes]:
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise ValueError("could not safely open existing output: {}".format(exc)) from exc
+
+    content: Optional[bytes] = None
+    failure: Optional[BaseException] = None
     try:
         opened = os.fstat(descriptor)
         if (
@@ -61,9 +66,32 @@ def _read_existing_output(path: Path) -> Optional[bytes]:
             or not _same_identity(opened, final)
         ):
             raise ValueError("output changed while being read")
-        return b"".join(chunks)
-    finally:
+        try:
+            final_path = path.lstat()
+        except OSError as exc:
+            raise ValueError("output path changed while being read") from exc
+        if (
+            not stat.S_ISREG(final_path.st_mode)
+            or final_path.st_nlink != 1
+            or not _same_identity(final, final_path)
+        ):
+            raise ValueError("output path changed while being read")
+        content = b"".join(chunks)
+    except BaseException as exc:
+        failure = exc
+    try:
         os.close(descriptor)
+    except OSError as exc:
+        if failure is None:
+            failure = exc
+    if failure is not None:
+        if isinstance(failure, (OSError, ValueError)):
+            raise ValueError(
+                "could not safely read existing output: {}".format(failure)
+            ) from failure
+        raise failure
+    assert content is not None
+    return content
 
 
 def _remove_created_output(path: Path, created: os.stat_result) -> None:
@@ -92,16 +120,40 @@ def _write_new_output(path: Path, encoded: bytes) -> None:
     except OSError as exc:
         raise ValueError("could not exclusively create output: {}".format(exc)) from exc
 
-    created = os.fstat(descriptor)
-    failure: Optional[OSError] = None
+    created: Optional[os.stat_result] = None
+    opened: Optional[os.stat_result] = None
+    failure: Optional[BaseException] = None
     try:
+        created = path.lstat()
+        if not stat.S_ISREG(created.st_mode) or created.st_nlink != 1:
+            raise ValueError(
+                "output changed or is not an ordinary single-link regular file"
+            )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not _same_identity(created, opened)
+        ):
+            raise ValueError(
+                "output changed or is not an ordinary single-link regular file"
+            )
         offset = 0
         while offset < len(encoded):
             written = os.write(descriptor, encoded[offset:])
             if written <= 0:
                 raise OSError("output write made no progress")
             offset += written
-    except OSError as exc:
+        final = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or final.st_nlink != 1
+            or not _same_identity(opened, final)
+        ):
+            raise ValueError(
+                "output changed or is not an ordinary single-link regular file"
+            )
+    except BaseException as exc:
         failure = exc
     try:
         os.close(descriptor)
@@ -109,8 +161,28 @@ def _write_new_output(path: Path, encoded: bytes) -> None:
         if failure is None:
             failure = exc
     if failure is not None:
-        _remove_created_output(path, created)
-        raise ValueError("could not completely write output: {}".format(failure)) from failure
+        if created is not None:
+            _remove_created_output(path, created)
+        if isinstance(failure, (OSError, ValueError)):
+            raise ValueError(
+                "could not completely write output: {}".format(failure)
+            ) from failure
+        raise failure
+    assert opened is not None
+    try:
+        final_path = path.lstat()
+    except OSError as exc:
+        _remove_created_output(path, opened)
+        raise ValueError("output path changed after writing") from exc
+    if (
+        not stat.S_ISREG(final_path.st_mode)
+        or final_path.st_nlink != 1
+        or not _same_identity(opened, final_path)
+    ):
+        _remove_created_output(path, opened)
+        raise ValueError(
+            "output changed or is not an ordinary single-link regular file"
+        )
 
 
 def main() -> int:
