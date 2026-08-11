@@ -111,7 +111,7 @@ For one person's machine-wide vault and globally discoverable agent skills,
 continue with the `.env`/global-config workflow below or run
 `obsidian-wiki setup --vault /absolute/path/to/vault`.
 
-The numbered setup steps and optional hook, GitHub-sync, and QMD sections below
+The numbered setup steps and optional GitHub-sync and QMD sections below
 are Personal-mode instructions unless they explicitly say otherwise.
 
 ## Step 1: Create .env
@@ -305,75 +305,6 @@ Report the results and tell the user they can now:
 4. Run `claude-history-ingest` to mine their Claude conversations
 5. Run `codex-history-ingest` to mine their Codex sessions (if they use Codex)
 6. Run `wiki-status` again anytime to check the delta
-
-## Optional: Install the Stop Hook (Auto-Capture)
-
-Ask the user: **"Want to auto-capture findings at session end?"**
-
-If yes, install the Stop hook into their global Claude Code settings so that every session
-with meaningful work automatically prompts `/wiki-capture --quick` before closing.
-
-**What the hook does:** reads the session transcript on Stop, counts file edits and shell
-calls, and if significant work happened, asks Claude to run `/wiki-capture --quick` once.
-The `wiki-capture` quick-mode KEEP/SKIP gate prevents noise — routine or
-inconclusive sessions are skipped automatically.
-
-**Installation steps:**
-
-1. Verify that `command -v obsidian-wiki` succeeds. The source-installed CLI is
-   required; do not use a checkout as an execution fallback.
-
-2. Locate `wiki-stop-capture.sh` through the installed CLI's bundled data. Run
-   `obsidian-wiki info`, read the absolute `skills:` path, and use its parent as
-   `<REPO_PATH>`. The hook bundled into the locally built wheel is then:
-
-   - `<REPO_PATH>/hooks/wiki-stop-capture.sh`
-
-   Confirm that this file exists and resolve it to an absolute path as
-   `<HOOK_PATH>`. If it is absent, stop and ask the user to rebuild the installed
-   CLI from the supported source clone; do not download or copy a replacement
-   from an upstream location.
-
-3. Merge the hook entry into `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"<HOOK_PATH>\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-   Replace only the `<HOOK_PATH>` placeholder with the resolved absolute path.
-   Keep the escaped double quotes around it so paths containing spaces remain a
-   single shell argument and the settings file remains valid JSON.
-
-   If `~/.claude/settings.json` already exists and has a `hooks.Stop` array, **append** the new
-   entry rather than replacing — don't clobber existing hooks.
-
-   > **Note — expect a duplicate nudge inside this repo.** The obsidian-wiki repo ships its own
-   > git-tracked `.claude/settings.json` registering the same Stop hook at a relative path. Claude
-   > Code *merges* project-level and user-level hook config rather than letting one override the
-   > other, so sessions ending inside the repo itself fire both registrations. This is expected and
-   > harmless — the hook claims an atomic per-session sentinel, so only one nudge is emitted. Leave
-   > both in place: removing the project entry dirties a tracked framework file and disables capture
-   > for anyone who clones the repo without doing the personal setup.
-
-4. Confirm: "Stop hook installed. Claude Code will prompt `/wiki-capture --quick` at the
-   end of any session where you write files or run ≥ 4 shell commands."
-
-**To uninstall later:** remove the hook entry from `~/.claude/settings.json` or set
-`HIVEMIND_CAPTURE=false` in your shell to skip capture for a single session.
 
 ## Optional: Configure GitHub Sync
 

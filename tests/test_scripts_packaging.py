@@ -3,10 +3,8 @@
 The daily-update skill's Setup Mode references helper scripts under
 ``scripts/`` (daily-update.sh, the launchd plist, wiki-notify.sh) that are
 committed to the repo but were never force-included into the locally built
-wheel used for source installation — the same packaging-gap class as #143
-(the Stop hook), which that fix did
-not cover. These tests pin the packaging config that force-includes
-``scripts/`` and the skill instructions that resolve it via
+wheel used for source installation. These tests pin the packaging config that
+force-includes ``scripts/`` and the skill instructions that resolve it via
 ``$OBSIDIAN_WIKI_REPO``.
 """
 

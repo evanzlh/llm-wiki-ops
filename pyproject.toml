@@ -73,20 +73,12 @@ exclude = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "scripts" = "obsidian_wiki/_data/scripts"
-".claude/hooks/wiki-stop-capture.sh" = "obsidian_wiki/_data/hooks/wiki-stop-capture.sh"
 ".env.example" = "obsidian_wiki/_data/.env.example"
 
 [tool.hatch.build.targets.sdist]
-# Prune build noise. The Claude directory stays excluded and its Stop Hook is
-# re-added below so source distributions retain existing hook packaging.
+# Prune build noise and project-local agent configuration.
 exclude = [
   "/.claude",
   "/dist",
   "/build",
 ]
-
-# The Stop hook lives under /.claude (excluded above), so re-add just the one
-# script the wiki-setup skill wires up — otherwise the wheel force-include has
-# nothing to copy and the source-install artifact contains a dangling hook reference.
-[tool.hatch.build.targets.sdist.force-include]
-".claude/hooks/wiki-stop-capture.sh" = ".claude/hooks/wiki-stop-capture.sh"

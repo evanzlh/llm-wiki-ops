@@ -8,7 +8,7 @@ description: >
   it in the correct vault category. Also supports a fast QUICK MODE (`/wiki-capture --quick`, "quick
   capture", "capture this finding", "save this bug fix", "save this gotcha", "drop this to raw", "quick
   save to wiki") that drops findings to the `_raw/` staging area in under 60 seconds with no manifest
-  or index writes — used by the session-end Stop hook to auto-preserve findings. Accepts inline
+  or index writes as an explicit low-friction capture path. Accepts inline
   named-vault routing like "@research save this" via the shared Config Resolution Protocol.
 ---
 
@@ -19,7 +19,7 @@ You are preserving knowledge from the current conversation as a permanent wiki n
 This skill has three modes:
 
 - **Full mode (default)** — classify the content and write a finished, cross-linked wiki page directly into the right category. This is the rest of this document (Steps 1–7).
-- **Quick mode (`--quick`)** — zero-friction staging: drop findings to `_raw/` in under 60 seconds with no manifest/index/log/QMD writes. Used for mid-session capture and by the session-end Stop hook. See below, then stop — do **not** run the full-mode steps.
+- **Quick mode (`--quick`)** — zero-friction staging: explicitly drop findings to `_raw/` in under 60 seconds with no manifest/index/log/QMD writes. See below, then stop — do **not** run the full-mode steps.
 - **Correction mode (`--correction`)** — capture one atomic correction as derived knowledge while leaving the immutable conversation/source untouched. Use the template below, then update only the derived consumers and tracking links.
 
 **Portable Write Protocol branch:** The parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, reads the owner `AGENTS.md`, and Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not write `_raw/`, a knowledge page, or a source snapshot before selecting the branch.
@@ -29,7 +29,7 @@ This skill has three modes:
 Perform this in memory before selecting either completion branch:
 
 1. **Select capture submode.** Choose Full, Quick, or Correction (`--correction`) from the request before applying any later rule.
-2. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An automatic Stop-hook capture should err toward SKIP; an explicit user capture should err toward KEEP.
+2. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An explicit user capture should err toward KEEP.
 3. **Classify the kept content.** Choose the semantic category and matching final path: concept, entity, skill, reference, synthesis, journal, or project knowledge. Cluster related findings by topic and infer project context only from evidence in the conversation.
 4. **Rewrite it as declarative knowledge.** Preserve the substance, evidence, reasoning, implications, and relationships without presenting it as a chat transcript. Prepare required frontmatter and links in memory; make no source or vault write here.
 
@@ -90,7 +90,7 @@ Use this branch only when config resolution selected Personal mode. Apply the sh
 
 ## Quick Mode (`--quick`)
 
-Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture this finding" / "save this bug fix" / "save this gotcha" / "drop this to raw" / "quick save to wiki", or automatically by the session-end Stop hook.
+Trigger only when explicitly invoked as `/wiki-capture --quick`, or requested with "quick capture" / "capture this finding" / "save this bug fix" / "save this gotcha" / "drop this to raw" / "quick save to wiki".
 
 **Speed contract:** Inline only. No subagents. No QMD. No manifest/`index.md`/`log.md`/`hot.md` writes. Target: <60 seconds. Promotion to full wiki pages happens later via `/wiki-ingest`.
 

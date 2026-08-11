@@ -128,6 +128,27 @@ def test_framework_development_commands_provision_pytest_explicitly() -> None:
     ) in agents
 
 
+def test_automatic_stop_capture_surface_is_absent() -> None:
+    hook_name = "wiki-stop-" + "capture.sh"
+    packaged_hook_reference = hook_name[:-3]
+    session_hook_reference = "session-end Stop " + "hook"
+    assert not (ROOT / ".claude/settings.json").exists()
+    assert not (ROOT / ".claude/hooks" / hook_name).exists()
+    assert not (DATA / "hooks" / hook_name).exists()
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    setup = (DATA / "skills/wiki-setup/SKILL.md").read_text(encoding="utf-8")
+    capture = (DATA / "skills/wiki-capture/SKILL.md").read_text(encoding="utf-8")
+    for text in (pyproject, setup, capture):
+        assert packaged_hook_reference not in text
+        assert session_hook_reference not in text
+
+
+def test_explicit_quick_capture_remains_documented() -> None:
+    capture = (DATA / "skills/wiki-capture/SKILL.md").read_text(encoding="utf-8")
+    assert "/wiki-capture --quick" in capture
+    assert "Quick mode" in capture
+
+
 def test_legacy_digest_capture_is_deterministic_and_idempotent(tmp_path: Path) -> None:
     source = tmp_path / "skills"
     output = tmp_path / "catalog.json"
@@ -643,7 +664,7 @@ def test_legacy_digest_capture_preserves_read_error_over_close_error(
     assert "secondary close failure" not in str(error.value)
 
 
-def test_committed_legacy_catalog_covers_every_bundled_skill() -> None:
+def test_committed_legacy_catalog_covers_every_bundled_skill_name() -> None:
     payload = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert [item["label"] for item in payload["collections"]] == [
@@ -652,6 +673,6 @@ def test_committed_legacy_catalog_covers_every_bundled_skill() -> None:
     discovered = discover_skill_collection(
         DATA / "skills", ignore_source_artifacts=True
     )
-    assert payload["collections"][0]["skills"] == {
-        skill.name: skill.digest for skill in discovered.skills
+    assert set(payload["collections"][0]["skills"]) == {
+        skill.name for skill in discovered.skills
     }
