@@ -22,6 +22,7 @@ from obsidian_wiki.portable import (
     ensure_portable_gitattributes,
     ensure_portable_gitignore,
     merge_managed_block,
+    plan_portable_skill_sync,
     render_portable_gitattributes,
     setup_portable_repo,
 )
@@ -629,6 +630,284 @@ def test_setup_writes_complete_mirrors_and_v2_inventory(
         root / ".skills/wiki-ingest/assets/blob.bin"
     ).read_bytes() == b"\x00\xff\x10wiki\n"
     assert (root / ".skills/wiki-ingest/scripts/run.sh").stat().st_mode & 0o111
+
+
+def test_skill_sync_plan_reports_all_agent_additions_without_writing(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    custom = root / ".skills/team-note"
+    custom.mkdir()
+    (custom / "SKILL.md").write_text(
+        skill_markdown("team-note", "Use for team notes."), encoding="utf-8"
+    )
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+
+    assert report.status == "drift"
+    assert report.canonical_skills == ("team-note", "wiki-ingest", "wiki-query")
+    assert tuple(target.path for target in report.targets) == tuple(
+        relative for relative, _label in portable.PROJECT_AGENT_DIRS
+    )
+    assert all(target.added == ("team-note",) for target in report.targets)
+    assert all(
+        not target.changed and not target.removed and not target.unsafe
+        for target in report.targets
+    )
+    assert report.as_dict() == {
+        "status": "drift",
+        "canonical_skills": ["team-note", "wiki-ingest", "wiki-query"],
+        "targets": [
+            {
+                "path": relative,
+                "added": ["team-note"],
+                "changed": [],
+                "removed": [],
+                "unsafe": [],
+            }
+            for relative, _label in portable.PROJECT_AGENT_DIRS
+        ],
+        "warnings": [],
+    }
+    assert snapshot_tree(root) == before
+
+
+def test_clean_skill_sync_plan_is_stably_ordered_and_preserves_full_trees(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+
+    assert report.status == "clean"
+    assert tuple(target.path for target in report.targets) == tuple(
+        relative for relative, _label in portable.PROJECT_AGENT_DIRS
+    )
+    assert all(
+        not target.added
+        and not target.changed
+        and not target.removed
+        and not target.unsafe
+        for target in report.targets
+    )
+    assert snapshot_tree(root) == before
+
+
+def test_skill_sync_plan_reports_a_missing_target_as_folded_additions(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".cursor/skills")
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    change = next(item for item in report.targets if item.path == ".cursor/skills")
+
+    assert change.added == ("wiki-ingest", "wiki-query")
+    assert not change.changed and not change.removed and not change.unsafe
+    assert snapshot_tree(root) == before
+
+
+def test_skill_sync_plan_classifies_changed_removed_and_ordinary_invalid_extra(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    changed = root / ".claude/skills/wiki-ingest/SKILL.md"
+    changed.write_text(changed.read_text(encoding="utf-8") + "\nMirror drift.\n")
+    (root / ".cursor/skills/wiki-query/SKILL.md").unlink()
+    extra = root / ".windsurf/skills/owner-extra"
+    extra.mkdir()
+    (extra / "SKILL.md").write_text("not frontmatter\n", encoding="utf-8")
+    (extra / "data.bin").write_bytes(b"\x00\xff")
+    binary = root / ".agents/skills/wiki-ingest/assets/blob.bin"
+    binary.write_bytes(binary.read_bytes() + b"changed")
+    executable = root / ".pi/skills/wiki-ingest/scripts/run.sh"
+    executable.chmod(0o644)
+    (root / ".kiro/skills/wiki-ingest/references/深入阅读.md").unlink()
+    (root / ".skills/wiki-ingest/empty/nested").mkdir(parents=True)
+    for agent_relative, _label in portable.PROJECT_AGENT_DIRS:
+        (root / agent_relative / "wiki-ingest/empty/nested").mkdir(parents=True)
+    (root / ".kiro/skills/wiki-ingest/empty/nested").rmdir()
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    by_path = {target.path: target for target in report.targets}
+
+    assert by_path[".claude/skills"].changed == ("wiki-ingest/SKILL.md",)
+    assert by_path[".cursor/skills"].added == ("wiki-query/SKILL.md",)
+    assert by_path[".windsurf/skills"].removed == ("owner-extra",)
+    assert by_path[".agents/skills"].changed == (
+        "wiki-ingest/assets/blob.bin",
+    )
+    assert by_path[".pi/skills"].changed == ("wiki-ingest/scripts/run.sh",)
+    assert by_path[".kiro/skills"].added == (
+        "wiki-ingest/empty/nested",
+        "wiki-ingest/references/深入阅读.md",
+    )
+    assert all(not target.unsafe for target in report.targets)
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
+def test_skill_sync_plan_reports_unsafe_entries_without_following_them(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("outside\n", encoding="utf-8")
+    link = root / ".pi/skills/wiki-ingest/outside-link"
+    link.symlink_to(outside, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    by_path = {target.path: target for target in report.targets}
+
+    assert report.status == "drift"
+    assert by_path[".pi/skills"].unsafe == ("wiki-ingest/outside-link",)
+    assert sentinel.read_text(encoding="utf-8") == "outside\n"
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
+def test_skill_sync_plan_reports_all_safe_and_unsafe_drift_in_one_target(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    target = root / ".claude/skills"
+    changed = target / "wiki-ingest/SKILL.md"
+    changed.write_text(changed.read_text(encoding="utf-8") + "\nchanged\n")
+    extra = target / "owner-extra"
+    extra.mkdir()
+    (extra / "SKILL.md").write_text("ordinary extra\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / "wiki-ingest/unsafe-link").symlink_to(
+        outside, target_is_directory=True
+    )
+    hardlink_source = outside / "hardlink-source"
+    hardlink_source.write_bytes(b"outside\n")
+    hardlink = target / "wiki-query/SKILL.md"
+    hardlink.unlink()
+    os.link(hardlink_source, hardlink)
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    change = next(item for item in report.targets if item.path == ".claude/skills")
+
+    assert change.added == ()
+    assert change.changed == ("wiki-ingest/SKILL.md",)
+    assert change.removed == ("owner-extra",)
+    assert change.unsafe == (
+        "wiki-ingest/unsafe-link",
+        "wiki-query/SKILL.md",
+    )
+    assert hardlink_source.read_bytes() == b"outside\n"
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
+def test_skill_sync_plan_rejects_an_ancestor_symlink_without_following_it(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    outside = tmp_path / "outside-skills"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("outside\n", encoding="utf-8")
+    shutil.rmtree(root / ".kiro/skills")
+    (root / ".kiro/skills").symlink_to(outside, target_is_directory=True)
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    by_path = {target.path: target for target in report.targets}
+
+    assert by_path[".kiro/skills"].unsafe == (".",)
+    assert sentinel.read_text(encoding="utf-8") == "outside\n"
+    assert snapshot_tree(root) == before
+
+
+def test_skill_sync_plan_warns_for_managed_canonical_digest_divergence(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    canonical = root / ".skills/wiki-query/SKILL.md"
+    canonical.write_text(
+        skill_markdown("wiki-query", "Owner-modified query workflow."),
+        encoding="utf-8",
+    )
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+
+    assert report.status == "drift"
+    assert report.warnings == (
+        {
+            "code": "managed-canonical-modified",
+            "path": ".skills/wiki-query",
+            "message": (
+                "managed canonical skill differs from the installed inventory digest"
+            ),
+        },
+    )
+    assert all(target.changed == ("wiki-query/SKILL.md",) for target in report.targets)
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("inventory_kind", ["legacy", "invalid"])
+def test_skill_sync_plan_rejects_legacy_or_invalid_inventory_without_writing(
+    inventory_kind: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory_path = root / ".obsidian-wiki/managed-skills.json"
+    if inventory_kind == "legacy":
+        inventory_path.write_text(
+            json.dumps(
+                {
+                    "implementation": IMPLEMENTATION_ID,
+                    "skills": ["wiki-ingest", "wiki-query"],
+                    "skills_version": "2026.8.3",
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        inventory_path.write_text("{not-json\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="inventory|upgrade-skills"):
+        plan_portable_skill_sync(root)
+
+    assert snapshot_tree(root) == before
+
+
+def test_skill_sync_plan_rejects_invalid_canonical_skill_without_writing(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (root / ".skills/wiki-query/SKILL.md").write_text(
+        "---\nname: wrong-name\ndescription: invalid\n---\n", encoding="utf-8"
+    )
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="canonical skill"):
+        plan_portable_skill_sync(root)
+
+    assert snapshot_tree(root) == before
 
 
 def test_initial_setup_snapshots_bundled_source_once(

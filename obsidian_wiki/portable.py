@@ -16,7 +16,9 @@ import stat
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 try:
     import fcntl
@@ -36,8 +38,10 @@ from obsidian_wiki.skill_inventory import (
 )
 from obsidian_wiki.skill_trees import (
     SkillCollection,
+    SkillEntry,
     discover_skill_collection,
     materialize_skill_collection,
+    snapshot_ordinary_tree_with_unsafe,
 )
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
@@ -1305,6 +1309,185 @@ def _validate_agent_skill_mirrors(
             raise ValueError(
                 f"portable skill mirror differs from canonical .skills: {target}{suffix}"
             )
+
+
+@dataclass(frozen=True)
+class SkillMirrorChange:
+    """One target-relative, deterministic mirror synchronization plan."""
+
+    path: str
+    added: tuple[str, ...]
+    changed: tuple[str, ...]
+    removed: tuple[str, ...]
+    unsafe: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillSyncReport:
+    """Read-only comparison of canonical skills and every supported mirror."""
+
+    status: Literal["clean", "drift", "applied"]
+    canonical_skills: tuple[str, ...]
+    targets: tuple[SkillMirrorChange, ...]
+    warnings: tuple[dict[str, str], ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "canonical_skills": list(self.canonical_skills),
+            "targets": [
+                {
+                    "path": target.path,
+                    "added": list(target.added),
+                    "changed": list(target.changed),
+                    "removed": list(target.removed),
+                    "unsafe": list(target.unsafe),
+                }
+                for target in self.targets
+            ],
+            "warnings": [dict(warning) for warning in self.warnings],
+        }
+
+
+def _canonical_skill_entries(collection: SkillCollection) -> tuple[SkillEntry, ...]:
+    entries: list[SkillEntry] = []
+    for skill in collection.skills:
+        entries.append(SkillEntry(skill.name, "directory", False, b""))
+        entries.extend(
+            SkillEntry(
+                f"{skill.name}/{entry.path}",
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in skill.entries
+        )
+    return tuple(sorted(entries, key=lambda entry: entry.path))
+
+
+def _minimal_changed_paths(
+    paths: Iterable[str], *, blocking_ancestors: Iterable[str] = ()
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    blockers = set(blocking_ancestors)
+    for path in sorted(set(paths)):
+        if path in blockers:
+            continue
+        ancestors = PurePosixPath(path).parents
+        if any(
+            ancestor.as_posix() in blockers or ancestor.as_posix() in selected
+            for ancestor in ancestors
+            if ancestor.as_posix() != "."
+        ):
+            continue
+        selected.append(path)
+    return tuple(selected)
+
+
+def _plan_one_skill_mirror(
+    root: Path,
+    target_relative: str,
+    canonical_entries: tuple[SkillEntry, ...],
+) -> SkillMirrorChange:
+    target = root / target_relative
+    try:
+        _assert_safe_managed_path(root, target)
+        if target.exists():
+            mirror_snapshot, unsafe = snapshot_ordinary_tree_with_unsafe(target)
+        else:
+            mirror_snapshot, unsafe = (), ()
+        _assert_safe_managed_path(root, target)
+    except (OSError, ValueError):
+        return SkillMirrorChange(
+            path=target_relative,
+            added=(),
+            changed=(),
+            removed=(),
+            unsafe=(".",),
+        )
+
+    canonical = {entry.path: entry for entry in canonical_entries}
+    mirror = {entry.path: entry for entry in mirror_snapshot}
+    changed = _minimal_changed_paths(
+        path
+        for path in set(canonical) & set(mirror)
+        if canonical[path] != mirror[path]
+    )
+    unsafe = _minimal_changed_paths(unsafe)
+    blockers = (*changed, *unsafe)
+    added = _minimal_changed_paths(
+        set(canonical) - set(mirror), blocking_ancestors=blockers
+    )
+    removed = _minimal_changed_paths(
+        set(mirror) - set(canonical), blocking_ancestors=blockers
+    )
+    return SkillMirrorChange(
+        path=target_relative,
+        added=added,
+        changed=changed,
+        removed=removed,
+        unsafe=unsafe,
+    )
+
+
+def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
+    """Validate canonical skills and report every mirror difference without writes."""
+    root = _safe_root(Path(root))
+    canonical_root = root / ".skills"
+    try:
+        _assert_safe_managed_path(root, canonical_root)
+        canonical = discover_skill_collection(canonical_root)
+        _assert_safe_managed_path(root, canonical_root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"portable canonical skills are invalid: {exc}") from exc
+
+    try:
+        inventory = read_inventory(root, allow_legacy=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"portable managed skill inventory is invalid: {exc}") from exc
+    if isinstance(inventory, LegacyManagedSkillsInventory):
+        raise ValueError(  # noqa: TRY004 - a legacy schema is an invalid value here
+            "portable managed skill inventory is legacy; run "
+            "`obsidian-wiki repo upgrade-skills`"
+        )
+    assert isinstance(inventory, ManagedSkillsInventory)
+
+    canonical_by_name = canonical.by_name()
+    missing_managed = tuple(
+        name for name in inventory.managed_skills if name not in canonical_by_name
+    )
+    if missing_managed:
+        raise ValueError(
+            "portable managed skill inventory names missing canonical skills: "
+            + ", ".join(missing_managed)
+        )
+    warnings = tuple(
+        {
+            "code": "managed-canonical-modified",
+            "path": f".skills/{name}",
+            "message": (
+                "managed canonical skill differs from the installed inventory digest"
+            ),
+        }
+        for name in inventory.managed_skills
+        if canonical_by_name[name].digest != inventory.managed_skill_digests[name]
+    )
+
+    canonical_entries = _canonical_skill_entries(canonical)
+    targets = tuple(
+        _plan_one_skill_mirror(root, relative, canonical_entries)
+        for relative, _label in PROJECT_AGENT_DIRS
+    )
+    drift = any(
+        target.added or target.changed or target.removed or target.unsafe
+        for target in targets
+    )
+    return SkillSyncReport(
+        status="drift" if drift else "clean",
+        canonical_skills=canonical.names,
+        targets=targets,
+        warnings=warnings,
+    )
 
 
 def _materialize_complete_skill_trees(

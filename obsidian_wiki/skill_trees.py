@@ -146,36 +146,84 @@ def _snapshot_entry(
     entries: list[SkillEntry],
     *,
     ignore_source_artifacts: bool,
+    unsafe_entries: list[str] | None = None,
 ) -> None:
-    metadata = path.lstat()
+    try:
+        metadata = path.lstat()
+    except OSError:
+        if unsafe_entries is None:
+            raise
+        unsafe_entries.append(relative)
+        return
     mode = metadata.st_mode
     if stat.S_ISLNK(mode):
+        if unsafe_entries is not None:
+            unsafe_entries.append(relative)
+            return
         raise _error(path, "symbolic links are not allowed")
     if stat.S_ISDIR(mode):
         if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
             return
         entries.append(SkillEntry(relative, "directory", False, b""))
-        for child in sorted(path.iterdir(), key=lambda item: item.name):
+        try:
+            children = sorted(path.iterdir(), key=lambda item: item.name)
+        except OSError:
+            if unsafe_entries is None:
+                raise
+            unsafe_entries.append(relative)
+            entries[:] = [
+                entry
+                for entry in entries
+                if entry.path != relative
+                and not entry.path.startswith(relative + "/")
+            ]
+            return
+        for child in children:
             _snapshot_entry(
                 child,
                 relative + "/" + child.name,
                 entries,
                 ignore_source_artifacts=ignore_source_artifacts,
+                unsafe_entries=unsafe_entries,
             )
-        _validate_directory_unchanged(path, metadata)
+        try:
+            _validate_directory_unchanged(path, metadata)
+        except (OSError, ValueError):
+            if unsafe_entries is None:
+                raise
+            unsafe_entries.append(relative)
+            entries[:] = [
+                entry
+                for entry in entries
+                if entry.path != relative
+                and not entry.path.startswith(relative + "/")
+            ]
         return
     if not stat.S_ISREG(mode):
+        if unsafe_entries is not None:
+            unsafe_entries.append(relative)
+            return
         raise _error(path, "special files are not allowed")
     if metadata.st_nlink != 1:
+        if unsafe_entries is not None:
+            unsafe_entries.append(relative)
+            return
         raise _error(path, "multiply-linked regular files are not allowed")
     if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
+        return
+    try:
+        content = _read_ordinary_file(path, metadata)
+    except (OSError, ValueError):
+        if unsafe_entries is None:
+            raise
+        unsafe_entries.append(relative)
         return
     entries.append(
         SkillEntry(
             relative,
             "file",
             bool(mode & 0o111),
-            _read_ordinary_file(path, metadata),
+            content,
         )
     )
 
@@ -502,6 +550,45 @@ def snapshot_ordinary_tree(root: Path) -> tuple[SkillEntry, ...]:
         )
     _validate_directory_unchanged(root, root_metadata)
     return tuple(sorted(entries, key=lambda entry: entry.path))
+
+
+def snapshot_ordinary_tree_with_unsafe(
+    root: Path,
+) -> tuple[tuple[SkillEntry, ...], tuple[str, ...]]:
+    """Snapshot ordinary entries and report unsafe paths without following them."""
+    try:
+        root_metadata = root.lstat()
+    except FileNotFoundError:
+        return (), ()
+    except OSError:
+        return (), (".",)
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(
+        root_metadata.st_mode
+    ):
+        return (), (".",)
+
+    entries: list[SkillEntry] = []
+    unsafe_entries: list[str] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return (), (".",)
+    for child in children:
+        _snapshot_entry(
+            child,
+            child.name,
+            entries,
+            ignore_source_artifacts=False,
+            unsafe_entries=unsafe_entries,
+        )
+    try:
+        _validate_directory_unchanged(root, root_metadata)
+    except (OSError, ValueError):
+        return (), (".",)
+    return (
+        tuple(sorted(entries, key=lambda entry: entry.path)),
+        tuple(sorted(set(unsafe_entries))),
+    )
 
 
 def _materialize_path(root: Path, relative: str) -> Path:
