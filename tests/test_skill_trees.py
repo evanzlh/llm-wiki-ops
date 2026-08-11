@@ -131,6 +131,95 @@ def test_ignore_mode_excludes_only_declared_source_artifacts(tmp_path: Path) -> 
     ]
 
 
+def test_ignore_mode_rejects_symlink_named_as_ignored_file(tmp_path: Path) -> None:
+    skill = write_skill(tmp_path, "example")
+    target = skill / "target"
+    target.write_bytes(b"target")
+    ignored_link = skill / ".env"
+    try:
+        ignored_link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip("symbolic links unavailable: {}".format(exc))
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="symbolic"):
+        discover_skill_collection(tmp_path, ignore_source_artifacts=True)
+
+
+def test_ignore_mode_rejects_special_file_named_as_ignored_file(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("named pipes unavailable")
+    skill = write_skill(tmp_path, "example")
+    try:
+        os.mkfifo(skill / ".env")
+    except OSError as exc:
+        pytest.skip("named pipes unavailable: {}".format(exc))
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="special"):
+        discover_skill_collection(tmp_path, ignore_source_artifacts=True)
+
+
+def test_ignore_mode_rejects_hardlinked_ignored_file(tmp_path: Path) -> None:
+    skill = write_skill(tmp_path, "example")
+    ignored = skill / ".env"
+    ignored.write_bytes(b"secret")
+    try:
+        os.link(ignored, skill / ".env.local")
+    except OSError as exc:
+        pytest.skip("hard links unavailable: {}".format(exc))
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="multiply-linked"):
+        discover_skill_collection(tmp_path, ignore_source_artifacts=True)
+
+
+def test_ignore_mode_matches_exact_declared_source_artifacts(tmp_path: Path) -> None:
+    skill = write_skill(tmp_path, "example")
+    ignored_directories = (".git", ".svn", ".hg", "__pycache__")
+    ignored_files = (
+        ".DS_Store",
+        ".env",
+        ".env.local",
+        "._resource",
+        "bytecode.pyc",
+        "bytecode.pyo",
+    )
+    retained_directories = (".gitignore", ".svnx", ".hgx", "__pycache__x")
+    retained_files = (
+        ".DS_Storex",
+        ".environment",
+        ".envx",
+        ".-resource",
+        "bytecode.pycx",
+        "bytecode.pyox",
+    )
+    for name in ignored_directories:
+        directory = skill / name
+        directory.mkdir()
+        (directory / "ignored").write_bytes(b"ignored")
+    for name in ignored_files:
+        (skill / name).write_bytes(b"ignored")
+    for name in retained_directories:
+        directory = skill / name
+        directory.mkdir()
+        (directory / "retained").write_bytes(b"retained")
+    for name in retained_files:
+        (skill / name).write_bytes(b"retained")
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    entries = discover_skill_collection(tmp_path, ignore_source_artifacts=True).skills[0].entries
+    paths = {entry.path for entry in entries}
+    for name in ignored_directories + ignored_files:
+        assert name not in paths
+    for name in retained_directories + retained_files:
+        assert name in paths
+
+
 def test_rejects_special_files_where_supported(tmp_path: Path) -> None:
     if not hasattr(os, "mkfifo"):
         pytest.skip("named pipes unavailable")
@@ -162,6 +251,18 @@ def test_digest_changes_for_exact_bytes_and_executable_bit(tmp_path: Path) -> No
 
     assert original != bytes_changed
     assert bytes_changed != executable_changed
+
+
+def test_entries_are_globally_sorted_by_relative_path(tmp_path: Path) -> None:
+    skill = write_skill(tmp_path, "example")
+    (skill / "a").mkdir()
+    (skill / "a" / "z").write_bytes(b"z")
+    (skill / "a-foo").write_bytes(b"sibling")
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    entries = discover_skill_collection(tmp_path).skills[0].entries
+    assert [entry.path for entry in entries] == ["SKILL.md", "a", "a-foo", "a/z"]
 
 
 def test_materializes_identical_snapshots_and_rejects_existing_destination(tmp_path: Path) -> None:

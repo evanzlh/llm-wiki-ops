@@ -71,11 +71,11 @@ def _snapshot_entry(
 ) -> None:
     metadata = path.lstat()
     mode = metadata.st_mode
-    if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
-        return
     if stat.S_ISLNK(mode):
         raise _error(path, "symbolic links are not allowed")
     if stat.S_ISDIR(mode):
+        if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
+            return
         entries.append(SkillEntry(relative, "directory", False, b""))
         for child in sorted(path.iterdir(), key=lambda item: item.name):
             _snapshot_entry(
@@ -89,6 +89,8 @@ def _snapshot_entry(
         raise _error(path, "special files are not allowed")
     if metadata.st_nlink != 1:
         raise _error(path, "multiply-linked regular files are not allowed")
+    if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
+        return
     entries.append(
         SkillEntry(relative, "file", bool(mode & 0o111), path.read_bytes())
     )
@@ -123,14 +125,26 @@ def discover_skill_collection(
     skills: list[SkillTree] = []
     for directory in sorted(root.iterdir(), key=lambda item: item.name):
         metadata = directory.lstat()
-        if ignore_source_artifacts and _is_ignored_source_artifact(
-            directory.name, metadata.st_mode
-        ):
-            continue
+        mode = metadata.st_mode
+        if stat.S_ISLNK(mode):
+            raise _error(directory, "symbolic links are not allowed")
+        if stat.S_ISDIR(mode):
+            if ignore_source_artifacts and _is_ignored_source_artifact(
+                directory.name, mode
+            ):
+                continue
+        elif stat.S_ISREG(mode):
+            if metadata.st_nlink != 1:
+                raise _error(directory, "multiply-linked regular files are not allowed")
+            if ignore_source_artifacts and _is_ignored_source_artifact(
+                directory.name, mode
+            ):
+                continue
+            raise _error(directory, "each skill must be an ordinary directory")
+        else:
+            raise _error(directory, "special files are not allowed")
         if not _SKILL_NAME.fullmatch(directory.name):
             raise _error(directory, "unsafe skill directory name")
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise _error(directory, "each skill must be an ordinary directory")
         skill_file = directory / "SKILL.md"
         if not skill_file.exists():
             raise _error(skill_file, "SKILL.md is missing")
@@ -154,7 +168,7 @@ def discover_skill_collection(
                 entries,
                 ignore_source_artifacts=ignore_source_artifacts,
             )
-        frozen_entries = tuple(entries)
+        frozen_entries = tuple(sorted(entries, key=lambda entry: entry.path))
         skills.append(SkillTree(name, description, frozen_entries, _digest(name, frozen_entries)))
     if not skills:
         raise _error(root, "skill collection must not be empty")
