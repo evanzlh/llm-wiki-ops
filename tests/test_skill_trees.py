@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import os
+import stat
 
 import pytest
 
@@ -80,6 +81,34 @@ def test_rejects_source_and_nested_symlinks(tmp_path: Path) -> None:
     (skill / "resource-link").symlink_to(target / "target" / "SKILL.md")
     with pytest.raises(ValueError, match="symbolic"):
         discover_skill_collection(tmp_path)
+
+
+def test_rejects_file_replaced_by_symlink_before_descriptor_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = write_skill(tmp_path, "example")
+    resource = skill / "resource"
+    resource.write_bytes(b"original")
+    replacement = skill / "replacement"
+    replacement.write_bytes(b"replacement")
+
+    from obsidian_wiki import skill_trees
+
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(path: object, flags: int) -> int:
+        nonlocal swapped
+        if not swapped and os.fspath(path) == os.fspath(resource):
+            resource.unlink()
+            resource.symlink_to(replacement.name)
+            swapped = True
+        return real_open(path, flags)
+
+    monkeypatch.setattr(skill_trees.os, "open", replace_before_open)
+
+    with pytest.raises(ValueError, match="changed|ordinary|symbolic"):
+        skill_trees.discover_skill_collection(tmp_path)
 
 
 @pytest.mark.parametrize("path", ["SKILL.md", "nested.txt"])
@@ -177,47 +206,98 @@ def test_ignore_mode_rejects_hardlinked_ignored_file(tmp_path: Path) -> None:
         discover_skill_collection(tmp_path, ignore_source_artifacts=True)
 
 
-def test_ignore_mode_matches_exact_declared_source_artifacts(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".AppleDouble",
+        ".LSOverride",
+        ".Spotlight-V100",
+        ".Trashes",
+    ],
+)
+def test_ignore_mode_matches_each_declared_directory(tmp_path: Path, name: str) -> None:
     skill = write_skill(tmp_path, "example")
-    ignored_directories = (".git", ".svn", ".hg", "__pycache__")
-    ignored_files = (
+    directory = skill / name
+    directory.mkdir()
+    (directory / "ignored").write_bytes(b"ignored")
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    entries = discover_skill_collection(tmp_path, ignore_source_artifacts=True).skills[0].entries
+    assert [entry.path for entry in entries] == ["SKILL.md"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
         ".DS_Store",
+        "Thumbs.db",
+        "desktop.ini",
+        "Icon\r",
         ".env",
         ".env.local",
         "._resource",
         "bytecode.pyc",
         "bytecode.pyo",
-    )
-    retained_directories = (".gitignore", ".svnx", ".hgx", "__pycache__x")
-    retained_files = (
-        ".DS_Storex",
-        ".environment",
-        ".envx",
-        ".-resource",
-        "bytecode.pycx",
-        "bytecode.pyox",
-    )
-    for name in ignored_directories:
-        directory = skill / name
-        directory.mkdir()
-        (directory / "ignored").write_bytes(b"ignored")
-    for name in ignored_files:
-        (skill / name).write_bytes(b"ignored")
-    for name in retained_directories:
-        directory = skill / name
+    ],
+)
+def test_ignore_mode_matches_each_declared_file(tmp_path: Path, name: str) -> None:
+    skill = write_skill(tmp_path, "example")
+    (skill / name).write_bytes(b"ignored")
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    entries = discover_skill_collection(tmp_path, ignore_source_artifacts=True).skills[0].entries
+    assert [entry.path for entry in entries] == ["SKILL.md"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    [
+        ("directory", ".git-cache"),
+        ("directory", ".hg-cache"),
+        ("directory", ".svn-cache"),
+        ("directory", "__pycache__x"),
+        ("directory", ".pytest_cachex"),
+        ("directory", ".mypy_cachex"),
+        ("directory", ".ruff_cachex"),
+        ("directory", ".AppleDoublex"),
+        ("directory", ".LSOverridex"),
+        ("directory", ".Spotlight-V100x"),
+        ("directory", ".Trashesx"),
+        ("file", ".DS_Storex"),
+        ("file", "Thumbs.dbx"),
+        ("file", "desktop.inix"),
+        ("file", "Icon"),
+        ("file", ".environment"),
+        ("file", ".envx"),
+        ("file", ".-resource"),
+        ("file", "bytecode.pycx"),
+        ("file", "bytecode.pyox"),
+    ],
+)
+def test_ignore_mode_retains_near_matches(tmp_path: Path, kind: str, name: str) -> None:
+    skill = write_skill(tmp_path, "example")
+    path = skill / name
+    if kind == "directory":
+        directory = path
         directory.mkdir()
         (directory / "retained").write_bytes(b"retained")
-    for name in retained_files:
-        (skill / name).write_bytes(b"retained")
+    else:
+        path.write_bytes(b"retained")
 
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     entries = discover_skill_collection(tmp_path, ignore_source_artifacts=True).skills[0].entries
     paths = {entry.path for entry in entries}
-    for name in ignored_directories + ignored_files:
-        assert name not in paths
-    for name in retained_directories + retained_files:
-        assert name in paths
+    assert name in paths
 
 
 def test_rejects_special_files_where_supported(tmp_path: Path) -> None:
@@ -285,7 +365,11 @@ def test_materializes_identical_snapshots_and_rejects_existing_destination(tmp_p
 
     assert discover_skill_collection(first) == collection
     assert discover_skill_collection(second) == collection
-    assert (first / "example" / "scripts" / "run.sh").stat().st_mode & 0o111
+    assert stat.S_IMODE(first.stat().st_mode) == 0o755
+    assert stat.S_IMODE((first / "example").stat().st_mode) == 0o755
+    assert stat.S_IMODE((first / "example" / "scripts").stat().st_mode) == 0o755
+    assert stat.S_IMODE((first / "example" / "scripts" / "run.sh").stat().st_mode) == 0o755
+    assert stat.S_IMODE((first / "example" / "SKILL.md").stat().st_mode) == 0o644
     with pytest.raises(ValueError, match="already exists"):
         materialize_skill_collection(collection, first)
 

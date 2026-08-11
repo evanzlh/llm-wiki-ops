@@ -14,7 +14,24 @@ from .frontmatter import FrontmatterError, parse_frontmatter
 
 
 _SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-_SOURCE_IGNORED_DIRECTORIES = frozenset({".git", ".svn", ".hg", "__pycache__"})
+_SOURCE_IGNORED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".AppleDouble",
+        ".LSOverride",
+        ".Spotlight-V100",
+        ".Trashes",
+    }
+)
+_SOURCE_IGNORED_FILES = frozenset(
+    {".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"}
+)
 
 
 @dataclass(frozen=True)
@@ -49,11 +66,65 @@ def _error(path: Path, message: str) -> ValueError:
     return ValueError("{}: {}".format(path, message))
 
 
+def _same_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _read_ordinary_file(path: Path, observed: os.stat_result) -> bytes:
+    if not stat.S_ISREG(observed.st_mode):
+        raise _error(path, "file must be an ordinary regular file")
+    if observed.st_nlink != 1:
+        raise _error(path, "multiply-linked regular files are not allowed")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise _error(path, "file changed or is not an ordinary file") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise _error(path, "file must be an ordinary regular file")
+        if opened.st_nlink != 1:
+            raise _error(path, "multiply-linked regular files are not allowed")
+        if not _same_identity(observed, opened):
+            raise _error(path, "file changed while being read")
+
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+        final = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or final.st_nlink != 1
+            or not _same_identity(opened, final)
+        ):
+            raise _error(path, "file changed while being read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_directory_unchanged(path: Path, observed: os.stat_result) -> None:
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise _error(path, "directory changed during scan") from exc
+    if not stat.S_ISDIR(current.st_mode) or not _same_identity(observed, current):
+        raise _error(path, "directory changed during scan")
+
+
 def _is_ignored_source_artifact(name: str, mode: int) -> bool:
     if stat.S_ISDIR(mode):
         return name in _SOURCE_IGNORED_DIRECTORIES
     return (
-        name == ".DS_Store"
+        name in _SOURCE_IGNORED_FILES
         or name == ".env"
         or name.startswith(".env.")
         or name.startswith("._")
@@ -84,6 +155,7 @@ def _snapshot_entry(
                 entries,
                 ignore_source_artifacts=ignore_source_artifacts,
             )
+        _validate_directory_unchanged(path, metadata)
         return
     if not stat.S_ISREG(mode):
         raise _error(path, "special files are not allowed")
@@ -92,7 +164,12 @@ def _snapshot_entry(
     if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
         return
     entries.append(
-        SkillEntry(relative, "file", bool(mode & 0o111), path.read_bytes())
+        SkillEntry(
+            relative,
+            "file",
+            bool(mode & 0o111),
+            _read_ordinary_file(path, metadata),
+        )
     )
 
 
@@ -146,12 +223,17 @@ def discover_skill_collection(
         if not _SKILL_NAME.fullmatch(directory.name):
             raise _error(directory, "unsafe skill directory name")
         skill_file = directory / "SKILL.md"
-        if not skill_file.exists():
+        try:
+            skill_metadata = skill_file.lstat()
+        except FileNotFoundError:
             raise _error(skill_file, "SKILL.md is missing")
-        if stat.S_ISLNK(skill_file.lstat().st_mode) or not stat.S_ISREG(skill_file.lstat().st_mode):
+        if stat.S_ISLNK(skill_metadata.st_mode) or not stat.S_ISREG(
+            skill_metadata.st_mode
+        ):
             raise _error(skill_file, "SKILL.md must be an ordinary file")
         try:
-            frontmatter = parse_frontmatter(skill_file.read_bytes().decode("utf-8"))
+            skill_bytes = _read_ordinary_file(skill_file, skill_metadata)
+            frontmatter = parse_frontmatter(skill_bytes.decode("utf-8"))
         except (FrontmatterError, UnicodeDecodeError) as exc:
             raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
         name = frontmatter.scalars.get("name", "")
@@ -168,8 +250,10 @@ def discover_skill_collection(
                 entries,
                 ignore_source_artifacts=ignore_source_artifacts,
             )
+        _validate_directory_unchanged(directory, metadata)
         frozen_entries = tuple(sorted(entries, key=lambda entry: entry.path))
         skills.append(SkillTree(name, description, frozen_entries, _digest(name, frozen_entries)))
+    _validate_directory_unchanged(root, root_metadata)
     if not skills:
         raise _error(root, "skill collection must not be empty")
     return SkillCollection(tuple(skills))
