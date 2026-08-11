@@ -13,9 +13,7 @@ You are running an autonomous research loop on a topic, synthesizing what you fi
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Use authoritative research-source files for `transaction begin`, create results only in the returned `candidate_vault`, and suppress direct manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes below. If no authoritative source path exists, stop and ask for one rather than bypassing the protocol. In Personal mode, retain the workflow below unchanged.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch after research. Until then, shared preparation is read-only; network queries are read-only with respect to the vault and no worker may write a source or knowledge page.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand what's already in the wiki — don't re-research things the wiki covers well
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it surfaces recent context
 4. Check `$OBSIDIAN_VAULT_PATH/references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault
@@ -73,6 +71,25 @@ If major contradictions remain unresolved:
 If contradictions are minor or the topic feels well-covered after Round 2, skip additional searching and proceed to filing.
 
 **Halt condition:** Stop when depth is achieved or 3 rounds are complete — do not loop indefinitely.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The network queries are read-only with respect to the vault; only the reviewed source-snapshot and transaction phases below may write.
+
+1. The parent agent materializes each accepted web source as a small, reviewable UTF-8 Markdown source snapshot below a configured `sources` root. Record URL, retrieval time, content hash, excerpts, and page-level citations. Review the snapshot against the research results, preserve valid Unicode filenames and Source IDs, and never persist an absolute runtime path. If adequate evidence cannot be materialized and reviewed, stop before a transaction.
+2. Compute complete authoritative source closure from all accepted snapshots plus the existing Source IDs of pages to replace/delete; use repository-relative IDs, never compiled vault pages. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`, retain its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+3. Distill the prepared findings into candidate knowledge pages only below `candidate_vault`. Each candidate `sources` cites only accepted snapshot Source IDs as a non-empty subset of the transaction closure. Declare approved removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+5. On failure, use status-aware recovery: inspect `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; use list/show plus retry, restore, abort, or discard only when allowed. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue with direct filing and the manifest v1, central-file, QMD, and Personal Git behavior below. Do not fall through into Portable Repository completion.
 
 ## Filing — Write Wiki Pages
 

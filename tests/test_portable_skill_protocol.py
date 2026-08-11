@@ -71,6 +71,14 @@ MAINTENANCE_WRITE_SKILLS = (
     ".skills/wiki-status/SKILL.md",
     ".skills/wiki-synthesize/SKILL.md",
 )
+SPECIAL_WRITE_SKILLS = (
+    ".skills/daily-update/SKILL.md",
+    ".skills/wiki-capture/SKILL.md",
+    ".skills/wiki-dashboard/SKILL.md",
+    ".skills/wiki-import/SKILL.md",
+    ".skills/wiki-research/SKILL.md",
+    ".skills/wiki-stage-commit/SKILL.md",
+)
 PORTABLE_COMPLETION_REQUIREMENTS = (
     "obsidian-wiki transaction validate",
     "obsidian-wiki transaction commit",
@@ -504,6 +512,226 @@ def test_maintenance_family_has_safe_portable_completion(relative: str) -> None:
         assert required in portable_flat, (
             f"{relative}: missing special rule {required!r}"
         )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    SPECIAL_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_special_family_has_explicit_terminal_mode_gate(relative: str) -> None:
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+    personal_flat = " ".join(personal.split())
+
+    for required in (
+        "Select exactly one terminal completion branch",
+        "parent agent resolves config and mode",
+        "owner `AGENTS.md`",
+        "shared preparation is read-only",
+    ):
+        assert required in shared_flat, f"{relative}: missing shared gate {required!r}"
+
+    for required in (
+        "repository root as the command CWD",
+        "Whenever a candidate transaction is present",
+        "Review every warning",
+        "Fix every issue",
+        "status-aware recovery",
+        "recovery.preferred_action",
+        "recommended_action",
+        "allowed_actions",
+        "no trusted transaction ID",
+        "outcome is ambiguous",
+        "after commit succeeds or recovery is fully resolved",
+        "use only those bounded inputs to write the semantic `hot.md` as the agent",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing Portable special-flow rule {required!r}"
+        )
+
+    assert "Use this branch only when config resolution selected Personal mode" in personal_flat
+    assert "Do not fall through into Portable Repository completion" in personal_flat
+
+
+def test_daily_update_portable_is_read_only_until_a_page_repair_is_selected() -> None:
+    relative = ".skills/daily-update/SKILL.md"
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "obsidian-wiki transaction list --json",
+        "obsidian-wiki cache-check --configured",
+        "read-only daily check creates no transaction",
+        "If no knowledge-page repair is selected, finish the hot freshness flow, report, and stop",
+        "do not create an empty transaction or operation journal",
+        "cron and terminal-notification setup are Personal-mode-only",
+        "Compute complete authoritative source closure",
+    ):
+        assert required in portable
+    assert portable.index(
+        "If no knowledge-page repair is selected, finish the hot freshness flow, report, and stop"
+    ) < portable.index(
+        "obsidian-wiki transaction begin"
+    )
+
+
+def test_capture_portable_materializes_source_before_transaction_and_never_writes_raw() -> None:
+    relative = ".skills/wiki-capture/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    flat = " ".join(portable.split())
+    for required in (
+        "never write live `_raw/`",
+        "small, reviewable UTF-8 Markdown or plain-text snapshot",
+        "below a configured `sources` root",
+        "origin, capture time, content hash, and the exact captured text",
+        "quick/raw-only request is unsupported",
+        "candidate `sources` cites only accepted snapshot Source IDs",
+        "Preserve valid Unicode",
+    ):
+        assert required in flat
+    assert flat.index("small, reviewable UTF-8 Markdown or plain-text snapshot") < flat.index(
+        "Compute complete authoritative source closure"
+    ) < flat.index("obsidian-wiki transaction begin")
+    assert "Ensure `$OBSIDIAN_RAW_DIR` exists" not in portable
+
+
+def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
+    relative = ".skills/wiki-dashboard/SKILL.md"
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "`_meta/*.base` and Dataview dashboard configuration are unsupported",
+        "stop before any file mutation or `transaction begin`",
+        "do not partially create a knowledge page",
+        "no transaction is created",
+    ):
+        assert required in portable
+
+
+def test_import_portable_materializes_external_bundle_records_before_begin() -> None:
+    relative = ".skills/wiki-import/SKILL.md"
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "external bundle or import path is transient analysis input",
+        "reviewable UTF-8 source snapshots or records",
+        "below a configured `sources` root",
+        "origin, format, content hash, and imported records",
+        "repository-relative Source IDs",
+        "never persist an absolute import path",
+        "candidate replacements and deletions",
+        "transaction delete",
+    ):
+        assert required in portable
+    assert portable.index("reviewable UTF-8 source snapshots or records") < portable.index(
+        "Compute complete authoritative source closure"
+    ) < portable.index("obsidian-wiki transaction begin")
+
+
+def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> None:
+    relative = ".skills/wiki-research/SKILL.md"
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "network queries are read-only with respect to the vault",
+        "reviewable UTF-8 Markdown source snapshot",
+        "URL, retrieval time, content hash, excerpts, and page-level citations",
+        "below a configured `sources` root",
+        "If adequate evidence cannot be materialized and reviewed, stop before a transaction",
+        "candidate `sources` cites only accepted snapshot Source IDs",
+    ):
+        assert required in portable
+    assert portable.index("reviewable UTF-8 Markdown source snapshot") < portable.index(
+        "Compute complete authoritative source closure"
+    ) < portable.index("obsidian-wiki transaction begin")
+
+
+def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
+    relative = ".skills/wiki-stage-commit/SKILL.md"
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "obsidian-wiki transaction list --json",
+        "review the selected transaction with `transaction show`",
+        "never begin an empty or replacement transaction",
+        "validate an active candidate transaction before commit",
+        "retry, restore, abort, or discard",
+        "reject means abort or discard according to status",
+        "`_staging/` remains Personal-mode-only",
+    ):
+        assert required in portable
+    assert "obsidian-wiki transaction begin" not in portable
+
+
+def test_import_snapshot_candidate_uses_relative_unicode_source_id(tmp_path: Path) -> None:
+    source_id = "sources/imports/知识图谱/记录-01.md"
+    root, _, record = _portable_transaction(tmp_path, (source_id,))
+    source = root / source_id
+    source.write_text(
+        "origin: bundle/graph.json\nformat: graph-json\ncontent-hash: sha256:abc\n\n记录正文\n",
+        encoding="utf-8",
+    )
+    candidate = _write_candidate(
+        record,
+        "concepts/知识图谱.md",
+        f"""---
+title: 知识图谱
+category: concepts
+tags: [imported]
+sources: [{source_id}]
+summary: 从可审查导入记录生成的候选页。
+created: {record.started_at}
+updated: {record.started_at}
+---
+# 知识图谱
+""",
+    )
+    assert validate_candidate_page(candidate, record.source_ids) == (source_id,)
+    assert not Path(source_id).is_absolute()
 
 
 def test_maintenance_replacement_and_deletion_share_source_closure(

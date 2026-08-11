@@ -22,6 +22,27 @@ This skill has three modes:
 - **Quick mode (`--quick`)** — zero-friction staging: drop findings to `_raw/` in under 60 seconds with no manifest/index/log/QMD writes. Used for mid-session capture and by the session-end Stop hook. See below, then stop — do **not** run the full-mode steps.
 - **Correction mode (`--correction`)** — capture one atomic correction as derived knowledge while leaving the immutable conversation/source untouched. Use the template below, then update only the derived consumers and tracking links.
 
+**Portable Write Protocol branch:** The parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, reads the owner `AGENTS.md`, and Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not write `_raw/`, a knowledge page, or a source snapshot before selecting the branch.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD and never write live `_raw/`.
+
+1. Apply the KEEP/SKIP and classification guidance in memory. For KEEP, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
+2. Compute complete authoritative source closure from accepted snapshots and the existing Source IDs of every updated/deleted page. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`. Keep the absolute `candidate_vault` only in memory. New candidates use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+3. Write the finished candidate only below `candidate_vault`; its candidate `sources` cites only accepted snapshot Source IDs (a non-empty subset of the transaction closure). Declare removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+5. On failure, use status-aware recovery: inspect `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; use list/show plus retry, restore, abort, or discard only when allowed. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. The Quick, Correction, and Full workflows below retain direct `_raw/`, manifest v1, central-file, QMD, and Personal Git snapshot behavior. Config resolution provides concrete runtime values; it does not export them into the parent shell. Do not fall through into Portable Repository completion.
+
 ## Quick Mode (`--quick`)
 
 Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture this finding" / "save this bug fix" / "save this gotcha" / "drop this to raw" / "quick save to wiki", or automatically by the session-end Stop hook.
@@ -30,9 +51,7 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 
 1. **Resolve config** (Config Resolution Protocol in `llm-wiki/SKILL.md`): get `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_RAW_DIR` (default: `$OBSIDIAN_VAULT_PATH/_raw`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, do not create or write vault `_raw/`: quick staging is Personal-mode behavior. The user must first preserve the capture as an authoritative file below a configured `sources` path; then route its promotion through `wiki-ingest` and the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. If no such source exists, stop with that guidance rather than direct-writing the repository.
-
-   In Personal mode, Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not, then continue below.
+   Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not, then continue below.
 
    Capture does not independently reinterpret validator schema inputs. When `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, or `OBSIDIAN_SCHEMA_SOURCE` is present, preserve it for the downstream lint/trust consumer: CLI values take precedence over environment/config values, which take precedence over framework defaults, and explicit blank or whitespace-only values fail closed. Omit a variable to use defaults.
 
@@ -62,8 +81,6 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 ## Correction Mode (`--correction`)
 
 Use this mode when a user or stronger authority corrects a claim derived from an immutable conversation, tool result, or other raw source. Never edit or copy the raw source. Resolve config, read the vault `AGENTS.md`, and update an existing derived page when one owns the claim; otherwise create the smallest owner-compliant derived correction page.
-
-**Portable Write Protocol branch:** After resolving config, Portable Repository mode requires the correction's immutable source to be an authoritative file below a configured `sources` path. Follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`, write the corrected page only in `candidate_vault`, and suppress the direct manifest, `log.md`, `hot.md`, snapshot, and Git steps below. If the correction cannot be represented as a transaction, stop without changing the live vault. Personal mode retains the workflow below.
 
 Record exactly one atomic claim pair. `speaker_type` is semantic and must be assessed independently of a serialized message `role` (a tool result may be serialized as `role=user`). Do not include raw transcript excerpts.
 
@@ -107,7 +124,6 @@ After writing the derived correction, link the immutable source to the created/u
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, require an actual authoritative source file and follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Create the finished note only below `candidate_vault` and suppress direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If the conversation has not been preserved as an authoritative source, stop with guidance instead of direct-writing the vault. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand existing wiki content (avoid duplicates)
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it gives context on recent activity
 

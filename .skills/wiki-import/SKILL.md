@@ -19,10 +19,9 @@ Either way, the import writes pages with correct frontmatter and wikilinks, then
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Treat the import bundle files as the actual sources, create imported pages only in the returned `candidate_vault`, declare removals explicitly, and suppress direct central-file, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch after source detection. Until then, shared preparation is read-only; do not copy bundle records or write vault files.
 2. Read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists — apply any owner-specific conventions.
+3. Treat that file as the owner `AGENTS.md` for the selected mode.
 
 ## Step 1: Locate and Detect Source Type
 
@@ -65,6 +64,25 @@ Import preview (OKF bundle — full pages)
   Pages:  N total  (concepts: A, entities: B, skills: C, references: D, ...)
   Target: $OBSIDIAN_VAULT_PATH
 ```
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The external bundle or import path is transient analysis input; never persist an absolute import path.
+
+1. Before a transaction, materialize the selected data as small, reviewable UTF-8 source snapshots or records below a configured `sources` root. Each record includes origin, format, content hash, and imported records or bounded excerpts sufficient to reproduce the candidate. Review and accept every snapshot. Preserve valid Unicode filenames and repository-relative Source IDs exactly.
+2. Resolve conflicts in memory and Compute complete authoritative source closure as the set union of accepted import snapshot IDs plus existing source IDs of every live page replaced or deleted; never use compiled vault page paths. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`, retain its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+3. Write candidate replacements and new pages only below `candidate_vault`; each candidate `sources` cites only a non-empty subset of transaction Source IDs. Represent approved candidate replacements and deletions explicitly, using `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty` for each deletion.
+4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+5. On failure, use status-aware recovery: inspect `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; use list/show plus retry, restore, abort, or discard only when allowed. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue with conflict resolution, page reconstruction, manifest v1, `index.md`, `log.md`, `hot.md`, and Personal Git behavior below. Do not fall through into Portable Repository completion.
 
 ## Step 2: Determine Conflict Resolution Mode
 
