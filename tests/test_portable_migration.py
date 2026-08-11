@@ -1291,6 +1291,80 @@ def test_apply_preserves_recreated_empty_skill_directory_during_rollback(
     ) == replacement_postimage
 
 
+def test_apply_preserves_directory_replaced_after_rollback_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    empty_directory = root / ".skills/wiki-ingest/references/empty/nested"
+    original_replace = migration_module._atomic_replace_bytes
+    original_read_directory = migration_module._read_directory_postimage
+    original_rollback = migration_module._rollback_targets
+    rollback_started = False
+    page_applied = False
+    failed = False
+    replaced = False
+    replacement_postimage: tuple[int, int, int] | None = None
+
+    def fail_after_page(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal failed, page_applied
+        if page_applied and not failed:
+            failed = True
+            raise OSError("post-validation rollback race")
+        original_replace(path, data, **kwargs)
+        if path == page:
+            page_applied = True
+
+    def mark_rollback(*args, **kwargs):
+        nonlocal rollback_started
+        rollback_started = True
+        return original_rollback(*args, **kwargs)
+
+    def replace_after_validation(repo: Path, directory: Path):
+        nonlocal replaced, replacement_postimage
+        postimage = original_read_directory(repo, directory)
+        if rollback_started and directory == empty_directory and not replaced:
+            replacement = empty_directory.parent / "concurrent-replacement"
+            displaced = empty_directory.parent / "displaced-owned-directory"
+            replacement.mkdir(mode=0o755)
+            replacement.chmod(0o755)
+            empty_directory.rename(displaced)
+            replacement.rename(empty_directory)
+            metadata = empty_directory.stat()
+            replacement_postimage = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_ctime_ns,
+            )
+            replaced = True
+        return postimage
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", fail_after_page)
+    monkeypatch.setattr(migration_module, "_rollback_targets", mark_rollback)
+    monkeypatch.setattr(
+        migration_module, "_read_directory_postimage", replace_after_validation
+    )
+
+    with pytest.raises(MigrationError, match="post-validation rollback race"):
+        apply_migration(
+            plan, installed_version="2026.8", source_skills=source_skills
+        )
+
+    assert replaced
+    assert replacement_postimage is not None
+    assert any(
+        child.is_dir()
+        and (
+            child.stat().st_dev,
+            child.stat().st_ino,
+            child.stat().st_ctime_ns,
+        )
+        == replacement_postimage
+        for child in empty_directory.parent.iterdir()
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")
 def test_apply_rollback_restores_original_file_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
