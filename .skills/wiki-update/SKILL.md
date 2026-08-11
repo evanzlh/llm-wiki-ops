@@ -242,9 +242,12 @@ Before selecting the terminal workflow:
 
 Use this branch only when config resolution selected Portable Repository mode
 and the parent has applied the owner `AGENTS.md`. Keep the repository root as
-the command CWD throughout. The absolute `candidate_vault` is a runtime
-destination only: keep it in agent memory, do not `cd` into it, and never
-persist it in a page, manifest, operation record, skill, or configuration.
+the command CWD throughout. Here `<vault>/.manifest.json` is the resolved
+Portable marker and `<vault>/.manifest/sources/` contains the per-source
+shards; transaction commit, not the agent, maintains both. The absolute
+`candidate_vault` is a runtime destination only: keep it in agent memory, do
+not `cd` into it, and never persist it in a page, manifest, operation record,
+skill, or configuration.
 
 1. **Establish any missing source authority.** Before source closure, the
    parent may write a small, reviewable text source snapshot below the
