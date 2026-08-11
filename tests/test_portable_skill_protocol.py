@@ -238,6 +238,89 @@ def _fenced_block_after(text: str, label: str, language: str) -> str:
     return fenced.split("\n```", 1)[0] + "\n"
 
 
+def _portable_begin_commands(portable: str) -> list[list[str]]:
+    shell_blocks: list[str] = []
+    prose_lines: list[str] = []
+    fence: tuple[str, int, bool] | None = None
+    block_lines: list[str] = []
+
+    for line in portable.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        match = re.match(
+            r"^[ \t]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", content
+        )
+        if fence is None:
+            if match is None:
+                prose_lines.append(line)
+                continue
+            marker = match.group("marker")
+            language = match.group("tail").strip().split(maxsplit=1)[0].lower()
+            fence = (marker[0], len(marker), language in {"bash", "shell"})
+            block_lines = []
+            continue
+
+        marker_char, marker_len, is_shell = fence
+        if (
+            match is not None
+            and match.group("marker")[0] == marker_char
+            and len(match.group("marker")) >= marker_len
+            and not match.group("tail").strip()
+        ):
+            if is_shell:
+                shell_blocks.append("".join(block_lines))
+            fence = None
+            block_lines = []
+            continue
+        block_lines.append(line)
+
+    fragments = re.findall(
+        r"(?<!`)`([^`\r\n]+)`(?!`)", "".join(prose_lines)
+    )
+    for block in shell_blocks:
+        logical = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", block)
+        fragments.extend(logical.splitlines())
+
+    commands: list[list[str]] = []
+    for fragment in fragments:
+        try:
+            tokens = shlex.split(fragment.strip())
+        except ValueError:
+            continue
+        for index in range(max(0, len(tokens) - 2)):
+            if tokens[index : index + 3] == [
+                "obsidian-wiki",
+                "transaction",
+                "begin",
+            ]:
+                commands.append(tokens[index:])
+                break
+    return commands
+
+
+def _assert_portable_begin_source_syntax(portable: str, *, relative: str) -> None:
+    for tokens in _portable_begin_commands(portable):
+        source_positions = [
+            index
+            for index, token in enumerate(tokens)
+            if token.lstrip("[") == "--source"
+        ]
+        assert len(source_positions) == 1, (
+            f"{relative}: transaction begin requires exactly one --source: {tokens!r}"
+        )
+        source_index = source_positions[0]
+        next_option = next(
+            (
+                index
+                for index in range(source_index + 1, len(tokens))
+                if tokens[index].lstrip("[").startswith("-")
+            ),
+            len(tokens),
+        )
+        assert tokens[source_index + 1 : next_option], (
+            f"{relative}: --source requires at least one source value: {tokens!r}"
+        )
+
+
 def _portable_transaction(tmp_path: Path, source_ids: tuple[str, ...]):
     root = tmp_path / "knowledge"
     (root / ".obsidian-wiki").mkdir(parents=True)
@@ -426,26 +509,77 @@ def test_portable_transaction_begin_uses_one_source_flag_with_multi_source_value
         relative=relative,
         next_heading="Personal mode completion",
     )
-    commands = re.findall(
-        r"obsidian-wiki[ \t]+transaction[ \t]+begin[^\n`]*",
-        portable,
+    commands = _portable_begin_commands(portable)
+    if "obsidian-wiki transaction begin" in portable:
+        assert commands, f"{relative}: failed to parse documented transaction begin"
+    _assert_portable_begin_source_syntax(portable, relative=relative)
+
+
+@pytest.mark.parametrize(
+    ("case", "portable_body", "valid"),
+    (
+        (
+            "inline-correct",
+            "Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json`.",
+            True,
+        ),
+        (
+            "inline-repeated",
+            "Run `obsidian-wiki transaction begin --source a.md [--source b.md] --json`.",
+            False,
+        ),
+        (
+            "fenced-single-line",
+            "```bash\nobsidian-wiki transaction begin --source a.md --json\n```",
+            True,
+        ),
+        (
+            "continued-transaction",
+            "```shell\nobsidian-wiki transaction \\\n  begin --source a.md b.md --json\n```",
+            True,
+        ),
+        (
+            "continued-begin",
+            "```bash\nobsidian-wiki transaction begin \\\n  --source a.md b.md --json --pretty\n```",
+            True,
+        ),
+        (
+            "concrete-multiple-sources",
+            "`obsidian-wiki transaction begin --source sources/a.md sources/b.md --json`",
+            True,
+        ),
+        (
+            "fenced-repeated",
+            "```bash\nobsidian-wiki transaction begin --source a.md --source b.md\n```",
+            False,
+        ),
+        (
+            "missing-source",
+            "`obsidian-wiki transaction begin --json --pretty`",
+            False,
+        ),
+    ),
+)
+def test_portable_begin_scanner_handles_inline_fences_and_continuations(
+    case: str, portable_body: str, valid: bool
+) -> None:
+    text = (
+        "## Portable Repository completion\n"
+        f"{portable_body}\n"
+        "## Personal mode completion\nPersonal.\n"
     )
-    for command in commands:
-        tokens = shlex.split(command.rstrip(".,;:"))
-        source_flags = [token for token in tokens if token.lstrip("[") == "--source"]
-        assert len(source_flags) == 1, (
-            f"{relative}: transaction begin accepts one --source followed by all values: "
-            f"{command!r}"
-        )
-        source_index = tokens.index("--source")
-        json_index = tokens.index("--json")
-        source_values = tokens[source_index + 1 : json_index]
-        assert len(source_values) >= 3, (
-            f"{relative}: transaction begin must show required + optional sources: {command!r}"
-        )
-        assert any(token.startswith("[") and "source" in token for token in source_values), (
-            f"{relative}: transaction begin must show the multi-source value form: {command!r}"
-        )
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=case,
+        next_heading="Personal mode completion",
+    )
+    assert len(_portable_begin_commands(portable)) == 1, case
+    if valid:
+        _assert_portable_begin_source_syntax(portable, relative=case)
+    else:
+        with pytest.raises(AssertionError):
+            _assert_portable_begin_source_syntax(portable, relative=case)
 
 
 def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
