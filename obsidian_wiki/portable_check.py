@@ -849,6 +849,15 @@ def _canonical_root_entries(canonical: SkillCollection) -> tuple[SkillEntry, ...
     return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
+_UNSAFE_SKILL_MESSAGES = {
+    "symlink": "symlink detected in agent mirror",
+    "hard-link": "hard link detected in agent mirror",
+    "special": "special filesystem entry detected in agent mirror",
+    "changed": "agent mirror entry changed during inspection",
+    "read-error": "agent mirror entry could not be read safely",
+}
+
+
 def _check_skill_mirrors(
     config: PortableConfig,
     canonical: SkillCollection,
@@ -869,7 +878,7 @@ def _check_skill_mirrors(
             )
             continue
         try:
-            mirror_snapshot, unsafe_paths = snapshot_ordinary_tree_with_unsafe(
+            mirror_snapshot, unsafe_findings = snapshot_ordinary_tree_with_unsafe(
                 mirror_root, anchor=config.root
             )
         except (OSError, ValueError) as exc:
@@ -890,19 +899,21 @@ def _check_skill_mirrors(
                 )
             )
             continue
-        for unsafe_path in unsafe_paths:
+        for unsafe in unsafe_findings:
             path = (
                 agent_relative
-                if unsafe_path == "."
-                else (PurePosixPath(agent_relative) / unsafe_path).as_posix()
+                if unsafe.path == "."
+                else (PurePosixPath(agent_relative) / unsafe.path).as_posix()
             )
             issues.append(
                 CheckIssue(
                     "skill-mirror-unsafe",
                     path,
-                    "agent mirror entry is unsafe or changed during inspection",
+                    _UNSAFE_SKILL_MESSAGES[unsafe.reason],
                 )
             )
+
+        unsafe_paths = tuple(unsafe.path for unsafe in unsafe_findings)
 
         def blocked(path: str) -> bool:
             return any(

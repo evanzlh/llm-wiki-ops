@@ -56,6 +56,12 @@ class SkillEntry:
 
 
 @dataclass(frozen=True)
+class UnsafeSkillEntry:
+    path: str
+    reason: Literal["symlink", "hard-link", "special", "changed", "read-error"]
+
+
+@dataclass(frozen=True)
 class SkillTree:
     name: str
     description: str
@@ -152,19 +158,19 @@ def _snapshot_entry(
     entries: list[SkillEntry],
     *,
     ignore_source_artifacts: bool,
-    unsafe_entries: list[str] | None = None,
+    unsafe_entries: list[UnsafeSkillEntry] | None = None,
 ) -> None:
     try:
         metadata = path.lstat()
     except OSError:
         if unsafe_entries is None:
             raise
-        unsafe_entries.append(relative)
+        unsafe_entries.append(UnsafeSkillEntry(relative, "read-error"))
         return
     mode = metadata.st_mode
     if stat.S_ISLNK(mode):
         if unsafe_entries is not None:
-            unsafe_entries.append(relative)
+            unsafe_entries.append(UnsafeSkillEntry(relative, "symlink"))
             return
         raise _error(path, "symbolic links are not allowed")
     if stat.S_ISDIR(mode):
@@ -176,7 +182,7 @@ def _snapshot_entry(
         except OSError:
             if unsafe_entries is None:
                 raise
-            unsafe_entries.append(relative)
+            unsafe_entries.append(UnsafeSkillEntry(relative, "read-error"))
             entries[:] = [
                 entry
                 for entry in entries
@@ -197,7 +203,7 @@ def _snapshot_entry(
         except (OSError, ValueError):
             if unsafe_entries is None:
                 raise
-            unsafe_entries.append(relative)
+            unsafe_entries.append(UnsafeSkillEntry(relative, "changed"))
             entries[:] = [
                 entry
                 for entry in entries
@@ -207,22 +213,27 @@ def _snapshot_entry(
         return
     if not stat.S_ISREG(mode):
         if unsafe_entries is not None:
-            unsafe_entries.append(relative)
+            unsafe_entries.append(UnsafeSkillEntry(relative, "special"))
             return
         raise _error(path, "special files are not allowed")
     if metadata.st_nlink != 1:
         if unsafe_entries is not None:
-            unsafe_entries.append(relative)
+            unsafe_entries.append(UnsafeSkillEntry(relative, "hard-link"))
             return
         raise _error(path, "multiply-linked regular files are not allowed")
     if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
         return
     try:
         content = _read_ordinary_file(path, metadata)
-    except (OSError, ValueError):
+    except OSError:
         if unsafe_entries is None:
             raise
-        unsafe_entries.append(relative)
+        unsafe_entries.append(UnsafeSkillEntry(relative, "read-error"))
+        return
+    except ValueError:
+        if unsafe_entries is None:
+            raise
+        unsafe_entries.append(UnsafeSkillEntry(relative, "changed"))
         return
     entries.append(
         SkillEntry(
@@ -624,13 +635,13 @@ def _snapshot_bound_directory(
     descriptor: int,
     relative: str,
     entries: list[SkillEntry],
-    unsafe_entries: list[str],
+    unsafe_entries: list[UnsafeSkillEntry],
 ) -> None:
     before = os.fstat(descriptor)
     try:
         names = sorted(os.listdir(descriptor))
     except OSError:
-        unsafe_entries.append(relative or ".")
+        unsafe_entries.append(UnsafeSkillEntry(relative or ".", "read-error"))
         _remove_entry_subtree(entries, relative)
         return
     for name in names:
@@ -638,11 +649,11 @@ def _snapshot_bound_directory(
         try:
             observed = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
         except OSError:
-            unsafe_entries.append(child_relative)
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "read-error"))
             continue
         mode = observed.st_mode
         if stat.S_ISLNK(mode):
-            unsafe_entries.append(child_relative)
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "symlink"))
             continue
         if stat.S_ISDIR(mode):
             child_descriptor = None
@@ -663,23 +674,32 @@ def _snapshot_bound_directory(
                     _same_bound_snapshot(opened, attached, directory=True)
                 ):
                     raise ValueError("directory changed during scan")
-            except (OSError, ValueError):
-                unsafe_entries.append(child_relative)
+            except OSError:
+                unsafe_entries.append(UnsafeSkillEntry(child_relative, "read-error"))
+                _remove_entry_subtree(entries, child_relative)
+            except ValueError:
+                unsafe_entries.append(UnsafeSkillEntry(child_relative, "changed"))
                 _remove_entry_subtree(entries, child_relative)
             finally:
                 if child_descriptor is not None:
                     os.close(child_descriptor)
             continue
-        if not stat.S_ISREG(mode) or observed.st_nlink != 1:
-            unsafe_entries.append(child_relative)
+        if not stat.S_ISREG(mode):
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "special"))
+            continue
+        if observed.st_nlink != 1:
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "hard-link"))
             continue
         try:
             content, opened = _read_bound_file(descriptor, name, observed)
             attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             if not _same_bound_snapshot(opened, attached, directory=False):
                 raise ValueError("file changed after being read")
-        except (OSError, ValueError):
-            unsafe_entries.append(child_relative)
+        except OSError:
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "read-error"))
+            continue
+        except ValueError:
+            unsafe_entries.append(UnsafeSkillEntry(child_relative, "changed"))
             continue
         entries.append(
             SkillEntry(
@@ -691,29 +711,29 @@ def _snapshot_bound_directory(
         )
     final = os.fstat(descriptor)
     if not _same_bound_snapshot(before, final, directory=True):
-        unsafe_entries.append(relative or ".")
+        unsafe_entries.append(UnsafeSkillEntry(relative or ".", "changed"))
         _remove_entry_subtree(entries, relative)
 
 
 def _snapshot_posix_bound_tree(
     anchor: Path, root: Path
-) -> tuple[tuple[SkillEntry, ...], tuple[str, ...]]:
+) -> tuple[tuple[SkillEntry, ...], tuple[UnsafeSkillEntry, ...]]:
     anchor = Path(os.path.abspath(os.fspath(anchor)))
     root = Path(os.path.abspath(os.fspath(root)))
     try:
         relative = root.relative_to(anchor)
     except ValueError:
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "changed"),)
     try:
         anchor_observed = anchor.lstat()
     except FileNotFoundError:
         return (), ()
     except OSError:
-        return (), (".",)
-    if stat.S_ISLNK(anchor_observed.st_mode) or not stat.S_ISDIR(
-        anchor_observed.st_mode
-    ):
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "read-error"),)
+    if stat.S_ISLNK(anchor_observed.st_mode):
+        return (), (UnsafeSkillEntry(".", "symlink"),)
+    if not stat.S_ISDIR(anchor_observed.st_mode):
+        return (), (UnsafeSkillEntry(".", "special"),)
 
     descriptors: list[int] = []
     bindings: list[tuple[int, str, int, os.stat_result]] = []
@@ -722,52 +742,56 @@ def _snapshot_posix_bound_tree(
         descriptors.append(current)
         anchor_opened = os.fstat(current)
         if not _same_bound_snapshot(anchor_observed, anchor_opened, directory=True):
-            return (), (".",)
+            return (), (UnsafeSkillEntry(".", "changed"),)
         for part in relative.parts:
             try:
                 observed = os.stat(part, dir_fd=current, follow_symlinks=False)
             except FileNotFoundError:
                 return (), ()
             except OSError:
-                return (), (".",)
-            if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
-                return (), (".",)
+                return (), (UnsafeSkillEntry(".", "read-error"),)
+            if stat.S_ISLNK(observed.st_mode):
+                return (), (UnsafeSkillEntry(".", "symlink"),)
+            if not stat.S_ISDIR(observed.st_mode):
+                return (), (UnsafeSkillEntry(".", "special"),)
             try:
                 child = os.open(part, _bound_directory_flags(), dir_fd=current)
             except OSError:
-                return (), (".",)
+                return (), (UnsafeSkillEntry(".", "read-error"),)
             descriptors.append(child)
             opened = os.fstat(child)
             if not _same_bound_snapshot(observed, opened, directory=True):
-                return (), (".",)
+                return (), (UnsafeSkillEntry(".", "changed"),)
             bindings.append((current, part, child, opened))
             current = child
 
         entries: list[SkillEntry] = []
-        unsafe_entries: list[str] = []
+        unsafe_entries: list[UnsafeSkillEntry] = []
         _snapshot_bound_directory(current, "", entries, unsafe_entries)
         try:
             anchor_attached = anchor.lstat()
         except OSError:
-            return (), (".",)
+            return (), (UnsafeSkillEntry(".", "read-error"),)
         if not _same_bound_snapshot(anchor_opened, anchor_attached, directory=True):
-            return (), (".",)
+            return (), (UnsafeSkillEntry(".", "changed"),)
         for parent, name, child, opened in bindings:
             try:
                 attached = os.stat(name, dir_fd=parent, follow_symlinks=False)
                 final = os.fstat(child)
             except OSError:
-                return (), (".",)
+                return (), (UnsafeSkillEntry(".", "read-error"),)
             if not _same_bound_snapshot(opened, attached, directory=True) or not (
                 _same_bound_snapshot(opened, final, directory=True)
             ):
-                return (), (".",)
+                return (), (UnsafeSkillEntry(".", "changed"),)
         return (
             tuple(sorted(entries, key=lambda entry: entry.path)),
-            tuple(sorted(set(unsafe_entries))),
+            tuple(
+                sorted(set(unsafe_entries), key=lambda item: (item.path, item.reason))
+            ),
         )
     except OSError:
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "read-error"),)
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -804,20 +828,20 @@ def _deepest_existing_ordinary_directory(anchor: Path, root: Path) -> Path:
 
 def snapshot_ordinary_tree_with_unsafe(
     root: Path, *, anchor: Path | None = None
-) -> tuple[tuple[SkillEntry, ...], tuple[str, ...]]:
+) -> tuple[tuple[SkillEntry, ...], tuple[UnsafeSkillEntry, ...]]:
     """Snapshot ordinary entries and report unsafe paths without following them."""
     if anchor is not None:
         if _SUPPORTS_BOUND_TREE_WALK:
             return _snapshot_posix_bound_tree(anchor, root)
         if os.name != "nt":
-            return (), (".",)
+            return (), (UnsafeSkillEntry(".", "read-error"),)
         from .local_state import _close_windows_handles, _windows_directory_guard
 
         try:
             guarded = _deepest_existing_ordinary_directory(anchor, root)
             handles = _windows_directory_guard(anchor, (guarded,))
         except (OSError, RuntimeError, ValueError):
-            return (), (".",)
+            return (), (UnsafeSkillEntry(".", "read-error"),)
         try:
             return snapshot_ordinary_tree_with_unsafe(root)
         finally:
@@ -827,18 +851,18 @@ def snapshot_ordinary_tree_with_unsafe(
     except FileNotFoundError:
         return (), ()
     except OSError:
-        return (), (".",)
-    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(
-        root_metadata.st_mode
-    ):
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "read-error"),)
+    if stat.S_ISLNK(root_metadata.st_mode):
+        return (), (UnsafeSkillEntry(".", "symlink"),)
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        return (), (UnsafeSkillEntry(".", "special"),)
 
     entries: list[SkillEntry] = []
-    unsafe_entries: list[str] = []
+    unsafe_entries: list[UnsafeSkillEntry] = []
     try:
         children = sorted(root.iterdir(), key=lambda item: item.name)
     except OSError:
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "read-error"),)
     for child in children:
         _snapshot_entry(
             child,
@@ -850,10 +874,10 @@ def snapshot_ordinary_tree_with_unsafe(
     try:
         _validate_directory_unchanged(root, root_metadata)
     except (OSError, ValueError):
-        return (), (".",)
+        return (), (UnsafeSkillEntry(".", "changed"),)
     return (
         tuple(sorted(entries, key=lambda entry: entry.path)),
-        tuple(sorted(set(unsafe_entries))),
+        tuple(sorted(set(unsafe_entries), key=lambda item: (item.path, item.reason))),
     )
 
 

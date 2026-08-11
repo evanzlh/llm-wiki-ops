@@ -867,7 +867,12 @@ def test_skill_sync_plan_root_unsafe_collapses_redundant_unsafe_descendants(
 
     def root_and_child_unsafe(path: Path, *, anchor: Path):
         if path == root / ".kiro/skills":
-            return (), (".", "wiki-ingest/unsafe-child")
+            return (), (
+                skill_trees.UnsafeSkillEntry(".", "changed"),
+                skill_trees.UnsafeSkillEntry(
+                    "wiki-ingest/unsafe-child", "symlink"
+                ),
+            )
         return original(path, anchor=anchor)
 
     monkeypatch.setattr(

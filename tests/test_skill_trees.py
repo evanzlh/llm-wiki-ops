@@ -130,6 +130,36 @@ def test_snapshot_ordinary_tree_rejects_unsafe_entries(
         snapshot_ordinary_tree(tmp_path)
 
 
+def test_tolerant_snapshot_preserves_structured_unsafe_reasons(
+    tmp_path: Path,
+) -> None:
+    from obsidian_wiki.skill_trees import (
+        UnsafeSkillEntry,
+        snapshot_ordinary_tree_with_unsafe,
+    )
+
+    root = tmp_path / "repo"
+    tree = root / "mirror"
+    tree.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+    (tree / "symlink").symlink_to(external)
+    os.link(external, tree / "hardlink")
+    try:
+        os.mkfifo(tree / "special")
+    except OSError as exc:
+        pytest.skip(f"special files unavailable: {exc}")
+
+    entries, unsafe = snapshot_ordinary_tree_with_unsafe(tree, anchor=root)
+
+    assert entries == ()
+    assert unsafe == (
+        UnsafeSkillEntry("hardlink", "hard-link"),
+        UnsafeSkillEntry("special", "special"),
+        UnsafeSkillEntry("symlink", "symlink"),
+    )
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     [

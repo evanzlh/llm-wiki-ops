@@ -1406,11 +1406,11 @@ def _plan_one_skill_mirror(
     try:
         _assert_safe_managed_path(root, target)
         if target.exists():
-            mirror_snapshot, unsafe = snapshot_ordinary_tree_with_unsafe(
+            mirror_snapshot, unsafe_findings = snapshot_ordinary_tree_with_unsafe(
                 target, anchor=root
             )
         else:
-            mirror_snapshot, unsafe = (), ()
+            mirror_snapshot, unsafe_findings = (), ()
         _assert_safe_managed_path(root, target)
     except (OSError, ValueError):
         return SkillMirrorChange(
@@ -1423,7 +1423,7 @@ def _plan_one_skill_mirror(
 
     canonical = {entry.path: entry for entry in canonical_entries}
     mirror = {entry.path: entry for entry in mirror_snapshot}
-    unsafe = _minimal_changed_paths(unsafe)
+    unsafe = _minimal_changed_paths(finding.path for finding in unsafe_findings)
     changed = _minimal_changed_paths(
         (
             path
