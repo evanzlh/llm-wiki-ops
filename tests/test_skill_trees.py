@@ -222,6 +222,58 @@ def test_rejects_ambiguous_or_unsupported_folded_metadata(
         discover_skill_collection(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "'other:key': >\ndescription: Use this skill.",
+        '"other:key": >\ndescription: Use this skill.',
+        "other:key: >\ndescription: Use this skill.",
+        "!tag other: >\ndescription: Use this skill.",
+        "&anchor other: >\ndescription: Use this skill.",
+        "'unterminated: >\ndescription: Use this skill.",
+        "description:\t>\n  Block content.",
+        "description: >\t\n  Block content.",
+        "'other':\t>\ndescription: Use this skill.",
+    ],
+)
+def test_rejects_non_description_block_keys_and_structural_tabs(
+    tmp_path: Path, metadata: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + metadata
+        + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="frontmatter|block|tab|description"):
+        discover_skill_collection(tmp_path)
+
+
+def test_block_header_near_misses_remain_plain_scalars(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: example\n"
+        "description: Use a > comparison: literal.\n"
+        "quoted: '>'\n"
+        'double_quoted: "|"\n'
+        "---\n\n"
+        "# Body\n\n'other:key': >\n  Not frontmatter.\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    tree = discover_skill_collection(tmp_path).skills[0]
+    assert tree.description == "Use a > comparison: literal."
+
+
 def test_discovers_every_current_bundled_skill_with_nonempty_description() -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
 

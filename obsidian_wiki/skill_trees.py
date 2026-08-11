@@ -208,18 +208,30 @@ def _normalized_skill_frontmatter(text: str) -> str:
     folded_line: int | None = None
     for index in range(1, closing):
         line = lines[index]
-        if not line or line[0].isspace() or ":" not in line:
+        if not line or line[0].isspace():
             continue
-        key, raw = line.split(":", 1)
-        value = raw.strip()
-        if key.strip() == "description":
+        block_header: tuple[str, str] | None = None
+        for separator in range(len(line) - 1, -1, -1):
+            if line[separator] != ":":
+                continue
+            candidate = line[separator + 1 :].lstrip(" \t")
+            if candidate.startswith((">", "|")):
+                block_header = (line[:separator], candidate)
+                break
+        if block_header is not None:
+            key, value = block_header
+            if "\t" in line:
+                raise FrontmatterError("skill metadata block header contains a tab")
+            if key.strip(" ") != "description":
+                raise FrontmatterError("unsupported skill metadata block field")
             description_lines.append(index)
             if value in _SUPPORTED_DESCRIPTION_BLOCKS:
                 folded_line = index
-            elif value.startswith((">", "|")):
+            else:
                 raise FrontmatterError("unsupported folded skill description style")
-        elif value.startswith((">", "|")):
-            raise FrontmatterError("unsupported skill metadata block field")
+            continue
+        if ":" in line and line.split(":", 1)[0].strip(" ") == "description":
+            description_lines.append(index)
 
     if len(description_lines) > 1:
         raise FrontmatterError("duplicate skill description")
