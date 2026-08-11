@@ -220,9 +220,7 @@ def _skill_block_value(raw_region: str) -> tuple[str, bool] | None:
     ):
         value_end -= 1
     value = uncommented[value_start:value_end]
-    if not value.startswith((">", "|")) or any(
-        _structural_whitespace(character) for character in value
-    ):
+    if not value.startswith((">", "|")):
         return None
     start = raw_region.find(uncommented)
     if start < 0:

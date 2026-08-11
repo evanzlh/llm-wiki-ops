@@ -377,6 +377,78 @@ def test_rejects_unsupported_or_malformed_commented_block_headers(
         discover_skill_collection(tmp_path)
 
 
+@pytest.mark.parametrize("comment", ["", " # inline comment"])
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        ("description: > 2", "style"),
+        ("description: >- extra", "style"),
+        ("description: | text", "style"),
+        ("other: > extra", "field"),
+    ],
+)
+def test_rejects_every_unquoted_block_like_mapping_value(
+    tmp_path: Path, mapping: str, message: str, comment: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        + mapping
+        + comment
+        + "\ndescription: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match=message):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize("comment", ["", " # inline comment"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("'> 2'", "> 2"),
+        ('">- extra"', ">- extra"),
+        ("'| text'", "| text"),
+    ],
+)
+def test_quoted_block_like_description_values_remain_scalars(
+    tmp_path: Path, value: str, expected: str, comment: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: "
+        + value
+        + comment
+        + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == expected
+
+
+def test_quoted_block_like_other_field_remains_scalar(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\nother: '> extra'\n"
+        "description: Use this skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Use this skill."
+    )
+
+
 @pytest.mark.parametrize(
     "header",
     [
