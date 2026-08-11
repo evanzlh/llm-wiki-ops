@@ -208,8 +208,12 @@ Status scans ignore `.gitkeep` and any file with hidden source path components
 (relative components beginning with `.`). These placeholders and hidden files
 are not authoritative tracked sources.
 
-Use `obsidian-wiki cache-check` and `cache-update` for v2 state. Do not run the
-legacy `scripts/manifest.py` commands, manually edit shards, or replace the
+Use `obsidian-wiki cache-check --configured` for Portable v2 freshness. When it
+reports a new or stale source, compile or recompile candidate pages through a
+transaction; transaction commit owns the affected manifest shards. The
+`cache-update` command remains a low-level compatibility interface, not a
+Portable transaction completion step. Do not run the legacy
+`scripts/manifest.py` commands, manually edit shard fields, or replace the
 marker with a monolithic source map. A live URL or external filesystem path is
 not a durable Source ID; store necessary external material as a small,
 reviewable snapshot below `sources` using ordinary Git. Git LFS pointers are

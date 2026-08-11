@@ -579,7 +579,7 @@ Available for automation, scripting, and debugging. Skills call some of these in
 | `batch-plan <vault> <source_dir>` | Split a source directory into parallel-ingest batches, skipping unchanged files |
 | `cache-check <vault> <sources...>` | Legacy explicit-vault form: which sources are new / modified / unchanged in the mode-appropriate manifest |
 | `cache-check --configured <sources...>` | Resolve the vault and mode from CWD configuration; every positional path is a source |
-| `cache-update <vault> <source>` | Record a source hash and pages in personal v1 or the portable v2 shard |
+| `cache-update <vault> <source>` | Low-level compatibility interface: record a source hash and pages in personal v1 or a portable v2 shard |
 | `cache-hash <path>` | Compute a file or directory hash (no manifest I/O) |
 | `ast-extract <path>` | Extract classes, functions, and imports from code — no LLM, no API calls |
 
@@ -593,6 +593,12 @@ obsidian-wiki cache-update /resolved/vault /resolved/source.md --json --pretty
 obsidian-wiki cache-hash /resolved/source.md --json --pretty
 obsidian-wiki ast-extract ./src --pretty
 ```
+
+`cache-update` is a low-level compatibility interface for explicit manifest
+maintenance and legacy automation; the positional example documents its real
+CLI form. It is not a Portable transaction completion step: ordinary Portable
+write skills use `transaction commit`, which derives and owns the affected
+shards.
 
 Cache output is JSON by default. `cache-check`, `cache-update`, and
 `cache-hash` also accept explicit `--json` idempotently, and `--pretty` only
@@ -628,8 +634,24 @@ Exit behavior is suitable for any CI platform:
 Portable manifest drift uses three stable error codes: `source-new` means an
 authoritative source has no shard, `source-stale` means its content hash no
 longer matches, and `source-orphaned` means a shard has no source file. All
-three are PR blockers: compile or reconcile the source and run `cache-update`, then rerun
-`check` before merging.
+three are PR blockers.
+
+For `source-new` or `source-stale`, compile or recompile the source through a
+transaction. Begin with the complete authoritative source closure, write and
+review candidate pages from the repository-root CWD, and use this completion
+sequence:
+
+```bash
+obsidian-wiki transaction begin --source <source> --json --pretty
+# Compile or recompile reviewed candidate pages below the returned candidate_vault.
+obsidian-wiki transaction validate <id> --json --pretty
+obsidian-wiki transaction commit <id> --json --pretty
+obsidian-wiki check
+```
+
+Commit updates the affected shards. Do not follow transaction completion with
+`cache-update`. After commit, rerun `obsidian-wiki check` and review the
+Git diff before merging.
 
 For `source-orphaned`, restore a source deleted by mistake. If deletion was
 intentional, remove the entire corresponding shard file with

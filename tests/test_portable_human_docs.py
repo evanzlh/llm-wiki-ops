@@ -40,6 +40,36 @@ def test_cli_documents_cache_structured_output_contract() -> None:
         assert required in text
 
 
+def test_portable_manifest_docs_keep_cache_update_out_of_completion() -> None:
+    configuration = _flat("docs/configuration.md")
+    assert (
+        "Use `obsidian-wiki cache-check` and `cache-update` for v2 state"
+        not in configuration
+    )
+    for required in (
+        "Use `obsidian-wiki cache-check --configured` for Portable v2 freshness",
+        "compile or recompile candidate pages through a transaction",
+        "transaction commit owns the affected manifest shards",
+        "not a Portable transaction completion step",
+    ):
+        assert required in configuration
+
+    cli = _flat("docs/cli.md")
+    for required in (
+        "For `source-new` or `source-stale`, compile or recompile the source "
+        "through a transaction",
+        "obsidian-wiki transaction begin --source <source> --json --pretty",
+        "obsidian-wiki transaction validate <id> --json --pretty",
+        "obsidian-wiki transaction commit <id> --json --pretty",
+        "After commit, rerun `obsidian-wiki check`",
+        "`cache-update` is a low-level compatibility interface",
+        "It is not a Portable transaction completion step",
+        "git rm <vault>/.manifest/sources/<relative>.json",
+        "whole-file Git deletion",
+    ):
+        assert required in cli
+
+
 def test_cli_documents_hot_inputs_contract() -> None:
     text = _flat("docs/cli.md")
     for required in (
