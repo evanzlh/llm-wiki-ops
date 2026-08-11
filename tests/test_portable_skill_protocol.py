@@ -16,6 +16,7 @@ from obsidian_wiki.transaction import (
     validate_candidate_page,
     validate_candidate_path,
 )
+from obsidian_wiki.transaction_guidance import guidance_for_record
 from obsidian_wiki.trust import validate_trust_metadata
 
 
@@ -72,7 +73,6 @@ MAINTENANCE_WRITE_SKILLS = (
     ".skills/wiki-status/SKILL.md",
     ".skills/wiki-synthesize/SKILL.md",
 )
-from obsidian_wiki.transaction_guidance import guidance_for_record
 SPECIAL_WRITE_SKILLS = (
     ".skills/daily-update/SKILL.md",
     ".skills/wiki-capture/SKILL.md",
@@ -714,7 +714,7 @@ def test_capture_portable_materializes_source_before_transaction_and_never_write
         "below a configured `sources` root",
         "origin, capture time, content hash, and the exact captured text",
         "quick/raw-only request is unsupported",
-        "New page `sources` contains non-empty relevant accepted snapshot Source IDs",
+        "New page `sources` contains non-empty relevant accepted or authoritative snapshot Source IDs",
         "Preserve valid Unicode",
     ):
         assert required in flat
@@ -773,7 +773,9 @@ def test_capture_shared_submode_skip_and_correction_are_portable_reachable() -> 
 @pytest.mark.parametrize(
     "relative",
     (
+        ".skills/daily-update/SKILL.md",
         ".skills/wiki-capture/SKILL.md",
+        ".skills/wiki-import/SKILL.md",
         ".skills/wiki-research/SKILL.md",
     ),
     ids=lambda relative: Path(relative).parent.name,
@@ -789,10 +791,10 @@ def test_snapshot_candidates_preserve_relevant_existing_provenance(relative: str
     )
     for required in (
         "New page `sources`",
-        "non-empty relevant accepted snapshot Source IDs",
+        "non-empty relevant accepted or authoritative snapshot Source IDs",
         "Updated or merged page `sources`",
         "preserve every existing Source ID that still supports retained content",
-        "add the new relevant accepted snapshot Source IDs",
+        "add the new relevant accepted or authoritative snapshot Source IDs",
         "deduplicate",
         "non-empty subset of the frozen transaction source closure",
     ):
@@ -842,35 +844,6 @@ updated: {record.started_at}
     assert validate_candidate_page(updated_page, record.source_ids) == tuple(
         sorted((old_source, new_source))
     )
-
-
-@pytest.mark.parametrize(
-    "relative",
-    (
-        ".skills/daily-update/SKILL.md",
-        ".skills/wiki-import/SKILL.md",
-    ),
-    ids=lambda relative: Path(relative).parent.name,
-)
-def test_other_special_updates_do_not_drop_existing_source_provenance(
-    relative: str,
-) -> None:
-    portable = " ".join(
-        _h2_section(
-            _text(relative),
-            "Portable Repository completion",
-            relative=relative,
-            next_heading="Personal mode completion",
-        ).split()
-    )
-    for required in (
-        "updated or merged candidate `sources`",
-        "preserve every existing Source ID that still supports retained content",
-        "non-empty subset of the frozen transaction source closure",
-    ):
-        assert required in portable, f"{relative}: missing source retention {required!r}"
-
-
 def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
     relative = ".skills/wiki-dashboard/SKILL.md"
     portable = " ".join(
