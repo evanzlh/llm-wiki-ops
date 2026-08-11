@@ -1974,7 +1974,11 @@ def _rmdir_owned_directory(
                 "migration-owned directory changed during rollback; "
                 f"preserved at {_repo_relative(root, tombstone)}"
             ) from exc
-        if moved.identity != before.identity or moved.mode != before.mode:
+        if (
+            moved.identity != before.identity
+            or moved.mode != before.mode
+            or moved.ctime_ns != before.ctime_ns
+        ):
             raise MigrationError(
                 "migration-owned directory changed during rollback; "
                 f"preserved at {_repo_relative(root, tombstone)}"

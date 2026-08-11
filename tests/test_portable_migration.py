@@ -1365,6 +1365,46 @@ def test_apply_preserves_directory_replaced_after_rollback_validation(
     )
 
 
+def test_windows_directory_rollback_preserves_changed_ctime_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "owned"
+    directory.mkdir()
+    before = migration_module._DirectoryPostimage(
+        identity=(7, 11), mode=None, ctime_ns=100
+    )
+    moved = migration_module._DirectoryPostimage(
+        identity=before.identity, mode=None, ctime_ns=101
+    )
+    postimages = iter((before, moved))
+    error: MigrationError | None = None
+
+    with monkeypatch.context() as platform:
+        platform.setattr(migration_module.os, "name", "nt")
+        platform.setattr(
+            migration_module.secrets,
+            "token_hex",
+            lambda _length: "a" * 32,
+        )
+        platform.setattr(
+            migration_module,
+            "_read_directory_postimage",
+            lambda _root, _directory: next(postimages),
+        )
+        try:
+            migration_module._rmdir_owned_directory(
+                tmp_path, directory, before, compare_ctime=True
+            )
+        except MigrationError as exc:
+            error = exc
+
+    tombstone = tmp_path / f".{directory.name}.migration-owned-{'a' * 32}"
+    assert error is not None
+    assert "preserved at" in str(error)
+    assert not directory.exists()
+    assert tombstone.is_dir()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")
 def test_apply_rollback_restores_original_file_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
