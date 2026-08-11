@@ -681,46 +681,40 @@ def _parse_sections(
     return groups[0], groups[1], groups[2]
 
 
-def validate_operation(path: Path, *, vault: Path | None = None) -> OperationChange:
-    """Validate one operation page and return its canonical change record."""
-    path = Path(path)
-    if vault is None:
-        parts = path.parts
-        matches = [
-            index
-            for index in range(len(parts) - 1)
-            if parts[index : index + 2] == ("journal", "operations")
-        ]
-        if len(matches) != 1:
-            raise OperationError("operation path must be below journal/operations")
-        vault = Path(*parts[: matches[0]])
-    vault = Path(vault)
-    try:
-        relative = path.relative_to(vault)
-    except ValueError as exc:
-        raise OperationError("operation path escapes the vault") from exc
-    if relative.parts[:2] != ("journal", "operations") or len(relative.parts) != 5:
+def _validated_operation_relative(
+    relative: str | PurePosixPath,
+) -> tuple[PurePosixPath, re.Match[str]]:
+    raw = relative.as_posix() if isinstance(relative, PurePosixPath) else relative
+    if not isinstance(raw, str) or not raw or "\\" in raw or "\x00" in raw:
         raise OperationError("operation path must use journal/operations/YYYY/MM")
-    try:
-        parent_relative = path.parent.relative_to(vault)
-    except ValueError as exc:
-        raise OperationError("operation path escapes the vault") from exc
-    current = vault
-    if not _ordinary_directory(current):
-        raise OperationError("operation vault is unsafe")
-    for part in parent_relative.parts:
-        current = current / part
-        if not _ordinary_directory(current):
-            raise OperationError("operation page path is unsafe")
-    if path.is_symlink():
-        raise OperationError("operation page path is unsafe")
-    match = _FILENAME_RE.fullmatch(path.name)
+    posix = PurePosixPath(raw)
+    if (
+        posix.is_absolute()
+        or "." in posix.parts
+        or ".." in posix.parts
+        or posix.as_posix() != raw
+        or posix.parts[:2] != ("journal", "operations")
+        or len(posix.parts) != 5
+    ):
+        raise OperationError("operation path must use journal/operations/YYYY/MM")
+    match = _FILENAME_RE.fullmatch(posix.name)
     if match is None:
         raise OperationError("operation filename is invalid")
+    return posix, match
+
+
+def validate_operation_text(
+    relative: str | PurePosixPath,
+    text: str,
+) -> OperationChange:
+    """Validate canonical operation text for one vault-relative path."""
+
+    relative_path, match = _validated_operation_relative(relative)
+    if not isinstance(text, str):
+        raise OperationError("operation page text must be a string")
     try:
-        text = _read_operation_text(path)
         parsed = parse_frontmatter(text)
-    except (OperationError, FrontmatterError) as exc:
+    except FrontmatterError as exc:
         raise OperationError(f"operation frontmatter is invalid: {exc}") from exc
     fields = parsed.fields
     if fields != _FRONTMATTER_FIELDS:
@@ -739,7 +733,10 @@ def validate_operation(path: Path, *, vault: Path | None = None) -> OperationCha
     day = completed.strftime("%Y-%m-%d")
     if parsed.scalars.get("created") != day or parsed.scalars.get("updated") != day:
         raise OperationError("operation created and updated dates are invalid")
-    if relative.parts[2:4] != (completed.strftime("%Y"), completed.strftime("%m")):
+    if relative_path.parts[2:4] != (
+        completed.strftime("%Y"),
+        completed.strftime("%m"),
+    ):
         raise OperationError("operation directory does not match completed_at")
     if match.group(1) != completed.strftime("%Y%m%dT%H%M%SZ"):
         raise OperationError("operation filename timestamp does not match completed_at")
@@ -757,3 +754,43 @@ def validate_operation(path: Path, *, vault: Path | None = None) -> OperationCha
     if render_operation(change) != text:
         raise OperationError("operation page is not canonical")
     return change
+
+
+def validate_operation(path: Path, *, vault: Path | None = None) -> OperationChange:
+    """Validate one operation page and return its canonical change record."""
+
+    path = Path(path)
+    if vault is None:
+        parts = path.parts
+        matches = [
+            index
+            for index in range(len(parts) - 1)
+            if parts[index : index + 2] == ("journal", "operations")
+        ]
+        if len(matches) != 1:
+            raise OperationError("operation path must be below journal/operations")
+        vault = Path(*parts[: matches[0]])
+    vault = Path(vault)
+    try:
+        relative = path.relative_to(vault)
+    except ValueError as exc:
+        raise OperationError("operation path escapes the vault") from exc
+    _validated_operation_relative(PurePosixPath(relative.as_posix()))
+    try:
+        parent_relative = path.parent.relative_to(vault)
+    except ValueError as exc:
+        raise OperationError("operation path escapes the vault") from exc
+    current = vault
+    if not _ordinary_directory(current):
+        raise OperationError("operation vault is unsafe")
+    for part in parent_relative.parts:
+        current = current / part
+        if not _ordinary_directory(current):
+            raise OperationError("operation page path is unsafe")
+    if path.is_symlink():
+        raise OperationError("operation page path is unsafe")
+    try:
+        text = _read_operation_text(path)
+    except OperationError as exc:
+        raise OperationError(f"operation frontmatter is invalid: {exc}") from exc
+    return validate_operation_text(PurePosixPath(relative.as_posix()), text)

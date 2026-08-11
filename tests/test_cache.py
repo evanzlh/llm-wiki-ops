@@ -292,7 +292,7 @@ class TestCacheCLI:
         )
 
     def _run_from(self, cwd: Path, home: Path, *args: str):
-        home.mkdir()
+        home.mkdir(exist_ok=True)
         env = os.environ.copy()
         env["HOME"] = str(home)
         return subprocess.run(
@@ -324,6 +324,25 @@ class TestCacheCLI:
         assert proc.returncode == 0
         assert "\n  " in proc.stdout
 
+    @pytest.mark.parametrize("option_position", ["before", "between", "after"])
+    def test_cache_check_accepts_json_options_in_any_position(
+        self, option_position, vault, src_file
+    ):
+        paths = [str(vault), str(src_file)]
+        options = ["--json", "--pretty"]
+        arguments = {
+            "before": [*options, *paths],
+            "between": [paths[0], *options, paths[1]],
+            "after": [*paths, *options],
+        }[option_position]
+
+        proc = self._run("cache-check", *arguments)
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["new"] == [str(src_file)]
+        assert "\n  " in proc.stdout
+        assert proc.stderr == ""
+
     def test_cache_update_then_check_unchanged(self, vault, src_file):
         self._run("cache-update", str(vault), str(src_file))
         proc = self._run("cache-check", str(vault), str(src_file))
@@ -336,6 +355,274 @@ class TestCacheCLI:
         assert proc.returncode == 0
         sources = _load_manifest(vault)
         assert sources[str(src_file)]["pages_produced"] == ["concepts/foo.md", "entities/bar.md"]
+
+    @pytest.mark.parametrize("command", ["cache-check", "cache-update", "cache-hash"])
+    def test_cache_commands_accept_explicit_json(self, command, vault, src_file):
+        arguments = {
+            "cache-check": [str(vault), str(src_file)],
+            "cache-update": [str(vault), str(src_file)],
+            "cache-hash": [str(src_file)],
+        }[command]
+
+        proc = self._run(command, *arguments, "--json", "--pretty")
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)
+        assert "\n  " in proc.stdout
+        assert proc.stderr == ""
+
+    def test_cache_check_configured_resolves_portable_vault(
+        self, portable_repo, tmp_path
+    ):
+        root, _config = portable_repo
+        source = root / "sources" / "组会纪要.md"
+        source.write_text("会议", encoding="utf-8")
+
+        proc = self._run_from(
+            root,
+            tmp_path / "home",
+            "cache-check",
+            "--configured",
+            "sources/组会纪要.md",
+            "--json",
+            "--pretty",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["new"] == ["sources/组会纪要.md"]
+        assert "\n  " in proc.stdout
+        assert proc.stderr == ""
+
+    def test_cache_check_configured_resolves_global_vault(self, tmp_path):
+        home = tmp_path / "home"
+        work = tmp_path / "work"
+        vault = tmp_path / "vault"
+        source = work / "source.md"
+        work.mkdir()
+        vault.mkdir()
+        source.write_text("source", encoding="utf-8")
+        config = home / ".obsidian-wiki" / "config"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            f"OBSIDIAN_VAULT_PATH={vault}\n",
+            encoding="utf-8",
+        )
+
+        proc = self._run_from(
+            work,
+            home,
+            "cache-check",
+            "--configured",
+            "source.md",
+            "--json",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["new"] == [str(source)]
+        assert proc.stderr == ""
+
+    def test_cache_check_legacy_relative_cjk_source_keeps_lexical_identity(
+        self, tmp_path
+    ):
+        vault = tmp_path / "vault"
+        source = tmp_path / "组会纪要.md"
+        vault.mkdir()
+        source.write_text("会议", encoding="utf-8")
+
+        proc = self._run_from(
+            tmp_path,
+            tmp_path / "home",
+            "cache-check",
+            "vault",
+            "组会纪要.md",
+            "--json",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["new"] == [str(source)]
+        assert proc.stderr == ""
+
+    def test_cache_check_legacy_at_vault_is_literal_and_warning_matches_execution(
+        self, portable_repo, tmp_path
+    ):
+        root, _config = portable_repo
+        literal_vault = root / "@work"
+        literal_vault.mkdir()
+        source = root / "legacy-source.md"
+        source.write_text("source", encoding="utf-8")
+        home = tmp_path / "home"
+        named_config = home / ".obsidian-wiki" / "config.work"
+        named_config.parent.mkdir(parents=True)
+        named_config.write_text(
+            f"OBSIDIAN_VAULT_PATH={tmp_path / 'named-vault'}\n",
+            encoding="utf-8",
+        )
+
+        proc = self._run_from(
+            root,
+            home,
+            "cache-check",
+            "@work",
+            str(source),
+            "--json",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(proc.stdout)
+        assert payload["new"] == [str(source)]
+        warning = payload["context_warnings"][0]
+        assert warning["code"] == "portable-context-overridden"
+        assert warning["selected_mode"] == "explicit"
+        assert warning["selected_source"] == str(literal_vault)
+        assert warning["selected_vault"] == str(literal_vault)
+        assert proc.stderr == ""
+
+    def test_cache_check_configured_rejects_in_root_source_symlink(
+        self, portable_repo, tmp_path
+    ):
+        root, _config = portable_repo
+        source = root / "sources" / "ordinary.md"
+        source.write_text("source", encoding="utf-8")
+        alias = root / "sources" / "alias.md"
+        try:
+            alias.symlink_to(source)
+        except OSError:
+            pytest.skip("symlinks are unavailable")
+
+        proc = self._run_from(
+            root,
+            tmp_path / "home",
+            "cache-check",
+            "--configured",
+            "sources/alias.md",
+            "--json",
+        )
+
+        assert proc.returncode == 1
+        assert proc.stdout == ""
+        assert "source must be a single-link ordinary file" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_cache_check_legacy_symlinked_vault_keeps_portable_context(
+        self, portable_repo, tmp_path
+    ):
+        root, config = portable_repo
+        vault_link = root / "vault-link"
+        try:
+            vault_link.symlink_to(config.vault, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are unavailable")
+        source = root / "sources" / "source.md"
+        source.write_text("source", encoding="utf-8")
+
+        proc = self._run_from(
+            root,
+            tmp_path / "home",
+            "cache-check",
+            "vault-link",
+            "sources/source.md",
+            "--json",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(proc.stdout)
+        assert payload["new"] == ["sources/source.md"]
+        assert payload["context_warnings"][0]["selected_vault"] == str(
+            config.vault
+        )
+        assert proc.stderr == ""
+
+    def test_cache_update_legacy_symlinked_vault_keeps_portable_context(
+        self, portable_repo, tmp_path
+    ):
+        root, config = portable_repo
+        vault_link = root / "vault-link"
+        try:
+            vault_link.symlink_to(config.vault, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are unavailable")
+        source = root / "sources" / "source.md"
+        source.write_text("source", encoding="utf-8")
+
+        proc = self._run_from(
+            root,
+            tmp_path / "home",
+            "cache-update",
+            "vault-link",
+            "sources/source.md",
+            "--json",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["path"] == str(source)
+        shard = config.vault / ".manifest" / "sources" / "source.md.json"
+        assert json.loads(shard.read_text(encoding="utf-8"))["source_id"] == (
+            "sources/source.md"
+        )
+        assert proc.stderr == ""
+
+    def test_cache_default_json_does_not_emit_global_setup_warning(
+        self, vault, src_file, tmp_path
+    ):
+        home = tmp_path / "home"
+        config = home / ".obsidian-wiki" / "config"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            f"OBSIDIAN_VAULT_PATH={vault}\nOBSIDIAN_WIKI_VERSION=old\n",
+            encoding="utf-8",
+        )
+
+        proc = self._run_from(home, home, "cache-check", str(vault), str(src_file))
+
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout)
+        assert proc.stderr == ""
+
+    def test_cache_json_structures_relevant_context_warning(
+        self, portable_repo, vault, src_file, tmp_path
+    ):
+        root, _config = portable_repo
+
+        proc = self._run_from(
+            root,
+            tmp_path / "home",
+            "cache-check",
+            str(vault),
+            str(src_file),
+            "--json",
+        )
+
+        payload = json.loads(proc.stdout)
+        assert proc.returncode == 0
+        assert payload["context_warnings"][0]["code"] == (
+            "portable-context-overridden"
+        )
+        assert proc.stderr == ""
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ("cache-check",),
+            ("cache-check", "--configured"),
+        ],
+    )
+    def test_cache_check_parser_rejects_missing_paths_without_stdout(
+        self, arguments
+    ):
+        proc = self._run(*arguments)
+
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert "the following arguments are required: PATH" in proc.stderr
+
+    def test_cache_check_rejects_ambiguous_single_legacy_path(self, vault):
+        proc = self._run("cache-check", str(vault), "--json")
+
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert proc.stderr == (
+            "error: cache-check requires VAULT SOURCE... or --configured SOURCE...\n"
+        )
 
     def test_portable_context_is_resolved_from_cwd(
         self, portable_repo, monkeypatch, tmp_path

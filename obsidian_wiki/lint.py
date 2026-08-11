@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
 from obsidian_wiki.frontmatter import FrontmatterError, parse_relationships
+from obsidian_wiki.page_graph import normalise_node_id, parse_page_text
 from obsidian_wiki.trust import (
     ALLOWED_LIFECYCLES,
     TRUST_LEDGER_RELATIVE_PATH,
@@ -39,50 +39,11 @@ ALLOWED_RELATIONSHIP_TYPES = frozenset(
     {"extends", "implements", "contradicts", "derived_from", "uses", "replaces", "related_to"}
 )
 
-_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
-_FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*):", re.MULTILINE)
-_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
-_MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
-
-
-def _slug(text: str) -> str:
-    return text.strip().lower().replace(" ", "-")
-
-
 def _iter_pages(vault: Path) -> list[Path]:
     return [
         path for path in vault.rglob("*.md")
         if not any(part in SKIP_DIRS for part in path.relative_to(vault).parts)
     ]
-
-
-def _parse_frontmatter_values(frontmatter: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    lines = frontmatter.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line or ":" not in line or line.startswith((" ", "\t")):
-            i += 1
-            continue
-        key, raw = line.split(":", 1)
-        key = key.strip()
-        value = raw.strip()
-        if value in {">", ">-", "|", "|-"}:
-            block: list[str] = []
-            i += 1
-            while i < len(lines):
-                child = lines[i]
-                if child.startswith(" ") or child.startswith("\t"):
-                    block.append(child.strip())
-                    i += 1
-                    continue
-                break
-            values[key] = " ".join(part for part in block if part).strip()
-            continue
-        values[key] = value.strip("'\"")
-        i += 1
-    return values
 
 
 def _typed_relationships(text: str) -> list[dict[str, str]]:
@@ -96,41 +57,23 @@ def _typed_relationships(text: str) -> list[dict[str, str]]:
     ]
 
 
-def _normalise_node_id(raw: str) -> str:
-    target = raw.strip().removeprefix("[[").removesuffix("]]")
-    target = target.split("|", 1)[0].split("#", 1)[0].strip()
-    if target.lower().endswith(".md"):
-        target = target[:-3]
-    return "/".join(_slug(part) for part in target.strip("/").split("/") if part)
-
-
 def _parse_page(path: Path, vault: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    front_match = _FRONTMATTER_RE.match(text)
-    frontmatter = front_match.group(1) if front_match else ""
-    fields = set(_FIELD_RE.findall(frontmatter))
-    values = _parse_frontmatter_values(frontmatter)
-    relative = path.relative_to(vault)
-
-    links: list[str] = []
-    for raw in _WIKILINK_RE.findall(text):
-        target = _slug(raw.split("/")[-1])
-        if target:
-            links.append(target)
-    for href in _MD_LINK_RE.findall(text):
-        target = _slug(Path(href).stem)
-        if target:
-            links.append(target)
+    parsed = parse_page_text(path.relative_to(vault).as_posix(), text)
 
     return {
-        "path": relative.as_posix(),
-        "node_id": _normalise_node_id(relative.with_suffix("").as_posix()),
-        "slug": _slug(path.stem),
-        "title": values.get("title", "").strip() or path.stem,
-        "summary": values.get("summary", "").strip(),
-        "fields": fields,
-        "links": links,
-        "relationships": _typed_relationships(text) if front_match else [],
+        "path": parsed.path,
+        "node_id": parsed.node_id,
+        "slug": parsed.slug,
+        "title": parsed.title,
+        "summary": parsed.summary,
+        "fields": set(parsed.fields),
+        "links": list(parsed.links),
+        "relationships": (
+            _typed_relationships(parsed.text)
+            if parsed.text.startswith("---\n") and "\n---" in parsed.text[4:]
+            else []
+        ),
     }
 
 
@@ -246,7 +189,7 @@ def lint_vault(
                     }
                 )
                 continue
-            target = _normalise_node_id(target_raw)
+            target = normalise_node_id(target_raw)
             matches = node_index.get(target, []) if "/" in target else slug_index.get(target, [])
             if len(matches) > 1:
                 typed_relationship_issues.append(

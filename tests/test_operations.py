@@ -13,6 +13,7 @@ from obsidian_wiki.operations import (
     operation_path,
     render_operation,
     validate_operation,
+    validate_operation_text,
     write_operation,
 )
 
@@ -241,3 +242,17 @@ def test_validate_operation_rejects_supported_nested_frontmatter(tmp_path: Path)
 
     with pytest.raises(OperationError, match="frontmatter fields"):
         validate_operation(path, vault=tmp_path)
+
+
+def test_validate_operation_text_validates_canonical_relative_content() -> None:
+    change = OperationChange(
+        "tx-bound",
+        "2026-08-11T01:00:00Z",
+        ("sources/组会.md",),
+        ("concepts/缓存.md",),
+        (),
+        (),
+    )
+    relative = "journal/operations/2026/08/20260811T010000Z-abcd.md"
+
+    assert validate_operation_text(relative, render_operation(change)) == change

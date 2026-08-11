@@ -1765,29 +1765,59 @@ def cmd_sessions_name(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cache_source_path(raw: str) -> Path:
+    """Return an absolute lexical source path without following symlinks."""
+    return Path(os.path.abspath(os.fspath(Path(raw).expanduser())))
+
+
+def _cache_vault_path(raw: str) -> Path:
+    """Return a canonical absolute vault path for runtime ownership checks."""
+    return _cache_source_path(raw).resolve(strict=False)
+
+
 def cmd_cache_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import check_sources
 
-    vault = Path(args.vault).expanduser().resolve()
-    sources = [Path(p).expanduser().resolve() for p in args.sources]
-    try:
-        portable = _manifest_context_for_vault(vault)
-    except ConfigError as exc:
-        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
-        return 1
-    result = check_sources(vault, sources, portable=portable)
-    if args.pretty:
-        print(json.dumps(result, indent=2))
+    if not args.configured and not args.paths:
+        print(
+            "error: cache-check requires VAULT SOURCE... or --configured SOURCE...",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.configured:
+        vault_arg = None
     else:
-        print(json.dumps(result))
+        vault = _cache_vault_path(args.path)
+        vault_arg = str(vault)
+    resolved = _resolved_inspection(vault_arg)
+    if resolved is None:
+        return 1
+    inspection, runtime = resolved
+    if args.configured:
+        vault = runtime.vault
+        sources_raw = [args.path, *args.paths]
+        portable = runtime.portable
+    else:
+        sources_raw = args.paths
+        try:
+            portable = _manifest_context_for_vault(vault)
+        except ConfigError as exc:
+            print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+            return 1
+
+    sources = [_cache_source_path(path) for path in sources_raw]
+    result = check_sources(vault, sources, portable=portable)
+    _attach_context_warnings(result, inspection)
+    _json_print(result, pretty=args.pretty)
     return 0
 
 
 def cmd_cache_update(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import update_source
 
-    vault = Path(args.vault).expanduser().resolve()
-    source = Path(args.source).expanduser().resolve()
+    vault = _cache_vault_path(args.vault)
+    source = _cache_source_path(args.source)
     pages = args.pages or []
     try:
         portable = _manifest_context_for_vault(vault)
@@ -1795,18 +1825,24 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
         print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
         return 1
     h = update_source(vault, source, pages_produced=pages, portable=portable)
-    print(json.dumps({"path": str(source), "content_hash": h}))
+    _json_print(
+        {"path": str(source), "content_hash": h},
+        pretty=args.pretty,
+    )
     return 0
 
 
 def cmd_cache_hash(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import hash_file
 
-    path = Path(args.path).expanduser().resolve()
+    path = _cache_source_path(args.path)
     if not path.exists():
         print(f"error: {path} does not exist", file=sys.stderr)
         return 1
-    print(json.dumps({"path": str(path), "sha256": hash_file(path)}))
+    _json_print(
+        {"path": str(path), "sha256": hash_file(path)},
+        pretty=args.pretty,
+    )
     return 0
 
 
@@ -2111,6 +2147,38 @@ def cmd_transaction_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_transaction_validate(args: argparse.Namespace) -> int:
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+
+    manager = None
+    try:
+        manager = _transaction_manager()
+        report = manager.validate(args.transaction_id)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
+    payload = report.as_dict()
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(
+            f"transaction {args.transaction_id}: {report.status} "
+            f"({len(report.issues)} issues)"
+        )
+        for issue in report.issues:
+            print(
+                f"{_terminal_safe_text(issue.code)}: "
+                f"{_terminal_safe_text(issue.path)}: "
+                f"{_terminal_safe_text(issue.message)}"
+            )
+    return 1 if report.status == "fail" else 0
+
+
 def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
     from obsidian_wiki.portable_manifest import ManifestError
     from obsidian_wiki.transaction import TransactionError
@@ -2213,6 +2281,18 @@ def cmd_hot_mark_current(args: argparse.Namespace) -> int:
         _json_print(payload, pretty=args.pretty)
     else:
         print("hot.md marked current")
+    return 0
+
+
+def cmd_hot_inputs(args: argparse.Namespace) -> int:
+    from obsidian_wiki.local_state import hot_inputs
+
+    payload = hot_inputs(
+        _portable_command_config("hot inputs"),
+        page_limit=args.pages,
+        operation_limit=args.operations,
+    )
+    _json_print(payload, pretty=args.pretty)
     return 0
 
 
@@ -3117,6 +3197,7 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
         "begin",
         "list",
         "delete",
+        "validate",
         "commit",
         "retry",
         "restore",
@@ -3291,6 +3372,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_args(transaction_delete)
     transaction_delete.set_defaults(func=cmd_transaction_delete)
 
+    transaction_validate = transaction_sub.add_parser(
+        "validate",
+        help="validate a staged transaction without modifying it",
+        allow_abbrev=False,
+    )
+    transaction_validate.add_argument("transaction_id")
+    _add_json_args(transaction_validate)
+    transaction_validate.set_defaults(func=cmd_transaction_validate)
+
     for name, help_text, function in (
         ("commit", "promote an active transaction", cmd_transaction_commit),
         ("retry", "retry a retained failed transaction", cmd_transaction_retry),
@@ -3321,6 +3411,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_args(hot_mark)
     hot_mark.set_defaults(func=cmd_hot_mark_current)
+    hot_inputs_parser = hot_sub.add_parser(
+        "inputs", help="emit deterministic inputs for an Agent-written hot.md"
+    )
+    hot_inputs_parser.add_argument(
+        "--pages",
+        type=int,
+        default=50,
+        help="maximum page summaries to emit (default: 50)",
+    )
+    hot_inputs_parser.add_argument(
+        "--operations",
+        type=int,
+        default=10,
+        help="maximum operation records to emit (default: 10)",
+    )
+    _add_json_args(hot_inputs_parser)
+    hot_inputs_parser.set_defaults(func=cmd_hot_inputs, json=True)
 
     gq = sub.add_parser(
         "graph-query",
@@ -3520,12 +3627,15 @@ def build_parser() -> argparse.ArgumentParser:
         "cache-check",
         help="check which sources are new/modified/unchanged vs. .manifest.json",
     )
-    cc.add_argument("vault", help="path to the Obsidian vault")
+    cc.add_argument("path", metavar="PATH")
+    cc.add_argument("paths", nargs="*", metavar="PATH")
     cc.add_argument(
-        "sources", nargs="+", help="source file or directory paths to check"
+        "--configured",
+        action="store_true",
+        help="resolve the vault from config and treat every PATH as a source",
     )
-    cc.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    cc.set_defaults(func=cmd_cache_check)
+    _add_json_args(cc)
+    cc.set_defaults(func=cmd_cache_check, json=True)
 
     cu = sub.add_parser(
         "cache-update",
@@ -3539,14 +3649,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PAGE",
         help="vault-relative paths of pages produced",
     )
-    cu.set_defaults(func=cmd_cache_update)
+    _add_json_args(cu)
+    cu.set_defaults(func=cmd_cache_update, json=True)
 
     ch = sub.add_parser(
         "cache-hash",
         help="compute the SHA-256 hash of a file or directory (no manifest I/O)",
     )
     ch.add_argument("path", help="file or directory to hash")
-    ch.set_defaults(func=cmd_cache_hash)
+    _add_json_args(ch)
+    ch.set_defaults(func=cmd_cache_hash, json=True)
 
     ck = sub.add_parser("check", help="validate a portable repository without an LLM")
     ck.add_argument("--json", action="store_true", help="emit a JSON report")

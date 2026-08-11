@@ -7,10 +7,12 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.lint import lint_vault
+from obsidian_wiki.page_graph import parse_page_text
 from obsidian_wiki.trust import build_trust_ledger, write_trust_ledger
 
 
@@ -109,6 +111,46 @@ def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path
     assert report["findings"]["broken_links"] == [{"page": "concepts/alpha.md", "target": "ghost"}]
     assert any(item["page"] == "concepts/beta.md" for item in report["findings"]["missing_frontmatter"])
     assert report["findings"]["typed_relationship_issues"] == []
+
+
+def test_parse_page_text_preserves_wikilink_and_markdown_targets() -> None:
+    parsed = parse_page_text(
+        "concepts/alpha.md",
+        """---
+title: Alpha
+summary: An alpha page.
+---
+[[concepts/Beta|Beta]]
+[Gamma](../references/gamma.md#details)
+""",
+    )
+
+    assert parsed.path == "concepts/alpha.md"
+    assert parsed.node_id == "concepts/alpha"
+    assert parsed.slug == "alpha"
+    assert parsed.title == "Alpha"
+    assert parsed.links == ("beta", "gamma")
+    assert tuple(field.name for field in fields(parsed)) == (
+        "path",
+        "node_id",
+        "slug",
+        "title",
+        "summary",
+        "fields",
+        "links",
+        "text",
+    )
+
+
+def test_lint_vault_reports_broken_links_after_page_graph_extraction(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md", links=["missing"])
+
+    report = lint_vault(vault)
+
+    assert report["findings"]["broken_links"] == [
+        {"page": "concepts/alpha.md", "target": "missing"}
+    ]
 
 
 def test_lint_vault_warns_on_duplicates_missing_summaries_and_orphans(tmp_path: Path) -> None:

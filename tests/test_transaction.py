@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -17,12 +19,20 @@ from obsidian_wiki import cli as cli_module
 from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki import transaction as transaction_module
 from obsidian_wiki import transaction_guidance as transaction_guidance_module
+from obsidian_wiki import transaction_validation as transaction_validation_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.transaction import (
     TransactionError,
     TransactionManager,
     validate_candidate_path,
+)
+from obsidian_wiki.transaction_validation import (
+    ProspectivePage,
+    TransactionValidationReport,
+    ValidationIssue,
+    validate_page_metadata,
+    validate_prospective_pages,
 )
 
 PAGE = """---
@@ -1355,7 +1365,13 @@ def test_commit_resolves_timestamp_once_and_sorts_change_sets(
     removed.write_text(PAGE, encoding="utf-8")
     manager = TransactionManager(config, operation_writer=operation_writer(config))
     record = manager.begin([source_b, source_a], transaction_id="tx-1")
-    candidate_page(record, "references/z.md", PAGE.replace("# A", "# Z"))
+    candidate_page(
+        record,
+        "references/z.md",
+        PAGE.replace("category: concepts", "category: references").replace(
+            "# A", "# Z"
+        ),
+    )
     candidate_page(record, "concepts/b.md")
     candidate_page(record, "concepts/a.md")
     manager.mark_delete("tx-1", "concepts/z.md")
@@ -3039,6 +3055,156 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert git_output(root, "remote", "-v") == before_remotes
 
 
+def test_transaction_validate_parser_accepts_full_json_flags() -> None:
+    args = cli_module.build_parser().parse_args(
+        ["transaction", "validate", "tx-1", "--json", "--pretty"]
+    )
+
+    assert args.transaction_id == "tx-1"
+    assert args.json is True
+    assert args.pretty is True
+
+
+def test_transaction_validate_cli_returns_structured_findings_read_only(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-cli")
+    candidate_page(record, "concepts/a.md", PAGE + "[[missing]]\n")
+    before = {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "validate",
+        "tx-cli",
+        "--json",
+        "--pretty",
+    )
+
+    after = {
+        path.relative_to(root): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert result.stdout.startswith("{\n")
+    assert set(payload) == {
+        "transaction_id",
+        "status",
+        "candidate_pages",
+        "deletions",
+        "issues",
+        "warnings",
+    }
+    assert payload["status"] == "fail"
+    assert payload["issues"][0]["code"] == "broken-link"
+    assert "recovery" not in payload
+    assert before == after
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_transaction_validate_cli_passing_human_output_is_concise(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-pass")
+    candidate_page(record, "concepts/a.md")
+
+    result = run_cli(
+        tmp_path / "home", root, "transaction", "validate", "tx-pass"
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "transaction tx-pass: pass (0 issues)\n"
+
+
+def test_transaction_validate_cli_human_issues_escape_terminal_controls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = TransactionValidationReport(
+        transaction_id="tx-unsafe-output",
+        status="fail",
+        candidate_pages=("concepts/a.md",),
+        deletions=(),
+        issues=(
+            ValidationIssue(
+                "broken-link\nforged-code\x1b[31m",
+                "concepts/a.md\nforged-path\x1b[31m",
+                "broken link\nforged-message\x1b[31m",
+                "missing",
+            ),
+        ),
+    )
+
+    class Manager:
+        def validate(self, transaction_id: str) -> TransactionValidationReport:
+            assert transaction_id == "tx-unsafe-output"
+            return report
+
+    monkeypatch.setattr(cli_module, "_transaction_manager", Manager)
+
+    result = cli_module.cmd_transaction_validate(
+        argparse.Namespace(
+            transaction_id="tx-unsafe-output",
+            json=False,
+            pretty=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.err == ""
+    assert "\x1b" not in captured.out
+    assert captured.out.splitlines() == [
+        "transaction tx-unsafe-output: fail (1 issues)",
+        "broken-link\\nforged-code\\x1b[31m: "
+        "concepts/a.md\\nforged-path\\x1b[31m: "
+        "broken link\\nforged-message\\x1b[31m",
+    ]
+
+
+def test_transaction_validate_cli_invalid_id_uses_structured_error_envelope(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "validate",
+        "missing",
+        "--json",
+        "--pretty",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert result.stdout.startswith("{\n")
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "transaction-error"
+    assert "missing" in payload["error"]["message"]
+    assert payload["recovery"] == {
+        "transaction_id": None,
+        "transaction_status": None,
+        "inspect_command": "obsidian-wiki transaction list --json",
+        "preferred_action": None,
+        "alternatives": [],
+    }
+
+
 def test_transaction_cli_human_list_computes_guidance_once_per_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3116,6 +3282,7 @@ def test_transaction_cli_retries_a_retained_failed_transaction(
         ("transaction", "begin", "--source", "source.md", "--json"),
         ("transaction", "list", "--json"),
         ("transaction", "delete", "tx-1", "concepts/a.md", "--json"),
+        ("transaction", "validate", "tx-1", "--json"),
         ("transaction", "commit", "tx-1", "--json"),
         ("transaction", "retry", "tx-1", "--json"),
         ("transaction", "restore", "tx-1", "--json"),
@@ -3422,6 +3589,7 @@ def test_transaction_human_failure_escapes_terminal_control_characters(
     "arguments",
     [
         ("transaction", "commit", "--json"),
+        ("transaction", "validate", "--json"),
         ("transaction", "list", "--json", "--unknown"),
         ("transaction", "commit", "--json", "--pretty"),
     ],
@@ -3914,3 +4082,1179 @@ def test_global_stale_warning_is_skipped_for_non_transaction_json_command(
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"status": "current"}
     assert captured.err == ""
+
+
+def _prospective_page(
+    path: str,
+    *,
+    title: str = "Example",
+    category: str = "concepts",
+    tags: str = "  - example",
+    sources: str = "  - sources/a.md",
+    tags_line: Optional[str] = None,
+    sources_line: Optional[str] = None,
+    created: str = "2026-08-07",
+    updated: str = "2026-08-07",
+    body: str = "# Example\n",
+    candidate: bool = True,
+) -> ProspectivePage:
+    return ProspectivePage(
+        path,
+        "\n".join(
+            (
+                "---",
+                f"title: {title}",
+                f"category: {category}",
+                *( (f"tags: {tags_line}",) if tags_line is not None else ("tags:", tags) ),
+                *(
+                    (f"sources: {sources_line}",)
+                    if sources_line is not None
+                    else ("sources:", sources)
+                ),
+                f"created: {created}",
+                f"updated: {updated}",
+                "---",
+                body,
+            )
+        ),
+        candidate,
+    )
+
+
+def _validation_codes(*pages: ProspectivePage, sources: tuple[str, ...] = ("sources/a.md",)) -> list[str]:
+    return [
+        issue.code
+        for issue in validate_prospective_pages(tuple(pages), sources)
+    ]
+
+
+def test_transaction_validation_issue_is_frozen_and_serializes_stably() -> None:
+    issue = ValidationIssue(
+        "broken-link", "concepts/a.md", "link does not resolve", "missing"
+    )
+
+    assert issue.as_dict() == {
+        "code": "broken-link",
+        "path": "concepts/a.md",
+        "message": "link does not resolve",
+        "target": "missing",
+    }
+    assert ValidationIssue("frontmatter-invalid", "concepts/a.md", "invalid").as_dict() == {
+        "code": "frontmatter-invalid",
+        "path": "concepts/a.md",
+        "message": "invalid",
+    }
+    with pytest.raises(AttributeError):
+        issue.code = "other"  # type: ignore[misc]
+
+
+def test_candidate_semantics_reports_invalid_timestamp_category_and_empty_scalar() -> None:
+    page = _prospective_page(
+        "entities/example.md",
+        title='""',
+        category="concepts",
+        created="not-a-date",
+        updated="2026-08-07T10:00:00",
+    )
+
+    assert _validation_codes(page) == [
+        "frontmatter-category-path",
+        "frontmatter-created-invalid",
+        "frontmatter-title-empty",
+        "frontmatter-updated-invalid",
+    ]
+
+
+def test_candidate_semantics_requires_list_tags_and_sources() -> None:
+    page = _prospective_page(
+        "concepts/example.md", tags_line="example", sources_line="sources/a.md"
+    )
+
+    assert _validation_codes(page) == [
+        "frontmatter-sources-type",
+        "frontmatter-tags-type",
+    ]
+
+
+def test_candidate_semantics_accepts_dates_aware_timestamps_and_source_subset() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        tags="  - example\n  - validation",
+        sources="  - sources/b.md",
+        created="2026-08-07T10:00:00+08:00",
+        updated="2026-08-07",
+    )
+
+    assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == []
+
+
+def test_page_timestamp_parser_preserves_sortable_boundary_aware_values() -> None:
+    earliest = transaction_validation_module.parse_date_or_aware_timestamp(
+        "0001-01-01T00:00:00+23:59"
+    )
+    latest = transaction_validation_module.parse_date_or_aware_timestamp(
+        "9999-12-31T23:59:59-23:59"
+    )
+
+    assert sorted((latest, earliest)) == [earliest, latest]
+    assert earliest.isoformat() == "0001-01-01T00:00:00+23:59"
+    assert latest.isoformat() == "9999-12-31T23:59:59-23:59"
+
+
+def test_page_metadata_accepts_boundary_aware_timestamps() -> None:
+    page = _prospective_page(
+        "concepts/boundary.md",
+        created="0001-01-01T00:00:00+23:59",
+        updated="9999-12-31T23:59:59-23:59",
+    )
+
+    assert validate_page_metadata(
+        page.path,
+        page.text,
+        allowed_source_ids=("sources/a.md",),
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    [
+        "../escape.md",
+        "/absolute.md",
+        r"sources\windows.md",
+        "C:/drive.md",
+        "./sources/dot.md",
+        "sources/./dot.md",
+    ],
+)
+def test_page_metadata_rejects_noncanonical_source_id_syntax(source_id: str) -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources=f"  - {source_id}",
+    )
+
+    assert "frontmatter-source-invalid" in {
+        issue.code for issue in validate_page_metadata(page.path, page.text)
+    }
+
+
+def test_page_metadata_rejects_empty_source_id_during_frontmatter_parsing() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources='  - ""',
+    )
+
+    issues = validate_page_metadata(page.path, page.text)
+
+    assert [issue.code for issue in issues] == ["frontmatter-invalid"]
+    assert "empty item" in issues[0].message
+
+
+def test_page_metadata_validates_configured_source_roots_lexically() -> None:
+    valid = _prospective_page(
+        "concepts/valid.md",
+        sources="  - sources/资料/组会.md",
+    )
+    invalid = _prospective_page(
+        "concepts/invalid.md",
+        sources="  - outside/资料/组会.md",
+    )
+
+    assert validate_page_metadata(
+        valid.path,
+        valid.text,
+        source_roots=("sources",),
+    ) == ()
+    assert [
+        issue.code
+        for issue in validate_page_metadata(
+            invalid.path,
+            invalid.text,
+            source_roots=("sources",),
+        )
+    ] == ["frontmatter-source-root"]
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    ["sources", "sources-other/资料.md"],
+)
+def test_page_metadata_requires_source_id_strictly_below_configured_root(
+    source_id: str,
+) -> None:
+    page = _prospective_page(
+        "concepts/invalid.md",
+        sources=f"  - {source_id}",
+    )
+
+    assert [
+        issue.code
+        for issue in validate_page_metadata(
+            page.path,
+            page.text,
+            source_roots=("sources",),
+        )
+    ] == ["frontmatter-source-root"]
+
+
+def test_project_category_accepts_overviews_and_nested_semantic_pages() -> None:
+    overview = _prospective_page("projects/widget.md", category="projects")
+    named_overview = _prospective_page("projects/gadget/gadget.md", category="projects")
+    nested = _prospective_page("projects/widget/concepts/design.md", category="concepts")
+
+    assert _validation_codes(overview, named_overview, nested) == []
+
+
+def test_project_category_rejects_non_overview_and_nonsemantic_nested_paths() -> None:
+    misplaced_overview = _prospective_page(
+        "projects/widget/not-widget.md", category="projects"
+    )
+    unsupported_nested = _prospective_page(
+        "projects/widget/misc/note.md", category="projects"
+    )
+
+    assert _validation_codes(misplaced_overview, unsupported_nested) == [
+        "frontmatter-category-path",
+        "frontmatter-category-path",
+    ]
+
+
+def test_multi_source_validation_rejects_foreign_and_duplicate_sources() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources="  - sources/a.md\n  - sources/a.md\n  - sources/foreign.md",
+    )
+
+    assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == [
+        "frontmatter-sources-duplicate",
+        "frontmatter-sources-foreign",
+    ]
+
+
+def test_prospective_graph_accepts_candidate_to_candidate_and_live_links() -> None:
+    candidate = _prospective_page(
+        "concepts/alpha.md", body="[[Beta]]\n[[Live Page]]\n"
+    )
+    beta = _prospective_page("concepts/beta.md")
+    live = _prospective_page(
+        "references/live-page.md", candidate=False, body="[[Alpha]]\n"
+    )
+
+    assert _validation_codes(candidate, beta, live) == []
+
+
+def test_prospective_graph_reports_live_links_broken_by_deleted_page() -> None:
+    live = _prospective_page(
+        "concepts/retained.md", candidate=False, body="[[Deleted]]\n"
+    )
+
+    assert validate_prospective_pages((live,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/retained.md",
+            "broken link target: deleted",
+            "deleted",
+        ),
+    )
+
+
+def test_prospective_graph_validates_markdown_links_and_allows_self_links() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body="[Beta](../references/beta.md#details)\n[[Alpha]]\n",
+    )
+    beta = _prospective_page("references/beta.md", category="references")
+
+    assert _validation_codes(page, beta) == []
+
+
+def test_prospective_graph_ignores_external_and_nonmarkdown_links() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body=(
+            "[External](https://example.com/doc.md)\n"
+            "[Asset](asset.md.png)\n"
+            "[Gamma](../references/gamma.md#section)\n"
+        ),
+    )
+    gamma = _prospective_page("references/gamma.md", category="references")
+
+    assert _validation_codes(page, gamma) == []
+
+
+def test_prospective_graph_ignores_attachment_wikilinks_but_checks_page_targets() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body="[[asset.png]]\n![[asset.png]]\n[[Missing]]\n[[missing.md]]\n",
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+def test_prospective_graph_parses_markdown_destination_forms_before_classifying() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body=(
+            '[Title](missing.md "title")\n'
+            "[Angle](<missing.md>)\n"
+            "[Query](missing.md?raw=1)\n"
+            "[Fragment](missing.md#section)\n"
+        ),
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+    )
+
+
+def test_prospective_graph_ignores_malformed_bracket_heavy_text() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body=("[" * 4096) + ("[[" * 4096), candidate=False
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("[ stray ", "[[ stray ", "[" * 4096),
+    ids=("markdown", "wikilink", "bracket-heavy"),
+)
+def test_prospective_graph_recovers_valid_wikilinks_after_malformed_prefixes(
+    prefix: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=prefix + "[[Missing]]\n")
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[bad](unfinished [[Missing]]\n", "missing"),
+        ("[bad](unfinished [Missing](missing.md)\n", "concepts/missing"),
+        ("[[bad [Missing](missing.md)\n", "concepts/missing"),
+        ('[bad](unfinished.md "title [Missing](missing.md)\n', "concepts/missing"),
+        ("[bad](<unfinished.md [Missing](missing.md)\n", "concepts/missing"),
+        ("[bad [Missing](missing.md)\n", "concepts/missing"),
+        ("[[bad [text] [[Missing]]\n", "missing"),
+    ),
+    ids=(
+        "unterminated-destination-wikilink",
+        "unterminated-destination-markdown",
+        "unterminated-wikilink-body",
+        "unterminated-title",
+        "unterminated-angle",
+        "nested-markdown-label",
+        "nested-wikilink-body",
+    ),
+)
+def test_prospective_graph_recovers_links_from_all_malformed_scanner_states(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("[", "[" * 4095, "[" * 4096),
+    ids=("overlap", "odd-bracket-run", "even-bracket-run"),
+)
+def test_prospective_graph_recovers_overlapping_wikilinks_after_bracket_runs(
+    prefix: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=prefix + "[[Missing]]\n")
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[See [draft]](missing.md)\n", "concepts/missing"),
+        ('[x](missing.md "title [draft]")\n', "concepts/missing"),
+        ("[x](<missing[1].md>)\n", "concepts/missing[1]"),
+        ("[[Missing|[draft]]]\n", "missing"),
+    ),
+    ids=("nested-label", "quoted-title", "angle-destination", "wikilink-alias"),
+)
+def test_prospective_graph_accepts_valid_brackets_inside_link_syntax(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+def test_prospective_graph_ignores_malformed_external_destinations() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body="[x](http://[example.com/doc.md)\n"
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[x](<missing(and.md>)\n", "concepts/missing(and"),
+        ("[x](<missing)and.md>)\n", "concepts/missing)and"),
+        ('[x](missing.md "title (draft")\n', "concepts/missing"),
+        ('[x](missing.md "title ) draft")\n', "concepts/missing"),
+        ("[x](missing.md 'title (draft')\n", "concepts/missing"),
+        ("[x](missing.md 'title ) draft')\n", "concepts/missing"),
+    ),
+    ids=(
+        "angle-open-parenthesis",
+        "angle-close-parenthesis",
+        "double-quote-open-parenthesis",
+        "double-quote-close-parenthesis",
+        "single-quote-open-parenthesis",
+        "single-quote-close-parenthesis",
+    ),
+)
+def test_prospective_graph_keeps_destination_context_parentheses_as_content(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[x](missing'quote.md)\n", "concepts/missing'quote"),
+        ('[x](missing"quote.md)\n', 'concepts/missing"quote'),
+    ),
+    ids=("single-quote-in-path", "double-quote-in-path"),
+)
+def test_prospective_graph_treats_quotes_in_bare_destinations_as_path_content(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        (
+            "[outer [Missing](missing.md)](../references/present.md)\n",
+            "concepts/missing",
+        ),
+        (
+            "[outer [[Missing]]](../references/present.md)\n",
+            "missing",
+        ),
+    ),
+    ids=("nested-markdown", "embedded-wikilink"),
+)
+def test_prospective_graph_keeps_nested_syntax_links_inside_present_outer_targets(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page(
+        "references/present.md", category="references", candidate=False
+    )
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "[x](https://example.com/[[Missing]].md)\n",
+        '[x](present.md "see [Missing](missing.md)")\n',
+        "[x](present.md 'see [Missing](missing.md)')\n",
+    ),
+    ids=("external-destination", "double-quoted-title", "single-quoted-title"),
+)
+def test_prospective_graph_suppresses_syntax_inside_completed_destinations_and_titles(
+    body: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == ()
+
+
+def test_prospective_graph_keeps_present_nested_markdown_and_discards_outer_missing() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body="[outer [Present](present.md)](missing.md)\n"
+    )
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[outer [Present](present.md)]([[Missing]])\n", "missing"),
+        (
+            "[outer [Present](present.md)]([Missing](missing.md))\n",
+            "concepts/missing",
+        ),
+    ),
+    ids=("wikilink-destination", "markdown-destination"),
+)
+def test_prospective_graph_retains_destination_syntax_after_discarding_invalid_outer_markdown(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+def test_span_precedence_avoids_pairwise_candidate_scans_for_large_link_streams() -> None:
+    source = inspect.getsource(transaction_validation_module._apply_span_precedence)
+    body = "".join(f"[label {index}](target-{index}.md)\n" for index in range(5_000))
+
+    assert "any(" not in source
+    assert transaction_validation_module._page_links("concepts/alpha.md", body) == tuple(
+        f"concepts/target-{index}" for index in range(5_000)
+    )
+
+
+def test_prospective_graph_avoids_duplicate_title_pseudolinks() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body='[Missing](missing.md "see [x](missing.md)")\n'
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+    )
+
+
+def test_prospective_graph_reports_duplicate_identity_and_uses_path_qualified_targets() -> None:
+    first = _prospective_page("concepts/shared.md")
+    second = _prospective_page("references/shared.md", category="references")
+    ambiguous = _prospective_page(
+        "skills/ambiguous.md", category="skills", body="[[Shared]]\n"
+    )
+    qualified = _prospective_page(
+        "skills/qualified.md", category="skills", body="[[concepts/shared]]\n"
+    )
+
+    assert validate_prospective_pages(
+        (first, second, ambiguous, qualified), ("sources/a.md",)
+    ) == (
+        ValidationIssue(
+            "duplicate-page-identity",
+            "concepts/shared.md",
+            "duplicate page identity: shared",
+            "shared",
+        ),
+        ValidationIssue(
+            "duplicate-page-identity",
+            "references/shared.md",
+            "duplicate page identity: shared",
+            "shared",
+        ),
+        ValidationIssue(
+            "ambiguous-link",
+            "skills/ambiguous.md",
+            "ambiguous link target: shared",
+            "shared",
+        ),
+    )
+
+
+def test_transaction_validation_report_serializes_stably() -> None:
+    issue = ValidationIssue(
+        "broken-link", "concepts/a.md", "broken link target: missing", "missing"
+    )
+    report = TransactionValidationReport(
+        transaction_id="tx-validate",
+        status="fail",
+        candidate_pages=("concepts/a.md",),
+        deletions=("concepts/old.md",),
+        issues=(issue,),
+    )
+
+    assert report.as_dict() == {
+        "transaction_id": "tx-validate",
+        "status": "fail",
+        "candidate_pages": ["concepts/a.md"],
+        "deletions": ["concepts/old.md"],
+        "issues": [issue.as_dict()],
+        "warnings": [],
+    }
+
+
+def test_validate_is_read_only_and_reports_all_candidate_issues(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    live = config.vault / "concepts/live.md"
+    live.write_text(PAGE.replace("title: A", "title: Live"), encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-validate")
+    candidate = candidate_page(
+        record,
+        "concepts/a.md",
+        PAGE.replace("updated: 2026-08-07", "updated: invalid")
+        + "[[missing]]\n",
+    )
+    watched = (
+        source,
+        live,
+        candidate,
+        record.workspace / "metadata.json",
+        record.workspace / "deletions.json",
+    )
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in watched
+    }
+
+    report = manager.validate("tx-validate")
+
+    after = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in watched
+    }
+    assert report.status == "fail"
+    assert report.candidate_pages == ("concepts/a.md",)
+    assert {issue.code for issue in report.issues} == {
+        "frontmatter-updated-invalid",
+        "broken-link",
+    }
+    assert report.warnings == ()
+    assert before == after
+    assert not (config.vault / "concepts/a.md").exists()
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_validate_reports_live_link_broken_by_deletion(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    removed = config.vault / "concepts/removed.md"
+    removed.write_text(PAGE.replace("title: A", "title: Removed"), encoding="utf-8")
+    retained = config.vault / "concepts/retained.md"
+    retained.write_text(
+        PAGE.replace("title: A", "title: Retained") + "[[removed]]\n",
+        encoding="utf-8",
+    )
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-delete")
+    manager.mark_delete("tx-delete", "concepts/removed.md")
+
+    report = manager.validate("tx-delete")
+
+    assert report.status == "fail"
+    assert report.candidate_pages == ()
+    assert report.deletions == ("concepts/removed.md",)
+    assert [
+        (issue.code, issue.path, issue.target) for issue in report.issues
+    ] == [("broken-link", "concepts/retained.md", "removed")]
+    assert removed.read_bytes() == PAGE.replace(
+        "title: A", "title: Removed"
+    ).encode("utf-8")
+
+
+def test_validate_uses_candidate_replacement_in_prospective_graph(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/target.md"
+    target.write_text(
+        PAGE.replace("title: A", "title: Target") + "[[missing]]\n",
+        encoding="utf-8",
+    )
+    retained = config.vault / "concepts/retained.md"
+    retained.write_text(
+        PAGE.replace("title: A", "title: Retained") + "[[target]]\n",
+        encoding="utf-8",
+    )
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-replace")
+    replacement = PAGE.replace("title: A", "title: Target").replace(
+        "# A", "# Replaced"
+    )
+    candidate_page(record, "concepts/target.md", replacement)
+
+    report = manager.validate("tx-replace")
+
+    assert report.status == "pass"
+    assert report.issues == ()
+    assert target.read_text(encoding="utf-8").endswith("[[missing]]\n")
+
+
+def test_validate_resolves_candidate_link_to_tracked_root_page(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    (config.vault / "index.md").write_text("# Index\n", encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-root-target")
+    candidate_page(record, "concepts/a.md", PAGE + "[[index]]\n")
+
+    report = manager.validate("tx-root-target")
+
+    assert report.status == "pass"
+    assert report.issues == ()
+
+
+def test_validate_reports_broken_link_from_tracked_root_page(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    (config.vault / "index.md").write_text(
+        "# Index\n[[missing]]\n", encoding="utf-8"
+    )
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-root-origin")
+
+    report = manager.validate("tx-root-origin")
+
+    assert [(issue.code, issue.path, issue.target) for issue in report.issues] == [
+        ("broken-link", "index.md", "missing")
+    ]
+
+
+def test_validate_aggregates_invalid_ordinary_candidate_files(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-invalid-files")
+    candidate_page(record, "concepts/frontmatter.md", "not frontmatter\n")
+    invalid_utf8 = record.candidate_vault / "concepts/encoding.md"
+    invalid_utf8.write_bytes(b"\xff\xfe")
+    invalid_path = record.candidate_vault / "concepts/not-markdown.txt"
+    invalid_path.write_text(PAGE, encoding="utf-8")
+    invalid_separator = record.candidate_vault / "concepts/back\\slash.md"
+    invalid_separator.write_text(PAGE, encoding="utf-8")
+
+    report = manager.validate("tx-invalid-files")
+
+    assert report.status == "fail"
+    assert report.candidate_pages == (
+        "concepts/back\\slash.md",
+        "concepts/encoding.md",
+        "concepts/frontmatter.md",
+        "concepts/not-markdown.txt",
+    )
+    assert [(issue.code, issue.path) for issue in report.issues] == [
+        ("candidate-path-invalid", "concepts/back\\slash.md"),
+        ("candidate-utf8-invalid", "concepts/encoding.md"),
+        ("frontmatter-invalid", "concepts/frontmatter.md"),
+        ("candidate-path-invalid", "concepts/not-markdown.txt"),
+    ]
+
+
+def test_validate_keeps_unsafe_candidate_topology_fatal(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-unsafe")
+    candidate = record.candidate_vault / "concepts/a.md"
+    candidate.parent.mkdir(parents=True)
+    external = tmp_path / "external.md"
+    external.write_text(PAGE, encoding="utf-8")
+    candidate.symlink_to(external)
+
+    with pytest.raises(TransactionError, match="candidate.*single-link ordinary file"):
+        manager.validate("tx-unsafe")
+
+
+def test_validate_keeps_preimage_drift_fatal(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-drift")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Candidate"))
+    concurrent = PAGE.replace("# A", "# Concurrent")
+    target.write_text(concurrent, encoding="utf-8")
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.validate("tx-drift")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_validate_preserves_cjk_candidate_and_source_paths(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root, "资料/来源.md")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-cjk")
+    page = PAGE.replace("title: A", "title: 中文页面").replace(
+        "sources/a.md", "sources/资料/来源.md"
+    )
+    candidate_page(record, "concepts/中文页面.md", page)
+
+    report = manager.validate("tx-cjk")
+
+    assert report.status == "pass"
+    assert report.candidate_pages == ("concepts/中文页面.md",)
+    assert report.as_dict()["candidate_pages"] == ["concepts/中文页面.md"]
+    assert record.source_ids == ("sources/资料/来源.md",)
+    assert report.issues == ()
+
+
+def test_commit_rejects_preflight_before_snapshot_or_mutation(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-invalid")
+    candidate_page(record, "concepts/a.md", PAGE + "[[missing]]\n")
+
+    with pytest.raises(TransactionError, match="transaction validation failed"):
+        manager.commit("tx-invalid")
+
+    payload = json.loads(
+        (record.workspace / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "active"
+    assert payload["snapshot_index"] == {}
+    assert not (config.vault / "concepts/a.md").exists()
+    assert manager.lock_path.exists()
+
+
+def test_commit_reads_candidate_bytes_once_and_promotes_them_unchanged(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-read-once")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    expected = candidate.read_bytes()
+    before_mtime = candidate.stat().st_mtime_ns
+    original_read = manager._read_single_link_bytes
+    candidate_reads = 0
+
+    def counting_read(path: Path, label: str) -> bytes:
+        nonlocal candidate_reads
+        if path == candidate:
+            candidate_reads += 1
+        return original_read(path, label)
+
+    monkeypatch.setattr(manager, "_read_single_link_bytes", counting_read)
+
+    manager.commit("tx-read-once", completed_at="2026-08-07T01:00:00Z")
+
+    assert candidate_reads == 1
+    assert candidate.read_bytes() == expected
+    assert candidate.stat().st_mtime_ns == before_mtime
+    assert (config.vault / "concepts/a.md").read_bytes() == expected
+
+
+def test_retry_validation_failure_preserves_recovery_evidence(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-invalid")
+    candidate = candidate_page(
+        record, "concepts/a.md", PAGE.replace("# A", "# Candidate")
+    )
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-invalid")
+    candidate.write_text(PAGE + "[[missing]]\n", encoding="utf-8")
+    metadata = record.workspace / "metadata.json"
+    before_metadata = metadata.read_bytes()
+    before_payload = json.loads(before_metadata)
+    before_snapshots = {
+        path.relative_to(record.workspace / "snapshots").as_posix(): path.read_bytes()
+        for path in (record.workspace / "snapshots").rglob("*")
+        if path.is_file()
+    }
+    assert before_payload["snapshot_index"]
+    assert before_snapshots
+
+    with pytest.raises(TransactionError, match="transaction validation failed"):
+        manager.retry("tx-retry-invalid")
+
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    after_snapshots = {
+        path.relative_to(record.workspace / "snapshots").as_posix(): path.read_bytes()
+        for path in (record.workspace / "snapshots").rglob("*")
+        if path.is_file()
+    }
+    assert payload["status"] == "failed"
+    assert metadata.read_bytes() == before_metadata
+    assert payload["snapshot_index"] == before_payload["snapshot_index"]
+    assert payload["residual_postimages"] == before_payload["residual_postimages"]
+    assert after_snapshots == before_snapshots
+    assert target.read_bytes() == PAGE.encode("utf-8")
+    assert not manager.lock_path.exists()
+
+
+def test_retry_reads_candidate_bytes_once(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-read-once")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-read-once")
+    manager.operation_writer = operation_writer(config)
+    original_read = manager._read_single_link_bytes
+    candidate_reads = 0
+
+    def counting_read(path: Path, label: str) -> bytes:
+        nonlocal candidate_reads
+        if path == candidate:
+            candidate_reads += 1
+        return original_read(path, label)
+
+    monkeypatch.setattr(manager, "_read_single_link_bytes", counting_read)
+
+    manager.retry("tx-retry-read-once", completed_at="2026-08-07T02:00:00Z")
+
+    assert candidate_reads == 1
+    assert (config.vault / "concepts/a.md").read_bytes() == PAGE.encode("utf-8")
+
+
+def test_retry_promotes_cached_bytes_when_candidate_changes_after_preflight(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-cached")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    cached_bytes = candidate.read_bytes()
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-cached")
+    manager.operation_writer = operation_writer(config)
+    original_clear = manager._clear_snapshot_state
+    changed_bytes = (PAGE + "[[missing-after-preflight]]\n").encode("utf-8")
+
+    def change_candidate_after_preflight(record_value) -> None:
+        candidate.write_bytes(changed_bytes)
+        original_clear(record_value)
+
+    monkeypatch.setattr(manager, "_clear_snapshot_state", change_candidate_after_preflight)
+
+    manager.retry("tx-retry-cached", completed_at="2026-08-07T02:00:00Z")
+
+    assert candidate.read_bytes() == changed_bytes
+    assert (config.vault / "concepts/a.md").read_bytes() == cached_bytes
+
+
+def test_retry_preflight_omits_known_failed_writer_residual(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    extra = config.vault / "references/writer-extra.md"
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            extra.write_text(
+                PAGE.replace("category: concepts", "category: references")
+                + "[[missing]]\n",
+                encoding="utf-8",
+            )
+            raise OSError("writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-residual")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    cleanup_failed = False
+
+    def fail_initial_cleanup(record_value, index) -> None:
+        nonlocal cleanup_failed
+        if not cleanup_failed and "references/writer-extra.md" in index:
+            cleanup_failed = True
+            raise TransactionError("simulated writer cleanup failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", fail_initial_cleanup)
+    with pytest.raises(TransactionError, match="writer restore failed"):
+        manager.commit("tx-retry-residual")
+    assert cleanup_failed
+    assert extra.exists()
+    failed_metadata = (record.workspace / "metadata.json").read_bytes()
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    result = manager.retry(
+        "tx-retry-residual", completed_at="2026-08-07T02:00:00Z"
+    )
+
+    assert result.created == ("concepts/a.md",)
+    assert not extra.exists()
+    assert manager.load("tx-retry-residual").status == "complete"
+    assert (record.workspace / "metadata.json").read_bytes() != failed_metadata
+
+
+def test_retry_preflight_reads_absent_deletion_target_from_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    removed = config.vault / "concepts/removed.md"
+    removed.write_text(
+        PAGE.replace("title: A", "title: Removed"), encoding="utf-8"
+    )
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            raise OSError("writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-deletion")
+    manager.mark_delete("tx-retry-deletion", "concepts/removed.md")
+    original_restore = manager._restore_snapshot_index
+    rollback_failed = False
+
+    def leave_deletion_unrestored(record_value, index) -> None:
+        nonlocal rollback_failed
+        if not rollback_failed and "concepts/removed.md" in index:
+            rollback_failed = True
+            original_restore(
+                record_value,
+                {
+                    relative: stored
+                    for relative, stored in index.items()
+                    if relative != "concepts/removed.md"
+                },
+            )
+            raise TransactionError("simulated deletion rollback failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", leave_deletion_unrestored)
+    with pytest.raises(TransactionError, match="restore failed"):
+        manager.commit("tx-retry-deletion")
+    assert rollback_failed
+    assert not removed.exists()
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["snapshot_index"]["concepts/removed.md"] is not None
+    assert payload["residual_postimages"]["concepts/removed.md"] is None
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    result = manager.retry(
+        "tx-retry-deletion", completed_at="2026-08-07T02:00:00Z"
+    )
+
+    assert result.removed == ("concepts/removed.md",)
+    assert not removed.exists()
+    assert manager.load("tx-retry-deletion").status == "complete"
