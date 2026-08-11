@@ -247,11 +247,11 @@ obsidian-wiki transaction commit <id> --json --pretty
 
 `begin --source` accepts one or more repository-relative paths or filesystem
 paths that resolve to ordinary files below the configured source root. The
-JSON result includes `transaction_id`, `candidate_vault`, `snapshots`,
-`source_ids`, and `status`. Candidate pages must use a supported knowledge
-category, required frontmatter, and a non-empty `sources` list drawn only from
-that transaction. Reserved central files and `journal/operations/**` cannot be
-agent candidates.
+JSON result includes at least `transaction_id`, `status`, `started_at`,
+`source_ids`, `workspace`, `candidate_vault`, `snapshots`, and `deletions`.
+Candidate pages must use a supported knowledge category, required frontmatter,
+and a non-empty `sources` list drawn only from that transaction. Reserved
+central files and `journal/operations/**` cannot be agent candidates.
 
 Keep the repository root as the command working directory throughout this
 flow. `candidate_vault` is an absolute runtime destination, not a durable
@@ -639,10 +639,12 @@ three are PR blockers.
 For `source-new` or `source-stale`, compile or recompile the source through a
 transaction. Begin with the complete authoritative source closure, write and
 review candidate pages from the repository-root CWD, and use this completion
-sequence:
+sequence. The closure includes every Source ID cited by a candidate and every
+existing source cited by a page being updated or deleted; pass the actual
+authoritative file for each ID:
 
 ```bash
-obsidian-wiki transaction begin --source <source> --json --pretty
+obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty
 # Compile or recompile reviewed candidate pages below the returned candidate_vault.
 obsidian-wiki transaction validate <id> --json --pretty
 obsidian-wiki transaction commit <id> --json --pretty

@@ -93,9 +93,9 @@ are rejected.
 For collaboration, prefer a release-tag-based compatible PEP 440 range such
 as `>=2026.9,<2026.10`, reviewed together with the managed skill refresh.
 Exact development-build pins such as `==2026.9.dev141+gabcdef` are permitted
-when deliberate byte-for-byte reproducibility is required, but they are
-high-churn for source-installed forks and require frequent coordinated config
-updates.
+when exact CLI/source-revision compatibility or reproducibility is required,
+but they are high-churn for source-installed forks and require frequent
+coordinated config updates.
 
 The global Personal installation warning code `setup-version-stale` compares
 the installed CLI with the version recorded by a previous global setup. It is
