@@ -70,6 +70,11 @@ _UPGRADE_JOURNAL = "journal.json"
 _UPGRADE_JOURNAL_SCHEMA = 3
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SUPPORTS_BOUND_INVENTORY_DIRECTORIES = (
+    os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+)
 
 
 # Shared by the legacy project install in ``cli.py`` and portable adapters.
@@ -247,33 +252,300 @@ def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+
+
+def _require_inventory_file_metadata(
+    metadata: os.stat_result, path: Path, label: str
+) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError(
+            f"portable {label} must be a single-link ordinary non-reparse file: {path}"
+        )
+
+
+def _inventory_file_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    return flags
+
+
+def _inventory_directory_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    return flags
+
+
+def _directory_is_bound(
+    opened: os.stat_result, attached: os.stat_result
+) -> bool:
+    return (
+        stat.S_ISDIR(opened.st_mode)
+        and stat.S_ISDIR(attached.st_mode)
+        and not stat.S_ISLNK(attached.st_mode)
+        and not _is_reparse_point(opened)
+        and not _is_reparse_point(attached)
+        and opened.st_dev == attached.st_dev
+        and opened.st_ino == attached.st_ino
+        and opened.st_mode == attached.st_mode
+    )
+
+
+# Lexical path, child name within the previous descriptor, FD, opened metadata.
+_BoundDirectory = tuple[Path, str, int, os.stat_result]
+
+
+def _close_inventory_directories(
+    directories: list[_BoundDirectory], failure
+):
+    """Close every bound directory in reverse order without masking failure."""
+    for _path, _name, descriptor, _metadata in reversed(directories):
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+    return failure
+
+
+def _raise_inventory_read_failure(
+    failure: BaseException, path: Path, label: str
+) -> None:
+    if isinstance(failure, (OSError, ValueError)):
+        raise ValueError(  # noqa: TRY004 - normalize safe-read filesystem failures
+            f"portable {label} is unsafe or changed at {path}: {failure}"
+        ) from failure
+    raise failure
+
+
+def _open_posix_inventory_file(
+    root: Path, path: Path, label: str
+) -> tuple[int, os.stat_result, list[_BoundDirectory], list[int]]:
+    """Bind root-to-parent with dir_fds and open the final file relative to it."""
+    _assert_safe_managed_path(root, path)
+    candidate = _absolute_no_resolve(path)
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"portable {label} escapes repository: {path}") from exc
+    if len(relative.parts) < 2 or ".." in relative.parts:
+        raise ValueError(f"portable {label} must be below repository root: {path}")
+
+    directories: list[_BoundDirectory] = []
+    failure = None
+    pending_directory = None
+    file_descriptor = None
+    try:
+        pending_directory = os.open(root, _inventory_directory_flags())
+        metadata = os.fstat(pending_directory)
+        directories.append((root, "", pending_directory, metadata))
+        pending_directory = None
+        if not _directory_is_bound(metadata, metadata):
+            raise ValueError(f"portable repository root is unsafe: {root}")
+
+        current = root
+        for part in relative.parent.parts:
+            parent_descriptor = directories[-1][2]
+            pending_directory = os.open(
+                part, _inventory_directory_flags(), dir_fd=parent_descriptor
+            )
+            metadata = os.fstat(pending_directory)
+            current = current / part
+            directories.append((current, part, pending_directory, metadata))
+            pending_directory = None
+            if not _directory_is_bound(metadata, metadata):
+                raise ValueError(f"portable {label} parent is unsafe: {current}")
+
+        parent_descriptor = directories[-1][2]
+        observed = os.stat(
+            relative.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        _require_inventory_file_metadata(observed, path, label)
+        file_descriptor = os.open(
+            relative.name, _inventory_file_flags(), dir_fd=parent_descriptor
+        )
+        opened = os.fstat(file_descriptor)
+        if not _same_file_snapshot(observed, opened):
+            raise ValueError(f"portable {label} changed while being opened: {path}")
+        _require_inventory_file_metadata(opened, path, label)
+        return file_descriptor, opened, directories, []
+    except BaseException as exc:  # noqa: BLE001 - closes preserve primary failure
+        failure = exc
+    if file_descriptor is not None:
+        try:
+            os.close(file_descriptor)
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+    if pending_directory is not None:
+        try:
+            os.close(pending_directory)
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+    failure = _close_inventory_directories(directories, failure)
+    assert failure is not None
+    _raise_inventory_read_failure(failure, path, label)
+    raise AssertionError("unreachable")
+
+
+def _open_windows_inventory_file(
+    root: Path, path: Path, label: str
+) -> tuple[int, os.stat_result, list[_BoundDirectory], list[int]]:
+    """Open an inventory while no-delete-share handles guard its ancestors."""
+    # Reuse the repository's established no-delete-share directory handles.
+    # The lazy private import keeps this Task 4 change local; these helpers can
+    # move to a shared safe-FS module when more consumers need them.
+    from obsidian_wiki.local_state import (
+        LocalStateError,
+        _close_windows_handles,
+        _windows_directory_guard,
+    )
+
+    _assert_safe_managed_path(root, path)
+    handles: list[int] = []
+    descriptor = None
+    failure = None
+    try:
+        handles = _windows_directory_guard(root, (path.parent,))
+        observed = path.lstat()
+        _require_inventory_file_metadata(observed, path, label)
+        descriptor = os.open(path, _inventory_file_flags())
+        opened = os.fstat(descriptor)
+        if not _same_file_snapshot(observed, opened):
+            raise ValueError(f"portable {label} changed while being opened: {path}")
+        _require_inventory_file_metadata(opened, path, label)
+        return descriptor, opened, [], handles
+    except BaseException as exc:  # noqa: BLE001 - closes preserve primary failure
+        failure = exc
+    if descriptor is not None:
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            if failure is None:
+                failure = exc
+    try:
+        _close_windows_handles(handles)
+    except BaseException as exc:  # noqa: BLE001 - preserve earlier open failure
+        if failure is None:
+            failure = exc
+    assert failure is not None
+    if isinstance(failure, LocalStateError):
+        failure = ValueError(str(failure))
+    _raise_inventory_read_failure(failure, path, label)
+    raise AssertionError("unreachable")
+
+
+def _open_bound_inventory_file(
+    root: Path, path: Path, label: str
+) -> tuple[int, os.stat_result, list[_BoundDirectory], list[int]]:
+    """Open an inventory only through the platform's bound-directory mechanism."""
+    root = _safe_root(root)
+    if _SUPPORTS_BOUND_INVENTORY_DIRECTORIES and os.name != "nt":
+        return _open_posix_inventory_file(root, path, label)
+    if os.name == "nt":
+        return _open_windows_inventory_file(root, path, label)
+    raise ValueError(
+        f"portable {label} cannot be read safely on this platform: {path}"
+    )
+
+
+def _validate_bound_inventory_after_close(
+    root: Path,
+    path: Path,
+    label: str,
+    final: os.stat_result,
+    directories: list[_BoundDirectory],
+    windows_handles: list[int],
+) -> None:
+    """Validate the file and every attachment while directory guards remain open."""
+    if directories:
+        parent_descriptor = directories[-1][2]
+        current_file = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        _require_inventory_file_metadata(current_file, path, label)
+        if not _same_file_snapshot(final, current_file):
+            raise ValueError(f"portable {label} changed while being read: {path}")
+
+        for index, (directory, name, descriptor, opened) in enumerate(directories):
+            current_opened = os.fstat(descriptor)
+            if not _directory_is_bound(opened, current_opened):
+                raise ValueError(
+                    f"portable {label} directory changed while being read: {directory}"
+                )
+            if index == 0:
+                attached = directory.lstat()
+            else:
+                attached = os.stat(
+                    name,
+                    dir_fd=directories[index - 1][2],
+                    follow_symlinks=False,
+                )
+            if not _directory_is_bound(current_opened, attached):
+                raise ValueError(
+                    f"portable {label} directory detached while being read: {directory}"
+                )
+        return
+
+    if windows_handles:
+        _assert_safe_managed_path(root, path)
+        current_file = path.lstat()
+        _require_inventory_file_metadata(current_file, path, label)
+        if not _same_file_snapshot(final, current_file):
+            raise ValueError(f"portable {label} changed while being read: {path}")
+        return
+
+    raise ValueError(f"portable {label} has no bound parent guard: {path}")
+
+
+def _validate_inventory_after_guards_closed(
+    root: Path,
+    path: Path,
+    label: str,
+    final: os.stat_result,
+    directories: list[_BoundDirectory],
+) -> None:
+    """Catch replacements injected while the directory guards were closing."""
+    if directories:
+        for directory, _name, _descriptor, opened in directories:
+            attached = directory.lstat()
+            if not _directory_is_bound(opened, attached):
+                raise ValueError(
+                    f"portable {label} directory detached during close: {directory}"
+                )
+    else:
+        _assert_safe_managed_path(root, path)
+
+    current_file = path.lstat()
+    _require_inventory_file_metadata(current_file, path, label)
+    if not _same_file_snapshot(final, current_file):
+        raise ValueError(f"portable {label} changed during guard close: {path}")
+
+
 def _read_single_link_ordinary_bytes_once(
     root: Path, path: Path, label: str
 ) -> bytes:
     """Perform one complete contained, no-follow ordinary-file read."""
     root = _safe_root(root)
-    observed = _assert_single_link_ordinary_file(root, path, label)
-
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    flags |= getattr(os, "O_NONBLOCK", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise ValueError(f"portable {label} changed while being read: {path}") from exc
+    descriptor, opened, directories, windows_handles = _open_bound_inventory_file(
+        root, path, label
+    )
 
     content = None
     final = None
     failure = None
     try:
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or not _same_file_snapshot(observed, opened)
-        ):
-            raise ValueError(f"portable {label} changed while being read: {path}")
-
         chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
@@ -298,26 +570,42 @@ def _read_single_link_ordinary_bytes_once(
     except OSError as exc:
         if failure is None:
             failure = exc
+    if failure is None:
+        assert content is not None
+        assert final is not None
+        try:
+            _validate_bound_inventory_after_close(
+                root,
+                path,
+                label,
+                final,
+                directories,
+                windows_handles,
+            )
+        except BaseException as exc:  # noqa: BLE001 - closes preserve primary failure
+            failure = exc
+
+    failure = _close_inventory_directories(directories, failure)
+    if windows_handles:
+        from obsidian_wiki.local_state import _close_windows_handles
+
+        try:
+            _close_windows_handles(windows_handles)
+        except BaseException as exc:  # noqa: BLE001 - preserve earlier file failure
+            if failure is None:
+                failure = exc
+    if failure is None:
+        assert final is not None
+        try:
+            _validate_inventory_after_guards_closed(
+                root, path, label, final, directories
+            )
+        except BaseException as exc:  # noqa: BLE001 - validation is first failure
+            failure = exc
     if failure is not None:
-        if isinstance(failure, (OSError, ValueError)):
-            raise ValueError(
-                f"could not safely read portable {label}: {failure}"
-            ) from failure
-        raise failure
+        _raise_inventory_read_failure(failure, path, label)
 
     assert content is not None
-    assert final is not None
-    try:
-        _assert_safe_managed_path(root, path)
-        current = path.lstat()
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"portable {label} changed while being read: {path}") from exc
-    if (
-        not stat.S_ISREG(current.st_mode)
-        or current.st_nlink != 1
-        or not _same_file_snapshot(final, current)
-    ):
-        raise ValueError(f"portable {label} changed while being read: {path}")
     return content
 
 

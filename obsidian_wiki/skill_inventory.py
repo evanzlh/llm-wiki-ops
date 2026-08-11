@@ -52,18 +52,21 @@ def _validate_managed_skills(value: object) -> tuple[str, ...]:
 def _validate_digest_mapping(
     value: object, names: tuple[str, ...]
 ) -> Mapping[str, str]:
-    if type(value) is not dict:
-        raise ValueError("managed_skill_digests must be an object")
-    if set(value) != set(names):
+    if not isinstance(value, Mapping):
+        raise ValueError(  # noqa: TRY004 - schema violations share ValueError
+            "managed_skill_digests must be a mapping"
+        )
+    copied = dict(value)
+    if set(copied) != set(names):
         raise ValueError("managed_skill_digests keys must exactly match managed_skills")
-    for name, digest in value.items():
+    for name, digest in copied.items():
         if type(name) is not str or type(digest) is not str:
             raise ValueError("managed skill digest names and values must be strings")
         if _SKILL_DIGEST.fullmatch(digest) is None:
             raise ValueError(
                 f"managed skill digest for {name!r} must be lowercase sha256: plus 64 hex digits"
             )
-    return MappingProxyType(dict(value))
+    return MappingProxyType(copied)
 
 
 @dataclass(frozen=True)

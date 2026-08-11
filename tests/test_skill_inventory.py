@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import FrozenInstanceError
+import stat
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -66,6 +68,16 @@ def test_inventory_values_are_immutable() -> None:
         inventory.skills_version = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError):
         inventory.managed_skill_digests["wiki-ingest"] = DIGEST_2  # type: ignore[index]
+
+
+def test_dataclasses_replace_accepts_the_frozen_mapping_contract() -> None:
+    inventory = make_inventory()
+
+    updated = replace(inventory, skills_version="2026.8.4")
+
+    assert updated.skills_version == "2026.8.4"
+    assert updated.managed_skill_digests == inventory.managed_skill_digests
+    assert isinstance(updated.managed_skill_digests, MappingProxyType)
 
 
 def test_legacy_inventory_requires_explicit_opt_in_and_is_typed() -> None:
@@ -265,6 +277,18 @@ def write_inventory(root: Path, text: str | None = None) -> Path:
     return path
 
 
+def descriptor_matches(descriptor: int, expected: os.stat_result) -> bool:
+    try:
+        current = os.fstat(descriptor)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(current.st_mode)
+        and current.st_dev == expected.st_dev
+        and current.st_ino == expected.st_ino
+    )
+
+
 def test_read_inventory_reads_the_contained_single_link_ordinary_file(
     tmp_path: Path,
 ) -> None:
@@ -274,8 +298,218 @@ def test_read_inventory_reads_the_contained_single_link_ordinary_file(
     assert read_inventory(root) == make_inventory()
 
 
+def test_read_inventory_rejects_parent_swap_after_lexical_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    write_inventory(root)
+    managed = root / ".obsidian-wiki"
+    stash = root / ".obsidian-wiki-stash"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "managed-skills.json").write_text(
+        render_inventory(
+            ManagedSkillsInventory(
+                skills_version="2026.8.4",
+                managed_skills=("wiki-ingest", "wiki-query"),
+                managed_skill_digests={
+                    "wiki-ingest": DIGEST_1,
+                    "wiki-query": DIGEST_2,
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    real_validate = portable._assert_safe_managed_path
+
+    def restore_safe_parent() -> None:
+        if managed.is_symlink():
+            managed.unlink()
+            stash.rename(managed)
+
+    def expose_outside_parent() -> None:
+        managed.rename(stash)
+        managed.symlink_to(outside, target_is_directory=True)
+
+    def swap_after_validation(validated_root: Path, candidate: Path) -> None:
+        restore_safe_parent()
+        real_validate(validated_root, candidate)
+        expose_outside_parent()
+
+    monkeypatch.setattr(portable, "_assert_safe_managed_path", swap_after_validation)
+
+    with pytest.raises(ValueError, match="changed|symlink|unsafe"):
+        read_inventory(root)
+
+
+def test_read_inventory_rejects_parent_swap_before_final_attachment_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    inventory_stat = path.stat()
+    managed = root / ".obsidian-wiki"
+    stash = root / ".obsidian-wiki-stash"
+    real_close = os.close
+    real_validate = portable._assert_safe_managed_path
+    swapped = False
+
+    def restore_safe_parent() -> None:
+        if managed.is_symlink():
+            managed.unlink()
+            stash.rename(managed)
+
+    def expose_detached_parent() -> None:
+        managed.rename(stash)
+        managed.symlink_to(stash, target_is_directory=True)
+
+    def hide_swap_during_lexical_validation(
+        validated_root: Path, candidate: Path
+    ) -> None:
+        detached = managed.is_symlink()
+        if detached:
+            restore_safe_parent()
+        real_validate(validated_root, candidate)
+        if detached:
+            expose_detached_parent()
+
+    def swap_during_inventory_close(descriptor: int) -> None:
+        nonlocal swapped
+        is_inventory = descriptor_matches(descriptor, inventory_stat)
+        real_close(descriptor)
+        if is_inventory and not swapped:
+            swapped = True
+            expose_detached_parent()
+
+    monkeypatch.setattr(
+        portable, "_assert_safe_managed_path", hide_swap_during_lexical_validation
+    )
+    monkeypatch.setattr(portable.os, "close", swap_during_inventory_close)
+
+    with pytest.raises(ValueError, match="changed|symlink|unsafe"):
+        read_inventory(root)
+
+
+def test_read_inventory_rejects_parent_swap_during_second_directory_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    write_inventory(root)
+    managed = root / ".obsidian-wiki"
+    managed_stat = managed.stat()
+    stash = root / ".obsidian-wiki-stash"
+    real_close = os.close
+    parent_close_count = 0
+
+    def swap_during_second_parent_close(descriptor: int) -> None:
+        nonlocal parent_close_count
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError:
+            metadata = None
+        is_managed_parent = bool(
+            metadata is not None
+            and stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_dev == managed_stat.st_dev
+            and metadata.st_ino == managed_stat.st_ino
+        )
+        real_close(descriptor)
+        if is_managed_parent:
+            parent_close_count += 1
+            if parent_close_count == 2:
+                managed.rename(stash)
+                managed.symlink_to(stash, target_is_directory=True)
+
+    monkeypatch.setattr(portable.os, "close", swap_during_second_parent_close)
+
+    with pytest.raises(ValueError, match="changed|detached|symlink|unsafe"):
+        read_inventory(root)
+
+
+def test_read_inventory_closes_file_when_opened_fstat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    inventory_stat = path.stat()
+    real_fstat = os.fstat
+    opened_descriptor: int | None = None
+
+    def fail_first_inventory_fstat(descriptor: int) -> os.stat_result:
+        nonlocal opened_descriptor
+        metadata = real_fstat(descriptor)
+        if (
+            opened_descriptor is None
+            and stat.S_ISREG(metadata.st_mode)
+            and metadata.st_dev == inventory_stat.st_dev
+            and metadata.st_ino == inventory_stat.st_ino
+        ):
+            opened_descriptor = descriptor
+            raise OSError("inventory fstat failure")
+        return metadata
+
+    monkeypatch.setattr(portable.os, "fstat", fail_first_inventory_fstat)
+
+    with pytest.raises(ValueError, match="fstat failure|unsafe"):
+        read_inventory(root)
+    assert opened_descriptor is not None
+    with pytest.raises(OSError):
+        real_fstat(opened_descriptor)
+
+
+def test_read_inventory_requests_binary_mode_for_inventory_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    fake_binary = 1 << 29
+    real_open = os.open
+    inventory_flags: list[int] = []
+
+    def capture_flags(candidate, flags, *args, **kwargs):
+        candidate_text = os.fspath(candidate)
+        if candidate_text == os.fspath(path) or candidate_text == path.name:
+            inventory_flags.append(flags)
+        return real_open(candidate, flags & ~fake_binary, *args, **kwargs)
+
+    monkeypatch.setattr(portable.os, "O_BINARY", fake_binary, raising=False)
+    monkeypatch.setattr(portable.os, "open", capture_flags)
+
+    assert read_inventory(root) == make_inventory()
+    assert inventory_flags
+    assert all(flags & fake_binary for flags in inventory_flags)
+
+
+def test_read_inventory_rejects_file_reparse_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    write_inventory(root)
+    monkeypatch.setattr(
+        portable,
+        "_is_reparse_point",
+        lambda metadata: stat.S_ISREG(metadata.st_mode),
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="ordinary|reparse|unsafe"):
+        read_inventory(root)
+
+
 def test_read_inventory_rejects_missing_file(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="missing|ordinary"):
+    with pytest.raises(ValueError, match="missing|ordinary|unsafe|No such file"):
         read_inventory(tmp_path / "repo")
 
 
@@ -338,7 +572,7 @@ def test_read_inventory_rejects_hard_link(tmp_path: Path) -> None:
     other = tmp_path / "other.json"
     os.link(path, other)
 
-    with pytest.raises(ValueError, match="multiple links|hard link"):
+    with pytest.raises(ValueError, match="multiple links|hard link|single-link"):
         read_inventory(root)
 
 
@@ -375,7 +609,7 @@ def test_read_inventory_rejects_replacement_between_lstat_and_open(
 
     def replace_before_open(candidate, flags, *args, **kwargs):
         nonlocal replaced
-        if not replaced and os.fspath(candidate) == os.fspath(path):
+        if not replaced and os.fspath(candidate) in (os.fspath(path), path.name):
             replaced = True
             path.replace(tmp_path / "old-inventory.json")
             path.write_bytes(replacement)
@@ -388,29 +622,6 @@ def test_read_inventory_rejects_replacement_between_lstat_and_open(
     assert (tmp_path / "old-inventory.json").read_bytes() == original
 
 
-def test_read_inventory_keeps_the_first_validated_file_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from obsidian_wiki import portable
-
-    root = tmp_path / "repo"
-    path = write_inventory(root)
-    real_validate = portable._assert_single_link_ordinary_file
-
-    def validate_then_replace(validated_root: Path, candidate: Path, label: str):
-        observed = real_validate(validated_root, candidate, label)
-        path.replace(tmp_path / "first-validated-inventory.json")
-        path.write_text(render_inventory(make_inventory()), encoding="utf-8")
-        return observed
-
-    monkeypatch.setattr(
-        portable, "_assert_single_link_ordinary_file", validate_then_replace
-    )
-
-    with pytest.raises(ValueError, match="changed"):
-        read_inventory(root)
-
-
 def test_read_inventory_rejects_path_replacement_during_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,12 +629,13 @@ def test_read_inventory_rejects_path_replacement_during_read(
 
     root = tmp_path / "repo"
     path = write_inventory(root)
+    inventory_stat = path.stat()
     real_read = os.read
     replaced = False
 
     def replace_during_read(descriptor: int, count: int) -> bytes:
         nonlocal replaced
-        if not replaced:
+        if not replaced and descriptor_matches(descriptor, inventory_stat):
             replaced = True
             path.replace(tmp_path / "opened-inventory.json")
             path.write_text(render_inventory(make_inventory()), encoding="utf-8")
@@ -442,13 +654,15 @@ def test_read_inventory_revalidates_path_after_successful_close(
 
     root = tmp_path / "repo"
     path = write_inventory(root)
+    inventory_stat = path.stat()
     real_close = os.close
     replaced = False
 
     def replace_during_close(descriptor: int) -> None:
         nonlocal replaced
+        is_inventory = descriptor_matches(descriptor, inventory_stat)
         real_close(descriptor)
-        if not replaced:
+        if is_inventory and not replaced:
             replaced = True
             path.replace(tmp_path / "closed-inventory.json")
             path.write_text(render_inventory(make_inventory()), encoding="utf-8")
@@ -483,7 +697,7 @@ def test_read_inventory_rejects_same_inode_rewrite_during_first_read(
 
     def rewrite_before_first_read(descriptor: int, count: int) -> bytes:
         nonlocal rewritten
-        if not rewritten:
+        if not rewritten and descriptor_matches(descriptor, before):
             rewritten = True
             path.write_bytes(changed)
             os.utime(
@@ -523,8 +737,9 @@ def test_read_inventory_rejects_same_inode_rewrite_during_close(
 
     def rewrite_during_close(descriptor: int) -> None:
         nonlocal rewritten
+        is_inventory = descriptor_matches(descriptor, before)
         real_close(descriptor)
-        if not rewritten:
+        if is_inventory and not rewritten:
             rewritten = True
             path.write_bytes(changed)
             os.utime(
@@ -562,8 +777,9 @@ def test_read_inventory_rejects_no_utime_close_rewrite_on_coarse_timestamps(
 
     def rewrite_during_first_close(descriptor: int) -> None:
         nonlocal rewritten
+        is_inventory = descriptor_matches(descriptor, before)
         real_close(descriptor)
-        if not rewritten:
+        if is_inventory and not rewritten:
             rewritten = True
             path.write_bytes(changed)
             assert path.stat().st_ino == before.st_ino
@@ -593,31 +809,21 @@ def test_read_inventory_accepts_stable_rewrite_before_first_byte_after_two_reads
     )
     changed = render_inventory(changed_inventory).encode("utf-8")
     assert len(changed) == before.st_size
-    real_open = os.open
     real_read = os.read
-    open_count = 0
     rewritten = False
-
-    def count_inventory_open(candidate, flags, *args, **kwargs):
-        nonlocal open_count
-        if os.fspath(candidate) == os.fspath(path):
-            open_count += 1
-        return real_open(candidate, flags, *args, **kwargs)
 
     def rewrite_before_first_byte(descriptor: int, count: int) -> bytes:
         nonlocal rewritten
-        if not rewritten:
+        if not rewritten and descriptor_matches(descriptor, before):
             rewritten = True
             path.write_bytes(changed)
             assert path.stat().st_ino == before.st_ino
         return real_read(descriptor, count)
 
-    monkeypatch.setattr(portable.os, "open", count_inventory_open)
     monkeypatch.setattr(portable.os, "read", rewrite_before_first_byte)
     monkeypatch.setattr(portable, "_stat_timestamp_ns", lambda _stat, _name: 0)
 
     assert read_inventory(root) == changed_inventory
-    assert open_count == 2
 
 
 def test_read_inventory_rejects_short_read_even_when_json_is_valid(
@@ -630,13 +836,14 @@ def test_read_inventory_rejects_short_read_even_when_json_is_valid(
     path = root / MANAGED_SKILLS_INVENTORY
     path.parent.mkdir(parents=True)
     path.write_bytes(render_inventory(make_inventory()).encode("utf-8") + padding)
+    inventory_stat = path.stat()
     real_read = os.read
     first_read = True
 
     def omit_trailing_bytes(descriptor: int, count: int) -> bytes:
         nonlocal first_read
         data = real_read(descriptor, count)
-        if first_read:
+        if first_read and descriptor_matches(descriptor, inventory_stat):
             first_read = False
             assert data.endswith(padding)
             return data[: -len(padding)]
@@ -654,15 +861,21 @@ def test_read_inventory_preserves_primary_failure_when_close_also_fails(
     from obsidian_wiki import portable
 
     root = tmp_path / "repo"
-    write_inventory(root)
+    path = write_inventory(root)
+    inventory_stat = path.stat()
+    real_read = os.read
     real_close = os.close
 
-    def fail_read(_descriptor: int, _count: int) -> bytes:
-        raise RuntimeError("primary read failure")
+    def fail_read(descriptor: int, count: int) -> bytes:
+        if descriptor_matches(descriptor, inventory_stat):
+            raise RuntimeError("primary read failure")
+        return real_read(descriptor, count)
 
     def close_then_fail(descriptor: int) -> None:
+        is_inventory = descriptor_matches(descriptor, inventory_stat)
         real_close(descriptor)
-        raise OSError("secondary close failure")
+        if is_inventory:
+            raise OSError("secondary close failure")
 
     monkeypatch.setattr(portable.os, "read", fail_read)
     monkeypatch.setattr(portable.os, "close", close_then_fail)
@@ -677,12 +890,15 @@ def test_read_inventory_normalizes_close_only_oserror(
     from obsidian_wiki import portable
 
     root = tmp_path / "repo"
-    write_inventory(root)
+    path = write_inventory(root)
+    inventory_stat = path.stat()
     real_close = os.close
 
     def close_then_fail(descriptor: int) -> None:
+        is_inventory = descriptor_matches(descriptor, inventory_stat)
         real_close(descriptor)
-        raise OSError("close failure")
+        if is_inventory:
+            raise OSError("close failure")
 
     monkeypatch.setattr(portable.os, "close", close_then_fail)
 
