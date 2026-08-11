@@ -39,6 +39,12 @@ _SOURCE_IGNORED_FILES = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"}
 )
 _SUPPORTED_DESCRIPTION_BLOCKS = frozenset({">", ">-", ">+"})
+_SUPPORTS_BOUND_TREE_WALK = (
+    os.name == "posix"
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.listdir in os.supports_fd
+)
 
 
 @dataclass(frozen=True)
@@ -552,10 +558,270 @@ def snapshot_ordinary_tree(root: Path) -> tuple[SkillEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
+def _same_bound_snapshot(
+    observed: os.stat_result, current: os.stat_result, *, directory: bool
+) -> bool:
+    fields = ("st_dev", "st_ino", "st_mode", "st_ctime_ns")
+    if not directory:
+        fields += ("st_size", "st_mtime_ns")
+    return all(getattr(observed, field) == getattr(current, field) for field in fields)
+
+
+def _bound_directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _bound_file_flags() -> int:
+    return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _remove_entry_subtree(entries: list[SkillEntry], relative: str) -> None:
+    if not relative:
+        entries.clear()
+        return
+    entries[:] = [
+        entry
+        for entry in entries
+        if entry.path != relative and not entry.path.startswith(relative + "/")
+    ]
+
+
+def _read_bound_file(
+    parent_descriptor: int, name: str, observed: os.stat_result
+) -> tuple[bytes, os.stat_result]:
+    descriptor = os.open(name, _bound_file_flags(), dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not _same_bound_snapshot(observed, opened, directory=False)
+        ):
+            raise ValueError("file changed while being opened")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        final = os.fstat(descriptor)
+        if not _same_bound_snapshot(opened, final, directory=False):
+            raise ValueError("file changed while being read")
+        content = b"".join(chunks)
+        if len(content) != final.st_size:
+            raise ValueError("file size changed while being read")
+        return content, opened
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_bound_directory(
+    descriptor: int,
+    relative: str,
+    entries: list[SkillEntry],
+    unsafe_entries: list[str],
+) -> None:
+    before = os.fstat(descriptor)
+    try:
+        names = sorted(os.listdir(descriptor))
+    except OSError:
+        unsafe_entries.append(relative or ".")
+        _remove_entry_subtree(entries, relative)
+        return
+    for name in names:
+        child_relative = f"{relative}/{name}" if relative else name
+        try:
+            observed = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except OSError:
+            unsafe_entries.append(child_relative)
+            continue
+        mode = observed.st_mode
+        if stat.S_ISLNK(mode):
+            unsafe_entries.append(child_relative)
+            continue
+        if stat.S_ISDIR(mode):
+            child_descriptor = None
+            try:
+                child_descriptor = os.open(
+                    name, _bound_directory_flags(), dir_fd=descriptor
+                )
+                opened = os.fstat(child_descriptor)
+                if not _same_bound_snapshot(observed, opened, directory=True):
+                    raise ValueError("directory changed while being opened")
+                entries.append(SkillEntry(child_relative, "directory", False, b""))
+                _snapshot_bound_directory(
+                    child_descriptor, child_relative, entries, unsafe_entries
+                )
+                final = os.fstat(child_descriptor)
+                attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not _same_bound_snapshot(opened, final, directory=True) or not (
+                    _same_bound_snapshot(opened, attached, directory=True)
+                ):
+                    raise ValueError("directory changed during scan")
+            except (OSError, ValueError):
+                unsafe_entries.append(child_relative)
+                _remove_entry_subtree(entries, child_relative)
+            finally:
+                if child_descriptor is not None:
+                    os.close(child_descriptor)
+            continue
+        if not stat.S_ISREG(mode) or observed.st_nlink != 1:
+            unsafe_entries.append(child_relative)
+            continue
+        try:
+            content, opened = _read_bound_file(descriptor, name, observed)
+            attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if not _same_bound_snapshot(opened, attached, directory=False):
+                raise ValueError("file changed after being read")
+        except (OSError, ValueError):
+            unsafe_entries.append(child_relative)
+            continue
+        entries.append(
+            SkillEntry(
+                child_relative,
+                "file",
+                bool(opened.st_mode & 0o111),
+                content,
+            )
+        )
+    final = os.fstat(descriptor)
+    if not _same_bound_snapshot(before, final, directory=True):
+        unsafe_entries.append(relative or ".")
+        _remove_entry_subtree(entries, relative)
+
+
+def _snapshot_posix_bound_tree(
+    anchor: Path, root: Path
+) -> tuple[tuple[SkillEntry, ...], tuple[str, ...]]:
+    anchor = Path(os.path.abspath(os.fspath(anchor)))
+    root = Path(os.path.abspath(os.fspath(root)))
+    try:
+        relative = root.relative_to(anchor)
+    except ValueError:
+        return (), (".",)
+    try:
+        anchor_observed = anchor.lstat()
+    except FileNotFoundError:
+        return (), ()
+    except OSError:
+        return (), (".",)
+    if stat.S_ISLNK(anchor_observed.st_mode) or not stat.S_ISDIR(
+        anchor_observed.st_mode
+    ):
+        return (), (".",)
+
+    descriptors: list[int] = []
+    bindings: list[tuple[int, str, int, os.stat_result]] = []
+    try:
+        current = os.open(anchor, _bound_directory_flags())
+        descriptors.append(current)
+        anchor_opened = os.fstat(current)
+        if not _same_bound_snapshot(anchor_observed, anchor_opened, directory=True):
+            return (), (".",)
+        for part in relative.parts:
+            try:
+                observed = os.stat(part, dir_fd=current, follow_symlinks=False)
+            except FileNotFoundError:
+                return (), ()
+            except OSError:
+                return (), (".",)
+            if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+                return (), (".",)
+            try:
+                child = os.open(part, _bound_directory_flags(), dir_fd=current)
+            except OSError:
+                return (), (".",)
+            descriptors.append(child)
+            opened = os.fstat(child)
+            if not _same_bound_snapshot(observed, opened, directory=True):
+                return (), (".",)
+            bindings.append((current, part, child, opened))
+            current = child
+
+        entries: list[SkillEntry] = []
+        unsafe_entries: list[str] = []
+        _snapshot_bound_directory(current, "", entries, unsafe_entries)
+        try:
+            anchor_attached = anchor.lstat()
+        except OSError:
+            return (), (".",)
+        if not _same_bound_snapshot(anchor_opened, anchor_attached, directory=True):
+            return (), (".",)
+        for parent, name, child, opened in bindings:
+            try:
+                attached = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                final = os.fstat(child)
+            except OSError:
+                return (), (".",)
+            if not _same_bound_snapshot(opened, attached, directory=True) or not (
+                _same_bound_snapshot(opened, final, directory=True)
+            ):
+                return (), (".",)
+        return (
+            tuple(sorted(entries, key=lambda entry: entry.path)),
+            tuple(sorted(set(unsafe_entries))),
+        )
+    except OSError:
+        return (), (".",)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _deepest_existing_ordinary_directory(anchor: Path, root: Path) -> Path:
+    """Return the deepest existing root ancestor, rejecting links and reparses."""
+    anchor = Path(os.path.abspath(os.fspath(anchor)))
+    root = Path(os.path.abspath(os.fspath(root)))
+    try:
+        relative = root.relative_to(anchor)
+    except ValueError as exc:
+        raise ValueError("tree root escapes its anchor") from exc
+
+    current = anchor
+    for part in (None, *relative.parts):
+        if part is not None:
+            current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return current.parent
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        ):
+            raise ValueError(
+                f"tree anchor path must contain only ordinary directories: {current}"
+            )
+    return current
+
+
 def snapshot_ordinary_tree_with_unsafe(
-    root: Path,
+    root: Path, *, anchor: Path | None = None
 ) -> tuple[tuple[SkillEntry, ...], tuple[str, ...]]:
     """Snapshot ordinary entries and report unsafe paths without following them."""
+    if anchor is not None:
+        if _SUPPORTS_BOUND_TREE_WALK:
+            return _snapshot_posix_bound_tree(anchor, root)
+        if os.name != "nt":
+            return (), (".",)
+        from .local_state import _close_windows_handles, _windows_directory_guard
+
+        try:
+            guarded = _deepest_existing_ordinary_directory(anchor, root)
+            handles = _windows_directory_guard(anchor, (guarded,))
+        except (OSError, RuntimeError, ValueError):
+            return (), (".",)
+        try:
+            return snapshot_ordinary_tree_with_unsafe(root)
+        finally:
+            _close_windows_handles(handles)
     try:
         root_metadata = root.lstat()
     except FileNotFoundError:

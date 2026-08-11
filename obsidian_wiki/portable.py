@@ -14,10 +14,11 @@ import re
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Literal
 
 try:
@@ -1329,7 +1330,14 @@ class SkillSyncReport:
     status: Literal["clean", "drift", "applied"]
     canonical_skills: tuple[str, ...]
     targets: tuple[SkillMirrorChange, ...]
-    warnings: tuple[dict[str, str], ...] = ()
+    warnings: tuple[Mapping[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(MappingProxyType(dict(warning)) for warning in self.warnings),
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -1370,9 +1378,12 @@ def _minimal_changed_paths(
 ) -> tuple[str, ...]:
     selected: list[str] = []
     blockers = set(blocking_ancestors)
+    candidates = set(paths)
     if "." in blockers:
         return ()
-    for path in sorted(set(paths)):
+    if "." in candidates:
+        return (".",)
+    for path in sorted(candidates):
         if path in blockers:
             continue
         ancestors = PurePosixPath(path).parents
@@ -1395,7 +1406,9 @@ def _plan_one_skill_mirror(
     try:
         _assert_safe_managed_path(root, target)
         if target.exists():
-            mirror_snapshot, unsafe = snapshot_ordinary_tree_with_unsafe(target)
+            mirror_snapshot, unsafe = snapshot_ordinary_tree_with_unsafe(
+                target, anchor=root
+            )
         else:
             mirror_snapshot, unsafe = (), ()
         _assert_safe_managed_path(root, target)

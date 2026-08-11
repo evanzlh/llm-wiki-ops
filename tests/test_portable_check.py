@@ -1594,12 +1594,12 @@ def test_check_rejects_ancestor_symlink_inserted_after_mirror_snapshot(
     shutil.copytree(root / ".claude", external)
     from obsidian_wiki import portable_check
 
-    original_snapshot = portable_check.snapshot_ordinary_tree
+    original_snapshot = portable_check.snapshot_ordinary_tree_with_unsafe
     swapped = False
 
-    def swap_ancestor_after_snapshot(path: Path):
+    def swap_ancestor_after_snapshot(path: Path, *, anchor: Path):
         nonlocal swapped
-        snapshot = original_snapshot(path)
+        snapshot = original_snapshot(path, anchor=anchor)
         if not swapped and path == root / ".claude/skills":
             swapped = True
             shutil.rmtree(root / ".claude")
@@ -1607,7 +1607,9 @@ def test_check_rejects_ancestor_symlink_inserted_after_mirror_snapshot(
         return snapshot
 
     monkeypatch.setattr(
-        portable_check, "snapshot_ordinary_tree", swap_ancestor_after_snapshot
+        portable_check,
+        "snapshot_ordinary_tree_with_unsafe",
+        swap_ancestor_after_snapshot,
     )
 
     report = check_portable_repo(config)

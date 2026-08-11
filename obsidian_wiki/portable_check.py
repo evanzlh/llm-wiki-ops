@@ -40,7 +40,7 @@ from .skill_trees import (
     SkillCollection,
     SkillEntry,
     discover_skill_collection,
-    snapshot_ordinary_tree,
+    snapshot_ordinary_tree_with_unsafe,
 )
 
 
@@ -869,9 +869,9 @@ def _check_skill_mirrors(
             )
             continue
         try:
-            mirror_snapshot = snapshot_ordinary_tree(mirror_root)
-        except FileNotFoundError:
-            mirror_snapshot = ()
+            mirror_snapshot, unsafe_paths = snapshot_ordinary_tree_with_unsafe(
+                mirror_root, anchor=config.root
+            )
         except (OSError, ValueError) as exc:
             issues.append(
                 CheckIssue(
@@ -890,8 +890,32 @@ def _check_skill_mirrors(
                 )
             )
             continue
+        for unsafe_path in unsafe_paths:
+            path = (
+                agent_relative
+                if unsafe_path == "."
+                else (PurePosixPath(agent_relative) / unsafe_path).as_posix()
+            )
+            issues.append(
+                CheckIssue(
+                    "skill-mirror-unsafe",
+                    path,
+                    "agent mirror entry is unsafe or changed during inspection",
+                )
+            )
+
+        def blocked(path: str) -> bool:
+            return any(
+                unsafe == "."
+                or path == unsafe
+                or path.startswith(unsafe + "/")
+                for unsafe in unsafe_paths
+            )
+
         mirror_entries = {entry.path: entry for entry in mirror_snapshot}
         for path in sorted(set(canonical_entries) - set(mirror_entries)):
+            if blocked(path):
+                continue
             issues.append(
                 CheckIssue(
                     "skill-mirror-missing",
@@ -900,6 +924,8 @@ def _check_skill_mirrors(
                 )
             )
         for path in sorted(set(canonical_entries) & set(mirror_entries)):
+            if blocked(path):
+                continue
             if canonical_entries[path] != mirror_entries[path]:
                 issues.append(
                     CheckIssue(
@@ -909,6 +935,8 @@ def _check_skill_mirrors(
                     )
                 )
         for path in sorted(set(mirror_entries) - set(canonical_entries)):
+            if blocked(path):
+                continue
             issues.append(
                 CheckIssue(
                     "skill-mirror-extra",

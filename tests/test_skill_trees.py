@@ -77,6 +77,36 @@ def test_snapshot_ordinary_tree_preserves_raw_files_empty_dirs_and_modes(
     ]
 
 
+def test_deepest_existing_directory_stops_before_a_missing_tree_root(
+    tmp_path: Path,
+) -> None:
+    from obsidian_wiki.skill_trees import _deepest_existing_ordinary_directory
+
+    anchor = tmp_path / "repo"
+    parent = anchor / ".cursor"
+    parent.mkdir(parents=True)
+
+    assert (
+        _deepest_existing_ordinary_directory(anchor, parent / "skills") == parent
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
+def test_deepest_existing_directory_rejects_an_intermediate_symlink(
+    tmp_path: Path,
+) -> None:
+    from obsidian_wiki.skill_trees import _deepest_existing_ordinary_directory
+
+    anchor = tmp_path / "repo"
+    anchor.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (anchor / ".cursor").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="ordinary|reparse|symlink"):
+        _deepest_existing_ordinary_directory(anchor, anchor / ".cursor/skills")
+
+
 @pytest.mark.parametrize("entry_kind", ["symlink", "hardlink", "special"])
 def test_snapshot_ordinary_tree_rejects_unsafe_entries(
     tmp_path: Path, entry_kind: str

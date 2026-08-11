@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, cli, portable
+from obsidian_wiki import skill_trees
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable import (
     MANAGED_END,
@@ -855,6 +856,33 @@ def test_skill_sync_plan_root_level_unsafe_suppresses_all_safe_drift(
     assert snapshot_tree(root) == before
 
 
+def test_skill_sync_plan_root_unsafe_collapses_redundant_unsafe_descendants(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    original = portable.snapshot_ordinary_tree_with_unsafe
+
+    def root_and_child_unsafe(path: Path, *, anchor: Path):
+        if path == root / ".kiro/skills":
+            return (), (".", "wiki-ingest/unsafe-child")
+        return original(path, anchor=anchor)
+
+    monkeypatch.setattr(
+        portable, "snapshot_ordinary_tree_with_unsafe", root_and_child_unsafe
+    )
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    change = next(item for item in report.targets if item.path == ".kiro/skills")
+
+    assert change.unsafe == (".",)
+    assert not change.added and not change.changed and not change.removed
+    assert snapshot_tree(root) == before
+
+
 def test_skill_sync_plan_warns_for_managed_canonical_digest_divergence(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
@@ -880,6 +908,57 @@ def test_skill_sync_plan_warns_for_managed_canonical_digest_divergence(
         },
     )
     assert all(target.changed == ("wiki-query/SKILL.md",) for target in report.targets)
+    with pytest.raises(TypeError):
+        report.warnings[0]["code"] = "mutated"
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap race")
+def test_skill_sync_plan_binds_mirror_scan_against_swap_and_restore(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    target = root / ".kiro/skills"
+    changed_relative = "wiki-query/SKILL.md"
+    changed = target / changed_relative
+    changed.write_text(changed.read_text(encoding="utf-8") + "\nreal drift\n")
+    backup = tmp_path / "kiro-skills-backup"
+    original_iterdir = Path.iterdir
+    original_validate = skill_trees._validate_directory_unchanged
+    swapped = False
+    before = snapshot_tree(root)
+
+    def swap_before_iteration(path: Path):
+        nonlocal swapped
+        if path == target and not swapped:
+            swapped = True
+            target.rename(backup)
+            target.symlink_to(root / ".skills", target_is_directory=True)
+        return original_iterdir(path)
+
+    def restore_before_validation(path: Path, observed: os.stat_result) -> None:
+        if path == target and target.is_symlink():
+            target.unlink()
+            backup.rename(target)
+        original_validate(path, observed)
+
+    monkeypatch.setattr(Path, "iterdir", swap_before_iteration)
+    monkeypatch.setattr(
+        skill_trees, "_validate_directory_unchanged", restore_before_validation
+    )
+    try:
+        report = plan_portable_skill_sync(root)
+    finally:
+        if target.is_symlink():
+            target.unlink()
+            backup.rename(target)
+
+    change = next(item for item in report.targets if item.path == ".kiro/skills")
+    assert change.changed == (changed_relative,)
+    assert not change.unsafe
     assert snapshot_tree(root) == before
 
 
