@@ -1212,6 +1212,85 @@ def test_apply_rollback_removes_new_empty_skill_directories(
     assert all(not directory.exists() for directory in empty_directories)
 
 
+def test_apply_detects_empty_skill_directory_deleted_before_operation_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    empty_directory = root / ".skills/wiki-ingest/references/empty/nested"
+    canonical_skill = root / ".skills/wiki-ingest/SKILL.md"
+    original_replace = migration_module._atomic_replace_bytes
+    deleted = False
+
+    def delete_empty_directory(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal deleted
+        original_replace(path, data, **kwargs)
+        if path == canonical_skill and not deleted:
+            empty_directory.rmdir()
+            deleted = True
+
+    monkeypatch.setattr(
+        migration_module, "_atomic_replace_bytes", delete_empty_directory
+    )
+
+    with pytest.raises(MigrationError, match="directory postimage"):
+        apply_migration(
+            plan, installed_version="2026.8", source_skills=source_skills
+        )
+
+    assert deleted
+    assert not (root / ".skills").exists()
+
+
+def test_apply_preserves_recreated_empty_skill_directory_during_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    empty_directory = root / ".skills/wiki-ingest/references/empty/nested"
+    canonical_skill = root / ".skills/wiki-ingest/SKILL.md"
+    original_replace = migration_module._atomic_replace_bytes
+    replaced = False
+    replacement_postimage: tuple[int, int, int] | None = None
+
+    def replace_empty_directory(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal replaced, replacement_postimage
+        original_replace(path, data, **kwargs)
+        if path == canonical_skill and not replaced:
+            replacement = empty_directory.parent / "replacement"
+            replacement.mkdir(mode=0o755)
+            replacement.chmod(0o755)
+            empty_directory.rmdir()
+            replacement.rename(empty_directory)
+            metadata = empty_directory.stat()
+            replacement_postimage = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_ctime_ns,
+            )
+            replaced = True
+
+    monkeypatch.setattr(
+        migration_module, "_atomic_replace_bytes", replace_empty_directory
+    )
+
+    with pytest.raises(MigrationError, match="directory postimage"):
+        apply_migration(
+            plan, installed_version="2026.8", source_skills=source_skills
+        )
+
+    assert replaced
+    assert empty_directory.is_dir()
+    metadata = empty_directory.stat()
+    assert (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_ctime_ns,
+    ) == replacement_postimage
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")
 def test_apply_rollback_restores_original_file_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

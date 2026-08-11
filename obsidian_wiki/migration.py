@@ -79,6 +79,19 @@ class _AppliedMutation:
 
 
 @dataclass(frozen=True)
+class _DirectoryPostimage:
+    identity: tuple[int, int]
+    mode: int | None
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class _CandidateDirectory:
+    relative: str
+    empty: bool
+
+
+@dataclass(frozen=True)
 class MigrationPlan:
     root: Path
     vault: Path
@@ -1087,7 +1100,77 @@ def _open_parent_fd(root: Path, path: Path) -> int:
         raise
 
 
-def _ensure_directory_path(root: Path, directory: Path) -> None:
+def _read_directory_postimage(root: Path, directory: Path) -> _DirectoryPostimage:
+    try:
+        relative = directory.relative_to(root)
+    except ValueError as exc:
+        raise MigrationError(
+            f"migration directory postimage escapes repository: {directory}"
+        ) from exc
+    if os.name == "nt":
+        if _has_symlink_component(directory, below=root):
+            raise MigrationError(
+                f"migration directory postimage changed: {relative.as_posix()}"
+            )
+        try:
+            metadata = directory.lstat()
+        except OSError as exc:
+            raise MigrationError(
+                f"migration directory postimage changed: {relative.as_posix()}"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise MigrationError(
+                f"migration directory postimage changed: {relative.as_posix()}"
+            )
+        return _DirectoryPostimage(
+            identity=(metadata.st_dev, metadata.st_ino),
+            mode=None,
+            ctime_ns=metadata.st_ctime_ns,
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(root, flags)
+        for part in relative.parts:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        opened = os.fstat(descriptor)
+        attached = directory.lstat()
+    except OSError as exc:
+        raise MigrationError(
+            f"migration directory postimage changed: {relative.as_posix()}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or stat.S_ISLNK(attached.st_mode)
+        or not stat.S_ISDIR(attached.st_mode)
+        or opened.st_dev != attached.st_dev
+        or opened.st_ino != attached.st_ino
+        or stat.S_IMODE(opened.st_mode) != stat.S_IMODE(attached.st_mode)
+        or opened.st_ctime_ns != attached.st_ctime_ns
+    ):
+        raise MigrationError(
+            f"migration directory postimage changed: {relative.as_posix()}"
+        )
+    return _DirectoryPostimage(
+        identity=(opened.st_dev, opened.st_ino),
+        mode=stat.S_IMODE(opened.st_mode),
+        ctime_ns=opened.st_ctime_ns,
+    )
+
+
+def _ensure_directory_path(
+    root: Path,
+    directory: Path,
+    *,
+    created_postimages: dict[Path, _DirectoryPostimage] | None = None,
+) -> None:
     try:
         relative = directory.relative_to(root)
     except ValueError as exc:
@@ -1102,18 +1185,27 @@ def _ensure_directory_path(root: Path, directory: Path) -> None:
                 raise MigrationError(
                     f"migration directory contains a symbolic link: {current}"
                 )
-            current.mkdir(exist_ok=True)
+            created = False
+            try:
+                current.mkdir()
+                created = True
+            except FileExistsError:
+                pass
             if not current.is_dir():
                 raise MigrationError(
                     f"migration directory is not ordinary: {current}"
                 )
+            if created and created_postimages is not None:
+                created_postimages[current] = _read_directory_postimage(root, current)
         return
 
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(root, flags)
+    current = root
     try:
         for part in relative.parts:
+            current /= part
             created = False
             try:
                 os.mkdir(part, mode=0o755, dir_fd=descriptor)
@@ -1126,6 +1218,13 @@ def _ensure_directory_path(root: Path, directory: Path) -> None:
                 if created:
                     os.fchmod(child, 0o755)
                     os.fsync(child)
+                    if created_postimages is not None:
+                        metadata = os.fstat(child)
+                        created_postimages[current] = _DirectoryPostimage(
+                            identity=(metadata.st_dev, metadata.st_ino),
+                            mode=stat.S_IMODE(metadata.st_mode),
+                            ctime_ns=metadata.st_ctime_ns,
+                        )
             except BaseException:
                 os.close(child)
                 raise
@@ -1543,7 +1642,7 @@ def _build_migration_candidates(
     operation_suffix: str,
 ) -> tuple[
     dict[str, _CandidateArtifact],
-    tuple[str, ...],
+    tuple[_CandidateDirectory, ...],
     str,
     dict[str, bytes | None],
 ]:
@@ -1647,7 +1746,7 @@ def _build_migration_candidates(
     operation_relative = _repo_relative(candidate_root, operation_target)
 
     candidates: dict[str, _CandidateArtifact] = {}
-    candidate_directories: list[str] = []
+    candidate_directories: list[_CandidateDirectory] = []
     local_prefix = PurePosixPath(".obsidian-wiki/local")
     for path in sorted(candidate_root.rglob("*")):
         relative = PurePosixPath(path.relative_to(candidate_root).as_posix())
@@ -1659,7 +1758,12 @@ def _build_migration_candidates(
                 f"migration candidate contains a symbolic link: {relative}"
             )
         if stat.S_ISDIR(metadata.st_mode):
-            candidate_directories.append(relative.as_posix())
+            candidate_directories.append(
+                _CandidateDirectory(
+                    relative=relative.as_posix(),
+                    empty=next(path.iterdir(), None) is None,
+                )
+            )
             continue
         if not stat.S_ISREG(metadata.st_mode):
             raise MigrationError(f"migration candidate is not ordinary: {relative}")
@@ -1671,7 +1775,7 @@ def _build_migration_candidates(
         )
     return (
         candidates,
-        tuple(sorted(candidate_directories)),
+        tuple(sorted(candidate_directories, key=lambda directory: directory.relative)),
         operation_relative,
         owner_dependencies,
     )
@@ -1790,6 +1894,39 @@ def _verify_promoted_postimages(
             )
 
 
+def _directory_postimage_matches(
+    current: _DirectoryPostimage,
+    expected: _DirectoryPostimage,
+    *,
+    compare_ctime: bool,
+) -> bool:
+    return (
+        current.identity == expected.identity
+        and current.mode == expected.mode
+        and (not compare_ctime or current.ctime_ns == expected.ctime_ns)
+    )
+
+
+def _verify_directory_postimages(
+    root: Path,
+    expected: dict[str, _DirectoryPostimage],
+    *,
+    ctime_sensitive: frozenset[str],
+) -> None:
+    for relative, postimage in expected.items():
+        current = _read_directory_postimage(
+            root, root / PurePosixPath(relative)
+        )
+        if not _directory_postimage_matches(
+            current,
+            postimage,
+            compare_ctime=relative in ctime_sensitive,
+        ):
+            raise MigrationError(
+                f"migration directory postimage changed: {relative}"
+            )
+
+
 def _missing_parents(root: Path, paths: Iterator[Path]) -> tuple[Path, ...]:
     missing: set[Path] = set()
     for path in paths:
@@ -1844,7 +1981,8 @@ def _rollback_targets(
     root: Path,
     originals: dict[str, bytes | None],
     original_modes: dict[str, int | None],
-    created_parents: tuple[Path, ...],
+    created_parent_postimages: dict[Path, _DirectoryPostimage],
+    ctime_sensitive_directories: frozenset[Path],
     applied: dict[str, _AppliedMutation],
 ) -> tuple[str, ...]:
     errors: list[str] = []
@@ -1884,14 +2022,23 @@ def _rollback_targets(
                 )
         except BaseException as exc:  # noqa: BLE001 - rollback is best-effort for interrupts too
             errors.append(f"{relative}: {exc}")
-    for directory in sorted(
-        created_parents, key=lambda item: len(item.parts), reverse=True
+    for directory, expected in sorted(
+        created_parent_postimages.items(),
+        key=lambda item: len(item[0].parts),
+        reverse=True,
     ):
         try:
+            if not directory.exists() and not directory.is_symlink():
+                continue
+            current = _read_directory_postimage(root, directory)
+            if not _directory_postimage_matches(
+                current,
+                expected,
+                compare_ctime=directory in ctime_sensitive_directories,
+            ):
+                raise MigrationError("created directory changed before rollback")
             directory.rmdir()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
+        except (OSError, MigrationError) as exc:
             if directory.exists() or directory.is_symlink():
                 errors.append(f"{_repo_relative(root, directory)}: {exc}")
     return tuple(errors)
@@ -1984,6 +2131,10 @@ def apply_migration(
     original_modes: dict[str, int | None] = {}
     applied: dict[str, _AppliedMutation] = {}
     created_parents: tuple[Path, ...] = ()
+    created_parent_postimages: dict[Path, _DirectoryPostimage] = {}
+    candidate_directory_postimages: dict[str, _DirectoryPostimage] = {}
+    empty_candidate_directories: frozenset[str] = frozenset()
+    empty_candidate_directory_paths: frozenset[Path] = frozenset()
 
     try:
         completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1999,6 +2150,13 @@ def apply_migration(
             source_skills=Path(source_skills),
             completed_at=completed_at,
             operation_suffix=operation_suffix,
+        )
+        empty_candidate_directories = frozenset(
+            directory.relative for directory in candidate_directories if directory.empty
+        )
+        empty_candidate_directory_paths = frozenset(
+            root / PurePosixPath(relative)
+            for relative in empty_candidate_directories
         )
         _verify_preimages(plan)
         _verify_candidate_dependencies(root, candidate_dependencies)
@@ -2047,7 +2205,8 @@ def apply_migration(
         }
         required_directories.add(plan.vault / ".manifest/sources")
         required_directories.update(
-            root / PurePosixPath(relative) for relative in candidate_directories
+            root / PurePosixPath(directory.relative)
+            for directory in candidate_directories
         )
         for directory in required_directories:
             if _has_symlink_component(directory, below=root):
@@ -2082,7 +2241,34 @@ def apply_migration(
         for directory in sorted(
             directories_to_create, key=lambda item: len(item.parts)
         ):
-            _ensure_directory_path(root, directory)
+            _ensure_directory_path(
+                root,
+                directory,
+                created_postimages=created_parent_postimages,
+            )
+        if set(created_parent_postimages) != set(created_parents):
+            raise MigrationError(
+                "migration created directory ownership changed during apply"
+            )
+        for directory in candidate_directories:
+            relative = directory.relative
+            target = root / PurePosixPath(relative)
+            postimage = _read_directory_postimage(root, target)
+            created_postimage = created_parent_postimages.get(target)
+            if created_postimage is not None:
+                if not _directory_postimage_matches(
+                    postimage,
+                    created_postimage,
+                    compare_ctime=directory.empty,
+                ):
+                    raise MigrationError(
+                        f"migration directory postimage changed: {relative}"
+                    )
+                if os.name != "nt" and postimage.mode != 0o755:
+                    raise MigrationError(
+                        f"migration directory postimage has wrong mode: {relative}"
+                    )
+            candidate_directory_postimages[relative] = postimage
 
         page_targets = {
             _repo_relative(root, plan.vault / PurePosixPath(relative))
@@ -2175,6 +2361,11 @@ def apply_migration(
                 include_operation=False,
                 removed_relative=hot_relative if removed_files else None,
             )
+            _verify_directory_postimages(
+                root,
+                candidate_directory_postimages,
+                ctime_sensitive=empty_candidate_directories,
+            )
             operation_artifact = changed[operation_relative]
             _write_exclusive_bytes(
                 root / PurePosixPath(operation_relative),
@@ -2205,6 +2396,11 @@ def apply_migration(
                 include_operation=True,
                 removed_relative=hot_relative if removed_files else None,
             )
+            _verify_directory_postimages(
+                root,
+                candidate_directory_postimages,
+                ctime_sensitive=empty_candidate_directories,
+            )
 
         manifest_payload = json.loads((migration_root / "manifest.json").read_text())
         manifest_payload["status"] = "committed"
@@ -2221,7 +2417,12 @@ def apply_migration(
         )
     except BaseException as exc:
         rollback_errors = _rollback_targets(
-            root, originals, original_modes, created_parents, applied
+            root,
+            originals,
+            original_modes,
+            created_parent_postimages,
+            empty_candidate_directory_paths,
+            applied,
         )
         if rollback_errors:
             forward_error = f"{type(exc).__name__}: {exc}"
