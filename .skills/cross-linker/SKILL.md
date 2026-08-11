@@ -23,6 +23,7 @@ You are weaving the wiki's knowledge graph tighter by finding and inserting miss
    The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
    keeps Steps 1–3 read-only. Select one terminal workflow after the shared
    read-only analysis; do not let a worker choose a mode or write files.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `index.md` to get the full inventory of pages and their one-line descriptions
 3. Skim `log.md` to see what was recently ingested (focus linking effort on new pages)
 

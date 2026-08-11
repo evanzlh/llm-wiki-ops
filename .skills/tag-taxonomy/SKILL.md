@@ -20,6 +20,7 @@ You are enforcing consistent tagging across the wiki by normalizing tags to a co
    The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
    keeps audit and page-preparation work read-only. Select one terminal workflow
    after the shared read-only analysis; workers never choose the mode or write.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `$OBSIDIAN_VAULT_PATH/_meta/taxonomy.md` — this is the canonical tag list
 3. Read `index.md` to understand the wiki's scope
 
@@ -115,6 +116,11 @@ Use this branch only after Portable Repository mode was resolved. Keep the
 repository root as the command CWD; keep the absolute `candidate_vault` only in
 memory and do not `cd` into it.
 
+Before computing closure, fail closed if the requested logical operation
+requires any `_meta/taxonomy.md` change. In that case the entire logical
+operation is unsupported: stop before `transaction begin` or any page mutation,
+and do not partially normalize pages while leaving the vocabulary unchanged.
+
 1. Compute complete source closure before beginning: the set union of all
    existing `sources` Source IDs from every updated or deleted live page and all
    repository-relative Source IDs any candidate `sources` field will cite. This
@@ -125,9 +131,8 @@ memory and do not `cd` into it.
 3. Write candidate replacements or new knowledge pages at final vault-relative
    paths below `candidate_vault`. New pages use
    `created = updated = started_at`; updates preserve the existing `created` and
-   set `updated = started_at`. `_meta/taxonomy.md` is a live central file, not a
-   transaction knowledge candidate; if the requested change requires editing it,
-   report that part as unsupported in Portable mode and do not mutate it.
+   set `updated = started_at`. `_meta/taxonomy.md` remains a live central file,
+   not a transaction knowledge candidate.
 4. Declare reviewed page removals with
    `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
 5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every

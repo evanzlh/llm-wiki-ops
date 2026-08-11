@@ -20,6 +20,7 @@ You are performing a destructive operation on the wiki. Always archive first, al
    keeps inventory, intent confirmation, and planning read-only. Select one
    terminal workflow after the shared read-only analysis; workers never choose
    mode or mutate the vault.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `.manifest.json` to understand current state
 3. **Confirm the user's intent.** This skill supports three modes:
    - **Archive only** — snapshot current wiki, no rebuild

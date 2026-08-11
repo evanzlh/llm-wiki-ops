@@ -28,6 +28,7 @@ You are computing the current state of the wiki: what's been ingested, what's ne
    or write reports. Portable read-only status begins with
    `obsidian-wiki transaction list --json` and surfaces retained or failed
    transactions first.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 ledger. Portable mode uses manifest v2: its
    `.manifest.json` is only a marker, shards are below
@@ -105,12 +106,13 @@ paths are not durable Source IDs.
 Read portable state with:
 
 ```bash
-obsidian-wiki cache-check "$OBSIDIAN_VAULT_PATH" <source1> [source2 ...]
+obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty
 obsidian-wiki check --json --pretty
 ```
 
-Use `cache-update` after a successful compile; do not manually edit the marker
-or shards. Small, reviewable authoritative snapshots use ordinary Git storage.
+Portable transaction commit is the sole shard writer; do not run `cache-update`
+or manually edit the marker or shards. Small, reviewable authoritative snapshots
+use ordinary Git storage.
 Git LFS pointers are unsupported. The manifest stores source compilation state,
 not model, agent, API, or generation-tool provenance.
 
@@ -198,8 +200,8 @@ For portable manifest v2, `obsidian-wiki check` exposes the PR-facing names:
 
 | Check issue | Meaning | Required action |
 |---|---|---|
-| `source-new` | An authoritative source exists with no shard | Compile it, then run `cache-update` |
-| `source-stale` | Source content differs from the shard hash | Recompile it, then run `cache-update` |
+| `source-new` | An authoritative source exists with no shard | Compile it through a transaction; successful commit writes the shard |
+| `source-stale` | Source content differs from the shard hash | Recompile it through a transaction; successful commit writes the shard |
 | `source-orphaned` | A shard exists but its source no longer exists | Restore the source, or reconcile an intentional deletion as described below |
 
 All three are deterministic errors and therefore PR blockers. Report them
@@ -473,6 +475,10 @@ You'll reuse this data across all sections below.
 For ordinary status, return the read-only report and stop without a transaction.
 For an insights write, keep the repository root as the command CWD; keep the
 absolute `candidate_vault` only in memory and do not `cd` into it.
+`_insights.md` remains Personal-mode-only; Portable insights, when authority
+closes, are transaction knowledge candidates at `synthesis/wiki-insights.md`;
+review and commit the candidate through the steps below.
+`_insights.md` reads and writes are Personal-mode-only.
 
 1. Trace the analyzed input pages through their frontmatter to actual
    authoritative files below configured source roots. If genuinely
@@ -491,8 +497,9 @@ absolute `candidate_vault` only in memory and do not `cd` into it.
 4. Write candidate replacements or new knowledge pages; for this skill the path
    is `synthesis/wiki-insights.md`. New pages use
    `created = updated = started_at`; updates
-   preserve the existing `created` and set `updated = started_at`. Its `sources`
-   cites only transaction Source IDs. Use transaction-compatible frontmatter:
+   preserve the existing `created` value and set `updated = started_at`. Its
+   `sources` cites only transaction Source IDs. Use transaction-compatible
+   frontmatter:
 
    ```yaml
    ---

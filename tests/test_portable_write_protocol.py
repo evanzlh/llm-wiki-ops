@@ -238,8 +238,8 @@ def test_portable_status_insights_are_transactional_knowledge_pages() -> None:
         "category: synthesis",
         "tags: [wiki-insights, meta/graph]",
         "sources: [<transaction Source IDs>]",
-        "created: TIMESTAMP",
-        "updated: TIMESTAMP",
+        "created: <started_at, or preserved value on update>",
+        "updated: <started_at>",
     ):
         assert required_frontmatter in status
     assert "preserve the existing `created` value" in status

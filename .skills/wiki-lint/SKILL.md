@@ -24,6 +24,7 @@ You are performing a health check on an Obsidian wiki. Your goal is to find and 
    Keep checks, report generation, dry-run, and confirmation read-only. Select
    one terminal workflow after the shared read-only analysis; workers never
    choose the mode or write fixes.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. **Read owner rules** — if `$OBSIDIAN_VAULT_PATH/AGENTS.md` exists, read it before interpreting any schema. Owner rules override framework defaults.
 3. **Form the effective schema** — record the schema source locator plus effective required/optional frontmatter, lifecycle values, relationship types, and provenance markers. Framework values are defaults; preserve owner extensions and relaxed requiredness exactly. Never coerce an owner type to a framework type.
 4. Read `index.md` for the full page inventory

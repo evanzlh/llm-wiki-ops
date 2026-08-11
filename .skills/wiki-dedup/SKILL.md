@@ -23,6 +23,7 @@ You are finding and merging wiki pages that cover the same concept under differe
    keeps detection, semantic review, and confirmation read-only. Select one
    terminal workflow after the shared read-only analysis; workers never choose
    the mode or mutate pages.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `index.md` to get the full page inventory with one-line descriptions and tags.
 3. Read `log.md` briefly — if a dedup run just happened, note what was already merged.
 
@@ -162,13 +163,17 @@ the absolute `candidate_vault` only in memory, and do not `cd` into it.
    Preserve valid Unicode and CJK spellings exactly.
 2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
    once with the closure and retain `id`, `started_at`, and `candidate_vault`.
-3. Write candidate replacements or new knowledge pages, including approved
-   redirect stubs, at final vault-relative paths below `candidate_vault`. New
-   pages use `created = updated = started_at`; updates preserve the existing
-   `created` and set `updated = started_at`.
-4. Declare each duplicate removal with
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`; never
-   remove a live page directly.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths below `candidate_vault`. New pages use
+   `created = updated = started_at`; updates preserve the existing `created`
+   and set `updated = started_at`.
+4. Choose exactly one disposition for each secondary path. Normally write a
+   redirect stub candidate and do not declare that path for deletion; the stub
+   must carry all required frontmatter, including non-empty `sources` drawn from
+   the transaction Source IDs. If the user explicitly approved removal instead,
+   declare it with `transaction delete` and do not write a candidate at that path:
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. A path can
+   never be both a candidate and a deletion.
 5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
    warning and Fix every issue, including backlinks broken by deletions.
 6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the

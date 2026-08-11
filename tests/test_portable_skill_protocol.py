@@ -501,7 +501,9 @@ def test_maintenance_family_has_safe_portable_completion(relative: str) -> None:
         ),
     }
     for required in special_requirements[relative]:
-        assert required in portable, f"{relative}: missing special rule {required!r}"
+        assert required in portable_flat, (
+            f"{relative}: missing special rule {required!r}"
+        )
 
 
 def test_maintenance_replacement_and_deletion_share_source_closure(
@@ -537,6 +539,81 @@ updated: {record.started_at}
     assert loaded.deletions == ("concepts/旧维护策略.md",)
     parsed = parse_frontmatter(candidate.read_text(encoding="utf-8"))
     assert parsed.scalars["updated"] == record.started_at
+
+
+def test_dedup_uses_exclusive_secondary_page_dispositions(tmp_path: Path) -> None:
+    relative = ".skills/wiki-dedup/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    for required in (
+        "Choose exactly one disposition for each secondary path",
+        "redirect stub candidate and do not declare that path for deletion",
+        "declare it with `transaction delete` and do not write a candidate at that path",
+        "required frontmatter",
+        "non-empty `sources`",
+    ):
+        assert required in " ".join(portable.split()), required
+
+    source_id = "sources/维护/去重.md"
+    _, config, record = _portable_transaction(tmp_path, (source_id,))
+    _write_candidate(
+        record,
+        "concepts/重复项.md",
+        f"""---
+title: 重复项重定向
+category: concepts
+tags: [maintenance]
+sources: [{source_id}]
+summary: 合法的去重重定向候选。
+created: {record.started_at}
+updated: {record.started_at}
+---
+# 重复项重定向
+""",
+    )
+    with pytest.raises(TransactionError, match="conflicts with candidate page"):
+        TransactionManager(config).mark_delete(
+            record.transaction_id, "concepts/重复项.md"
+        )
+
+
+def test_tag_taxonomy_fails_before_partial_portable_mutation() -> None:
+    relative = ".skills/tag-taxonomy/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    flat = " ".join(portable.split())
+    gate = flat.index("requires any `_meta/taxonomy.md` change")
+    begin = flat.index("obsidian-wiki transaction begin")
+    assert gate < begin
+    for required in (
+        "the entire logical operation is unsupported",
+        "stop before `transaction begin` or any page mutation",
+        "do not partially normalize pages",
+    ):
+        assert required in flat
+
+
+def test_status_portable_manifest_uses_configured_read_only_cache() -> None:
+    text = _text(".skills/wiki-status/SKILL.md")
+    portable_manifest = text.split(
+        "### Portable Repository mode — manifest v2", 1
+    )[1].split("## Step 1: Scan Current Sources", 1)[0]
+    assert (
+        "obsidian-wiki cache-check --configured <source1> [source2 ...] "
+        "--json --pretty"
+    ) in portable_manifest
+    assert "transaction commit is the sole shard writer" in portable_manifest
+    assert 'cache-check "$OBSIDIAN_VAULT_PATH"' not in portable_manifest
+    cache_update_pattern = dict(PORTABLE_EXECUTABLE_COMMANDS)["cache-update"]
+    assert cache_update_pattern.search(portable_manifest) is None
 
 
 @pytest.mark.parametrize(

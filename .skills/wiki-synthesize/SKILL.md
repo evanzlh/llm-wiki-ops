@@ -20,6 +20,7 @@ You are scanning the wiki for concepts that co-occur across many pages but have 
    keeps discovery, scoring, and page preparation read-only. Select one terminal
    workflow after the shared read-only analysis; workers never choose the mode
    or write pages.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `index.md` to get the full page inventory.
 3. Read `hot.md` if it exists — it surfaces recent activity and active threads that may already point to synthesis opportunities.
 4. Read `_meta/taxonomy.md` to understand the tag vocabulary.
@@ -136,12 +137,15 @@ Use this branch only after Portable Repository mode was resolved. Keep the
 repository root as the command CWD; retain the absolute `candidate_vault` only
 in memory and do not `cd` into it.
 
-1. Trace every selected input page to its actual authoritative Source IDs.
+1. Resolve actual authoritative source files traced from every selected input
+   page, then use their Source IDs.
    Compute complete source closure as the set union of the existing `sources`
    Source IDs from every updated or deleted live page, the
-   union of the input pages' actual authoritative Source IDs, and every Source ID any candidate
-   `sources` field will cite. All are repository-relative Source IDs and never compiled vault
-   page paths. If this closure cannot be established, report the synthesis opportunity without writing.
+   union of the input pages' actual authoritative Source IDs, and every Source
+   ID any candidate `sources` field will cite. All are repository-relative
+   Source IDs and never compiled vault page paths; never use compiled vault pages as transaction sources.
+   If this closure cannot be established, report
+   the synthesis opportunity without writing.
    Preserve valid Unicode and CJK spellings exactly.
 2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
    once and retain `id`, `started_at`, and `candidate_vault`.
