@@ -121,13 +121,31 @@ paths. The CLI resolves them to Source IDs, acquires the repository write lock,
 records preimages, and returns a local `candidate_vault`. The agent writes only
 final vault-relative knowledge paths there and declares removals separately.
 
-On commit, the CLI validates candidate paths, required frontmatter, and
-transaction-scoped `sources`; verifies that affected live output targets still
-match their begin-time preimages; snapshots those targets; promotes pages and
-deletions; rebuilds affected manifest relationships; and writes the operation
-page last. A dirty source worktree is normal and allowed. Unrelated edits are
-also allowed: only preimage drift in an affected output page or manifest shard
-blocks promotion.
+Before mutation, validation builds this in-memory overlay without copying or
+rewriting the live vault:
+
+```text
+prospective vault = (live knowledge pages - declared deletions) + candidate replacements
+```
+
+The overlay is keyed by vault-relative path, so a candidate replaces a
+same-path live page. Validation checks candidate paths and semantic
+frontmatter, then resolves links across candidate-to-candidate edges and
+unchanged live pages. This also exposes
+links that a deletion would break and ambiguous page identities. Candidate
+`sources` may be a non-empty subset of the transaction Source IDs, but cannot
+introduce another source. The agent writes `started_at` into candidate
+timestamps before review; validation and commit never restamp candidates, so
+reviewed candidate bytes are the bytes promoted.
+
+The explicit `transaction validate` command is read-only. Commit and retry
+reuse the same content preflight before recovery snapshots or promotion. Only
+after a passing preflight does commit verify that affected live output targets
+still match their begin-time preimages, snapshot those targets, promote pages
+and deletions, rebuild affected manifest relationships, and write the
+operation page last. A dirty source worktree is normal and allowed. Unrelated
+edits are also allowed: only preimage drift in an affected output page or
+manifest shard blocks promotion.
 
 Completed operations use this collision-resistant path:
 
@@ -151,8 +169,10 @@ outcome is understood. None of these operations invokes Git.
 `hot.md` has a separate local freshness protocol. Its sidecar fingerprints
 knowledge pages, manifest state, operation entries, and the current Git branch
 or detached HEAD. `obsidian-wiki hot status --json` removes only stale
-`hot.md`; an agent may then rebuild the semantic snapshot from current pages
-and recent operations and finish with `obsidian-wiki hot mark-current --json`.
+`hot.md`; `obsidian-wiki hot inputs --json --pretty` then gathers a bounded,
+validated, read-only set of page summaries and immutable operations with that
+fingerprint. The agent—not the deterministic CLI—writes the semantic snapshot
+and finishes with `obsidian-wiki hot mark-current --json`.
 
 The transaction CLI changes the working tree but never commits or pushes
 portable changes. Git diff and pull-request review are the content boundary;
@@ -242,10 +262,12 @@ dedicated untracked-source or LFS-pointer blocker, so the operator must inspect
 Git status and source bytes. Large opaque binaries and Git LFS pointers are not
 compiled as authoritative source contents.
 
-Agents use `obsidian-wiki cache-check` and `cache-update`; they do not hand-edit
-the marker or shards. The v2 schema deliberately omits model, agent, API, and
-generation-tool provenance: it records authoritative source compilation, not
-which tool happened to perform it.
+Agents may use `obsidian-wiki cache-check --configured` to inspect freshness;
+ordinary Portable writes do not run `cache-update`. Transaction commit owns
+the affected shards, and agents never hand-edit the marker or shards. The v2
+schema deliberately omits model, agent, API, and generation-tool provenance:
+it records authoritative source compilation, not which tool happened to
+perform it.
 
 Portable validation gives source drift stable issue names:
 

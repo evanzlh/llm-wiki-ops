@@ -53,6 +53,17 @@ resolution. An explicit filesystem path uses no unrelated config. Schema
 settings come only from the resolved source, so one vault's extensions cannot
 leak into another vault.
 
+Config resolution returns runtime values to the CLI and agent; it does not
+export `OBSIDIAN_VAULT_PATH` into the parent shell. Portable instructions
+therefore use a config-aware command such as `cache-check --configured`.
+Personal-mode instructions first resolve the vault in agent memory and then
+pass a concrete path, for example:
+
+```bash
+obsidian-wiki cache-check --configured sources/design.md --json --pretty
+obsidian-wiki cache-check /resolved/vault /resolved/source.md --json --pretty
+```
+
 ## Portable Repository configuration
 
 Portable repositories track this schema at `.obsidian-wiki/config.toml`:
@@ -78,6 +89,20 @@ and source paths must not overlap. `implementation` prevents a repository for
 another fork from being opened silently; `requires_cli` is a PEP 440 version
 constraint checked before use. Machine-specific settings and absolute paths
 are rejected.
+
+For collaboration, prefer a release-tag-based compatible PEP 440 range such
+as `>=2026.9,<2026.10`, reviewed together with the managed skill refresh.
+Exact development-build pins such as `==2026.9.dev141+gabcdef` are permitted
+when deliberate byte-for-byte reproducibility is required, but they are
+high-churn for source-installed forks and require frequent coordinated config
+updates.
+
+The global Personal installation warning code `setup-version-stale` compares
+the installed CLI with the version recorded by a previous global setup. It is
+independent from Portable `requires_cli` compatibility, which validates the
+current repository's PEP 440 contract. Satisfying one does not satisfy or
+silence the other; structured portable cache commands omit the irrelevant
+global setup warning.
 
 Configured `sources` paths define the only authoritative source roots for
 portable ingest. `local_state` is ignored runtime state and may be absent in a

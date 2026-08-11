@@ -4,6 +4,28 @@ Everything lives in [`.skills/`](../.skills/). Each skill is a markdown file the
 
 Slash commands (`/skill-name`) work in Claude Code, Cursor, Windsurf, and most CLI agents. Everywhere else, just describe what you want.
 
+## Portable write-skill contract
+
+Every write skill has explicit adjacent Portable Repository completion and
+Personal mode completion branches. Shared analysis may precede them, but an
+agent selects one locally complete branch and never falls through into the
+other mode's tracking operations.
+
+In Portable mode, keep the repository root as CWD and treat the returned
+runtime-only absolute `candidate_vault` as a destination without changing into
+it or persisting it. Candidate timestamps come from the transaction
+`started_at`: new pages use it for both `created` and `updated`; updates retain
+their original `created` and use `started_at` for `updated`. The branch computes
+complete authoritative source closure, stages candidates and deletions,
+validates before commit, then follows status-aware recovery if promotion cannot
+finish.
+
+Portable skills also use the hot freshness gate before reading local semantic
+context: `hot status`, then `hot inputs` and an agent-written semantic refresh
+when stale, followed by `hot mark-current`. Transaction commit owns manifest
+shards and operation pages; skills do not update Portable `index.md`, `log.md`,
+or Git state.
+
 ## Setup & vaults
 
 | Skill | What it does | Slash command |
