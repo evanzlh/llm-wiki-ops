@@ -29,16 +29,17 @@ from obsidian_wiki.portable import (
     MANAGED_SKILLS_INVENTORY,
     PORTABLE_VAULT_DIRS,
     PROJECT_AGENT_DIRS,
-    copy_canonical_skills,
+    _managed_inventory_for_collection,
+    _materialize_complete_skill_trees,
+    _snapshot_bundled_skills,
     ensure_portable_gitattributes,
     ensure_portable_gitignore,
     install_portable_bootstrap,
-    render_managed_skills_inventory,
     scaffold_portable_vault,
-    write_agent_adapters,
     write_portable_config,
 )
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.skill_inventory import render_inventory
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
@@ -1574,15 +1575,17 @@ def _build_migration_candidates(
         owner_dependencies[record.source_id] = source_data
         destination.write_bytes(source_data)
 
-    skill_names = copy_canonical_skills(source_skills, candidate_root)
-    write_agent_adapters(candidate_root, skill_names)
+    bundled_skills = _snapshot_bundled_skills(source_skills)
+    canonical_skills = _materialize_complete_skill_trees(candidate_root, bundled_skills)
     install_portable_bootstrap(candidate_root)
     ensure_portable_gitattributes(candidate_root)
     ensure_portable_gitignore(candidate_root, vault_relative.as_posix())
     inventory = candidate_root / MANAGED_SKILLS_INVENTORY
     inventory.parent.mkdir(parents=True, exist_ok=True)
     inventory.write_text(
-        render_managed_skills_inventory(installed_version, skill_names),
+        render_inventory(
+            _managed_inventory_for_collection(installed_version, canonical_skills)
+        ),
         encoding="utf-8",
         newline="\n",
     )

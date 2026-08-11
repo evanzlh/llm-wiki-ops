@@ -11,9 +11,10 @@ from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.operations import write_operation
-from obsidian_wiki.portable import setup_portable_repo
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.skill_trees import discover_skill_collection
 from obsidian_wiki.transaction import TransactionManager
 
 
@@ -113,10 +114,35 @@ def _portable_seed(tmp_path: Path) -> Path:
     source_skills = tmp_path / "framework-skills"
     skill = source_skills / "wiki-query"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# Query\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: wiki-query\n"
+        "description: Search the compiled wiki and synthesize a cited answer.\n"
+        "---\n\n"
+        "# Query\n\n"
+        "Inspect summaries before reading only the relevant page bodies.\n",
+        encoding="utf-8",
+    )
+    reference = skill / "references/查询说明.md"
+    reference.parent.mkdir()
+    reference.write_text("# 查询说明\n", encoding="utf-8")
     root = tmp_path / "seed"
     setup_portable_repo(root, version=__version__, source_skills=source_skills)
     return root
+
+
+def test_portable_seed_exposes_complete_useful_skill_mirrors(tmp_path: Path) -> None:
+    root = _portable_seed(tmp_path)
+    canonical = discover_skill_collection(root / ".skills")
+
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        assert discover_skill_collection(root / agent_relative) == canonical
+        mirrored = root / agent_relative / "wiki-query/SKILL.md"
+        text = mirrored.read_text(encoding="utf-8")
+        assert "description: Search the compiled wiki" in text
+        assert "Inspect summaries before reading" in text
+        assert "Portable adapter" not in text
+        assert "../../../.skills/" not in text
 
 
 def _page(*, title: str, source_id: str, created: str) -> str:

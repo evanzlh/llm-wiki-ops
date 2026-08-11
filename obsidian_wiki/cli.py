@@ -46,11 +46,11 @@ from obsidian_wiki.portable import (
     MANAGED_SKILLS_INVENTORY,
     MANIFEST_MARKER,
     PROJECT_AGENT_DIRS,
-    _adapter_text,
     _assert_directory,
     _assert_safe_managed_path,
     _assert_single_link_managed_tree,
     _assert_single_link_ordinary_file,
+    _legacy_adapter_text,
     _read_managed_skills_inventory_file,
     setup_portable_repo,
     upgrade_portable_skills,
@@ -966,7 +966,7 @@ def _validate_portable_project_skills(portable: PortableConfig) -> str:
             expected_relative = os.path.relpath(
                 canonical / "SKILL.md", adapter_root
             ).replace(os.sep, "/")
-            expected = _adapter_text(skill_name, expected_relative)
+            expected = _legacy_adapter_text(skill_name, expected_relative)
             if adapter.read_text(encoding="utf-8") != expected:
                 raise ValueError(
                     f"portable adapter must be a regular relative Markdown adapter: "

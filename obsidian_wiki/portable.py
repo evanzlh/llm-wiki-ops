@@ -1,7 +1,7 @@
 """Clone-ready portable repository scaffolding.
 
 Portable repositories carry their configuration, canonical skills, agent
-adapters, and Obsidian vault together.  This module deliberately has no global
+skill mirrors, and Obsidian vault together.  This module deliberately has no global
 configuration or Git side effects.
 """
 
@@ -27,7 +27,18 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND
 from obsidian_wiki.config import PortableConfig, load_portable_config
-from obsidian_wiki.skill_inventory import MANAGED_SKILLS_INVENTORY
+from obsidian_wiki.skill_inventory import (
+    MANAGED_SKILLS_INVENTORY,
+    LegacyManagedSkillsInventory,
+    ManagedSkillsInventory,
+    read_inventory,
+    render_inventory,
+)
+from obsidian_wiki.skill_trees import (
+    SkillCollection,
+    discover_skill_collection,
+    materialize_skill_collection,
+)
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
 MANAGED_END = "<!-- obsidian-wiki:managed:end -->"
@@ -1224,7 +1235,7 @@ def _validate_pre_inventory_migration(
             adapter = adapter_dir / "SKILL.md"
             adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
             canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
-            expected = _adapter_text(
+            expected = _legacy_adapter_text(
                 name,
                 posixpath.relpath(
                     canonical_relative.as_posix(), adapter_relative.parent.as_posix()
@@ -1242,7 +1253,7 @@ def _validate_pre_inventory_migration(
                 )
 
 
-def _adapter_text(skill_name: str, relative_target: str) -> str:
+def _legacy_adapter_text(skill_name: str, relative_target: str) -> str:
     return (
         "---\n"
         f"name: {skill_name}\n"
@@ -1254,38 +1265,78 @@ def _adapter_text(skill_name: str, relative_target: str) -> str:
     )
 
 
-def write_agent_adapters(
+def write_agent_skill_mirrors(
     root: Path,
-    skill_names: Iterable[str],
+    collection: SkillCollection,
     *,
     agent_dirs: Iterable[tuple[str, str]] = PROJECT_AGENT_DIRS,
 ) -> None:
-    """Write ordinary per-agent adapter files pointing to canonical skills."""
+    """Materialize complete ordinary-file mirrors for every supported agent."""
     root = _safe_root(Path(root))
-    planned: list[tuple[Path, str]] = []
     for agent_relative, _label in agent_dirs:
-        agent_root = root / agent_relative
-        _assert_managed_tree(root, agent_root)
-        if agent_root.exists() and not agent_root.is_dir():
-            raise ValueError(f"portable agent skills path must be a directory: {agent_root}")
-        for skill_name in sorted(skill_names):
-            adapter_relative = PurePosixPath(agent_relative) / skill_name / "SKILL.md"
-            canonical_relative = PurePosixPath(".skills") / skill_name / "SKILL.md"
-            target = root.joinpath(*adapter_relative.parts)
-            _assert_safe_managed_path(root, target)
-            if target.parent.exists() and not target.parent.is_dir():
-                raise ValueError(f"portable adapter directory collision: {target.parent}")
-            if target.exists():
-                if not target.is_file():
-                    raise ValueError(f"portable adapter collision: {target}")
-                continue
-            relative_target = posixpath.relpath(
-                canonical_relative.as_posix(),
-                adapter_relative.parent.as_posix(),
+        target = root / agent_relative
+        _assert_safe_managed_path(root, target)
+        if target.exists() or target.is_symlink():
+            raise ValueError(f"portable agent skills path already exists: {target}")
+        materialize_skill_collection(collection, target)
+
+
+def _validate_agent_skill_mirrors(
+    root: Path,
+    canonical: SkillCollection,
+    *,
+    remediation: bool = False,
+) -> None:
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        target = root / agent_relative
+        try:
+            mirror = discover_skill_collection(target)
+        except (OSError, ValueError) as exc:
+            suffix = (
+                "; run `obsidian-wiki repo sync-skills --apply`" if remediation else ""
             )
-            planned.append((target, _adapter_text(skill_name, relative_target)))
-    for target, text in planned:
-        _write_text_if_changed(target, text, root=root)
+            raise ValueError(
+                f"portable skill mirror is invalid at {target}: {exc}{suffix}"
+            ) from exc
+        if mirror != canonical:
+            suffix = (
+                "; run `obsidian-wiki repo sync-skills --apply`" if remediation else ""
+            )
+            raise ValueError(
+                f"portable skill mirror differs from canonical .skills: {target}{suffix}"
+            )
+
+
+def _materialize_complete_skill_trees(
+    root: Path, bundled: SkillCollection
+) -> SkillCollection:
+    canonical_root = root / ".skills"
+    _assert_safe_managed_path(root, canonical_root)
+    materialize_skill_collection(bundled, canonical_root)
+    canonical = discover_skill_collection(canonical_root)
+    write_agent_skill_mirrors(root, canonical)
+    _validate_agent_skill_mirrors(root, canonical)
+    return canonical
+
+
+def _managed_inventory_for_collection(
+    version: str, collection: SkillCollection
+) -> ManagedSkillsInventory:
+    return ManagedSkillsInventory(
+        skills_version=version,
+        managed_skills=collection.names,
+        managed_skill_digests={skill.name: skill.digest for skill in collection.skills},
+    )
+
+
+def _snapshot_bundled_skills(source: Path) -> SkillCollection:
+    try:
+        return discover_skill_collection(source, ignore_source_artifacts=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"canonical skill source is invalid: {exc}. Reinstall from a framework "
+            f"clone with `{SOURCE_REINSTALL_COMMAND}`."
+        ) from exc
 
 
 def _bootstrap_body(relative_agents: str) -> str:
@@ -1583,7 +1634,9 @@ def _preflight_existing_portable(
             raise ValueError(f"portable .gitattributes is invalid: {exc}") from exc
 
 
-def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) -> None:
+def _populate_portable_repo(
+    root: Path, *, version: str, bundled_skills: SkillCollection
+) -> None:
     write_portable_config(root, version=version)
     _ensure_portable_lock_file(root)
     sources = root / "sources"
@@ -1592,23 +1645,18 @@ def _populate_portable_repo(root: Path, *, version: str, source_skills: Path) ->
         raise ValueError(f"portable sources path must be a directory: {sources}")
     sources.mkdir(parents=True, exist_ok=True)
     scaffold_portable_vault(root / "wiki")
-    skill_names = copy_canonical_skills(source_skills, root)
-    write_agent_adapters(root, skill_names)
+    canonical = _materialize_complete_skill_trees(root, bundled_skills)
     install_portable_bootstrap(root)
     ensure_portable_gitattributes(root)
     ensure_portable_gitignore(root, "wiki")
-    _write_managed_skills_inventory(root, version=version, skill_names=skill_names)
+    (root / MANAGED_SKILLS_INVENTORY).write_text(
+        render_inventory(_managed_inventory_for_collection(version, canonical)),
+        encoding="utf-8",
+    )
 
 
-def _repair_existing_portable_repo(
-    root: Path,
-    *,
-    source_skills: Path,
-    skill_names: tuple[str, ...],
-) -> None:
-    """Repair missing managed artifacts without upgrading existing bytes."""
-    _copy_missing_managed_skills(source_skills, root, skill_names)
-    write_agent_adapters(root, skill_names)
+def _repair_existing_portable_repo(root: Path) -> None:
+    """Repair missing non-skill managed artifacts without upgrading skill bytes."""
     install_portable_bootstrap(root)
     ensure_portable_gitattributes(root)
     ensure_portable_gitignore(root, "wiki")
@@ -2164,7 +2212,7 @@ def _authorize_upgrade_recovery(
             agent_relative = PROJECT_AGENT_DIRS[agent_index][0]
             adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
             canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
-            trusted_adapter = _adapter_text(
+            trusted_adapter = _legacy_adapter_text(
                 name,
                 posixpath.relpath(
                     canonical_relative.as_posix(),
@@ -2668,7 +2716,7 @@ def upgrade_portable_skills(
                         transaction,
                         adapter,
                         root / agent_relative / name / "SKILL.md",
-                        _adapter_text(
+                        _legacy_adapter_text(
                             name,
                             posixpath.relpath(
                                 canonical_relative.as_posix(),
@@ -2815,7 +2863,9 @@ def setup_portable_repo(
 ) -> Path:
     """Scaffold a clone-ready portable repository and return its resolved root."""
     compatible_cli_spec(version)
-    source, skill_names = _discover_source_skills(source_skills)
+    source = _absolute_no_resolve(Path(source_skills).expanduser())
+    bundled_skills = _snapshot_bundled_skills(source)
+    skill_names = bundled_skills.names
     requested = _absolute_no_resolve(Path(root).expanduser())
     if requested.is_symlink():
         raise ValueError(f"portable repository root must not be a symlink: {requested}")
@@ -2847,22 +2897,23 @@ def setup_portable_repo(
             )
             inventory_path = root / MANAGED_SKILLS_INVENTORY
             if inventory_path.exists() or inventory_path.is_symlink():
-                _inventory_version, managed_names = _read_managed_skills_inventory(root)
+                inventory = read_inventory(root, allow_legacy=True)
+                if isinstance(inventory, LegacyManagedSkillsInventory):
+                    raise ValueError(
+                        "portable repository uses legacy skill adapters; run "
+                        "`obsidian-wiki repo upgrade-skills`"
+                    )
+                assert isinstance(inventory, ManagedSkillsInventory)
+                canonical = discover_skill_collection(root / ".skills")
                 _preflight_existing_portable(
-                    root, version=version, skill_names=managed_names
+                    root, version=version, skill_names=canonical.names
                 )
-                _repair_existing_portable_repo(
-                    root,
-                    source_skills=source,
-                    skill_names=managed_names,
-                )
+                _validate_agent_skill_mirrors(root, canonical, remediation=True)
+                _repair_existing_portable_repo(root)
             else:
-                _preflight_existing_portable(
-                    root, version=version, skill_names=skill_names
-                )
-                _validate_pre_inventory_migration(root, source, skill_names)
-                _write_managed_skills_inventory(
-                    root, version=version, skill_names=skill_names
+                raise ValueError(
+                    "portable repository has no managed skill inventory; run "
+                    "`obsidian-wiki repo upgrade-skills`"
                 )
         return root
 
@@ -2872,7 +2923,7 @@ def setup_portable_repo(
     )
     removed_empty_target = False
     try:
-        _populate_portable_repo(staging, version=version, source_skills=source)
+        _populate_portable_repo(staging, version=version, bundled_skills=bundled_skills)
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)

@@ -29,8 +29,8 @@ from .portable import (
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
     PROJECT_AGENT_DIRS,
-    _adapter_text,
     _bootstrap_body,
+    _legacy_adapter_text,
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
@@ -811,7 +811,7 @@ def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> N
             relative_target = posixpath.relpath(
                 canonical_relative.as_posix(), adapter_relative.parent.as_posix()
             )
-            expected = _adapter_text(name, relative_target)
+            expected = _legacy_adapter_text(name, relative_target)
             try:
                 actual = adapter.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
