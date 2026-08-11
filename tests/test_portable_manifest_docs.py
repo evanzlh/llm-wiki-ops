@@ -6,10 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_DOCS = (
-    ".skills/llm-wiki/SKILL.md",
-    ".skills/wiki-ingest/SKILL.md",
-    ".skills/wiki-update/SKILL.md",
-    ".skills/wiki-status/SKILL.md",
+    "obsidian_wiki/_data/skills/llm-wiki/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-update/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
 )
 HUMAN_MANIFEST_DOCS = (
     "docs/architecture.md",
@@ -83,7 +83,7 @@ def test_core_skills_distinguish_personal_and_portable_manifests() -> None:
 
 
 def test_llm_wiki_portable_protocol_never_requires_clone_specific_paths() -> None:
-    text = _text(".skills/llm-wiki/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/llm-wiki/SKILL.md")
     start = text.index("### Portable Repository mode — manifest v2")
     portable_section = text[start : text.find("\n## ", start)]
 
@@ -141,7 +141,7 @@ def test_human_docs_define_portable_source_id_and_snapshot_rules() -> None:
 
 
 def test_status_docs_define_portable_pr_blockers() -> None:
-    status_skill = _text(".skills/wiki-status/SKILL.md")
+    status_skill = _text("obsidian_wiki/_data/skills/wiki-status/SKILL.md")
     human_docs = "\n".join(
         _text(relative)
         for relative in ("docs/architecture.md", "docs/cli.md")
@@ -156,7 +156,7 @@ def test_status_docs_define_portable_pr_blockers() -> None:
 def test_orphaned_source_reconciliation_deletes_the_whole_shard_file() -> None:
     command = "git rm <vault>/.manifest/sources/<relative>.json"
     for relative in (
-        ".skills/wiki-status/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
         "docs/architecture.md",
         "docs/cli.md",
     ):
@@ -172,7 +172,7 @@ def test_orphaned_source_reconciliation_deletes_the_whole_shard_file() -> None:
 
 
 def test_portable_status_ignores_placeholder_and_hidden_source_paths() -> None:
-    for relative in (".skills/wiki-status/SKILL.md", "docs/architecture.md"):
+    for relative in ("obsidian_wiki/_data/skills/wiki-status/SKILL.md", "docs/architecture.md"):
         text = _collapsed(relative)
         assert ".gitkeep" in text, relative
         assert "hidden source path components" in text, relative

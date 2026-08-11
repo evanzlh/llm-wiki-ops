@@ -12,8 +12,8 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
         return (ROOT / relpath).read_text()
 
     def test_central_protocol_documents_inline_override_before_fallbacks(self) -> None:
-        llm_wiki = self.read(".skills/llm-wiki/SKILL.md")
-        agents = self.read("AGENTS.md")
+        llm_wiki = self.read("obsidian_wiki/_data/skills/llm-wiki/SKILL.md")
+        agents = self.read("obsidian_wiki/_data/bootstrap/AGENTS.md")
 
         self.assertIn("0. **Inline vault override (`@name`)", llm_wiki)
         self.assertIn("0. **Inline vault override (`@name`)", agents)
@@ -22,7 +22,8 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
 
     def test_skill_resolution_summaries_include_inline_override(self) -> None:
         stale = []
-        for skill_file in sorted((ROOT / ".skills").glob("*/SKILL.md")):
+        skill_root = ROOT / "obsidian_wiki" / "_data" / "skills"
+        for skill_file in sorted(skill_root.glob("*/SKILL.md")):
             text = skill_file.read_text()
             if "follow the Config Resolution Protocol" not in text:
                 continue
@@ -33,12 +34,12 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
 
     def test_agent_bootstrap_files_mention_named_vault_routing(self) -> None:
         for relpath in [
-            "AGENTS.md",
-            ".agent/rules/obsidian-wiki.md",
-            ".cursor/rules/obsidian-wiki.mdc",
-            ".github/copilot-instructions.md",
-            ".kiro/steering/obsidian-wiki.md",
-            ".windsurf/rules/obsidian-wiki.md",
+            "obsidian_wiki/_data/bootstrap/AGENTS.md",
+            "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
+            "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+            "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
+            "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
+            "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
             "docs/installation.md",
         ]:
             with self.subTest(relpath=relpath):
@@ -52,9 +53,9 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
 
     def test_core_skill_descriptions_include_named_vault_examples(self) -> None:
         examples = {
-            ".skills/wiki-query/SKILL.md": "wiki-query @work",
-            ".skills/wiki-update/SKILL.md": "@work update wiki",
-            ".skills/wiki-capture/SKILL.md": "@research save this",
+            "obsidian_wiki/_data/skills/wiki-query/SKILL.md": "wiki-query @work",
+            "obsidian_wiki/_data/skills/wiki-update/SKILL.md": "@work update wiki",
+            "obsidian_wiki/_data/skills/wiki-capture/SKILL.md": "@research save this",
         }
 
         for relpath, expected in examples.items():
@@ -62,7 +63,7 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
                 self.assertIn(expected, self.read(relpath))
 
     def test_wiki_query_does_not_prefer_default_over_inline_override(self) -> None:
-        wiki_query = self.read(".skills/wiki-query/SKILL.md")
+        wiki_query = self.read("obsidian_wiki/_data/skills/wiki-query/SKILL.md")
 
         self.assertIn("For cross-project queries without `@name`", wiki_query)
         self.assertNotIn("Prefer `~/.obsidian-wiki/config` for cross-project queries", wiki_query)

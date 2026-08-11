@@ -68,7 +68,9 @@ class ScriptsPackagingTest(unittest.TestCase):
 
 class DailyUpdateSkillTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.skill = (ROOT / ".skills" / "daily-update" / "SKILL.md").read_text()
+        self.skill = (
+            ROOT / "obsidian_wiki/_data/skills/daily-update/SKILL.md"
+        ).read_text()
 
     def test_skill_resolves_scripts_via_repo_var(self) -> None:
         for name in REFERENCED_SCRIPTS:

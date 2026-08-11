@@ -1,0 +1,49 @@
+{
+  "collections": [
+    {
+      "label": "portable-adapter-baseline-7596215",
+      "skills": {
+        "claude-history-ingest": "sha256:caa084d0f0aa384464bdd2e2ca71727dd569f0a3f950c82958f2eadd34a81dd2",
+        "codex-history-ingest": "sha256:fdb2e0d20724fed37df5933d725e0a98598a754a34431736619833299ee9f949",
+        "copilot-history-ingest": "sha256:c8df3288c9b741b376d7a75abfc4d49b60a71abe7abc410044dcff3eaca1e31e",
+        "cross-linker": "sha256:46059821d1c5cef2aacead35fb5a98157d24fff4f978b1cd5c9cb1431c1539e6",
+        "daily-update": "sha256:0972d6dcf230089029b493b03d2d323db0892e58916e4581b4f774058d1f790e",
+        "graph-colorize": "sha256:21481b90b6acb28f61f2c5fcb8fc143e5b2eef1aa9d164bde7821185bb2dc4ae",
+        "hermes-history-ingest": "sha256:b409780f61a88ad7922b6b01488b40ef0cf47c6e28052274f6ef783dc8137348",
+        "impl-validator": "sha256:f7115dfad46579a7c30ad81dd8db5dccdf69c75350f6f5b743e6edf3320dfed2",
+        "llm-wiki": "sha256:155731ddf0eee4972a505f569eeb1a63a13bb88d3b1d99370a44dbe84b12a5d4",
+        "memory-bridge": "sha256:d78a4cd6b919e6ba4bcac2e8b8fcc54101fa7090e413bd839dcfa9bab395685e",
+        "obsidian-layout-adjustment": "sha256:5ebb3adb213dfacb561fd4a7034bf548a621cda0fccbfe5da4dbeb4ac1bc8b6e",
+        "openclaw-history-ingest": "sha256:387a2137a635a8f45e8497dd6b6966e871e44f26e51ecb639df14353f1aedaa3",
+        "pi-history-ingest": "sha256:2071508aa30c4c46098d767e4e97a5583c41c9380913b5aad0cd91651d8dcbcf",
+        "session-brain": "sha256:359549087452403919f8be2700d8fec5ad108867a4e3234b5f62e0b17bd78feb",
+        "session-search": "sha256:ee3e907ad7c4c3b85aa6354dcba5ece15189f3e35642af75ed7c77e8e0034afe",
+        "skill-creator": "sha256:5c96caec3475d0cc139fca79442e32eda5d172cd4698f3294656906ee21c6719",
+        "tag-taxonomy": "sha256:9e0dd27bcb54befcfe0ec0b65c7eb84884fbb7e9f890c53994252151f75c4ce7",
+        "vault-skill-factory": "sha256:4b8db2f7dc37c16d1daef8ef243738ca58961739122393d920a6025359c911b9",
+        "wiki-agent": "sha256:bd5b140a7a6f3be0e222c8e16ced53103b277b033d5704839cb4a0e6d7d01dbd",
+        "wiki-capture": "sha256:1f3ce7f06b0ad4de7a5ca527bda8fd8f220487e6e358d8f2ac32d9986906b9d0",
+        "wiki-context-pack": "sha256:4369a51efdc3648959411edcad9a362b36128fb573841e6decb5a957666d0053",
+        "wiki-dashboard": "sha256:53f603b0575326277bcdddbd2385e64e21af2632bf86222ad7a0ccb701e868ee",
+        "wiki-dedup": "sha256:d1363b64f5b4b0ff3e045899856772181b0512eeacfd2d805cc798acaf9e2708",
+        "wiki-digest": "sha256:6dc8d746ac7e40b993df1d139991ba902da17dbd1bae9381f48c3e30dfd72782",
+        "wiki-export": "sha256:5d51d11b495f61947e6b7c067be63b29fba4cce78346816f4f7405068de60765",
+        "wiki-history-ingest": "sha256:086dc46f3b090af4bdc68e6e97576416456a1a5bc72a4d3b1b96ddabae6d1ec8",
+        "wiki-import": "sha256:3eb52c86ddeacd6e92e06801d8c4d2f75cddcf14d4b334bd6fbe5c76b5e3c3ea",
+        "wiki-ingest": "sha256:8ab8956c30ecf94053c5539fd90f4090097d6e0fbb7bbee1d60c1e1335a78558",
+        "wiki-lint": "sha256:66fb63666b4fa8c7527e4eccec7b860681361b3c90af1faac873efc365f09fb9",
+        "wiki-narrate": "sha256:53655a27e37e8cc4adeef7568669192cd010c575e76ab5cd57d31be7f5c09ff8",
+        "wiki-query": "sha256:feebfd953d07ba47071eb62e82de96bcc3f6faed1e31f05b2c5715cd4f9272d9",
+        "wiki-rebuild": "sha256:24fca4044ac2b15ca8bd107bb41322ed1bc9bf18f313595a31e534a7c1bd10a1",
+        "wiki-research": "sha256:ed6e6fc0fc06f557875d525e4dcff5f13a47fb659a67e7c505b7303500d76c35",
+        "wiki-setup": "sha256:b4bd3972870a68fc8eddf133ae2f344c34e9ead559551a4bc23e5bcf9cdee8cc",
+        "wiki-stage-commit": "sha256:d536ad49063cb7723d3304ebc594ee0f89058cfadf27c40e013802fb14c8ef6e",
+        "wiki-status": "sha256:28141cc1487d7cf39a45ccefcd432ae90dbdd9ead800949a66fb728110b367c6",
+        "wiki-switch": "sha256:a36f71cb45d66235981f8ca3c5f475dd036d3c3e95cb9ab9755675814984cee5",
+        "wiki-synthesize": "sha256:0bf4d33433d52eb71a765c1437cbe5e4e9f0acadadfabe882c1c1215c9920578",
+        "wiki-update": "sha256:dcbed1feecc75d4552309d65003a5f4ae2fb71b46ac7558a358a4016bffcfb5a"
+      }
+    }
+  ],
+  "schema_version": 1
+}

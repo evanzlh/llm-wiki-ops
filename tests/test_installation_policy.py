@@ -95,7 +95,8 @@ def test_build_metadata_is_retained_for_uv_source_install() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'build-backend = "hatchling.build"' in pyproject
     assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in pyproject
-    assert '".skills" = "obsidian_wiki/_data/skills"' in pyproject
+    assert '".skills" = "obsidian_wiki/_data/skills"' not in pyproject
+    assert (ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md").is_file()
 
 
 def test_source_reinstall_command_refreshes_cached_builds() -> None:
@@ -206,13 +207,15 @@ def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
 
 
 def test_agents_describes_obsidian_wiki_repo_as_bundled_data_root() -> None:
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    agents = (ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
     assert "`OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root)" in agents
     assert "`OBSIDIAN_WIKI_REPO` (where this repo is cloned)" not in agents
 
 
 def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
-    factory = (ROOT / ".skills/vault-skill-factory/SKILL.md").read_text(
+    factory = (ROOT / "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md").read_text(
         encoding="utf-8"
     )
     assert "$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/" in factory
@@ -220,8 +223,13 @@ def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
 
 
 def test_no_unsupported_install_guidance_remains() -> None:
-    checked_roots = (ROOT / "docs", ROOT / ".skills")
-    files = [ROOT / "README.md", ROOT / "README_ZH.md", ROOT / "AGENTS.md"]
+    checked_roots = (ROOT / "docs", ROOT / "obsidian_wiki/_data/skills")
+    files = [
+        ROOT / "README.md",
+        ROOT / "README_ZH.md",
+        ROOT / "AGENTS.md",
+        ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md",
+    ]
     for base in checked_roots:
         files.extend(
             path
@@ -339,13 +347,15 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=180,
     )
     marker = "<!-- source-reinstall-marker: cached-build-refresh -->"
-    source_skill = source / ".skills" / "wiki-ingest" / "SKILL.md"
+    source_skill = (
+        source / "obsidian_wiki" / "_data" / "skills" / "wiki-ingest" / "SKILL.md"
+    )
     source_skill.write_text(
         source_skill.read_text(encoding="utf-8") + f"\n{marker}\n",
         encoding="utf-8",
     )
     subprocess.run(
-        ["git", "add", ".skills/wiki-ingest/SKILL.md"],
+        ["git", "add", "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md"],
         cwd=source,
         env=env,
         text=True,
@@ -364,7 +374,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
             "-m",
             "test: update source skill marker",
             "--only",
-            ".skills/wiki-ingest/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
         ],
         cwd=source,
         env=env,

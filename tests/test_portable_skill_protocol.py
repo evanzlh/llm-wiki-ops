@@ -23,64 +23,64 @@ from obsidian_wiki.trust import validate_trust_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = (
-    "AGENTS.md",
-    ".skills/llm-wiki/SKILL.md",
-    ".skills/wiki-ingest/SKILL.md",
-    ".skills/wiki-update/SKILL.md",
-    ".skills/wiki-status/SKILL.md",
-    ".skills/wiki-query/SKILL.md",
-    ".skills/wiki-context-pack/SKILL.md",
+    "obsidian_wiki/_data/bootstrap/AGENTS.md",
+    "obsidian_wiki/_data/skills/llm-wiki/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-update/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-query/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md",
 )
 PORTABLE_WRITE_SKILLS = (
-    ".skills/claude-history-ingest/SKILL.md",
-    ".skills/codex-history-ingest/SKILL.md",
-    ".skills/copilot-history-ingest/SKILL.md",
-    ".skills/cross-linker/SKILL.md",
-    ".skills/daily-update/SKILL.md",
-    ".skills/hermes-history-ingest/SKILL.md",
-    ".skills/openclaw-history-ingest/SKILL.md",
-    ".skills/pi-history-ingest/SKILL.md",
-    ".skills/tag-taxonomy/SKILL.md",
-    ".skills/wiki-agent/SKILL.md",
-    ".skills/wiki-capture/SKILL.md",
-    ".skills/wiki-dashboard/SKILL.md",
-    ".skills/wiki-dedup/SKILL.md",
-    ".skills/wiki-import/SKILL.md",
-    ".skills/wiki-ingest/SKILL.md",
-    ".skills/wiki-lint/SKILL.md",
-    ".skills/wiki-rebuild/SKILL.md",
-    ".skills/wiki-research/SKILL.md",
-    ".skills/wiki-stage-commit/SKILL.md",
-    ".skills/wiki-status/SKILL.md",
-    ".skills/wiki-synthesize/SKILL.md",
-    ".skills/wiki-update/SKILL.md",
+    "obsidian_wiki/_data/skills/claude-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/codex-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/copilot-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/cross-linker/SKILL.md",
+    "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+    "obsidian_wiki/_data/skills/hermes-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/openclaw-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/pi-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-agent/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-dashboard/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-dedup/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-lint/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-rebuild/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-stage-commit/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-synthesize/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-update/SKILL.md",
 )
 HISTORY_WRITE_SKILLS = (
-    ".skills/claude-history-ingest/SKILL.md",
-    ".skills/codex-history-ingest/SKILL.md",
-    ".skills/copilot-history-ingest/SKILL.md",
-    ".skills/hermes-history-ingest/SKILL.md",
-    ".skills/openclaw-history-ingest/SKILL.md",
-    ".skills/pi-history-ingest/SKILL.md",
-    ".skills/wiki-agent/SKILL.md",
+    "obsidian_wiki/_data/skills/claude-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/codex-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/copilot-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/hermes-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/openclaw-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/pi-history-ingest/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-agent/SKILL.md",
 )
 BULK_HISTORY_WRITE_SKILLS = HISTORY_WRITE_SKILLS[:-1]
 MAINTENANCE_WRITE_SKILLS = (
-    ".skills/cross-linker/SKILL.md",
-    ".skills/tag-taxonomy/SKILL.md",
-    ".skills/wiki-dedup/SKILL.md",
-    ".skills/wiki-lint/SKILL.md",
-    ".skills/wiki-rebuild/SKILL.md",
-    ".skills/wiki-status/SKILL.md",
-    ".skills/wiki-synthesize/SKILL.md",
+    "obsidian_wiki/_data/skills/cross-linker/SKILL.md",
+    "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-dedup/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-lint/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-rebuild/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-synthesize/SKILL.md",
 )
 SPECIAL_WRITE_SKILLS = (
-    ".skills/daily-update/SKILL.md",
-    ".skills/wiki-capture/SKILL.md",
-    ".skills/wiki-dashboard/SKILL.md",
-    ".skills/wiki-import/SKILL.md",
-    ".skills/wiki-research/SKILL.md",
-    ".skills/wiki-stage-commit/SKILL.md",
+    "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-dashboard/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
+    "obsidian_wiki/_data/skills/wiki-stage-commit/SKILL.md",
 )
 PORTABLE_COMPLETION_REQUIREMENTS = (
     "obsidian-wiki transaction validate",
@@ -127,11 +127,11 @@ PORTABLE_EXECUTABLE_COMMANDS = (
     ),
 )
 BOOTSTRAPS = (
-    ".agent/rules/obsidian-wiki.md",
-    ".cursor/rules/obsidian-wiki.mdc",
-    ".windsurf/rules/obsidian-wiki.md",
-    ".kiro/steering/obsidian-wiki.md",
-    ".github/copilot-instructions.md",
+    "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
+    "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+    "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
+    "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
+    "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
 )
 HUMAN_DOCS = (
     "docs/configuration.md",
@@ -413,7 +413,10 @@ def test_canonical_protocol_has_the_complete_resolution_order() -> None:
         "`~/.obsidian-wiki/config`",
         "setup guidance",
     )
-    for relative in ("AGENTS.md", ".skills/llm-wiki/SKILL.md"):
+    for relative in (
+        "obsidian_wiki/_data/bootstrap/AGENTS.md",
+        "obsidian_wiki/_data/skills/llm-wiki/SKILL.md",
+    ):
         text = _text(relative)
         positions = [text.index(item) for item in expected]
         assert positions == sorted(positions), relative
@@ -431,7 +434,7 @@ def test_core_skills_and_bootstraps_point_to_the_canonical_protocol() -> None:
 
 
 def test_portable_setup_never_writes_global_config() -> None:
-    text = _text(".skills/wiki-setup/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/wiki-setup/SKILL.md")
     assert "obsidian-wiki setup --portable" in text
     assert "does not write `~/.obsidian-wiki/config`" in text
     assert "Personal mode" in text
@@ -583,7 +586,7 @@ def test_portable_begin_scanner_handles_inline_fences_and_continuations(
 
 
 def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
-    relative = ".skills/wiki-ingest/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -661,22 +664,22 @@ def test_maintenance_family_has_safe_portable_completion(relative: str) -> None:
     assert "Personal central files, QMD refresh, and Git snapshot rules" in personal_flat
 
     special_requirements = {
-        ".skills/cross-linker/SKILL.md": ("existing source closure",),
-        ".skills/tag-taxonomy/SKILL.md": ("existing source closure",),
-        ".skills/wiki-dedup/SKILL.md": ("existing source closure", "redirect stubs"),
-        ".skills/wiki-lint/SKILL.md": (
+        "obsidian_wiki/_data/skills/cross-linker/SKILL.md": ("existing source closure",),
+        "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md": ("existing source closure",),
+        "obsidian_wiki/_data/skills/wiki-dedup/SKILL.md": ("existing source closure", "redirect stubs"),
+        "obsidian_wiki/_data/skills/wiki-lint/SKILL.md": (
             "existing source closure",
             "Read-only lint requires no transaction",
         ),
-        ".skills/wiki-rebuild/SKILL.md": (
+        "obsidian_wiki/_data/skills/wiki-rebuild/SKILL.md": (
             "unsupported in Portable Repository mode",
             "archive, restore, or bulk clear",
         ),
-        ".skills/wiki-status/SKILL.md": (
+        "obsidian_wiki/_data/skills/wiki-status/SKILL.md": (
             "small, reviewable authoritative source snapshot",
             "return the insights analysis without writing",
         ),
-        ".skills/wiki-synthesize/SKILL.md": (
+        "obsidian_wiki/_data/skills/wiki-synthesize/SKILL.md": (
             "union of the input pages' actual authoritative Source IDs",
             "report the synthesis opportunity without writing",
         ),
@@ -737,7 +740,7 @@ def test_special_family_has_explicit_terminal_mode_gate(relative: str) -> None:
 
 
 def test_daily_update_portable_is_read_only_until_a_page_repair_is_selected() -> None:
-    relative = ".skills/daily-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/daily-update/SKILL.md"
     portable = " ".join(
         _h2_section(
             _text(relative),
@@ -766,10 +769,10 @@ def test_daily_update_portable_is_read_only_until_a_page_repair_is_selected() ->
 @pytest.mark.parametrize(
     "relative",
     (
-        ".skills/daily-update/SKILL.md",
-        ".skills/wiki-capture/SKILL.md",
-        ".skills/wiki-import/SKILL.md",
-        ".skills/wiki-research/SKILL.md",
+        "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
     ),
     ids=lambda relative: Path(relative).parent.name,
 )
@@ -801,10 +804,10 @@ def test_special_transaction_recovery_uses_only_real_cli_surfaces(relative: str)
 @pytest.mark.parametrize(
     "relative",
     (
-        ".skills/daily-update/SKILL.md",
-        ".skills/wiki-capture/SKILL.md",
-        ".skills/wiki-import/SKILL.md",
-        ".skills/wiki-research/SKILL.md",
+        "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
     ),
     ids=lambda relative: Path(relative).parent.name,
 )
@@ -860,7 +863,7 @@ def test_active_transaction_list_shape_recommends_commit_and_allows_abort(
 
 
 def test_capture_portable_materializes_source_before_transaction_and_never_writes_raw() -> None:
-    relative = ".skills/wiki-capture/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-capture/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -898,7 +901,7 @@ def test_capture_portable_materializes_source_before_transaction_and_never_write
 
 
 def test_capture_shared_submode_skip_and_correction_are_portable_reachable() -> None:
-    relative = ".skills/wiki-capture/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-capture/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -944,10 +947,10 @@ def test_capture_shared_submode_skip_and_correction_are_portable_reachable() -> 
 @pytest.mark.parametrize(
     "relative",
     (
-        ".skills/daily-update/SKILL.md",
-        ".skills/wiki-capture/SKILL.md",
-        ".skills/wiki-import/SKILL.md",
-        ".skills/wiki-research/SKILL.md",
+        "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
     ),
     ids=lambda relative: Path(relative).parent.name,
 )
@@ -1016,7 +1019,7 @@ updated: {record.started_at}
         sorted((old_source, new_source))
     )
 def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
-    relative = ".skills/wiki-dashboard/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-dashboard/SKILL.md"
     portable = " ".join(
         _h2_section(
             _text(relative),
@@ -1035,7 +1038,7 @@ def test_dashboard_portable_fails_closed_before_central_configuration_mutation()
 
 
 def test_import_portable_materializes_external_bundle_records_before_begin() -> None:
-    relative = ".skills/wiki-import/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-import/SKILL.md"
     text = _text(relative)
     portable = " ".join(
         _h2_section(
@@ -1071,7 +1074,7 @@ def test_import_portable_materializes_external_bundle_records_before_begin() -> 
 
 
 def test_import_candidate_plan_is_shared_read_only_and_reachable_by_both_modes() -> None:
-    relative = ".skills/wiki-import/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-import/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -1101,7 +1104,7 @@ def test_import_candidate_plan_is_shared_read_only_and_reachable_by_both_modes()
 
 
 def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> None:
-    relative = ".skills/wiki-research/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-research/SKILL.md"
     portable = " ".join(
         _h2_section(
             _text(relative),
@@ -1125,7 +1128,7 @@ def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> N
 
 
 def test_research_portable_checks_hot_before_any_hot_read() -> None:
-    relative = ".skills/wiki-research/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-research/SKILL.md"
     shared = _text(relative).split("## Portable Repository completion", 1)[0]
     portable_gate = shared.split("**Portable Repository hot context:**", 1)[1].split(
         "**Personal mode hot context:**", 1
@@ -1143,7 +1146,7 @@ def test_research_portable_checks_hot_before_any_hot_read() -> None:
 
 
 def test_research_filing_plan_is_shared_and_reachable_by_both_modes() -> None:
-    relative = ".skills/wiki-research/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-research/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -1175,7 +1178,7 @@ def test_research_filing_plan_is_shared_and_reachable_by_both_modes() -> None:
 
 
 def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
-    relative = ".skills/wiki-stage-commit/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-stage-commit/SKILL.md"
     portable = " ".join(
         _h2_section(
             _text(relative),
@@ -1201,7 +1204,7 @@ def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
 
 
 def test_stage_commit_distinguishes_list_fields_from_failure_recovery() -> None:
-    relative = ".skills/wiki-stage-commit/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-stage-commit/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -1298,7 +1301,7 @@ updated: {record.started_at}
 
 
 def test_dedup_uses_exclusive_secondary_page_dispositions(tmp_path: Path) -> None:
-    relative = ".skills/wiki-dedup/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-dedup/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -1338,7 +1341,7 @@ updated: {record.started_at}
 
 
 def test_tag_taxonomy_fails_before_partial_portable_mutation() -> None:
-    relative = ".skills/tag-taxonomy/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -1358,7 +1361,7 @@ def test_tag_taxonomy_fails_before_partial_portable_mutation() -> None:
 
 
 def test_tag_taxonomy_audit_only_stops_at_each_completion_branch() -> None:
-    relative = ".skills/tag-taxonomy/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md"
     text = _text(relative)
     portable = " ".join(
         _h2_section(
@@ -1393,27 +1396,27 @@ def test_tag_taxonomy_audit_only_stops_at_each_completion_branch() -> None:
     ("relative", "gate"),
     (
         (
-            ".skills/cross-linker/SKILL.md",
+            "obsidian_wiki/_data/skills/cross-linker/SKILL.md",
             "no EXTRACTED or INFERRED link candidate remains",
         ),
         (
-            ".skills/tag-taxonomy/SKILL.md",
+            "obsidian_wiki/_data/skills/tag-taxonomy/SKILL.md",
             "normalization produces no page changes",
         ),
         (
-            ".skills/wiki-dedup/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-dedup/SKILL.md",
             "no approved merge produces a page creation, update, or deletion",
         ),
         (
-            ".skills/wiki-lint/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-lint/SKILL.md",
             "approved consolidate plan contains no page change",
         ),
         (
-            ".skills/wiki-rebuild/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-rebuild/SKILL.md",
             "supported candidate-only rebuild contains no replacement, creation, or deletion",
         ),
         (
-            ".skills/wiki-synthesize/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-synthesize/SKILL.md",
             "no synthesis page, backlink update, or deletion remains",
         ),
     ),
@@ -1449,7 +1452,7 @@ def test_maintenance_noop_stops_before_transaction(
 
 
 def test_status_portable_manifest_uses_configured_read_only_cache() -> None:
-    text = _text(".skills/wiki-status/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/wiki-status/SKILL.md")
     portable_manifest = text.split(
         "### Portable Repository mode — manifest v2", 1
     )[1].split("## Step 1: Scan Current Sources", 1)[0]
@@ -1854,7 +1857,7 @@ def test_canonical_project_overview_example_passes_real_validators(
     tmp_path: Path,
 ) -> None:
     example = _fenced_block_after(
-        _text(".skills/llm-wiki/SKILL.md"),
+        _text("obsidian_wiki/_data/skills/llm-wiki/SKILL.md"),
         "Each project directory has an overview page structured like this:",
         "markdown",
     )
@@ -1882,7 +1885,7 @@ def test_canonical_project_overview_example_passes_real_validators(
 
 
 def test_claude_history_helpers_cannot_bypass_parent_completion() -> None:
-    claude = _text(".skills/claude-history-ingest/SKILL.md")
+    claude = _text("obsidian_wiki/_data/skills/claude-history-ingest/SKILL.md")
     manifest_helper = claude.split("### Append Mode", 1)[1].split(
         "### Pre-extraction", 1
     )[0]
@@ -1910,9 +1913,9 @@ def test_claude_history_helpers_cannot_bypass_parent_completion() -> None:
 
 def test_wiki_agent_targeted_flow_cannot_bypass_parent_completion() -> None:
     targeted = _h2_section(
-        _text(".skills/wiki-agent/SKILL.md"),
+        _text("obsidian_wiki/_data/skills/wiki-agent/SKILL.md"),
         "Portable Repository completion",
-        relative=".skills/wiki-agent/SKILL.md",
+        relative="obsidian_wiki/_data/skills/wiki-agent/SKILL.md",
         next_heading="Personal mode completion",
     )
     for required in (
@@ -1925,7 +1928,7 @@ def test_wiki_agent_targeted_flow_cannot_bypass_parent_completion() -> None:
 
 
 def test_wiki_agent_candidate_category_matches_its_semantic_path() -> None:
-    text = _text(".skills/wiki-agent/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/wiki-agent/SKILL.md")
     candidate = text.split("## Step 5: Distill Blobs into Wiki Pages", 1)[1].split(
         "## Step 6:", 1
     )[0]
@@ -1948,7 +1951,7 @@ def test_wiki_agent_candidate_category_matches_its_semantic_path() -> None:
 
 def test_wiki_agent_candidate_example_passes_real_validators(tmp_path: Path) -> None:
     example = _fenced_block_after(
-        _text(".skills/wiki-agent/SKILL.md"),
+        _text("obsidian_wiki/_data/skills/wiki-agent/SKILL.md"),
         "### Valid Portable concept candidate example",
         "markdown",
     )
@@ -1984,7 +1987,7 @@ def test_wiki_agent_slice_identity_retains_two_queries_for_one_session(
     tmp_path: Path,
 ) -> None:
     raw = _fenced_block_after(
-        _text(".skills/wiki-agent/SKILL.md"),
+        _text("obsidian_wiki/_data/skills/wiki-agent/SKILL.md"),
         "### Stable targeted slice identity example",
         "json",
     )
@@ -2043,7 +2046,7 @@ updated: 2026-08-11T12:00:00+00:00
 
 
 def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     text = _text(relative)
     portable = _h2_section(
         text,
@@ -2127,7 +2130,7 @@ def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:
 
 
 def test_wiki_update_shared_phase_is_read_only_and_capture_precedes_closure() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -2165,7 +2168,7 @@ def test_wiki_update_shared_phase_is_read_only_and_capture_precedes_closure() ->
 
 
 def test_wiki_update_external_only_first_update_materializes_before_delta() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
@@ -2198,7 +2201,7 @@ def test_wiki_update_external_only_first_update_materializes_before_delta() -> N
 
 
 def test_wiki_update_portable_delta_preserves_missing_cli_shapes() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -2236,7 +2239,7 @@ def test_wiki_update_portable_delta_preserves_missing_cli_shapes() -> None:
 
 
 def test_wiki_update_categories_match_validator_semantic_paths() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     shared = _text(relative).split("## Portable Repository completion", 1)[0]
     shared_flat = " ".join(shared.split())
 
@@ -2255,7 +2258,7 @@ def test_wiki_update_categories_match_validator_semantic_paths() -> None:
 
 
 def test_wiki_update_links_follow_resolved_runtime_contract() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     text = _text(relative)
     shared = text.split("## Portable Repository completion", 1)[0]
     shared_flat = " ".join(shared.split())
@@ -2272,7 +2275,7 @@ def test_wiki_update_links_follow_resolved_runtime_contract() -> None:
 
 
 def test_wiki_update_hot_waits_for_commit_or_resolved_recovery() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository completion",
@@ -2292,7 +2295,7 @@ def test_wiki_update_hot_waits_for_commit_or_resolved_recovery() -> None:
 
 
 def test_wiki_update_personal_removals_finish_before_tracking() -> None:
-    relative = ".skills/wiki-update/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/wiki-update/SKILL.md"
     personal = _h2_section(
         _text(relative), "Personal mode completion", relative=relative
     )
@@ -2315,7 +2318,7 @@ def test_wiki_update_personal_removals_finish_before_tracking() -> None:
 
 
 def test_portable_url_ingest_uses_repository_snapshot_and_parent_transaction() -> None:
-    relative = ".skills/wiki-ingest/references/url-sources.md"
+    relative = "obsidian_wiki/_data/skills/wiki-ingest/references/url-sources.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository URL flow",
@@ -2336,13 +2339,13 @@ def test_portable_url_ingest_uses_repository_snapshot_and_parent_transaction() -
     ):
         assert required in portable, f"{relative}: missing {required!r}"
 
-    main = _text(".skills/wiki-ingest/SKILL.md")
+    main = _text("obsidian_wiki/_data/skills/wiki-ingest/SKILL.md")
     assert "Portable Repository URL flow" in main
     assert "parent-owned Portable Repository completion" in main
 
 
 def test_large_folder_workers_are_analysis_only_and_parent_owns_completion() -> None:
-    text = _text(".skills/wiki-ingest/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/wiki-ingest/SKILL.md")
     section = text.split("### Step 0: Batch Planning for Large Folders", 1)[1].split(
         "### Ingesting Git Repositories", 1
     )[0]
@@ -2366,7 +2369,7 @@ def test_large_folder_workers_are_analysis_only_and_parent_owns_completion() -> 
 
 
 def test_pageindex_reference_separates_portable_analysis_from_personal_runtime() -> None:
-    relative = ".skills/wiki-ingest/references/pageindex.md"
+    relative = "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md"
     portable = _h2_section(
         _text(relative),
         "Portable Repository mode",
@@ -2403,7 +2406,7 @@ def test_pageindex_reference_separates_portable_analysis_from_personal_runtime()
     ):
         assert pattern.search(portable) is None, f"{relative}: unsafe Portable command"
 
-    main = _text(".skills/wiki-ingest/SKILL.md")
+    main = _text("obsidian_wiki/_data/skills/wiki-ingest/SKILL.md")
     pageindex = main.split("### Long-PDF preprocessing", 1)[1].split(
         "### Academic papers", 1
     )[0]
@@ -2412,7 +2415,7 @@ def test_pageindex_reference_separates_portable_analysis_from_personal_runtime()
 
 
 def test_academic_attachments_are_mode_gated() -> None:
-    text = _text(".skills/wiki-ingest/SKILL.md")
+    text = _text("obsidian_wiki/_data/skills/wiki-ingest/SKILL.md")
     academic = text.split("### Academic papers", 1)[1].split("### Step 1b", 1)[0]
     portable = academic.split("**Portable Repository mode", 1)[1].split(
         "**Personal mode", 1
@@ -2441,7 +2444,7 @@ def test_academic_attachments_are_mode_gated() -> None:
 
 
 def test_personal_ingest_commands_use_concrete_resolved_values() -> None:
-    main_relative = ".skills/wiki-ingest/SKILL.md"
+    main_relative = "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md"
     main = _text(main_relative)
     personal = _h2_section(main, "Personal mode completion", relative=main_relative)
     for required in (
@@ -2458,7 +2461,7 @@ def test_personal_ingest_commands_use_concrete_resolved_values() -> None:
     ):
         assert forbidden not in personal, f"{main_relative}: shell assumption {forbidden!r}"
 
-    url = _text(".skills/wiki-ingest/references/url-sources.md")
+    url = _text("obsidian_wiki/_data/skills/wiki-ingest/references/url-sources.md")
     assert "$OBSIDIAN_VAULT_PATH" not in url
 
     for required in (

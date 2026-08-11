@@ -87,38 +87,32 @@ class SchemaOptions(TypedDict):
 
 
 # ── Data resolution ──────────────────────────────────────────────────────────
-# Works for both a built wheel (data under <pkg>/_data) and an editable/source
-# checkout (data at the repo root next to the package).
+# Runtime assets have one canonical location inside the Python package. Source
+# checkouts and built wheels use the same package-relative paths.
 def _pkg_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def skills_dir() -> Path:
-    """Return the directory holding the bundled skill folders."""
-    for cand in (_pkg_dir() / "_data" / "skills", _pkg_dir().parent / ".skills"):
-        if cand.is_dir():
-            return cand
+def _data_dir(name: str) -> Path:
+    """Return one strict package-data directory or raise with recovery guidance."""
+    bundled = _pkg_dir() / "_data" / name
+    if bundled.is_dir():
+        return bundled
     raise FileNotFoundError(
-        "Could not locate bundled skills. Reinstall from a clone of "
+        f"Could not locate bundled {name}. Reinstall from a clone of "
         "https://github.com/evanzlh/obsidian-wiki with "
         f"`{SOURCE_REINSTALL_COMMAND}`."
     )
 
 
-def bootstrap_dir() -> Path | None:
-    """Return the directory containing agent bootstrap context files.
+def skills_dir() -> Path:
+    """Return the directory holding the bundled skill folders."""
+    return _data_dir("skills")
 
-    For a wheel this is ``_data/bootstrap``; for a source checkout the files are
-    spread across the repo root, so we return the repo root and resolve each
-    file via the repo-relative layout in ``_bootstrap_files``.
-    """
-    built = _pkg_dir() / "_data" / "bootstrap"
-    if built.is_dir():
-        return built
-    repo = _pkg_dir().parent
-    if (repo / "AGENTS.md").is_file():
-        return repo
-    return None
+
+def bootstrap_dir() -> Path:
+    """Return the packaged agent bootstrap directory."""
+    return _data_dir("bootstrap")
 
 
 def list_skills() -> list[str]:
@@ -245,8 +239,7 @@ def _install_hermes_profiles(mode: str) -> None:
 
 # ── Project-local install (opt-in) ───────────────────────────────────────────
 # (bootstrap-relative source path, destination relative to project dir).
-# The source path is resolved against bootstrap_dir() for a wheel, or mapped to
-# the repo layout for a source checkout (see _resolve_bootstrap_src).
+# Source paths are always resolved against the packaged bootstrap directory.
 BOOTSTRAP_FILES = [
     ("AGENTS.md", "AGENTS.md"),
     ("cursor/rules/obsidian-wiki.mdc", ".cursor/rules/obsidian-wiki.mdc"),
@@ -261,24 +254,15 @@ BOOTSTRAP_FILES = [
 AGENTS_ALIASES = ("CLAUDE.md", "GEMINI.md", ".hermes.md")
 
 
-def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path | None:
-    """Resolve a bootstrap source path under a wheel layout or repo layout."""
-    built = boot_root / rel
-    if built.exists():
-        return built
-    # Source checkout: boot_root is the repo root; files use the repo layout.
-    repo_rel = {
-        "AGENTS.md": "AGENTS.md",
-        "cursor/rules/obsidian-wiki.mdc": ".cursor/rules/obsidian-wiki.mdc",
-        "windsurf/rules/obsidian-wiki.md": ".windsurf/rules/obsidian-wiki.md",
-        "kiro/steering/obsidian-wiki.md": ".kiro/steering/obsidian-wiki.md",
-        "agent/rules/obsidian-wiki.md": ".agent/rules/obsidian-wiki.md",
-        "agent/workflows/obsidian-wiki.md": ".agent/workflows/obsidian-wiki.md",
-        "github/copilot-instructions.md": ".github/copilot-instructions.md",
-    }.get(rel)
-    if repo_rel and (boot_root / repo_rel).exists():
-        return boot_root / repo_rel
-    return None
+def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path:
+    """Resolve one required bootstrap file under the package-only layout."""
+    source = boot_root / rel
+    if source.is_file():
+        return source
+    raise FileNotFoundError(
+        f"Could not locate bundled bootstrap file {rel}. "
+        f"Reinstall with `{SOURCE_REINSTALL_COMMAND}`."
+    )
 
 
 def install_project(project_dir: Path, mode: str) -> None:
@@ -288,14 +272,9 @@ def install_project(project_dir: Path, mode: str) -> None:
         install_skills(project_dir / rel, f"{rel}/", mode=mode)
 
     boot_root = bootstrap_dir()
-    if boot_root is None:
-        print("   ⚠️  Bootstrap files not found in package; skipping context files")
-        return
 
     for rel, dest in BOOTSTRAP_FILES:
         src = _resolve_bootstrap_src(boot_root, rel)
-        if src is None:
-            continue
         dst = project_dir / dest
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.is_symlink() or dst.exists():
@@ -1144,14 +1123,24 @@ def run_doctor(
         )
         bundled = []
 
-    boot = bootstrap_dir()
-    _doctor_add(
-        checks,
-        name="bootstrap-assets",
-        status="pass" if boot else "fail",
-        detail=str(boot) if boot else "bootstrap files not found",
-        hint="" if boot else SOURCE_REINSTALL_HINT,
-    )
+    try:
+        boot = bootstrap_dir()
+    except FileNotFoundError as exc:
+        _doctor_add(
+            checks,
+            name="bootstrap-assets",
+            status="fail",
+            detail=str(exc),
+            hint=SOURCE_REINSTALL_HINT,
+        )
+    else:
+        _doctor_add(
+            checks,
+            name="bootstrap-assets",
+            status="pass",
+            detail=str(boot),
+            hint="",
+        )
 
     config = _read_config()
     config_present = GLOBAL_CONFIG.is_file()

@@ -973,10 +973,12 @@ def test_non_ascii_whitespace_inside_folded_content_is_preserved(tmp_path: Path)
 def test_discovers_every_current_bundled_skill_with_nonempty_description() -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
 
-    repository = Path(__file__).resolve().parents[1]
-    source_root = repository / ".skills"
-    installed_root = repository / "obsidian_wiki" / "_data" / "skills"
-    root = source_root if source_root.is_dir() else installed_root
+    root = (
+        Path(__file__).resolve().parents[1]
+        / "obsidian_wiki"
+        / "_data"
+        / "skills"
+    )
     collection = discover_skill_collection(root, ignore_source_artifacts=True)
 
     assert collection.names == tuple(
