@@ -314,6 +314,278 @@ def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
         )
 
 
+def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    text = _text(relative)
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+    personal_flat = " ".join(personal.split())
+
+    for required in (
+        "Select one terminal workflow after the shared analysis and page-preparation steps",
+        "parent agent owns mode resolution",
+        "owner `AGENTS.md`",
+    ):
+        assert required in shared_flat, (
+            f"{relative}: missing shared guard {required!r}"
+        )
+    for forbidden in (
+        "suppress all direct",
+        "uses manifest v2 through `obsidian-wiki cache-check` and `cache-update`",
+    ):
+        assert forbidden not in shared_flat, (
+            f"{relative}: legacy bypass {forbidden!r}"
+        )
+
+    for required in (
+        "source closure before `transaction begin`",
+        "existing `sources` Source ID",
+        "repository root as the command CWD",
+        "do not `cd` into it",
+        "created = updated = started_at",
+        "preserve the existing `created`",
+        "obsidian-wiki transaction delete",
+        "Review every warning",
+        "Fix every issue",
+        "status-aware recovery",
+        "allowed_actions",
+        "no trusted transaction ID",
+        "repository-relative Source IDs",
+        "Preserve valid Unicode",
+        "cache-check --configured",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing portable rule {required!r}"
+        )
+    for forbidden in (
+        "$OBSIDIAN_VAULT_PATH",
+        "After compiling each authoritative source, update its one shard",
+    ):
+        assert forbidden not in portable_flat, (
+            f"{relative}: portable bypass {forbidden!r}"
+        )
+
+    for required in (
+        "Write the prepared pages directly",
+        "manifest v1",
+        "obsidian-wiki cache-update <resolved-vault-path>",
+        "<resolved-vault-path>/index.md",
+        "<resolved-vault-path>/log.md",
+        "<resolved-vault-path>/hot.md",
+        "<resolved-qmd-cli> update",
+        "qmd://<resolved-qmd-wiki-collection>/",
+        "Git delta",
+        "config resolution does not export these values into the parent shell",
+    ):
+        assert required in personal_flat, (
+            f"{relative}: missing Personal rule {required!r}"
+        )
+    for forbidden in (
+        "$OBSIDIAN_VAULT_PATH",
+        "$QMD_WIKI_COLLECTION",
+        "${QMD_CLI:-qmd}",
+    ):
+        assert forbidden not in personal_flat, (
+            f"{relative}: shell assumption {forbidden!r}"
+        )
+
+
+def test_wiki_update_shared_phase_is_read_only_and_capture_precedes_closure() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    personal = _h2_section(text, "Personal mode completion", relative=relative)
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+    personal_flat = " ".join(personal.split())
+
+    assert "shared analysis and page-preparation steps are strictly read-only" in shared_flat
+    for forbidden in (
+        "capture any necessary external material",
+        "ordinary Git snapshot below `sources`",
+        "small, reviewable text source snapshot",
+    ):
+        assert forbidden not in shared_flat, f"{relative}: shared mutation {forbidden!r}"
+
+    for required in (
+        "parent may write a small, reviewable text source snapshot",
+        "below the configured `sources` root",
+        "It is a source file, not a Git snapshot",
+        "do not commit or publish it",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing Portable capture rule {required!r}"
+        )
+    assert portable.index("parent may write a small, reviewable text source snapshot") < (
+        portable.index("Compute source closure")
+    )
+    assert "Personal sources follow Personal manifest v1 and cache rules" in personal_flat
+
+
+def test_wiki_update_external_only_first_update_materializes_before_delta() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+
+    assert "cache-check --configured" not in shared_flat
+    for required in (
+        "carry the selected source paths, pending source proposal, and prepared page/removal changes in memory",
+        "external-only first update",
+        "materialize and review it before `cache-check`",
+        "A failed source-snapshot creation or review stops before any transaction",
+        "Never take a no-change exit while a source proposal is pending",
+        "After every selected source file exists",
+    ):
+        assert required in portable_flat or required in shared_flat, (
+            f"{relative}: missing first-update rule {required!r}"
+        )
+
+    materialize = portable.index("materialize and review it before `cache-check`")
+    cache_check = portable.index("obsidian-wiki cache-check --configured")
+    closure = portable.index("Compute source closure")
+    begin = portable.index("obsidian-wiki transaction begin")
+    assert materialize < cache_check < closure < begin
+
+
+def test_wiki_update_portable_delta_preserves_missing_cli_shapes() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    portable_flat = " ".join(portable.split())
+
+    for required in (
+        "Inspect `missing` first",
+        "reported `missing` entries",
+        "report the exact returned values",
+        "an explicitly selected absent path may be absolute",
+        "tracked missing entries are repository-relative Source IDs",
+        "Distinguish those shapes",
+        "For an absolute selected path, correct the selection or materialize/restore that ordinary file",
+        "For a tracked Source ID, restore the corresponding source or complete a supported migration",
+        "do not start a transaction or mutate the live vault",
+        "apply only the stated source remediation",
+        "then rerun `cache-check --configured`",
+        "rerun `cache-check --configured`",
+        "Never treat a missing-only result as no change",
+        "no `new` or `modified` entries",
+        "no prepared page creations, updates, or removals",
+        "Never bypass a pending source proposal",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing Portable delta rule {required!r}"
+        )
+    assert "stop without mutation or a transaction" not in portable_flat
+    assert "report every exact repository-relative Source ID" not in portable_flat
+    assert portable_flat.index("Inspect `missing` first") < portable_flat.index(
+        "no `new` or `modified` entries"
+    )
+
+
+def test_wiki_update_categories_match_validator_semantic_paths() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    shared = _text(relative).split("## Portable Repository completion", 1)[0]
+    shared_flat = " ".join(shared.split())
+
+    for required in (
+        "`projects/<project-name>/<project-name>.md` uses `category: projects`",
+        "`projects/<project-name>/concepts/` uses `category: concepts`",
+        "`projects/<project-name>/skills/` uses `category: skills`",
+        "`projects/<project-name>/references/` uses `category: references`",
+        "Global pages use the category matching their top-level semantic directory",
+        "The validator checks `category` against the page's semantic path",
+        "Global `concepts/` page example",
+    ):
+        assert required in shared_flat, (
+            f"{relative}: missing category/path rule {required!r}"
+        )
+
+
+def test_wiki_update_links_follow_resolved_runtime_contract() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    shared_flat = " ".join(shared.split())
+
+    for required in (
+        "Apply the resolved `OBSIDIAN_LINK_FORMAT`",
+        "`wikilink` means Obsidian `[[wikilinks]]`",
+        "`markdown` means standard Markdown links",
+    ):
+        assert required in shared_flat, (
+            f"{relative}: missing link-format rule {required!r}"
+        )
+    assert "Add `[[wikilinks]]`" not in shared
+
+
+def test_wiki_update_hot_waits_for_commit_or_resolved_recovery() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    portable_flat = " ".join(portable.split())
+
+    for required in (
+        "after commit succeeds or recovery is fully resolved",
+        "abort, restore, discard, or another allowed terminal recovery action",
+        "Do not run the hot flow while a transaction outcome is ambiguous",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing hot recovery gate {required!r}"
+        )
+
+
+def test_wiki_update_personal_removals_finish_before_tracking() -> None:
+    relative = ".skills/wiki-update/SKILL.md"
+    personal = _h2_section(
+        _text(relative), "Personal mode completion", relative=relative
+    )
+    personal_flat = " ".join(personal.split())
+
+    for required in (
+        "reviewed obsolete pages",
+        "remove obsolete backlinks",
+        "Only after every deletion and page write succeeds",
+        "remove deleted pages from `pages_in_vault`",
+        "remove or update source-to-page mappings",
+        "remove their `index.md` entries",
+        "Record deletion counts in `log.md`",
+        "reflect the conceptual removal in `hot.md`",
+        "Run Personal tracking and QMD only after deletions and writes succeed",
+    ):
+        assert required in personal_flat, (
+            f"{relative}: missing Personal removal rule {required!r}"
+        )
+
+
 def test_portable_url_ingest_uses_repository_snapshot_and_parent_transaction() -> None:
     relative = ".skills/wiki-ingest/references/url-sources.md"
     portable = _h2_section(
