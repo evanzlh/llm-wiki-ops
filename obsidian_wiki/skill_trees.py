@@ -1,0 +1,230 @@
+"""Deterministic, link-free snapshots of skill directory trees."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from hashlib import sha256
+import os
+from pathlib import Path
+import re
+import stat
+from typing import Literal
+
+from .frontmatter import FrontmatterError, parse_frontmatter
+
+
+_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SOURCE_IGNORED_DIRECTORIES = frozenset({".git", ".svn", ".hg", "__pycache__"})
+
+
+@dataclass(frozen=True)
+class SkillEntry:
+    path: str
+    kind: Literal["directory", "file"]
+    executable: bool
+    content: bytes
+
+
+@dataclass(frozen=True)
+class SkillTree:
+    name: str
+    description: str
+    entries: tuple[SkillEntry, ...]
+    digest: str
+
+
+@dataclass(frozen=True)
+class SkillCollection:
+    skills: tuple[SkillTree, ...]
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(skill.name for skill in self.skills)
+
+    def by_name(self) -> dict[str, SkillTree]:
+        return {skill.name: skill for skill in self.skills}
+
+
+def _error(path: Path, message: str) -> ValueError:
+    return ValueError("{}: {}".format(path, message))
+
+
+def _is_ignored_source_artifact(name: str, mode: int) -> bool:
+    if stat.S_ISDIR(mode):
+        return name in _SOURCE_IGNORED_DIRECTORIES
+    return (
+        name == ".DS_Store"
+        or name == ".env"
+        or name.startswith(".env.")
+        or name.startswith("._")
+        or name.endswith(".pyc")
+        or name.endswith(".pyo")
+    )
+
+
+def _snapshot_entry(
+    path: Path,
+    relative: str,
+    entries: list[SkillEntry],
+    *,
+    ignore_source_artifacts: bool,
+) -> None:
+    metadata = path.lstat()
+    mode = metadata.st_mode
+    if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
+        return
+    if stat.S_ISLNK(mode):
+        raise _error(path, "symbolic links are not allowed")
+    if stat.S_ISDIR(mode):
+        entries.append(SkillEntry(relative, "directory", False, b""))
+        for child in sorted(path.iterdir(), key=lambda item: item.name):
+            _snapshot_entry(
+                child,
+                relative + "/" + child.name,
+                entries,
+                ignore_source_artifacts=ignore_source_artifacts,
+            )
+        return
+    if not stat.S_ISREG(mode):
+        raise _error(path, "special files are not allowed")
+    if metadata.st_nlink != 1:
+        raise _error(path, "multiply-linked regular files are not allowed")
+    entries.append(
+        SkillEntry(relative, "file", bool(mode & 0o111), path.read_bytes())
+    )
+
+
+def _digest(name: str, entries: tuple[SkillEntry, ...]) -> str:
+    digest = sha256()
+
+    def add(value: bytes) -> None:
+        digest.update(str(len(value)).encode("ascii"))
+        digest.update(b":")
+        digest.update(value)
+
+    add(name.encode("utf-8"))
+    for entry in entries:
+        add(entry.path.encode("utf-8"))
+        add(entry.kind.encode("ascii"))
+        add(b"1" if entry.executable else b"0")
+        add(str(len(entry.content)).encode("ascii"))
+        add(entry.content)
+    return "sha256:" + digest.hexdigest()
+
+
+def discover_skill_collection(
+    root: Path, *, ignore_source_artifacts: bool = False
+) -> SkillCollection:
+    """Return a sorted, fully validated ordinary-file snapshot of root."""
+    root_metadata = root.lstat()
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise _error(root, "skill root must be an ordinary directory")
+
+    skills: list[SkillTree] = []
+    for directory in sorted(root.iterdir(), key=lambda item: item.name):
+        metadata = directory.lstat()
+        if ignore_source_artifacts and _is_ignored_source_artifact(
+            directory.name, metadata.st_mode
+        ):
+            continue
+        if not _SKILL_NAME.fullmatch(directory.name):
+            raise _error(directory, "unsafe skill directory name")
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise _error(directory, "each skill must be an ordinary directory")
+        skill_file = directory / "SKILL.md"
+        if not skill_file.exists():
+            raise _error(skill_file, "SKILL.md is missing")
+        if stat.S_ISLNK(skill_file.lstat().st_mode) or not stat.S_ISREG(skill_file.lstat().st_mode):
+            raise _error(skill_file, "SKILL.md must be an ordinary file")
+        try:
+            frontmatter = parse_frontmatter(skill_file.read_bytes().decode("utf-8"))
+        except (FrontmatterError, UnicodeDecodeError) as exc:
+            raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
+        name = frontmatter.scalars.get("name", "")
+        description = frontmatter.scalars.get("description", "")
+        if not name or not description:
+            raise _error(skill_file, "frontmatter name and description are required")
+        if name != directory.name:
+            raise _error(skill_file, "frontmatter name must equal directory name")
+        entries: list[SkillEntry] = []
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            _snapshot_entry(
+                child,
+                child.name,
+                entries,
+                ignore_source_artifacts=ignore_source_artifacts,
+            )
+        frozen_entries = tuple(entries)
+        skills.append(SkillTree(name, description, frozen_entries, _digest(name, frozen_entries)))
+    if not skills:
+        raise _error(root, "skill collection must not be empty")
+    return SkillCollection(tuple(skills))
+
+
+def _materialize_path(root: Path, relative: str) -> Path:
+    parts = relative.split("/")
+    if not relative or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("unsafe skill entry path: {}".format(relative))
+    return root.joinpath(*parts)
+
+
+def materialize_skill_collection(
+    collection: SkillCollection, destination: Path
+) -> None:
+    """Create destination from a snapshot; destination must not already exist."""
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("destination already exists: {}".format(destination))
+    destination.mkdir(parents=True)
+    os.chmod(destination, 0o755)
+    for skill in collection.skills:
+        skill_root = _materialize_path(destination, skill.name)
+        skill_root.mkdir()
+        os.chmod(skill_root, 0o755)
+        for entry in skill.entries:
+            path = _materialize_path(skill_root, entry.path)
+            if entry.kind == "directory":
+                path.mkdir()
+                os.chmod(path, 0o755)
+            else:
+                path.write_bytes(entry.content)
+                os.chmod(path, 0o755 if entry.executable else 0o644)
+
+
+def compare_skill_collections(
+    canonical: SkillCollection, mirror: SkillCollection
+) -> tuple[dict[str, tuple[str, ...]], ...]:
+    """Return deterministic added, changed, and removed path records.
+
+    The three mappings respectively describe paths to add to, change in, and
+    remove from ``mirror`` to make it match ``canonical``.
+    """
+    canonical_by_name = canonical.by_name()
+    mirror_by_name = mirror.by_name()
+    added: dict[str, tuple[str, ...]] = {}
+    changed: dict[str, tuple[str, ...]] = {}
+    removed: dict[str, tuple[str, ...]] = {}
+    for name in sorted(set(canonical_by_name) | set(mirror_by_name)):
+        canonical_tree = canonical_by_name.get(name)
+        mirror_tree = mirror_by_name.get(name)
+        canonical_entries = {
+            entry.path: entry
+            for entry in (() if canonical_tree is None else canonical_tree.entries)
+        }
+        mirror_entries = {
+            entry.path: entry
+            for entry in (() if mirror_tree is None else mirror_tree.entries)
+        }
+        added_paths = tuple(sorted(set(canonical_entries) - set(mirror_entries)))
+        changed_paths = tuple(
+            path
+            for path in sorted(set(canonical_entries) & set(mirror_entries))
+            if canonical_entries[path] != mirror_entries[path]
+        )
+        removed_paths = tuple(sorted(set(mirror_entries) - set(canonical_entries)))
+        if added_paths:
+            added[name] = added_paths
+        if changed_paths:
+            changed[name] = changed_paths
+        if removed_paths:
+            removed[name] = removed_paths
+    return added, changed, removed
