@@ -1,5 +1,8 @@
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 from obsidian_wiki.transaction import TransactionRecord
 from obsidian_wiki.transaction_guidance import guidance_for_record
@@ -49,6 +52,73 @@ def markdown_section(text: str, heading: str) -> str:
     return text[start : min(candidates, default=len(text))]
 
 
+def h2_headings(text: str) -> list[tuple[str, int, int]]:
+    headings: list[tuple[str, int, int]] = []
+    fence: tuple[str, int] | None = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        fence_match = re.match(
+            r"^[ \t]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", content
+        )
+        if fence_match is not None:
+            marker = fence_match.group("marker")
+            tail = fence_match.group("tail")
+            if fence is None:
+                fence = (marker[0], len(marker))
+            elif (
+                marker[0] == fence[0]
+                and len(marker) >= fence[1]
+                and not tail.strip()
+            ):
+                fence = None
+            offset += len(line)
+            continue
+
+        if fence is None:
+            heading_match = re.match(
+                r"^##[ \t]+(?P<title>[^\r\n]+?)[ \t]*$", content
+            )
+            if heading_match is not None:
+                headings.append(
+                    (heading_match.group("title"), offset, offset + len(content))
+                )
+        offset += len(line)
+    return headings
+
+
+def h2_section(
+    text: str,
+    heading: str,
+    *,
+    relative: str,
+    next_heading: str | None = None,
+) -> str:
+    headings = h2_headings(text)
+    matches = [match for match in headings if match[0] == heading]
+    assert len(matches) == 1, (
+        f"{relative}: expected exactly one H2 {heading!r}, found {len(matches)}"
+    )
+    match = matches[0]
+    position = headings.index(match)
+    following = headings[position + 1 :]
+    end = following[0][1] if following else len(text)
+
+    if next_heading is not None:
+        later = [item for item in headings if item[0] == next_heading]
+        assert len(later) == 1, (
+            f"{relative}: expected exactly one H2 {next_heading!r}, found {len(later)}"
+        )
+        assert later[0][1] > match[1], (
+            f"{relative}: H2 {next_heading!r} must follow H2 {heading!r}"
+        )
+        assert following and following[0] == later[0], (
+            f"{relative}: H2 {next_heading!r} must be the next H2 after {heading!r}"
+        )
+
+    return text[match[2] : end]
+
+
 def fenced_json_after(text: str, label: str) -> object:
     labeled = text.split(label, 1)[1]
     fenced = labeled.split("```json\n", 1)[1].split("\n```", 1)[0]
@@ -80,6 +150,37 @@ def test_canonical_protocol_owns_begin_commit_recovery_and_hot_commands() -> Non
         "Personal mode",
     ):
         assert required in text
+
+
+@pytest.mark.parametrize(
+    ("scope", "phrase"),
+    (
+        ("completion", "transaction validate <id> --json --pretty"),
+        ("completion", "created = updated = started_at"),
+        ("completion", "preserve the existing `created`"),
+        ("completion", "keep the repository root as the command working directory"),
+        ("completion", "do not `cd` into `candidate_vault`"),
+        ("completion", "hot inputs --json --pretty"),
+        ("manifest-v2", "cache-check --configured"),
+        ("manifest-v2", "preserve Unicode filenames"),
+    ),
+    ids=lambda value: value.replace(" ", "-") if isinstance(value, str) else None,
+)
+def test_canonical_portable_protocol_defines_runtime_safety_rules(
+    scope: str, phrase: str
+) -> None:
+    relative = ".skills/llm-wiki/SKILL.md"
+    text = skill_text("llm-wiki")
+    if scope == "completion":
+        scoped = h2_section(
+            text,
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        )
+    else:
+        scoped = markdown_section(text, "### Portable Repository mode — manifest v2")
+    assert phrase in scoped, f"{relative} {scope}: missing {phrase!r}"
 
 
 def test_read_skills_never_trust_stale_hot_state() -> None:

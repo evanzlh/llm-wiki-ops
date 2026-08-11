@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -23,6 +24,54 @@ def _text(relative: str) -> str:
 
 def _collapsed(relative: str) -> str:
     return " ".join(_text(relative).split())
+
+
+def _h2_headings(text: str) -> list[tuple[str, int, int]]:
+    headings: list[tuple[str, int, int]] = []
+    fence: tuple[str, int] | None = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        fence_match = re.match(
+            r"^[ \t]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", content
+        )
+        if fence_match is not None:
+            marker = fence_match.group("marker")
+            tail = fence_match.group("tail")
+            if fence is None:
+                fence = (marker[0], len(marker))
+            elif (
+                marker[0] == fence[0]
+                and len(marker) >= fence[1]
+                and not tail.strip()
+            ):
+                fence = None
+            offset += len(line)
+            continue
+
+        if fence is None:
+            heading_match = re.match(
+                r"^##[ \t]+(?P<title>[^\r\n]+?)[ \t]*$", content
+            )
+            if heading_match is not None:
+                headings.append(
+                    (heading_match.group("title"), offset, offset + len(content))
+                )
+        offset += len(line)
+    return headings
+
+
+def _h2_section(text: str, heading: str, *, relative: str) -> str:
+    headings = _h2_headings(text)
+    matches = [match for match in headings if match[0] == heading]
+    assert len(matches) == 1, (
+        f"{relative}: expected exactly one H2 {heading!r}, found {len(matches)}"
+    )
+    match = matches[0]
+    position = headings.index(match)
+    following = headings[position + 1 :]
+    end = following[0][1] if following else len(text)
+    return text[match[2] : end]
 
 
 def test_core_skills_distinguish_personal_and_portable_manifests() -> None:
@@ -139,13 +188,24 @@ def test_cli_docs_define_check_output_and_exit_behavior() -> None:
     assert "--pretty" in cli
 
 
-def test_readmes_have_one_aligned_portable_check_example() -> None:
+def test_readmes_have_aligned_portable_check_examples() -> None:
     english = _text("README.md")
     chinese = _text("README_ZH.md")
     command = "obsidian-wiki check"
 
-    assert english.count(command) == 1
-    assert chinese.count(command) == 1
-    assert command in english.split("## Start a portable team wiki", 1)[1]
-    assert command in chinese.split("## 创建便携式团队知识库", 1)[1]
+    english_portable = _h2_section(
+        english, "Start a portable team wiki", relative="README.md"
+    )
+    chinese_portable = _h2_section(
+        chinese, "创建便携式团队知识库", relative="README_ZH.md"
+    )
+    english_commands = tuple(
+        line for line in english_portable.splitlines() if command in line
+    )
+    chinese_commands = tuple(
+        line for line in chinese_portable.splitlines() if command in line
+    )
+
+    assert english_commands, "README.md portable section has no check command"
+    assert english_commands == chinese_commands
     assert "README_TW.md" not in english + chinese
