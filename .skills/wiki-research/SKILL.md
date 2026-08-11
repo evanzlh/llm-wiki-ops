@@ -15,8 +15,12 @@ You are running an autonomous research loop on a topic, synthesizing what you fi
 
 1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch after research. Until then, shared preparation is read-only; network queries are read-only with respect to the vault and no worker may write a source or knowledge page.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand what's already in the wiki — don't re-research things the wiki covers well
-3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it surfaces recent context
-4. Check `$OBSIDIAN_VAULT_PATH/references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault
+3. Select the matching read-only hot-context gate:
+
+   **Portable Repository hot context:** Run `obsidian-wiki hot status --json` first, then read the resolved `hot.md` only when it reports current. When stale, run `obsidian-wiki hot inputs --json --pretty` and use those bounded inputs as context, or skip hot context; do not write `hot.md` or mark it current during shared preparation.
+
+   **Personal mode hot context:** Read `<resolved-vault-path>/hot.md` directly if it exists; config resolution supplies the concrete runtime path and does not export a shell variable.
+4. Check the resolved vault's `references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault
 
 When writing internal links in generated pages, apply the link format from `llm-wiki/SKILL.md` (Link Format section) using the `OBSIDIAN_LINK_FORMAT` value.
 

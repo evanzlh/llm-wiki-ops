@@ -24,11 +24,19 @@ This skill has three modes:
 
 **Portable Write Protocol branch:** The parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, reads the owner `AGENTS.md`, and Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not write `_raw/`, a knowledge page, or a source snapshot before selecting the branch.
 
+## Shared read-only capture decision
+
+Perform this in memory before selecting either completion branch:
+
+1. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An automatic Stop-hook capture should err toward SKIP; an explicit user capture should err toward KEEP.
+2. **Classify the kept content.** Choose the semantic category and matching final path: concept, entity, skill, reference, synthesis, journal, or project knowledge. Cluster related findings by topic and infer project context only from evidence in the conversation.
+3. **Rewrite it as declarative knowledge.** Preserve the substance, evidence, reasoning, implications, and relationships without presenting it as a chat transcript. Prepare required frontmatter and links in memory; make no source or vault write here.
+
 ## Portable Repository completion
 
 Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD and never write live `_raw/`.
 
-1. Apply the KEEP/SKIP and classification guidance in memory. For KEEP, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
+1. Use the completed shared read-only capture decision. For KEEP, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
 2. Compute complete authoritative source closure from accepted snapshots and the existing Source IDs of every updated/deleted page. Run `obsidian-wiki transaction begin --source <source-id> [--source <source-id> ...] --json --pretty`. Keep the absolute `candidate_vault` only in memory. New candidates use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
 3. Write the finished candidate only below `candidate_vault`; its candidate `sources` cites only accepted snapshot Source IDs (a non-empty subset of the transaction closure). Declare removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
 4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
@@ -55,20 +63,9 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 
    Capture does not independently reinterpret validator schema inputs. When `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, or `OBSIDIAN_SCHEMA_SOURCE` is present, preserve it for the downstream lint/trust consumer: CLI values take precedence over environment/config values, which take precedence over framework defaults, and explicit blank or whitespace-only values fail closed. Omit a variable to use defaults.
 
-2. **Gate — KEEP or SKIP?** Before extracting, judge whether this session has capture value. This keeps the skill safe to call automatically without spamming `_raw/`.
-   - **SKIP** (exit with "Nothing worth capturing in this session.") if ALL are true: the conversation is purely conversational (planning/Q&A/explanation) with no implementation; no errors, debugging, or problem-solving visible; nothing surprising or undocumented; every finding is already obvious from the docs.
-   - **KEEP** (proceed) if ANY are true: a fix or workaround was found through investigation; non-obvious library/API/framework behavior was confirmed (edge case, undocumented constraint, time-costing gotcha); a debugging session reached a concrete conclusion; a reusable pattern emerged.
-   - When invoked **via the Stop hook, err toward SKIP** — only KEEP on clear evidence. When invoked **manually, err toward KEEP** — the user called it for a reason.
+2. **Write raw files** — for each kept topic cluster, write `$OBSIDIAN_RAW_DIR/<ISO-date>-<slug>.md`. Use a kebab-case slug (for example, `swift-actor-reentrancy`). Read `references/RAW-FORMAT.md` for the full frontmatter spec, finding-block body structure, and provenance/confidence calibration. Per-cluster fields that vary: `title`, `tags` (2–4 from taxonomy), `summary` (≤200 chars), `project` (inferred or `null`), `base_confidence` (0.6 discussed → 0.75 fix applied → 0.9 test confirmed), `provenance.extracted`/`provenance.inferred` (sum to 1.0), `lifecycle_changed` (today), `sources` (`"<project> session (<YYYY-MM-DD>)"`).
 
-3. **Scan for reusable findings** — non-obvious bugs and root causes, framework/library gotchas, surprising API behavior, investigated workarounds, environment/toolchain quirks, patterns from debugging. Skip PM updates, config already in CLAUDE.md, inconclusive back-and-forth, anything obvious from the docs, and pleasantries. If nothing material emerged, say so and stop.
-
-4. **Cluster by topic** — one `_raw/` file per topic cluster, not per finding. Name each as a kebab-case slug (e.g. `swift-actor-reentrancy`, `nextjs-hydration-mismatch`).
-
-5. **Infer project context** from repo names, file paths, framework mentions, error messages. Use the most specific name you can reliably infer; else `null`.
-
-6. **Write raw files** — for each cluster, write `$OBSIDIAN_RAW_DIR/<ISO-date>-<slug>.md`. Read `references/RAW-FORMAT.md` for the full frontmatter spec, finding-block body structure, and provenance/confidence calibration. Per-cluster fields that vary: `title`, `tags` (2–4 from taxonomy), `summary` (≤200 chars), `project` (inferred or `null`), `base_confidence` (0.6 discussed → 0.75 fix applied → 0.9 test confirmed), `provenance.extracted`/`provenance.inferred` (sum to 1.0), `lifecycle_changed` (today), `sources` (`"<project> session (<YYYY-MM-DD>)"`).
-
-7. **Confirm** — list staged files and tell the user to run `/wiki-ingest` to promote them:
+3. **Confirm** — list staged files and tell the user to run `/wiki-ingest` to promote them:
    ```
    Staged to _raw/:
      _raw/2026-05-27-swift-actor-reentrancy.md   — "Actor reentrancy causes deadlock in async forEach"

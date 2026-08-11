@@ -592,13 +592,24 @@ def test_daily_update_portable_is_read_only_until_a_page_repair_is_selected() ->
 
 def test_capture_portable_materializes_source_before_transaction_and_never_writes_raw() -> None:
     relative = ".skills/wiki-capture/SKILL.md"
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
     portable = _h2_section(
-        _text(relative),
+        text,
         "Portable Repository completion",
         relative=relative,
         next_heading="Personal mode completion",
     )
+    shared_flat = " ".join(shared.split())
     flat = " ".join(portable.split())
+    for required in (
+        "Shared read-only capture decision",
+        "KEEP",
+        "SKIP",
+        "Classify the kept content",
+        "Rewrite it as declarative knowledge",
+    ):
+        assert required in shared_flat
     for required in (
         "never write live `_raw/`",
         "small, reviewable UTF-8 Markdown or plain-text snapshot",
@@ -613,6 +624,8 @@ def test_capture_portable_materializes_source_before_transaction_and_never_write
         "Compute complete authoritative source closure"
     ) < flat.index("obsidian-wiki transaction begin")
     assert "Ensure `$OBSIDIAN_RAW_DIR` exists" not in portable
+    for forbidden in ("guidance below", "steps below"):
+        assert forbidden not in portable
 
 
 def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
@@ -636,9 +649,10 @@ def test_dashboard_portable_fails_closed_before_central_configuration_mutation()
 
 def test_import_portable_materializes_external_bundle_records_before_begin() -> None:
     relative = ".skills/wiki-import/SKILL.md"
+    text = _text(relative)
     portable = " ".join(
         _h2_section(
-            _text(relative),
+            text,
             "Portable Repository completion",
             relative=relative,
             next_heading="Personal mode completion",
@@ -658,6 +672,15 @@ def test_import_portable_materializes_external_bundle_records_before_begin() -> 
     assert portable.index("reviewable UTF-8 source snapshots or records") < portable.index(
         "Compute complete authoritative source closure"
     ) < portable.index("obsidian-wiki transaction begin")
+    assert text.index("## Step 2: Determine Conflict Resolution Mode") < text.index(
+        "## Portable Repository completion"
+    )
+    shared_conflict = text.split(
+        "## Step 2: Determine Conflict Resolution Mode", 1
+    )[1].split("## Portable Repository completion", 1)[0]
+    for required in ("`merge`", "`skip`", "`overwrite`", "read-only decision"):
+        assert required in shared_conflict
+    assert "conflict-resolution decision selected during shared read-only preparation" in portable
 
 
 def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> None:
@@ -684,6 +707,24 @@ def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> N
     ) < portable.index("obsidian-wiki transaction begin")
 
 
+def test_research_portable_checks_hot_before_any_hot_read() -> None:
+    relative = ".skills/wiki-research/SKILL.md"
+    shared = _text(relative).split("## Portable Repository completion", 1)[0]
+    portable_gate = shared.split("**Portable Repository hot context:**", 1)[1].split(
+        "**Personal mode hot context:**", 1
+    )[0]
+    assert "obsidian-wiki hot status --json" in portable_gate
+    assert "only when it reports current" in portable_gate
+    assert "obsidian-wiki hot inputs --json --pretty" in portable_gate
+    status = portable_gate.index("obsidian-wiki hot status --json")
+    read = portable_gate.index("read the resolved `hot.md`")
+    assert status < read
+    assert "Read `$OBSIDIAN_VAULT_PATH/hot.md`" not in portable_gate
+
+    personal_gate = shared.split("**Personal mode hot context:**", 1)[1]
+    assert "Read `<resolved-vault-path>/hot.md` directly" in personal_gate
+
+
 def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
     relative = ".skills/wiki-stage-commit/SKILL.md"
     portable = " ".join(
@@ -695,8 +736,10 @@ def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
         ).split()
     )
     for required in (
-        "obsidian-wiki transaction list --json",
-        "review the selected transaction with `transaction show`",
+        "obsidian-wiki transaction list --json --pretty",
+        "selected list record's `status`, `source_ids`, `candidate_vault`, `deletions`, and `recovery`",
+        "runtime-only absolute `candidate_vault`",
+        "candidate_pages`, `deletions`, `issues`, and `warnings`",
         "never begin an empty or replacement transaction",
         "validate an active candidate transaction before commit",
         "retry, restore, abort, or discard",
@@ -705,6 +748,7 @@ def test_stage_commit_portable_operates_only_on_existing_transactions() -> None:
     ):
         assert required in portable
     assert "obsidian-wiki transaction begin" not in portable
+    assert "transaction show" not in portable
 
 
 def test_import_snapshot_candidate_uses_relative_unicode_source_id(tmp_path: Path) -> None:
