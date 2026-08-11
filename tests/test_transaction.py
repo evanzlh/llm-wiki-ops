@@ -29,6 +29,7 @@ from obsidian_wiki.transaction import (
 )
 from obsidian_wiki.transaction_validation import (
     ProspectivePage,
+    TransactionValidationReport,
     ValidationIssue,
     validate_prospective_pages,
 )
@@ -1363,7 +1364,13 @@ def test_commit_resolves_timestamp_once_and_sorts_change_sets(
     removed.write_text(PAGE, encoding="utf-8")
     manager = TransactionManager(config, operation_writer=operation_writer(config))
     record = manager.begin([source_b, source_a], transaction_id="tx-1")
-    candidate_page(record, "references/z.md", PAGE.replace("# A", "# Z"))
+    candidate_page(
+        record,
+        "references/z.md",
+        PAGE.replace("category: concepts", "category: references").replace(
+            "# A", "# Z"
+        ),
+    )
     candidate_page(record, "concepts/b.md")
     candidate_page(record, "concepts/a.md")
     manager.mark_delete("tx-1", "concepts/z.md")
@@ -4491,3 +4498,502 @@ def test_prospective_graph_reports_duplicate_identity_and_uses_path_qualified_ta
             "shared",
         ),
     )
+
+
+def test_transaction_validation_report_serializes_stably() -> None:
+    issue = ValidationIssue(
+        "broken-link", "concepts/a.md", "broken link target: missing", "missing"
+    )
+    report = TransactionValidationReport(
+        transaction_id="tx-validate",
+        status="fail",
+        candidate_pages=("concepts/a.md",),
+        deletions=("concepts/old.md",),
+        issues=(issue,),
+    )
+
+    assert report.as_dict() == {
+        "transaction_id": "tx-validate",
+        "status": "fail",
+        "candidate_pages": ["concepts/a.md"],
+        "deletions": ["concepts/old.md"],
+        "issues": [issue.as_dict()],
+        "warnings": [],
+    }
+
+
+def test_validate_is_read_only_and_reports_all_candidate_issues(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    live = config.vault / "concepts/live.md"
+    live.write_text(PAGE.replace("title: A", "title: Live"), encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-validate")
+    candidate = candidate_page(
+        record,
+        "concepts/a.md",
+        PAGE.replace("updated: 2026-08-07", "updated: invalid")
+        + "[[missing]]\n",
+    )
+    watched = (
+        source,
+        live,
+        candidate,
+        record.workspace / "metadata.json",
+        record.workspace / "deletions.json",
+    )
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in watched
+    }
+
+    report = manager.validate("tx-validate")
+
+    after = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in watched
+    }
+    assert report.status == "fail"
+    assert report.candidate_pages == ("concepts/a.md",)
+    assert {issue.code for issue in report.issues} == {
+        "frontmatter-updated-invalid",
+        "broken-link",
+    }
+    assert report.warnings == ()
+    assert before == after
+    assert not (config.vault / "concepts/a.md").exists()
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_validate_reports_live_link_broken_by_deletion(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    removed = config.vault / "concepts/removed.md"
+    removed.write_text(PAGE.replace("title: A", "title: Removed"), encoding="utf-8")
+    retained = config.vault / "concepts/retained.md"
+    retained.write_text(
+        PAGE.replace("title: A", "title: Retained") + "[[removed]]\n",
+        encoding="utf-8",
+    )
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-delete")
+    manager.mark_delete("tx-delete", "concepts/removed.md")
+
+    report = manager.validate("tx-delete")
+
+    assert report.status == "fail"
+    assert report.candidate_pages == ()
+    assert report.deletions == ("concepts/removed.md",)
+    assert [
+        (issue.code, issue.path, issue.target) for issue in report.issues
+    ] == [("broken-link", "concepts/retained.md", "removed")]
+    assert removed.read_bytes() == PAGE.replace(
+        "title: A", "title: Removed"
+    ).encode("utf-8")
+
+
+def test_validate_uses_candidate_replacement_in_prospective_graph(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/target.md"
+    target.write_text(
+        PAGE.replace("title: A", "title: Target") + "[[missing]]\n",
+        encoding="utf-8",
+    )
+    retained = config.vault / "concepts/retained.md"
+    retained.write_text(
+        PAGE.replace("title: A", "title: Retained") + "[[target]]\n",
+        encoding="utf-8",
+    )
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-replace")
+    replacement = PAGE.replace("title: A", "title: Target").replace(
+        "# A", "# Replaced"
+    )
+    candidate_page(record, "concepts/target.md", replacement)
+
+    report = manager.validate("tx-replace")
+
+    assert report.status == "pass"
+    assert report.issues == ()
+    assert target.read_text(encoding="utf-8").endswith("[[missing]]\n")
+
+
+def test_validate_resolves_candidate_link_to_tracked_root_page(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    (config.vault / "index.md").write_text("# Index\n", encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-root-target")
+    candidate_page(record, "concepts/a.md", PAGE + "[[index]]\n")
+
+    report = manager.validate("tx-root-target")
+
+    assert report.status == "pass"
+    assert report.issues == ()
+
+
+def test_validate_reports_broken_link_from_tracked_root_page(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    (config.vault / "index.md").write_text(
+        "# Index\n[[missing]]\n", encoding="utf-8"
+    )
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-root-origin")
+
+    report = manager.validate("tx-root-origin")
+
+    assert [(issue.code, issue.path, issue.target) for issue in report.issues] == [
+        ("broken-link", "index.md", "missing")
+    ]
+
+
+def test_validate_aggregates_invalid_ordinary_candidate_files(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-invalid-files")
+    candidate_page(record, "concepts/frontmatter.md", "not frontmatter\n")
+    invalid_utf8 = record.candidate_vault / "concepts/encoding.md"
+    invalid_utf8.write_bytes(b"\xff\xfe")
+    invalid_path = record.candidate_vault / "concepts/not-markdown.txt"
+    invalid_path.write_text(PAGE, encoding="utf-8")
+    invalid_separator = record.candidate_vault / "concepts/back\\slash.md"
+    invalid_separator.write_text(PAGE, encoding="utf-8")
+
+    report = manager.validate("tx-invalid-files")
+
+    assert report.status == "fail"
+    assert report.candidate_pages == (
+        "concepts/back\\slash.md",
+        "concepts/encoding.md",
+        "concepts/frontmatter.md",
+        "concepts/not-markdown.txt",
+    )
+    assert [(issue.code, issue.path) for issue in report.issues] == [
+        ("candidate-path-invalid", "concepts/back\\slash.md"),
+        ("candidate-utf8-invalid", "concepts/encoding.md"),
+        ("frontmatter-invalid", "concepts/frontmatter.md"),
+        ("candidate-path-invalid", "concepts/not-markdown.txt"),
+    ]
+
+
+def test_validate_keeps_unsafe_candidate_topology_fatal(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-unsafe")
+    candidate = record.candidate_vault / "concepts/a.md"
+    candidate.parent.mkdir(parents=True)
+    external = tmp_path / "external.md"
+    external.write_text(PAGE, encoding="utf-8")
+    candidate.symlink_to(external)
+
+    with pytest.raises(TransactionError, match="candidate.*single-link ordinary file"):
+        manager.validate("tx-unsafe")
+
+
+def test_validate_keeps_preimage_drift_fatal(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-drift")
+    candidate_page(record, "concepts/a.md", PAGE.replace("# A", "# Candidate"))
+    concurrent = PAGE.replace("# A", "# Concurrent")
+    target.write_text(concurrent, encoding="utf-8")
+
+    with pytest.raises(TransactionError, match="changed after transaction began"):
+        manager.validate("tx-drift")
+
+    assert target.read_text(encoding="utf-8") == concurrent
+    assert not any((record.workspace / "snapshots").iterdir())
+
+
+def test_validate_preserves_cjk_candidate_and_source_paths(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root, "资料/来源.md")
+    manager = TransactionManager(config)
+    record = manager.begin([source], transaction_id="tx-cjk")
+    page = PAGE.replace("title: A", "title: 中文页面").replace(
+        "sources/a.md", "sources/资料/来源.md"
+    )
+    candidate_page(record, "concepts/中文页面.md", page)
+
+    report = manager.validate("tx-cjk")
+
+    assert report.status == "pass"
+    assert report.candidate_pages == ("concepts/中文页面.md",)
+    assert report.as_dict()["candidate_pages"] == ["concepts/中文页面.md"]
+    assert record.source_ids == ("sources/资料/来源.md",)
+    assert report.issues == ()
+
+
+def test_commit_rejects_preflight_before_snapshot_or_mutation(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-invalid")
+    candidate_page(record, "concepts/a.md", PAGE + "[[missing]]\n")
+
+    with pytest.raises(TransactionError, match="transaction validation failed"):
+        manager.commit("tx-invalid")
+
+    payload = json.loads(
+        (record.workspace / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "active"
+    assert payload["snapshot_index"] == {}
+    assert not (config.vault / "concepts/a.md").exists()
+    assert manager.lock_path.exists()
+
+
+def test_commit_reads_candidate_bytes_once_and_promotes_them_unchanged(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-read-once")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    expected = candidate.read_bytes()
+    before_mtime = candidate.stat().st_mtime_ns
+    original_read = manager._read_single_link_bytes
+    candidate_reads = 0
+
+    def counting_read(path: Path, label: str) -> bytes:
+        nonlocal candidate_reads
+        if path == candidate:
+            candidate_reads += 1
+        return original_read(path, label)
+
+    monkeypatch.setattr(manager, "_read_single_link_bytes", counting_read)
+
+    manager.commit("tx-read-once", completed_at="2026-08-07T01:00:00Z")
+
+    assert candidate_reads == 1
+    assert candidate.read_bytes() == expected
+    assert candidate.stat().st_mtime_ns == before_mtime
+    assert (config.vault / "concepts/a.md").read_bytes() == expected
+
+
+def test_retry_validation_failure_preserves_recovery_evidence(
+    tmp_path: Path,
+    operation_writer,
+) -> None:
+    root, config = make_config(tmp_path)
+    target = config.vault / "concepts/a.md"
+    target.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-invalid")
+    candidate = candidate_page(
+        record, "concepts/a.md", PAGE.replace("# A", "# Candidate")
+    )
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-invalid")
+    candidate.write_text(PAGE + "[[missing]]\n", encoding="utf-8")
+    metadata = record.workspace / "metadata.json"
+    before_metadata = metadata.read_bytes()
+    before_payload = json.loads(before_metadata)
+    before_snapshots = {
+        path.relative_to(record.workspace / "snapshots").as_posix(): path.read_bytes()
+        for path in (record.workspace / "snapshots").rglob("*")
+        if path.is_file()
+    }
+    assert before_payload["snapshot_index"]
+    assert before_snapshots
+
+    with pytest.raises(TransactionError, match="transaction validation failed"):
+        manager.retry("tx-retry-invalid")
+
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    after_snapshots = {
+        path.relative_to(record.workspace / "snapshots").as_posix(): path.read_bytes()
+        for path in (record.workspace / "snapshots").rglob("*")
+        if path.is_file()
+    }
+    assert payload["status"] == "failed"
+    assert metadata.read_bytes() == before_metadata
+    assert payload["snapshot_index"] == before_payload["snapshot_index"]
+    assert payload["residual_postimages"] == before_payload["residual_postimages"]
+    assert after_snapshots == before_snapshots
+    assert target.read_bytes() == PAGE.encode("utf-8")
+    assert not manager.lock_path.exists()
+
+
+def test_retry_reads_candidate_bytes_once(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-read-once")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-read-once")
+    manager.operation_writer = operation_writer(config)
+    original_read = manager._read_single_link_bytes
+    candidate_reads = 0
+
+    def counting_read(path: Path, label: str) -> bytes:
+        nonlocal candidate_reads
+        if path == candidate:
+            candidate_reads += 1
+        return original_read(path, label)
+
+    monkeypatch.setattr(manager, "_read_single_link_bytes", counting_read)
+
+    manager.retry("tx-retry-read-once", completed_at="2026-08-07T02:00:00Z")
+
+    assert candidate_reads == 1
+    assert (config.vault / "concepts/a.md").read_bytes() == PAGE.encode("utf-8")
+
+
+def test_retry_promotes_cached_bytes_when_candidate_changes_after_preflight(
+    tmp_path: Path,
+    operation_writer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-cached")
+    candidate = candidate_page(record, "concepts/a.md", PAGE)
+    cached_bytes = candidate.read_bytes()
+    with pytest.raises(TransactionError, match="rolled back"):
+        manager.commit("tx-retry-cached")
+    manager.operation_writer = operation_writer(config)
+    original_clear = manager._clear_snapshot_state
+    changed_bytes = (PAGE + "[[missing-after-preflight]]\n").encode("utf-8")
+
+    def change_candidate_after_preflight(record_value) -> None:
+        candidate.write_bytes(changed_bytes)
+        original_clear(record_value)
+
+    monkeypatch.setattr(manager, "_clear_snapshot_state", change_candidate_after_preflight)
+
+    manager.retry("tx-retry-cached", completed_at="2026-08-07T02:00:00Z")
+
+    assert candidate.read_bytes() == changed_bytes
+    assert (config.vault / "concepts/a.md").read_bytes() == cached_bytes
+
+
+def test_retry_preflight_omits_known_failed_writer_residual(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    extra = config.vault / "references/writer-extra.md"
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            extra.write_text(
+                PAGE.replace("category: concepts", "category: references")
+                + "[[missing]]\n",
+                encoding="utf-8",
+            )
+            raise OSError("writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-residual")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    cleanup_failed = False
+
+    def fail_initial_cleanup(record_value, index) -> None:
+        nonlocal cleanup_failed
+        if not cleanup_failed and "references/writer-extra.md" in index:
+            cleanup_failed = True
+            raise TransactionError("simulated writer cleanup failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", fail_initial_cleanup)
+    with pytest.raises(TransactionError, match="writer restore failed"):
+        manager.commit("tx-retry-residual")
+    assert cleanup_failed
+    assert extra.exists()
+    failed_metadata = (record.workspace / "metadata.json").read_bytes()
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    result = manager.retry(
+        "tx-retry-residual", completed_at="2026-08-07T02:00:00Z"
+    )
+
+    assert result.created == ("concepts/a.md",)
+    assert not extra.exists()
+    assert manager.load("tx-retry-residual").status == "complete"
+    assert (record.workspace / "metadata.json").read_bytes() != failed_metadata
+
+
+def test_retry_preflight_reads_absent_deletion_target_from_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    removed = config.vault / "concepts/removed.md"
+    removed.write_text(
+        PAGE.replace("title: A", "title: Removed"), encoding="utf-8"
+    )
+    calls = 0
+
+    def writer(change):
+        nonlocal calls
+        calls += 1
+        operation = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        operation.parent.mkdir(parents=True, exist_ok=True)
+        operation.write_text("# operation\n", encoding="utf-8")
+        if calls == 1:
+            raise OSError("writer failed")
+        return operation
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-retry-deletion")
+    manager.mark_delete("tx-retry-deletion", "concepts/removed.md")
+    original_restore = manager._restore_snapshot_index
+    rollback_failed = False
+
+    def leave_deletion_unrestored(record_value, index) -> None:
+        nonlocal rollback_failed
+        if not rollback_failed and "concepts/removed.md" in index:
+            rollback_failed = True
+            original_restore(
+                record_value,
+                {
+                    relative: stored
+                    for relative, stored in index.items()
+                    if relative != "concepts/removed.md"
+                },
+            )
+            raise TransactionError("simulated deletion rollback failure")
+        original_restore(record_value, index)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", leave_deletion_unrestored)
+    with pytest.raises(TransactionError, match="restore failed"):
+        manager.commit("tx-retry-deletion")
+    assert rollback_failed
+    assert not removed.exists()
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["snapshot_index"]["concepts/removed.md"] is not None
+    assert payload["residual_postimages"]["concepts/removed.md"] is None
+    monkeypatch.setattr(manager, "_restore_snapshot_index", original_restore)
+
+    result = manager.retry(
+        "tx-retry-deletion", completed_at="2026-08-07T02:00:00Z"
+    )
+
+    assert result.removed == ("concepts/removed.md",)
+    assert not removed.exists()
+    assert manager.load("tx-retry-deletion").status == "complete"

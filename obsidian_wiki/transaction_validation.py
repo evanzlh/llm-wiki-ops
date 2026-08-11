@@ -63,6 +63,29 @@ class ValidationIssue:
 
 
 @dataclass(frozen=True)
+class TransactionValidationReport:
+    """The complete read-only preflight result for one transaction."""
+
+    transaction_id: str
+    status: str
+    candidate_pages: tuple[str, ...]
+    deletions: tuple[str, ...]
+    issues: tuple[ValidationIssue, ...]
+    warnings: tuple[ValidationIssue, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the stable JSON-ready transaction validation contract."""
+        return {
+            "transaction_id": self.transaction_id,
+            "status": self.status,
+            "candidate_pages": list(self.candidate_pages),
+            "deletions": list(self.deletions),
+            "issues": [item.as_dict() for item in self.issues],
+            "warnings": [item.as_dict() for item in self.warnings],
+        }
+
+
+@dataclass(frozen=True)
 class _GraphRecord:
     """The shared-normalized identity needed for prospective graph checks."""
 
@@ -562,4 +585,9 @@ def validate_prospective_pages(
     return tuple(sorted(issues, key=lambda issue: (issue.path, issue.code, issue.target or "")))
 
 
-__all__ = ["ProspectivePage", "ValidationIssue", "validate_prospective_pages"]
+__all__ = [
+    "ProspectivePage",
+    "TransactionValidationReport",
+    "ValidationIssue",
+    "validate_prospective_pages",
+]

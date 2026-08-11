@@ -24,6 +24,12 @@ from obsidian_wiki.portable_manifest import (
     ManifestPreconditionError,
     ShardedManifest,
 )
+from obsidian_wiki.transaction_validation import (
+    ProspectivePage,
+    TransactionValidationReport,
+    ValidationIssue,
+    validate_prospective_pages,
+)
 
 try:
     import fcntl as _fcntl
@@ -126,6 +132,7 @@ _CONTROL_DIRECTORIES = frozenset(
         "_staging",
     }
 )
+_TRACKED_ROOT_GRAPH_PAGES = frozenset({"index.md", "log.md"})
 
 
 def validate_candidate_path(candidate_vault: Path, raw_path: str | Path) -> str:
@@ -372,6 +379,16 @@ class TransactionManager:
             records.append(self.load(path.name))
         return records
 
+    def validate(self, transaction_id: str) -> TransactionValidationReport:
+        """Validate one transaction without mutating its workspace or live vault."""
+        record = self.load(transaction_id)
+        if record.status not in {"active", "failed"}:
+            raise TransactionError(
+                f"cannot validate {record.status} transaction {transaction_id}"
+            )
+        _, report = self._validate_record(record)
+        return report
+
     def abort(self, transaction_id: str) -> None:
         with self._action_lock():
             record = self.load(transaction_id)
@@ -457,11 +474,8 @@ class TransactionManager:
             self._acquire_lock(transaction_id, record.started_at)
             lock_identity = self._require_owned_lock(transaction_id)
             try:
-                candidates = self._enumerate_candidates(record)
-                affected = set(self._affected_preimage_paths(record, candidates))
+                candidates = self._read_candidate_files(record)
                 payload = self._read_metadata_payload(record.workspace)
-                snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
-                rollback_exclusions = self._verify_rollback_exclusions(payload)
                 if (
                     self._load_residual_postimages(payload["residual_postimages"])
                     is None
@@ -470,6 +484,16 @@ class TransactionManager:
                         "failed transaction residual state is unknown; "
                         "discard is required"
                     )
+                affected_candidates = tuple(
+                    item
+                    for item in candidates
+                    if self._candidate_path_issue(record, item) is None
+                )
+                affected = set(
+                    self._affected_preimage_paths(record, affected_candidates)
+                )
+                snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
+                rollback_exclusions = self._verify_rollback_exclusions(payload)
                 cleanup = self._persisted_writer_cleanup(
                     record,
                     payload,
@@ -485,6 +509,13 @@ class TransactionManager:
                     rollback_exclusions=set(rollback_exclusions),
                 )
                 self._verify_preimages(record, affected - set(cleanup))
+                recovered_files = self._virtual_recovered_files(record, cleanup)
+                validation = self._content_validation_report(
+                    record,
+                    candidates,
+                    live_overrides=recovered_files,
+                )
+                self._raise_validation_failure(validation)
                 self._restore_persisted_writer_guard(
                     record,
                     payload,
@@ -501,6 +532,7 @@ class TransactionManager:
                     completed_at=completed_at,
                     lock_identity=lock_identity,
                     release_pre_snapshot_failure=True,
+                    preflight_candidates=candidates,
                 )
             except Exception:
                 if self.lock_path.exists() or self.lock_path.is_symlink():
@@ -632,6 +664,7 @@ class TransactionManager:
         completed_at: str | None,
         lock_identity: _FileIdentity,
         release_pre_snapshot_failure: bool,
+        preflight_candidates: tuple[_Candidate, ...] | None = None,
     ) -> CommitResult:
         resolved_completed_at = completed_at or self._utc_now()
         self._validate_started_at(resolved_completed_at)
@@ -648,16 +681,12 @@ class TransactionManager:
         rollback_exclusion_paths: set[str] = set()
         rollback_exclusions: dict[str, str | None] | None = {}
         try:
-            candidates = self._enumerate_candidates(record)
+            candidates, validation = self._validate_record(
+                record, preflight_candidates
+            )
+            self._raise_validation_failure(validation)
             candidate_names = tuple(candidate.relative for candidate in candidates)
-            overlap = sorted(set(candidate_names) & set(record.deletions))
-            if overlap:
-                raise TransactionError(
-                    "candidate and deletion target the same page: " + ", ".join(overlap)
-                )
             affected = self._affected_preimage_paths(record, candidates)
-            self._verify_preimages(record, affected)
-            self._verify_existing_page_sources(record, candidate_names)
 
             created = tuple(
                 sorted(
@@ -1027,6 +1056,15 @@ class TransactionManager:
     def _enumerate_candidates(
         self, record: TransactionRecord
     ) -> tuple[_Candidate, ...]:
+        candidates = self._read_candidate_files(record)
+        for candidate in candidates:
+            validate_candidate_path(record.candidate_vault, candidate.relative)
+            _validate_candidate_bytes(candidate.data, record.source_ids)
+        return candidates
+
+    def _read_candidate_files(
+        self, record: TransactionRecord
+    ) -> tuple[_Candidate, ...]:
         candidates: list[_Candidate] = []
         for directory, dirnames, filenames in os.walk(
             record.candidate_vault, topdown=True, followlinks=False
@@ -1039,9 +1077,7 @@ class TransactionManager:
             for name in sorted(filenames):
                 candidate = current / name
                 relative = candidate.relative_to(record.candidate_vault).as_posix()
-                validate_candidate_path(record.candidate_vault, relative)
                 data = self._read_single_link_bytes(candidate, "candidate page")
-                _validate_candidate_bytes(data, record.source_ids)
                 candidates.append(
                     _Candidate(relative=relative, path=candidate, data=data)
                 )
@@ -1060,10 +1096,204 @@ class TransactionManager:
             for name in sorted(filenames):
                 candidate = current / name
                 relative = candidate.relative_to(candidate_vault).as_posix()
-                validate_candidate_path(candidate_vault, relative)
                 self._require_ordinary_file(candidate, "candidate page")
                 names.append(relative)
         return tuple(sorted(names))
+
+    def _validate_record(
+        self,
+        record: TransactionRecord,
+        candidates: tuple[_Candidate, ...] | None = None,
+    ) -> tuple[tuple[_Candidate, ...], TransactionValidationReport]:
+        resolved_candidates = (
+            self._read_candidate_files(record) if candidates is None else candidates
+        )
+        valid_candidates = tuple(
+            item
+            for item in resolved_candidates
+            if self._candidate_path_issue(record, item) is None
+        )
+        self._verify_preimages(
+            record, self._affected_preimage_paths(record, valid_candidates)
+        )
+        report = self._content_validation_report(record, resolved_candidates)
+        return resolved_candidates, report
+
+    def _content_validation_report(
+        self,
+        record: TransactionRecord,
+        candidates: tuple[_Candidate, ...],
+        *,
+        live_overrides: dict[str, bytes | None] | None = None,
+    ) -> TransactionValidationReport:
+        candidate_names = tuple(item.relative for item in candidates)
+        overlap = sorted(set(candidate_names) & set(record.deletions))
+        if overlap:
+            raise TransactionError(
+                "candidate and deletion target the same page: " + ", ".join(overlap)
+            )
+        valid_candidates = tuple(
+            item
+            for item in candidates
+            if self._candidate_path_issue(record, item) is None
+        )
+        valid_candidate_names = tuple(item.relative for item in valid_candidates)
+        self._verify_existing_page_sources(
+            record,
+            valid_candidate_names,
+            live_overrides=live_overrides,
+        )
+        pages, candidate_issues = self._prospective_pages(
+            record,
+            candidates,
+            live_overrides=live_overrides,
+        )
+        issues = tuple(
+            sorted(
+                (*candidate_issues, *validate_prospective_pages(pages, record.source_ids)),
+                key=lambda item: (item.path, item.code, item.target or ""),
+            )
+        )
+        report = TransactionValidationReport(
+            transaction_id=record.transaction_id,
+            status="fail" if issues else "pass",
+            candidate_pages=candidate_names,
+            deletions=record.deletions,
+            issues=issues,
+        )
+        return report
+
+    @staticmethod
+    def _raise_validation_failure(report: TransactionValidationReport) -> None:
+        if not report.issues:
+            return
+        summary = "; ".join(
+            f"{issue.path}: {issue.code}: {issue.message}"
+            for issue in report.issues
+        )
+        raise TransactionError(f"transaction validation failed: {summary}")
+
+    @staticmethod
+    def _candidate_path_issue(
+        record: TransactionRecord, candidate: _Candidate
+    ) -> ValidationIssue | None:
+        try:
+            validate_candidate_path(record.candidate_vault, candidate.relative)
+        except TransactionError as exc:
+            return ValidationIssue(
+                code="candidate-path-invalid",
+                path=candidate.relative,
+                message=str(exc),
+            )
+        return None
+
+    def _prospective_pages(
+        self,
+        record: TransactionRecord,
+        candidates: tuple[_Candidate, ...],
+        *,
+        live_overrides: dict[str, bytes | None] | None = None,
+    ) -> tuple[tuple[ProspectivePage, ...], tuple[ValidationIssue, ...]]:
+        pages: list[ProspectivePage] = []
+        issues: list[ValidationIssue] = []
+        candidate_names = {item.relative for item in candidates}
+        omitted_live_paths = candidate_names | set(record.deletions)
+
+        for candidate in candidates:
+            path_issue = self._candidate_path_issue(record, candidate)
+            if path_issue is not None:
+                issues.append(path_issue)
+                continue
+            try:
+                text = candidate.data.decode("utf-8")
+            except UnicodeDecodeError:
+                issues.append(
+                    ValidationIssue(
+                        code="candidate-utf8-invalid",
+                        path=candidate.relative,
+                        message="candidate page must be UTF-8 text",
+                    )
+                )
+                continue
+            pages.append(
+                ProspectivePage(path=candidate.relative, text=text, candidate=True)
+            )
+
+        live_pages: dict[str, bytes] = {}
+        self._require_ordinary_directory(self.config.vault, "portable vault")
+        for relative in sorted(_TRACKED_ROOT_GRAPH_PAGES):
+            page = self.config.vault / relative
+            if not page.exists() and not page.is_symlink():
+                continue
+            live_pages[relative] = self._read_single_link_bytes(
+                page, "knowledge page"
+            )
+        for category in sorted(_KNOWLEDGE_DIRECTORIES):
+            root = self.config.vault / category
+            if not root.exists() and not root.is_symlink():
+                continue
+            self._require_ordinary_directory(root, "knowledge directory")
+            for directory, dirnames, filenames in os.walk(
+                root, topdown=True, followlinks=False
+            ):
+                current = Path(directory)
+                self._require_ordinary_directory(current, "knowledge directory")
+                kept_directories: list[str] = []
+                for name in sorted(dirnames):
+                    child = current / name
+                    if (
+                        category == "journal"
+                        and current == root
+                        and name == "operations"
+                    ):
+                        continue
+                    self._require_ordinary_directory(child, "knowledge directory")
+                    kept_directories.append(name)
+                dirnames[:] = kept_directories
+                for name in sorted(filenames):
+                    page = current / name
+                    self._require_ordinary_file(page, "knowledge page")
+                    if not name.endswith(".md"):
+                        continue
+                    relative = page.relative_to(self.config.vault).as_posix()
+                    live_pages[relative] = self._read_single_link_bytes(
+                        page, "knowledge page"
+                    )
+
+        for relative, data in (live_overrides or {}).items():
+            if not self._is_graph_page_path(relative):
+                continue
+            if data is None:
+                live_pages.pop(relative, None)
+            else:
+                live_pages[relative] = data
+
+        for relative, data in sorted(live_pages.items()):
+            if relative in omitted_live_paths:
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise TransactionError(
+                    f"knowledge page must be UTF-8 text: {relative}"
+                ) from exc
+            pages.append(
+                ProspectivePage(path=relative, text=text, candidate=False)
+            )
+
+        return tuple(sorted(pages, key=lambda item: item.path)), tuple(issues)
+
+    @staticmethod
+    def _is_graph_page_path(relative: str) -> bool:
+        path = PurePosixPath(relative)
+        if path.suffix != ".md":
+            return False
+        if len(path.parts) == 1:
+            return relative in _TRACKED_ROOT_GRAPH_PAGES
+        return (
+            path.parts[0] in _KNOWLEDGE_DIRECTORIES
+            and path.parts[:2] != ("journal", "operations")
+        )
 
     def _affected_preimage_paths(
         self,
@@ -1103,6 +1333,8 @@ class TransactionManager:
         self,
         record: TransactionRecord,
         candidate_names: tuple[str, ...],
+        *,
+        live_overrides: dict[str, bytes | None] | None = None,
     ) -> None:
         manifest = ShardedManifest(self.config)
         selected = set(record.source_ids)
@@ -1110,12 +1342,21 @@ class TransactionManager:
         for relative in affected_pages:
             if record.preimages.get(relative) is None:
                 continue
-            page = self._vault_path(relative)
             try:
-                text = self._read_single_link_bytes(page, "existing page").decode(
-                    "utf-8"
-                )
+                if live_overrides is not None and relative in live_overrides:
+                    data = live_overrides[relative]
+                    if data is None:
+                        raise TransactionError(
+                            "existing page is absent from the recovered vault: "
+                            + relative
+                        )
+                else:
+                    page = self._vault_path(relative)
+                    data = self._read_single_link_bytes(page, "existing page")
+                text = data.decode("utf-8")
                 frontmatter = parse_frontmatter(text)
+            except TransactionError:
+                raise
             except (UnicodeDecodeError, FrontmatterError) as exc:
                 raise TransactionError(
                     f"invalid existing page frontmatter: {relative}: {exc}"
@@ -1261,6 +1502,27 @@ class TransactionManager:
                 rollback_exclusions=rollback_exclusions or set(),
             )
         self._restore_snapshot_index(record, resolved_cleanup)
+
+    def _virtual_recovered_files(
+        self,
+        record: TransactionRecord,
+        cleanup: dict[str, str | None],
+    ) -> dict[str, bytes | None]:
+        snapshots = record.workspace / "snapshots"
+        recovered: dict[str, bytes | None] = {}
+        for relative, stored in sorted(cleanup.items()):
+            if stored is None:
+                recovered[relative] = None
+                continue
+            self._validate_relative_path(stored, "snapshot path")
+            snapshot = snapshots.joinpath(*PurePosixPath(stored).parts)
+            self._require_contained(
+                snapshot, snapshots, "snapshot path", strict_child=True
+            )
+            recovered[relative] = self._read_single_link_bytes(
+                snapshot, "transaction snapshot"
+            )
+        return recovered
 
     def _persisted_writer_cleanup(
         self,
