@@ -227,7 +227,6 @@ def test_rejects_ambiguous_or_unsupported_folded_metadata(
     [
         "'other:key': >\ndescription: Use this skill.",
         '"other:key": >\ndescription: Use this skill.',
-        "other:key: >\ndescription: Use this skill.",
         "!tag other: >\ndescription: Use this skill.",
         "&anchor other: >\ndescription: Use this skill.",
         "'unterminated: >\ndescription: Use this skill.",
@@ -263,6 +262,7 @@ def test_block_header_near_misses_remain_plain_scalars(tmp_path: Path) -> None:
         "description: Use a > comparison: literal.\n"
         "quoted: '>'\n"
         'double_quoted: "|"\n'
+        "other:key: >\n"
         "---\n\n"
         "# Body\n\n'other:key': >\n  Not frontmatter.\n",
         encoding="utf-8",
@@ -294,6 +294,87 @@ def test_literal_colon_indicator_text_is_not_a_block_header(
     from obsidian_wiki.skill_trees import discover_skill_collection
 
     assert discover_skill_collection(tmp_path).skills[0].description == expected
+
+
+@pytest.mark.parametrize(
+    "description",
+    ["'Compare syntax: >'", '"Compare syntax: >"'],
+)
+def test_quoted_literal_ending_in_indicator_is_not_a_block_header(
+    tmp_path: Path, description: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: " + description + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Compare syntax: >"
+    )
+
+
+def test_folded_description_header_accepts_inline_comment(tmp_path: Path) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n"
+        "description: > # comment: > is comment text\n"
+        "  Fold this line.\n  And this line.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == (
+        "Fold this line. And this line."
+    )
+
+
+def test_folded_description_header_comment_does_not_make_empty_content_valid(
+    tmp_path: Path,
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: > # comment\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="empty"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        ("description: >2 # comment", "style"),
+        ("other: > # comment", "field"),
+        ("description: | # comment", "style"),
+        ("description: >\t# comment", "whitespace"),
+        ("description: >\u00a0# comment", "whitespace"),
+        ("description: >\u2003# comment", "whitespace"),
+    ],
+)
+def test_rejects_unsupported_or_malformed_commented_block_headers(
+    tmp_path: Path, header: str, message: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n" + header + "\n  Content.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match=message):
+        discover_skill_collection(tmp_path)
 
 
 @pytest.mark.parametrize(

@@ -11,7 +11,12 @@ import stat
 import unicodedata
 from typing import Literal
 
-from .frontmatter import FrontmatterError, parse_frontmatter
+from .frontmatter import (
+    FrontmatterError,
+    _strip_comment,
+    _top_level_mapping,
+    parse_frontmatter,
+)
 
 
 _SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -34,7 +39,6 @@ _SOURCE_IGNORED_FILES = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"}
 )
 _SUPPORTED_DESCRIPTION_BLOCKS = frozenset({">", ">-", ">+"})
-_PLAIN_DESCRIPTION_MAPPING = re.compile(r"^description *:")
 
 
 @dataclass(frozen=True)
@@ -202,41 +206,37 @@ def _structural_whitespace(character: str) -> bool:
     }
 
 
-def _skill_block_header(line: str) -> tuple[str, str, bool] | None:
-    """Recognize an entire top-level mapping value as a block indicator."""
-    separator = line.rfind(":")
-    if separator < 0:
-        return None
-    key_region = line[:separator]
-    value_region = line[separator + 1 :]
-
-    key_end = len(key_region)
-    while key_end and _structural_whitespace(key_region[key_end - 1]):
-        key_end -= 1
+def _skill_block_value(raw_region: str) -> tuple[str, bool] | None:
+    """Return an uncommented block token and its ASCII-structure validity."""
+    uncommented = _strip_comment(raw_region)
     value_start = 0
-    while value_start < len(value_region) and _structural_whitespace(
-        value_region[value_start]
+    while value_start < len(uncommented) and _structural_whitespace(
+        uncommented[value_start]
     ):
         value_start += 1
-    value_end = len(value_region)
+    value_end = len(uncommented)
     while value_end > value_start and _structural_whitespace(
-        value_region[value_end - 1]
+        uncommented[value_end - 1]
     ):
         value_end -= 1
-
-    indicator = value_region[value_start:value_end]
-    if not indicator.startswith((">", "|")) or any(
-        _structural_whitespace(character) for character in indicator
+    value = uncommented[value_start:value_end]
+    if not value.startswith((">", "|")) or any(
+        _structural_whitespace(character) for character in value
     ):
         return None
+    start = raw_region.find(uncommented)
+    if start < 0:
+        return None
+    tail = raw_region[start + len(uncommented) :]
+    comment = tail.find("#")
+    trailing = tail if comment < 0 else tail[:comment]
     structural = (
-        key_region[key_end:]
-        + value_region[:value_start]
-        + value_region[value_end:]
+        raw_region[:start]
+        + uncommented[:value_start]
+        + uncommented[value_end:]
+        + trailing
     )
-    return key_region[:key_end], indicator, all(
-        character == " " for character in structural
-    )
+    return value, all(character == " " for character in structural)
 
 
 def _normalized_skill_frontmatter(text: str) -> str:
@@ -261,10 +261,21 @@ def _normalized_skill_frontmatter(text: str) -> str:
         line = lines[index]
         if not line or line.startswith((" ", "\t")):
             continue
-        block_header = _skill_block_header(line)
-        if block_header is not None:
-            key, value, ascii_structure = block_header
-            if not ascii_structure:
+        mapping = _top_level_mapping(line)
+        if mapping is None:
+            continue
+        key_region, raw_region = mapping
+        key_end = len(key_region)
+        while key_end and _structural_whitespace(key_region[key_end - 1]):
+            key_end -= 1
+        key = key_region[:key_end]
+        key_structure = key_region[key_end:]
+        block_value = _skill_block_value(raw_region)
+        if block_value is not None:
+            value, value_structure_is_ascii = block_value
+            if not value_structure_is_ascii or any(
+                character != " " for character in key_structure
+            ):
                 raise FrontmatterError(
                     "skill metadata block header has non-ASCII structural whitespace"
                 )
@@ -276,7 +287,9 @@ def _normalized_skill_frontmatter(text: str) -> str:
             else:
                 raise FrontmatterError("unsupported folded skill description style")
             continue
-        if _PLAIN_DESCRIPTION_MAPPING.match(line):
+        if key == "description" and all(
+            character == " " for character in key_structure
+        ):
             description_lines.append(index)
 
     if len(description_lines) > 1:
