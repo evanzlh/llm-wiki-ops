@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-import posixpath
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -30,10 +28,19 @@ from .portable import (
     MANAGED_START,
     PROJECT_AGENT_DIRS,
     _bootstrap_body,
-    _legacy_adapter_text,
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
+from .skill_inventory import (
+    LegacyManagedSkillsInventory,
+    ManagedSkillsInventory,
+    read_inventory,
+)
+from .skill_trees import (
+    SkillCollection,
+    compare_skill_collections,
+    discover_skill_collection,
+)
 
 
 @dataclass(frozen=True)
@@ -715,71 +722,30 @@ def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
             )
 
 
-def _canonical_skill_names(config: PortableConfig) -> tuple[str, ...]:
-    if not _ordinary_directory(config.skills) or _has_symlink_component(
-        config.root, config.skills
-    ):
-        raise ValueError("canonical skills path must be an ordinary directory")
-    names: list[str] = []
-    for child in sorted(config.skills.iterdir(), key=lambda item: item.name):
-        if not _ordinary_directory(child) or child.is_symlink():
-            if (child / "SKILL.md").exists():
-                raise ValueError(f"canonical skill directory is unsafe: {child.name}")
-            continue
-        skill_file = child / "SKILL.md"
-        if skill_file.exists() or skill_file.is_symlink():
-            if not _ordinary_file(skill_file) or _has_symlink_component(
-                config.skills, skill_file
-            ):
-                raise ValueError(f"canonical SKILL.md is unsafe: {child.name}")
-            names.append(child.name)
-    return tuple(names)
-
-
-def _inventory_names(
-    config: PortableConfig, canonical_names: tuple[str, ...]
-) -> tuple[str, ...]:
-    path = config.root / MANAGED_SKILLS_INVENTORY
-    if not _ordinary_file(path) or _has_symlink_component(config.root, path):
-        raise ValueError("managed-skills.json must be an ordinary contained file")
+def _load_canonical_skills(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> SkillCollection | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"managed-skills.json is invalid: {exc}") from exc
-    expected_fields = {"implementation", "skills", "skills_version"}
-    if not isinstance(payload, dict) or set(payload) != expected_fields:
-        raise ValueError("managed-skills.json has invalid fields")
-    if payload["implementation"] != IMPLEMENTATION_ID:
-        raise ValueError("managed-skills.json has the wrong implementation")
-    raw_version = payload["skills_version"]
-    if not isinstance(raw_version, str):
-        raise ValueError("managed-skills.json skills_version must be a valid version")
-    try:
-        skills_version = Version(raw_version)
-        required = SpecifierSet(config.requires_cli)
-    except (InvalidVersion, InvalidSpecifier) as exc:
-        raise ValueError("managed-skills.json has an invalid version") from exc
-    if not required.contains(skills_version, prereleases=True):
-        raise ValueError(
-            "managed-skills.json skills_version is not accepted by requires_cli"
+        return discover_skill_collection(config.skills)
+    except (OSError, ValueError) as exc:
+        issues.append(
+            CheckIssue(
+                "canonical-skill-invalid",
+                _rel(config.root, config.skills),
+                _skill_tree_error(config.root, exc),
+            )
         )
-    skills = payload["skills"]
-    if (
-        not isinstance(skills, list)
-        or any(not isinstance(name, str) for name in skills)
-        or skills != sorted(set(skills))
-    ):
-        raise ValueError("managed-skills.json skills must be unique sorted strings")
-    if tuple(skills) != canonical_names:
-        raise ValueError("managed-skills.json names do not match canonical skills")
-    return tuple(skills)
+        return None
 
 
-def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> None:
+def _load_managed_inventory(
+    config: PortableConfig,
+    canonical: SkillCollection,
+    issues: list[CheckIssue],
+) -> bool:
     try:
-        canonical_names = _canonical_skill_names(config)
-        names = _inventory_names(config, canonical_names)
-    except ValueError as exc:
+        inventory = read_inventory(config.root, allow_legacy=True)
+    except (OSError, ValueError) as exc:
         issues.append(
             CheckIssue(
                 "managed-skills-invalid",
@@ -787,43 +753,195 @@ def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> N
                 _scrub(config.root, exc),
             )
         )
-        try:
-            names = _canonical_skill_names(config)
-        except ValueError:
-            names = ()
-    for name in names:
-        for agent_relative, _label in PROJECT_AGENT_DIRS:
-            adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
-            adapter = config.root.joinpath(*adapter_relative.parts)
-            issue_path = adapter_relative.as_posix()
-            if not _ordinary_file(adapter) or _has_symlink_component(
-                config.root, adapter
-            ):
-                issues.append(
-                    CheckIssue(
-                        "managed-adapter-invalid",
-                        issue_path,
-                        "managed adapter must be an ordinary relative adapter",
-                    )
-                )
-                continue
-            canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
-            relative_target = posixpath.relpath(
-                canonical_relative.as_posix(), adapter_relative.parent.as_posix()
+        return False
+    if isinstance(inventory, LegacyManagedSkillsInventory):
+        issues.append(
+            CheckIssue(
+                "managed-skills-legacy",
+                MANAGED_SKILLS_INVENTORY,
+                "legacy managed skill adapters require `obsidian-wiki repo "
+                "upgrade-skills`",
             )
-            expected = _legacy_adapter_text(name, relative_target)
-            try:
-                actual = adapter.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                actual = ""
-            if actual != expected:
+        )
+        return False
+    assert isinstance(inventory, ManagedSkillsInventory)
+
+    try:
+        skills_version = Version(inventory.skills_version)
+        required = SpecifierSet(config.requires_cli)
+    except (InvalidVersion, InvalidSpecifier) as exc:
+        issues.append(
+            CheckIssue(
+                "managed-skills-invalid",
+                MANAGED_SKILLS_INVENTORY,
+                _scrub(
+                    config.root,
+                    f"managed skills inventory has an invalid version: {exc}",
+                ),
+            )
+        )
+        return False
+    if not required.contains(skills_version, prereleases=True):
+        issues.append(
+            CheckIssue(
+                "managed-skills-invalid",
+                MANAGED_SKILLS_INVENTORY,
+                "managed skills inventory skills_version is not accepted by "
+                "requires_cli",
+            )
+        )
+        return False
+
+    canonical_by_name = canonical.by_name()
+    missing = tuple(
+        name for name in inventory.managed_skills if name not in canonical_by_name
+    )
+    if missing:
+        issues.append(
+            CheckIssue(
+                "managed-skills-invalid",
+                MANAGED_SKILLS_INVENTORY,
+                "managed skills are missing from canonical .skills: "
+                + ", ".join(missing),
+            )
+        )
+        return False
+    for name in inventory.managed_skills:
+        actual = canonical_by_name[name].digest
+        expected = inventory.managed_skill_digests[name]
+        if actual != expected:
+            issues.append(
+                CheckIssue(
+                    "managed-canonical-modified",
+                    f".skills/{name}",
+                    "managed canonical skill differs from the installed inventory "
+                    "digest",
+                    "warning",
+                )
+            )
+    return True
+
+
+def _drift_path(agent_relative: str, name: str, path: str) -> str:
+    return (PurePosixPath(agent_relative) / name / path).as_posix()
+
+
+def _skill_tree_error(root: Path, error: object) -> str:
+    message = _scrub(root, error)
+    lowered = message.lower()
+    if "symbolic link" in lowered:
+        return "symlink detected: " + message
+    if "multiply-linked" in lowered:
+        return "hard link detected: " + message
+    return message
+
+
+def _missing_mirror_path(
+    mirror_root: Path, canonical: SkillCollection
+) -> Path | None:
+    """Return a safely confirmed missing required path after discovery failed."""
+    try:
+        root_metadata = mirror_root.lstat()
+    except FileNotFoundError:
+        return mirror_root
+    except OSError:
+        return None
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        return None
+    for name in canonical.names:
+        skill_root = mirror_root / name
+        try:
+            skill_metadata = skill_root.lstat()
+        except FileNotFoundError:
+            return skill_root
+        except OSError:
+            return None
+        if stat.S_ISLNK(skill_metadata.st_mode) or not stat.S_ISDIR(
+            skill_metadata.st_mode
+        ):
+            return None
+        skill_file = skill_root / "SKILL.md"
+        try:
+            skill_file.lstat()
+        except FileNotFoundError:
+            return skill_file
+        except OSError:
+            return None
+    return None
+
+
+def _check_skill_mirrors(
+    config: PortableConfig,
+    canonical: SkillCollection,
+    issues: list[CheckIssue],
+) -> None:
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        mirror_root = config.root / agent_relative
+        try:
+            mirror = discover_skill_collection(mirror_root)
+        except (OSError, ValueError) as exc:
+            missing = _missing_mirror_path(mirror_root, canonical)
+            if missing is not None:
                 issues.append(
                     CheckIssue(
-                        "managed-adapter-invalid",
-                        issue_path,
-                        "managed adapter content is stale or not relative",
+                        "skill-mirror-missing",
+                        _rel(config.root, missing),
+                        "canonical skill entry is missing from the agent mirror",
                     )
                 )
+            else:
+                issues.append(
+                    CheckIssue(
+                        "skill-mirror-unsafe",
+                        agent_relative,
+                        _skill_tree_error(config.root, exc),
+                    )
+                )
+            continue
+        added, changed, removed = compare_skill_collections(canonical, mirror)
+        for name, paths in sorted(added.items()):
+            for path in paths:
+                issues.append(
+                    CheckIssue(
+                        "skill-mirror-missing",
+                        _drift_path(agent_relative, name, path),
+                        "canonical skill entry is missing from the agent mirror",
+                    )
+                )
+        for name, paths in sorted(changed.items()):
+            for path in paths:
+                issues.append(
+                    CheckIssue(
+                        "skill-mirror-changed",
+                        _drift_path(agent_relative, name, path),
+                        "agent mirror entry differs from the canonical skill entry",
+                    )
+                )
+        for name, paths in sorted(removed.items()):
+            for path in paths:
+                issues.append(
+                    CheckIssue(
+                        "skill-mirror-extra",
+                        _drift_path(agent_relative, name, path),
+                        "agent mirror entry is absent from canonical skills",
+                    )
+                )
+
+
+def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    canonical = _load_canonical_skills(config, issues)
+    if canonical is None:
+        return
+    if not _load_managed_inventory(config, canonical, issues):
+        return
+    _check_skill_mirrors(config, canonical, issues)
+
+
+def check_portable_skills(config: PortableConfig) -> dict[str, object]:
+    """Validate canonical skills, inventory ownership, and every full mirror."""
+    issues: list[CheckIssue] = []
+    _check_managed_skills(config, issues)
+    return _report(issues)
 
 
 def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:

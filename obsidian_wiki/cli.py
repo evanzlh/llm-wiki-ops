@@ -43,15 +43,11 @@ from obsidian_wiki.migration import (
 )
 from obsidian_wiki.portable import (
     _BOOTSTRAP_REFERENCES,
-    MANAGED_SKILLS_INVENTORY,
     MANIFEST_MARKER,
     PROJECT_AGENT_DIRS,
     _assert_directory,
     _assert_safe_managed_path,
-    _assert_single_link_managed_tree,
     _assert_single_link_ordinary_file,
-    _legacy_adapter_text,
-    _read_managed_skills_inventory_file,
     setup_portable_repo,
     upgrade_portable_skills,
 )
@@ -936,43 +932,22 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
     )
 
 
-def _validate_portable_project_skills(portable: PortableConfig) -> str:
-    root = portable.root
-    inventory = root / MANAGED_SKILLS_INVENTORY
-    skills_version, skill_names = _read_managed_skills_inventory_file(root, inventory)
-    if skills_version != __version__:
-        raise ValueError(
-            f"portable managed skills version {skills_version} does not match {__version__}"
-        )
-    for skill_name in skill_names:
-        canonical = portable.skills / skill_name
-        _assert_single_link_managed_tree(
-            root, canonical, f"portable canonical skill {skill_name}"
-        )
-        _assert_single_link_ordinary_file(
-            root,
-            canonical / "SKILL.md",
-            f"portable canonical skill {skill_name}",
-        )
-        for agent_relative, _label in PROJECT_AGENT_DIRS:
-            adapter_root = root / agent_relative / skill_name
-            adapter = adapter_root / "SKILL.md"
-            _assert_single_link_managed_tree(
-                root, adapter_root, f"portable adapter {skill_name}"
-            )
-            _assert_single_link_ordinary_file(
-                root, adapter, f"portable adapter {skill_name}"
-            )
-            expected_relative = os.path.relpath(
-                canonical / "SKILL.md", adapter_root
-            ).replace(os.sep, "/")
-            expected = _legacy_adapter_text(skill_name, expected_relative)
-            if adapter.read_text(encoding="utf-8") != expected:
-                raise ValueError(
-                    f"portable adapter must be a regular relative Markdown adapter: "
-                    f"{adapter}"
-                )
-    return f"{len(skill_names)} managed skill(s) and all relative adapters are valid"
+def _validate_portable_project_skills(
+    portable: PortableConfig,
+) -> dict[str, object]:
+    from obsidian_wiki.portable_check import check_portable_skills
+
+    return check_portable_skills(portable)
+
+
+def _portable_skill_report_detail(report: dict[str, object]) -> str:
+    issues = report["issues"]
+    assert isinstance(issues, list)
+    if not issues:
+        return "canonical skills, managed ownership, and all agent mirrors are valid"
+    return "; ".join(
+        f"{issue['code']} ({issue['path']}): {issue['message']}" for issue in issues
+    )
 
 
 def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
@@ -1036,22 +1011,13 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
             status="pass",
             detail=path_detail,
         )
-    try:
-        skill_detail = _validate_portable_project_skills(loaded)
-    except (ValueError, OSError, UnicodeDecodeError) as exc:
-        _doctor_add(
-            checks,
-            name="project-skills",
-            status="fail",
-            detail=str(exc),
-        )
-    else:
-        _doctor_add(
-            checks,
-            name="project-skills",
-            status="pass",
-            detail=skill_detail,
-        )
+    skill_report = _validate_portable_project_skills(loaded)
+    _doctor_add(
+        checks,
+        name="project-skills",
+        status=str(skill_report["status"]),
+        detail=_portable_skill_report_detail(skill_report),
+    )
     return {"status": _doctor_status(checks), "checks": checks}
 
 
@@ -1864,7 +1830,12 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(
                 f"{issue['severity']}: {issue['code']}: {issue['path']}: {issue['message']}"
             )
-    return 1 if report["status"] == "fail" else 0
+    return (
+        1
+        if report["status"] == "fail"
+        or (args.strict and report["status"] == "warn")
+        else 0
+    )
 
 
 def _portable_command_config(command: str) -> PortableConfig:
@@ -3652,6 +3623,11 @@ def build_parser() -> argparse.ArgumentParser:
     ck = sub.add_parser("check", help="validate a portable repository without an LLM")
     ck.add_argument("--json", action="store_true", help="emit a JSON report")
     ck.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    ck.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero on warnings as well as failures",
+    )
     ck.set_defaults(func=cmd_check)
 
     ap = sub.add_parser(

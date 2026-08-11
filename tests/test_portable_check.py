@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 import json
 import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +23,12 @@ from obsidian_wiki.frontmatter import (
     parse_relationships,
 )
 from obsidian_wiki.operations import OperationChange, write_operation
-from obsidian_wiki.portable import MANAGED_END, MANAGED_START, setup_portable_repo
+from obsidian_wiki.portable import (
+    MANAGED_END,
+    MANAGED_START,
+    PROJECT_AGENT_DIRS,
+    setup_portable_repo,
+)
 from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 
@@ -1508,37 +1514,159 @@ def test_fail_level_lint_findings_become_errors(tmp_path: Path) -> None:
     ]
 
 
+def _write_custom_skill(root: Path, name: str = "team-note") -> Path:
+    skill = root / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Use for team notes.\n---\n\n# {name}\n",
+        encoding="utf-8",
+    )
+    return skill
+
+
+def _copy_skill_to_all_mirrors(root: Path, skill: Path) -> None:
+    for relative, _label in PROJECT_AGENT_DIRS:
+        shutil.copytree(skill, root / relative / skill.name)
+
+
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "code"),
     [
-        "missing",
-        "stale",
-        "absolute",
-        "symlink",
+        ("change", "skill-mirror-changed"),
+        ("delete", "skill-mirror-missing"),
+        ("extra", "skill-mirror-extra"),
+        ("symlink", "skill-mirror-unsafe"),
+        ("hardlink", "skill-mirror-unsafe"),
     ],
 )
-def test_managed_adapters_are_exact_relative_ordinary_files(
+def test_check_reports_complete_mirror_drift(
+    tmp_path: Path, mutation: str, code: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    mirror_root = root / ".claude/skills"
+    skill = mirror_root / "wiki-ingest"
+    skill_file = skill / "SKILL.md"
+    if mutation == "change":
+        skill_file.write_text(
+            skill_file.read_text(encoding="utf-8") + "\nMirror drift.\n",
+            encoding="utf-8",
+        )
+    elif mutation == "delete":
+        skill_file.unlink()
+    elif mutation == "extra":
+        _write_custom_skill(mirror_root, "mirror-only")
+    elif mutation == "symlink":
+        skill_file.unlink()
+        skill_file.symlink_to(root / ".skills/wiki-ingest/SKILL.md")
+    else:
+        external = tmp_path / "hardlinked-skill.md"
+        external.write_bytes(skill_file.read_bytes())
+        skill_file.unlink()
+        os.link(external, skill_file)
+
+    report = check_portable_repo(config)
+
+    assert report["status"] == "fail"
+    assert code in issue_codes(report)
+    assert str(root) not in json.dumps(report)
+
+
+def test_managed_canonical_edit_is_warning_when_mirrors_match(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    paths = [root / ".skills/wiki-ingest/SKILL.md"] + [
+        root / relative / "wiki-ingest/SKILL.md"
+        for relative, _label in PROJECT_AGENT_DIRS
+    ]
+    for path in paths:
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nOwner extension.\n",
+            encoding="utf-8",
+        )
+
+    report = check_portable_repo(config)
+
+    assert report["status"] == "warn"
+    assert issues_with_code(report, "managed-canonical-modified")[0]["severity"] == (
+        "warning"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["frontmatter", "directory-name"])
+def test_malformed_canonical_skill_is_reported_separately(
     tmp_path: Path, mutation: str
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
-    if mutation == "missing":
-        adapter.unlink()
-    elif mutation == "stale":
-        adapter.write_text("# wrong target\n", encoding="utf-8")
-    elif mutation == "absolute":
-        adapter.write_text(
-            "Read `/tmp/.skills/wiki-ingest/SKILL.md`\n", encoding="utf-8"
-        )
+    skill_file = root / ".skills/wiki-ingest/SKILL.md"
+    if mutation == "frontmatter":
+        skill_file.write_text("# Missing frontmatter\n", encoding="utf-8")
     else:
-        adapter.unlink()
-        adapter.symlink_to(root / ".skills/wiki-ingest/SKILL.md")
+        skill_file.write_text(
+            skill_file.read_text(encoding="utf-8").replace(
+                "name: wiki-ingest", "name: wrong-name", 1
+            ),
+            encoding="utf-8",
+        )
 
-    assert "managed-adapter-invalid" in issue_codes(check_portable_repo(config))
+    report = check_portable_repo(config)
+
+    assert "canonical-skill-invalid" in issue_codes(report)
+    assert str(root) not in json.dumps(report)
 
 
-@pytest.mark.parametrize("field", ["implementation", "skills_version", "skills"])
-def test_managed_inventory_validates_implementation_version_and_names(
+@pytest.mark.parametrize("missing_from", ["one", "all"])
+def test_custom_canonical_skills_must_exist_in_every_mirror(
+    tmp_path: Path, missing_from: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    custom = _write_custom_skill(root / ".skills")
+    _copy_skill_to_all_mirrors(root, custom)
+    targets = [root / relative / custom.name for relative, _ in PROJECT_AGENT_DIRS]
+    for target in targets if missing_from == "all" else targets[:1]:
+        shutil.rmtree(target)
+
+    report = check_portable_repo(config)
+
+    assert "skill-mirror-missing" in issue_codes(report)
+    assert "managed-skills-invalid" not in issue_codes(report)
+
+
+def test_custom_skill_binary_executable_and_cjk_resources_compare_exactly(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    custom = _write_custom_skill(root / ".skills", "portable-assets")
+    resource = custom / "resources/资料/二进制.dat"
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes(b"\x00\xffportable\n")
+    executable = custom / "scripts/run.sh"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    _copy_skill_to_all_mirrors(root, custom)
+
+    report = check_portable_repo(config)
+
+    assert report["status"] == "pass"
+
+
+def test_mirror_executable_mode_change_is_detected(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    custom = _write_custom_skill(root / ".skills", "portable-script")
+    executable = custom / "run.sh"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    _copy_skill_to_all_mirrors(root, custom)
+    (root / ".claude/skills/portable-script/run.sh").chmod(0o644)
+
+    assert "skill-mirror-changed" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize(
+    "field", ["implementation", "skills_version", "managed_skill_digests"]
+)
+def test_managed_inventory_validates_implementation_version_and_digest_keys(
     tmp_path: Path, field: str
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
@@ -1549,7 +1677,7 @@ def test_managed_inventory_validates_implementation_version_and_names(
     elif field == "skills_version":
         payload[field] = "not a version"
     else:
-        payload[field] = payload[field][1:]
+        payload[field].pop(next(iter(payload[field])))
     inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
     assert "managed-skills-invalid" in issue_codes(check_portable_repo(config))
@@ -1565,6 +1693,46 @@ def test_managed_inventory_version_must_satisfy_repository_range(
     inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
     assert "managed-skills-invalid" in issue_codes(check_portable_repo(config))
+
+
+def test_inventory_managed_name_must_exist_in_canonical_collection(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    payload = json.loads(inventory.read_text(encoding="utf-8"))
+    payload["managed_skills"].append("missing-managed")
+    payload["managed_skills"].sort()
+    payload["managed_skill_digests"]["missing-managed"] = "sha256:" + "0" * 64
+    inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    report = check_portable_repo(config)
+
+    assert "managed-skills-invalid" in issue_codes(report)
+    assert "skill-mirror-extra" not in issue_codes(report)
+
+
+def test_legacy_managed_inventory_has_upgrade_guidance(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    current = json.loads(inventory.read_text(encoding="utf-8"))
+    inventory.write_text(
+        json.dumps(
+            {
+                "implementation": IMPLEMENTATION_ID,
+                "skills": current["managed_skills"],
+                "skills_version": current["skills_version"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = check_portable_repo(config)
+
+    issue = issues_with_code(report, "managed-skills-legacy")[0]
+    assert "upgrade-skills" in issue["message"]
+    assert str(root) not in json.dumps(report)
 
 
 def test_bootstrap_owner_text_outside_managed_region_is_allowed(tmp_path: Path) -> None:
@@ -1700,7 +1868,7 @@ def _replace_with_external_hardlink(tmp_path: Path, target: Path) -> None:
         ("marker", "manifest-invalid"),
         ("shard", "manifest-invalid"),
         ("inventory", "managed-skills-invalid"),
-        ("adapter", "managed-adapter-invalid"),
+        ("mirror", "skill-mirror-unsafe"),
         ("bootstrap", "managed-bootstrap-invalid"),
         ("stable-view", "stable-view-modified"),
     ],
@@ -1716,7 +1884,7 @@ def test_checker_rejects_hardlinked_managed_files(
         "marker": root / "wiki/.manifest.json",
         "shard": shard,
         "inventory": root / ".obsidian-wiki/managed-skills.json",
-        "adapter": root / ".claude/skills/wiki-ingest/SKILL.md",
+        "mirror": root / ".claude/skills/wiki-ingest/SKILL.md",
         "bootstrap": root / "CLAUDE.md",
         "stable-view": root / "wiki/index.md",
     }
@@ -1829,6 +1997,32 @@ def test_cli_check_json_from_nested_source_is_nonzero_when_stale(
     assert proc.returncode == 1
     report = json.loads(proc.stdout)
     assert "source-stale" in issue_codes(report)
+
+
+@pytest.mark.parametrize(("strict", "returncode"), [(False, 0), (True, 1)])
+def test_cli_check_managed_canonical_warning_exit_semantics(
+    tmp_path: Path, strict: bool, returncode: int
+) -> None:
+    root, _, _, _, _ = valid_repo(tmp_path)
+    paths = [root / ".skills/wiki-ingest/SKILL.md"] + [
+        root / relative / "wiki-ingest/SKILL.md"
+        for relative, _label in PROJECT_AGENT_DIRS
+    ]
+    for path in paths:
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nOwner extension.\n",
+            encoding="utf-8",
+        )
+    args = ["check", "--json"]
+    if strict:
+        args.append("--strict")
+
+    proc = _run_cli(tmp_path / "home", root, *args)
+
+    assert proc.returncode == returncode
+    report = json.loads(proc.stdout)
+    assert report["status"] == "warn"
+    assert "managed-canonical-modified" in issue_codes(report)
 
 
 def test_cli_check_wrong_implementation_never_falls_back_to_global(
