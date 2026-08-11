@@ -45,18 +45,26 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ### Append Mode (default)
 
-Personal mode: check manifest v1 for each events JSONL, transcript JSONL,
-checkpoint, or session-store record. Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
-In either mode, only process:
+**Personal mode delta:** Compare every events JSONL, transcript JSONL,
+checkpoint, and session-store record with the manifest v1 session map. A
+session is new when its canonical identity is absent and modified when its
+`updated_at` is later than `ingested_at`.
 
-- Sessions not in the manifest (new sessions)
-- Sessions whose `updated_at` is newer than their `ingested_at` in the manifest
+**Portable Repository mode delta:** Inspect reviewed snapshots below the
+configured `sources` root. A session is new when no reviewed snapshot has the
+same agent/session identity; it is changed when the matching snapshot's
+recorded content hash differs from the hash of the currently selected Copilot
+material.
+
+**After mode-specific delta selection:** Process only sessions classified as
+new or changed by the selected rule. Never apply the Personal delta rule to a
+Portable run.
 
 This is usually what you want — the user ran a few new sessions and wants to capture the delta.
 
 ### Full Mode
 
-Process everything regardless of manifest. Use after a `wiki-rebuild` or if the user explicitly asks.
+Process everything regardless of prior tracking state. Use after a `wiki-rebuild` or if the user explicitly asks.
 
 ## GitHub Copilot Data Layout
 
@@ -121,7 +129,7 @@ VS Code extension data, keyed by workspace hash. The path is platform-specific a
 
 ## Step 1: Survey and Compute Delta
 
-Scan all three data locations and compare against `.manifest.json`:
+Scan all three data locations to build the source inventory:
 
 ```bash
 # --- Source 1: per-session directories ---
@@ -148,11 +156,18 @@ ORDER BY s.updated_at DESC;
 ls <workspaceStorage>/<hash>/GitHub.copilot-chat/transcripts/
 ```
 
-Build a unified inventory — one entry per session UUID — and classify:
+Build a unified inventory with one entry per session UUID.
 
-- **New** — not in manifest → needs ingesting
-- **Modified** — in manifest but `updated_at` is newer → needs re-ingesting
-- **Unchanged** — in manifest and not modified → skip in append mode
+**Personal mode survey:** Compare that inventory with the concrete vault's
+manifest v1 session map. A session is **New** when its canonical identity is
+absent, **Modified** when its `updated_at` is later than `ingested_at`, and
+**Unchanged** otherwise.
+
+**Portable Repository mode survey:** Inspect reviewed snapshots under the
+configured `sources` root. Selected material is **New** when no reviewed
+snapshot records the same agent/session identity, **Changed** when the matching
+snapshot's recorded content hash differs from the freshly computed hash, and
+**Unchanged** when both identity and hash match.
 
 Report to the user: "Found X sessions in session-state, Y in session-store.db, Z VS Code transcript files. Checkpoints: A. Delta: B new, C modified."
 

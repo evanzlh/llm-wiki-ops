@@ -198,18 +198,23 @@ For each extracted blob, determine where it belongs in the wiki:
 
 1. **Check if a wiki page already covers this** — grep `index.md` and page frontmatter for the topic. If yes, update the existing page rather than creating a new one.
 2. **Determine category** using standard rules (from `llm-wiki/SKILL.md`):
-   - Technique / how-to → `skills/`
-   - Abstract concept / pattern → `concepts/`
-   - Tool / library / person → `entities/`
-   - Cross-cutting insight → `synthesis/`
+   - Technique / how-to: `skills/<slug>.md` → `category: skills`
+   - Abstract concept / pattern: `concepts/<slug>.md` → `category: concepts`
+   - Tool / library / person: `entities/<slug>.md` → `category: entities`
+   - Cross-cutting insight: `synthesis/<slug>.md` → `category: synthesis`
+   The candidate path and `category` must use one matching pair. Never place a
+   pipe-separated list or an unresolved category choice in frontmatter. The
+   validator checks this semantic path/category match.
 3. **Prepare the page** with required frontmatter. Source identity is selected
    by the terminal mode: Portable mode uses only the reviewed repository
    snapshot Source IDs created in its completion branch; Personal mode retains
-   the agent-prefixed session source shown below.
+   the agent-prefixed session source shown below. This example is a concept
+   page; for another semantic type, replace both its path and category with the
+   corresponding pair above.
    ```yaml
    ---
    title: <topic>
-   category: skill|concept|entity|synthesis
+   category: concepts
    tags: [tag1, tag2]
    sources: [<agent>://<path/to/session>]
    created: <date>

@@ -41,17 +41,25 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ### Append Mode (default)
 
-Personal mode: check manifest v1 for each source file. Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
-In either mode, only process:
+**Personal mode delta:** Compare each memory or session file with the manifest
+v1 session map. A source is new when its canonical path is absent and modified
+when its source timestamp is later than `ingested_at`.
 
-- Files not in the manifest (new memory files, new session logs)
-- Files whose modification time is newer than `ingested_at` in the manifest
+**Portable Repository mode delta:** Inspect reviewed snapshots below the
+configured `sources` root. A source is new when no reviewed snapshot has the
+same agent/session identity; it is changed when the matching snapshot's
+recorded content hash differs from the hash of the currently selected Hermes
+material.
+
+**After mode-specific delta selection:** Process only sources classified as
+new or changed by the selected rule. Never apply the Personal delta rule to a
+Portable run.
 
 Use this mode for regular syncs.
 
 ### Full Mode
 
-Process everything regardless of manifest. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
+Process everything regardless of prior tracking state. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
 
 ## Hermes Data Layout
 
@@ -80,16 +88,21 @@ Skip `.hub/` internals (audit/quarantine state) and the `skills/` directory (sou
 
 ## Step 1: Survey and Compute Delta
 
-Scan `HERMES_HISTORY_PATH` and compare against `.manifest.json`:
+Scan `HERMES_HISTORY_PATH` to build the source inventory:
 
 - `~/.hermes/memories/`
 - `~/.hermes/sessions/**/` (if present)
 
-Classify each file:
+**Personal mode survey:** Compare the inventory with the concrete vault's
+manifest v1 session map. A file is **New** when its canonical path is absent,
+**Modified** when its source timestamp is later than `ingested_at`, and
+**Unchanged** otherwise.
 
-- **New** — not in manifest
-- **Modified** — in manifest but file is newer than `ingested_at`
-- **Unchanged** — already ingested and unchanged
+**Portable Repository mode survey:** Inspect reviewed snapshots under the
+configured `sources` root. Selected material is **New** when no reviewed
+snapshot records the same agent/session identity, **Changed** when the matching
+snapshot's recorded content hash differs from the freshly computed hash, and
+**Unchanged** when both identity and hash match.
 
 Report a concise delta summary before deep parsing.
 

@@ -477,18 +477,114 @@ def test_bulk_history_append_mode_does_not_parse_portable_manifest_as_v1(
     append = text.split("### Append Mode (default)", 1)[1].split(
         "### Full Mode", 1
     )[0]
-    append_flat = " ".join(append.split())
+    personal_marker = "**Personal mode delta:**"
+    portable_marker = "**Portable Repository mode delta:**"
+    selected_marker = "**After mode-specific delta selection:**"
+    assert personal_marker in append, f"{relative}: missing Personal append delta"
+    assert portable_marker in append, f"{relative}: missing Portable append delta"
+    assert selected_marker in append, f"{relative}: missing gated append handoff"
+    personal = append.split(personal_marker, 1)[1].split(portable_marker, 1)[0]
+    portable = append.split(portable_marker, 1)[1].split(selected_marker, 1)[0]
+    personal_flat = " ".join(personal.split())
+    portable_flat = " ".join(portable.split())
 
-    for required in (
-        "Personal mode: check manifest v1",
-        "Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots",
-    ):
-        assert required in append_flat, (
-            f"{relative}: missing mode-specific append rule {required!r}"
+    for required in ("manifest v1", "`ingested_at`"):
+        assert required in personal_flat, (
+            f"{relative}: Personal append delta missing {required!r}"
         )
-    assert "Check `.manifest.json`" not in append, (
-        f"{relative}: append mode still assumes Personal manifest shape"
+    for required in (
+        "configured `sources`",
+        "reviewed snapshot",
+        "agent/session identity",
+        "recorded content hash",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: Portable append delta missing {required!r}"
+        )
+    for forbidden in (
+        "manifest v1",
+        ".manifest.json",
+        "`ingested_at`",
+        "file mtime",
+        "modification time",
+    ):
+        assert forbidden not in portable_flat, (
+            f"{relative}: Portable append delta uses Personal rule {forbidden!r}"
+        )
+    assert "In either mode" not in append, (
+        f"{relative}: append mode falls through to a shared Personal delta rule"
     )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS[:-1],
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_bulk_history_survey_has_separate_personal_and_portable_delta_rules(
+    relative: str,
+) -> None:
+    text = _text(relative)
+    survey = text.split("## Step 1: Survey and Compute Delta", 1)[1].split(
+        "## Step 2:", 1
+    )[0]
+    personal_marker = "**Personal mode survey:**"
+    portable_marker = "**Portable Repository mode survey:**"
+    assert personal_marker in survey, f"{relative}: missing Personal survey"
+    assert portable_marker in survey, f"{relative}: missing Portable survey"
+    personal = survey.split(personal_marker, 1)[1].split(portable_marker, 1)[0]
+    portable = survey.split(portable_marker, 1)[1]
+    personal_flat = " ".join(personal.split())
+    portable_flat = " ".join(portable.split())
+
+    for required in ("manifest v1", "`ingested_at`"):
+        assert required in personal_flat, (
+            f"{relative}: Personal survey missing {required!r}"
+        )
+    for required in (
+        "configured `sources`",
+        "reviewed snapshot",
+        "agent/session identity",
+        "recorded content hash",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: Portable survey missing {required!r}"
+        )
+    for forbidden in (
+        "manifest v1",
+        ".manifest.json",
+        "`ingested_at`",
+        "file mtime",
+        "modification time",
+    ):
+        assert forbidden not in portable_flat, (
+            f"{relative}: Portable survey uses Personal rule {forbidden!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    HISTORY_WRITE_SKILLS[:-1],
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_bulk_history_portable_completion_excludes_personal_delta_state(
+    relative: str,
+) -> None:
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    for forbidden in (
+        ".manifest.json",
+        "`ingested_at`",
+        "file mtime",
+        "modification time",
+    ):
+        assert forbidden not in portable, (
+            f"{relative}: Portable completion uses Personal delta state {forbidden!r}"
+        )
 
 
 def test_claude_history_helpers_cannot_bypass_parent_completion() -> None:
@@ -532,6 +628,28 @@ def test_wiki_agent_targeted_flow_cannot_bypass_parent_completion() -> None:
         "Return the synthesized answer only after the selected completion branch finishes",
     ):
         assert required in targeted, f"wiki-agent targeted flow missing {required!r}"
+
+
+def test_wiki_agent_candidate_category_matches_its_semantic_path() -> None:
+    text = _text(".skills/wiki-agent/SKILL.md")
+    candidate = text.split("## Step 5: Distill Blobs into Wiki Pages", 1)[1].split(
+        "## Step 6:", 1
+    )[0]
+    candidate_flat = " ".join(candidate.split())
+
+    assert "category: skill|concept|entity|synthesis" not in candidate_flat
+    for required in (
+        "`skills/<slug>.md` → `category: skills`",
+        "`concepts/<slug>.md` → `category: concepts`",
+        "`entities/<slug>.md` → `category: entities`",
+        "`synthesis/<slug>.md` → `category: synthesis`",
+        "category: concepts",
+        "The candidate path and `category` must use one matching pair",
+        "The validator checks this semantic path/category match",
+    ):
+        assert required in candidate_flat, (
+            f"wiki-agent candidate guidance missing {required!r}"
+        )
 
 
 def test_wiki_update_completion_closes_mode_and_runtime_bypasses() -> None:

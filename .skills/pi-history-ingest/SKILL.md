@@ -42,17 +42,25 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ### Append Mode (default)
 
-Personal mode: check manifest v1 for each source file. Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
-In either mode, only process:
+**Personal mode delta:** Compare each session file with the manifest v1 session
+map. A session is new when its canonical path is absent and modified when its
+source timestamp is later than `ingested_at`.
 
-- Files not in the manifest (new sessions)
-- Files whose modification time is newer than `ingested_at` in the manifest
+**Portable Repository mode delta:** Inspect reviewed snapshots below the
+configured `sources` root. A session is new when no reviewed snapshot has the
+same agent/session identity; it is changed when the matching snapshot's
+recorded content hash differs from the hash of the currently selected Pi
+material.
+
+**After mode-specific delta selection:** Process only sessions classified as
+new or changed by the selected rule. Never apply the Personal delta rule to a
+Portable run.
 
 Use this mode for regular syncs.
 
 ### Full Mode
 
-Process everything regardless of manifest. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
+Process everything regardless of prior tracking state. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
 
 ## Pi Data Layout
 
@@ -107,7 +115,7 @@ Skip `model_change`, `thinking_level_change`, `custom` (extension state), and `l
 
 ## Step 1: Survey and Compute Delta
 
-Scan `PI_HISTORY_PATH` and compare against `.manifest.json`:
+Scan `PI_HISTORY_PATH` to build the source inventory:
 
 ```bash
 # List all session files
@@ -121,13 +129,17 @@ Build an inventory. For each session file, record:
 - `path` — absolute path
 - `cwd` — decoded from parent directory name (`--<path>--` → `/path`)
 - `session_name` — from the latest `session_info` entry (if any)
-- `modified_at` — file mtime
-- `already_ingested` — presence in `.manifest.json`
 
-Classify each file:
-- **New** — not in manifest
-- **Modified** — in manifest but file is newer than `ingested_at`
-- **Unchanged** — already ingested and unchanged
+**Personal mode survey:** Also record the source timestamp and whether the
+canonical path appears in the concrete vault's manifest v1 session map. A file
+is **New** when absent, **Modified** when its timestamp is later than
+`ingested_at`, and **Unchanged** otherwise.
+
+**Portable Repository mode survey:** Inspect reviewed snapshots under the
+configured `sources` root. Selected material is **New** when no reviewed
+snapshot records the same agent/session identity, **Changed** when the matching
+snapshot's recorded content hash differs from the freshly computed hash, and
+**Unchanged** when both identity and hash match.
 
 Report a concise delta summary before deep parsing:
 > "Found N Pi sessions across K projects. Delta: X new, Y modified."

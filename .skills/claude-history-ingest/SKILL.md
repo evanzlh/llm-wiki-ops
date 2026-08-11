@@ -45,12 +45,19 @@ This skill can be invoked directly or via the `wiki-history-ingest` router (`/wi
 
 ### Append Mode (default)
 
-Personal mode: check manifest v1 for each conversation JSONL or memory file.
-Portable Repository mode: compare discovered agent/session identity and content hash against existing reviewed snapshots.
-In either mode, only process:
+**Personal mode delta:** Compare each conversation JSONL or memory file with
+the manifest v1 session map. A source is new when its canonical path is absent;
+it is modified when its source timestamp is later than its `ingested_at` value.
 
-- Files not in the manifest (new conversations, new memory files, new projects)
-- Files whose modification time is newer than their `ingested_at` in the manifest
+**Portable Repository mode delta:** Inspect reviewed snapshots below the
+configured `sources` root. A source is new when no reviewed snapshot has the
+same agent/session identity; it is changed when the matching snapshot's
+recorded content hash differs from the hash of the currently selected external
+material.
+
+**After mode-specific delta selection:** Process only sources classified as
+new or changed by the selected rule. Never apply the Personal delta rule to a
+Portable run.
 
 This is usually what you want — the user ran a few new sessions and wants to capture the delta.
 
@@ -126,8 +133,9 @@ reviews the source snapshot, computes source closure, and owns the transaction.
 A history path can hold hundreds of conversation JSONLs — do not try to read them all. Per project:
 
 - **If the project already has memory files** (`memory/*.md`), ingest those first (they are
-  pre-distilled signal), then **also process conversations not yet in the manifest** — new
-  conversations should still be captured even for memory-rich projects.
+  pre-distilled signal), then **also process conversations classified as new or
+  changed by the selected mode's delta rule** — new conversations should still
+  be captured even for memory-rich projects.
 - **If the project has no memory files**, read only the **3 most recent** conversations (by mtime)
   to characterize it. Prefer pre-extracted files (see above) — they are cheap enough that you can
   read 5–10 in the same token budget as 1 raw JSONL.
@@ -136,7 +144,7 @@ A history path can hold hundreds of conversation JSONLs — do not try to read t
 
 ### Full Mode
 
-Process everything regardless of manifest. Use after a `wiki-rebuild` or if the user explicitly asks.
+Process everything regardless of prior tracking state. Use after a `wiki-rebuild` or if the user explicitly asks.
 
 ## Claude Code Data Layout
 
@@ -216,7 +224,7 @@ find ~/Library/Application\ Support/Claude/local-agent-mode-sessions -name "*.js
 
 ## Step 1: Survey and Compute Delta
 
-Scan both data locations and compare against `.manifest.json`:
+Scan both data locations to build one source inventory:
 
 ```bash
 # --- Source 1: CLI sessions (~/.claude) ---
@@ -242,13 +250,20 @@ find "$DESKTOP_SESSIONS" -name "audit.jsonl"
 find "$DESKTOP_SESSIONS" -name "*.jsonl" -path "*/.claude/projects/*"
 ```
 
-Build a unified inventory and classify each file:
+**Personal mode survey:** Compare the unified inventory with the concrete
+vault's manifest v1 session map. Classify a file as **New** when its canonical
+path is absent, **Modified** when its source timestamp is later than
+`ingested_at`, and **Unchanged** otherwise.
 
-- **New** — not in manifest → needs ingesting
-- **Modified** — in manifest but file is newer → needs re-ingesting
-- **Unchanged** — in manifest and not modified → skip in append mode
+**Portable Repository mode survey:** Inspect reviewed snapshots under the
+configured `sources` root. Classify selected material as **New** when no
+reviewed snapshot records the same agent/session identity, **Changed** when a
+matching snapshot's recorded content hash differs from the freshly computed
+hash, and **Unchanged** when both identity and hash match.
 
-Report to the user: "Found X CLI projects, Y desktop sessions. Memory files: A. Conversations: B. Audit logs: C. Delta: D new, E modified."
+Report the selected mode and its result: "Found X CLI projects, Y desktop
+sessions. Memory files: A. Conversations: B. Audit logs: C. Delta: D new, E
+changed."
 
 ## Step 2: Ingest Memory Files First
 
