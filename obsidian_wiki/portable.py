@@ -27,6 +27,7 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND
 from obsidian_wiki.config import PortableConfig, load_portable_config
+from obsidian_wiki.skill_inventory import MANAGED_SKILLS_INVENTORY
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
 MANAGED_END = "<!-- obsidian-wiki:managed:end -->"
@@ -63,7 +64,6 @@ PORTABLE_VAULT_DIRS = (
     ".obsidian",
 )
 PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
-MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
 _UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
 _UPGRADE_JOURNAL = "journal.json"
@@ -202,7 +202,9 @@ def _assert_managed_tree(root: Path, tree: Path) -> None:
             raise ValueError(f"managed tree contains symlink: {descendant}")
 
 
-def _assert_single_link_ordinary_file(root: Path, path: Path, label: str) -> None:
+def _assert_single_link_ordinary_file(
+    root: Path, path: Path, label: str
+) -> os.stat_result:
     """Require a managed file whose inode cannot be mutated through another path."""
     _assert_safe_managed_path(root, path)
     try:
@@ -215,6 +217,81 @@ def _assert_single_link_ordinary_file(root: Path, path: Path, label: str) -> Non
         raise ValueError(
             f"portable {label} has multiple links (hard link): {path}"
         )
+    return metadata
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> bytes:
+    """Read a contained managed file without following its final symlink."""
+    root = _safe_root(root)
+    observed = _assert_single_link_ordinary_file(root, path, label)
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"portable {label} changed while being read: {path}") from exc
+
+    content = None
+    final = None
+    failure = None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not _same_file_identity(observed, opened)
+        ):
+            raise ValueError(f"portable {label} changed while being read: {path}")
+
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+        final = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or final.st_nlink != 1
+            or not _same_file_identity(opened, final)
+        ):
+            raise ValueError(f"portable {label} changed while being read: {path}")
+        content = b"".join(chunks)
+    except BaseException as exc:  # noqa: BLE001 - close must not mask any primary failure
+        failure = exc
+    try:
+        os.close(descriptor)
+    except OSError as exc:
+        if failure is None:
+            failure = exc
+    if failure is not None:
+        if isinstance(failure, (OSError, ValueError)):
+            raise ValueError(
+                f"could not safely read portable {label}: {failure}"
+            ) from failure
+        raise failure
+
+    assert content is not None
+    assert final is not None
+    try:
+        _assert_safe_managed_path(root, path)
+        current = path.lstat()
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"portable {label} changed while being read: {path}") from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or not _same_file_identity(final, current)
+    ):
+        raise ValueError(f"portable {label} changed while being read: {path}")
+    return content
 
 
 def _assert_single_link_managed_tree(root: Path, tree: Path, label: str) -> None:
