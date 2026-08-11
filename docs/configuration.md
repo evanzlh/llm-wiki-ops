@@ -53,6 +53,17 @@ resolution. An explicit filesystem path uses no unrelated config. Schema
 settings come only from the resolved source, so one vault's extensions cannot
 leak into another vault.
 
+Config resolution returns runtime values to the CLI and agent; it does not
+export `OBSIDIAN_VAULT_PATH` into the parent shell. Portable instructions
+therefore use a config-aware command such as `cache-check --configured`.
+Personal-mode instructions first resolve the vault in agent memory and then
+pass a concrete path, for example:
+
+```bash
+obsidian-wiki cache-check --configured sources/design.md --json --pretty
+obsidian-wiki cache-check /resolved/vault /resolved/source.md --json --pretty
+```
+
 ## Portable Repository configuration
 
 Portable repositories track this schema at `.obsidian-wiki/config.toml`:
@@ -78,6 +89,20 @@ and source paths must not overlap. `implementation` prevents a repository for
 another fork from being opened silently; `requires_cli` is a PEP 440 version
 constraint checked before use. Machine-specific settings and absolute paths
 are rejected.
+
+For collaboration, prefer a release-tag-based compatible PEP 440 range such
+as `>=2026.9,<2026.10`, reviewed together with the managed skill refresh.
+Exact development-build pins such as `==2026.9.dev141+gabcdef` are permitted
+when exact CLI/source-revision compatibility or reproducibility is required,
+but they are high-churn for source-installed forks and require frequent
+coordinated config updates.
+
+The global Personal installation warning code `setup-version-stale` compares
+the installed CLI with the version recorded by a previous global setup. It is
+independent from Portable `requires_cli` compatibility, which validates the
+current repository's PEP 440 contract. Satisfying one does not satisfy or
+silence the other; structured portable cache commands omit the irrelevant
+global setup warning.
 
 Configured `sources` paths define the only authoritative source roots for
 portable ingest. `local_state` is ignored runtime state and may be absent in a
@@ -183,8 +208,12 @@ Status scans ignore `.gitkeep` and any file with hidden source path components
 (relative components beginning with `.`). These placeholders and hidden files
 are not authoritative tracked sources.
 
-Use `obsidian-wiki cache-check` and `cache-update` for v2 state. Do not run the
-legacy `scripts/manifest.py` commands, manually edit shards, or replace the
+Use `obsidian-wiki cache-check --configured` for Portable v2 freshness. When it
+reports a new or stale source, compile or recompile candidate pages through a
+transaction; transaction commit owns the affected manifest shards. The
+`cache-update` command remains a low-level compatibility interface, not a
+Portable transaction completion step. Do not run the legacy
+`scripts/manifest.py` commands, manually edit shard fields, or replace the
 marker with a monolithic source map. A live URL or external filesystem path is
 not a durable Source ID; store necessary external material as a small,
 reviewable snapshot below `sources` using ordinary Git. Git LFS pointers are

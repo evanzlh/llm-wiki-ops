@@ -22,6 +22,72 @@ This skill has three modes:
 - **Quick mode (`--quick`)** — zero-friction staging: drop findings to `_raw/` in under 60 seconds with no manifest/index/log/QMD writes. Used for mid-session capture and by the session-end Stop hook. See below, then stop — do **not** run the full-mode steps.
 - **Correction mode (`--correction`)** — capture one atomic correction as derived knowledge while leaving the immutable conversation/source untouched. Use the template below, then update only the derived consumers and tracking links.
 
+**Portable Write Protocol branch:** The parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, reads the owner `AGENTS.md`, and Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not write `_raw/`, a knowledge page, or a source snapshot before selecting the branch.
+
+## Shared read-only capture decision
+
+Perform this in memory before selecting either completion branch:
+
+1. **Select capture submode.** Choose Full, Quick, or Correction (`--correction`) from the request before applying any later rule.
+2. **KEEP or SKIP.** SKIP purely conversational or inconclusive material with no reusable decision, verified finding, workaround, or non-obvious lesson. KEEP when the user explicitly requests capture or the conversation contains a durable decision, confirmed behavior, debugging conclusion, reusable pattern, or valuable synthesis. An automatic Stop-hook capture should err toward SKIP; an explicit user capture should err toward KEEP.
+3. **Classify the kept content.** Choose the semantic category and matching final path: concept, entity, skill, reference, synthesis, journal, or project knowledge. Cluster related findings by topic and infer project context only from evidence in the conversation.
+4. **Rewrite it as declarative knowledge.** Preserve the substance, evidence, reasoning, implications, and relationships without presenting it as a chat transcript. Prepare required frontmatter and links in memory; make no source or vault write here.
+
+## Correction Mode (`--correction`) shared contract
+
+For Correction submode, leave the immutable source untouched and Record exactly one atomic claim pair. `speaker_type` is semantic and independent of a serialized message `role`. Never include raw transcript excerpts.
+
+```yaml
+correction_id: <stable-id>
+source_locator: <immutable file:line or channel/thread/timestamp>
+source_text_sha256: <64 lowercase hex chars>
+serialized_role: <source role, if present>
+speaker_type: user | assistant | teammate | tool_result | slack_member
+original_claim:
+  subject: <exact entity or capability>
+  assertion: <single atomic value>
+corrected_claim:
+  subject: <same exact entity or capability>
+  assertion: <single atomic value or null>
+authority_class: contract | decision | code | test | deploy | runtime | db | narrative
+verification_state: verified | inferred | unverified | contradicted
+asserted_at: <ISO-8601 timestamp>
+effective_at: <ISO-8601 timestamp or null>
+as_of: <ISO-8601 timestamp>
+supersedes: [<original-claim-id>]
+consumer_propagation:
+  kw: open | not_applicable | complete
+  ob: open | not_applicable | complete
+  requirements: open | not_applicable | complete
+  code: open | not_applicable | complete
+  tests: open | not_applicable | complete
+  ai_memory: open | not_applicable | complete
+corrected_at: <ISO-8601 timestamp>
+```
+
+Before any derived write, compute `source_pre_sha256` directly from the authoritative source and require equality with `source_text_sha256`. After all derived consumers are prepared, recompute `source_post_sha256`; require `source_pre_sha256 == source_post_sha256 == source_text_sha256`. Track consumer propagation independently and mark a consumer complete only after verification. Keep secrets, source copies, and raw excerpts out of the correction record.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD and never write live `_raw/`.
+
+1. Use the selected submode and completed shared read-only capture decision. For SKIP, report and stop; do not create a source snapshot, transaction, operation journal, or hot refresh.
+2. For kept Full/Quick content, the parent writes a small, reviewable UTF-8 Markdown or plain-text snapshot below a configured `sources` root. Include origin, capture time, content hash, and the exact captured text; review and accept it before continuing. Preserve valid Unicode Source IDs and filenames and never persist an absolute runtime path. A quick/raw-only request is unsupported when the user will not authorize a source snapshot: report that boundary and stop before any write or transaction.
+3. **Portable correction:** apply the shared atomic correction contract to the immutable source. Use its existing authoritative Source IDs and the source IDs already cited by affected live pages; this path does not create an ordinary conversation snapshot. If authority is insufficient or the source hash/locator cannot be verified, fail closed before `transaction begin`.
+4. Compute complete authoritative source closure from the source IDs selected by the active submode and the existing Source IDs of every updated/deleted page. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`. Keep the absolute `candidate_vault` only in memory. New candidates use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+5. Write the finished candidate only below `candidate_vault`. New page `sources` contains non-empty relevant accepted or authoritative snapshot Source IDs; for Correction, verified existing authoritative Source IDs satisfy this rule without creating an ordinary conversation snapshot. Updated or merged page `sources` must preserve every existing Source ID that still supports retained content, add the new relevant accepted or authoritative snapshot Source IDs when present, and deduplicate them. In both cases, `sources` is a non-empty subset of the frozen transaction source closure. Correction candidates update every affected derived consumer independently and preserve the immutable source. Declare removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+6. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+7. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then execute exactly the reported recommended or preferred action whose prerequisites hold. Status mapping: for active or preflight failure, fix candidates, validate, then commit, or abort when that is the chosen allowed action; for promoting, restore; for failed, use only a reported allowed retry, restore, abort, or discard; for complete or restored, accept the reported terminal state and make no further mutation. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+8. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Apply the shared submode decision. Quick and Full retain direct `_raw/`, manifest v1, central-file, QMD, and Personal Git snapshot behavior. Personal Correction applies the shared atomic correction/hash/consumer-propagation contract, writes the derived correction directly, then updates manifest v1 and `log.md`; it never edits or copies the immutable source. Config resolution provides concrete runtime values; it does not export them into the parent shell. Do not fall through into Portable Repository completion.
+
 ## Quick Mode (`--quick`)
 
 Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture this finding" / "save this bug fix" / "save this gotcha" / "drop this to raw" / "quick save to wiki", or automatically by the session-end Stop hook.
@@ -30,26 +96,13 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 
 1. **Resolve config** (Config Resolution Protocol in `llm-wiki/SKILL.md`): get `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_RAW_DIR` (default: `$OBSIDIAN_VAULT_PATH/_raw`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, do not create or write vault `_raw/`: quick staging is Personal-mode behavior. The user must first preserve the capture as an authoritative file below a configured `sources` path; then route its promotion through `wiki-ingest` and the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. If no such source exists, stop with that guidance rather than direct-writing the repository.
-
-   In Personal mode, Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not, then continue below.
+   Ensure `$OBSIDIAN_RAW_DIR` exists; create it if not, then continue below.
 
    Capture does not independently reinterpret validator schema inputs. When `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, or `OBSIDIAN_SCHEMA_SOURCE` is present, preserve it for the downstream lint/trust consumer: CLI values take precedence over environment/config values, which take precedence over framework defaults, and explicit blank or whitespace-only values fail closed. Omit a variable to use defaults.
 
-2. **Gate — KEEP or SKIP?** Before extracting, judge whether this session has capture value. This keeps the skill safe to call automatically without spamming `_raw/`.
-   - **SKIP** (exit with "Nothing worth capturing in this session.") if ALL are true: the conversation is purely conversational (planning/Q&A/explanation) with no implementation; no errors, debugging, or problem-solving visible; nothing surprising or undocumented; every finding is already obvious from the docs.
-   - **KEEP** (proceed) if ANY are true: a fix or workaround was found through investigation; non-obvious library/API/framework behavior was confirmed (edge case, undocumented constraint, time-costing gotcha); a debugging session reached a concrete conclusion; a reusable pattern emerged.
-   - When invoked **via the Stop hook, err toward SKIP** — only KEEP on clear evidence. When invoked **manually, err toward KEEP** — the user called it for a reason.
+2. **Write raw files** — for each kept topic cluster, write `$OBSIDIAN_RAW_DIR/<ISO-date>-<slug>.md`. Use a kebab-case slug (for example, `swift-actor-reentrancy`). Read `references/RAW-FORMAT.md` for the full frontmatter spec, finding-block body structure, and provenance/confidence calibration. Per-cluster fields that vary: `title`, `tags` (2–4 from taxonomy), `summary` (≤200 chars), `project` (inferred or `null`), `base_confidence` (0.6 discussed → 0.75 fix applied → 0.9 test confirmed), `provenance.extracted`/`provenance.inferred` (sum to 1.0), `lifecycle_changed` (today), `sources` (`"<project> session (<YYYY-MM-DD>)"`).
 
-3. **Scan for reusable findings** — non-obvious bugs and root causes, framework/library gotchas, surprising API behavior, investigated workarounds, environment/toolchain quirks, patterns from debugging. Skip PM updates, config already in CLAUDE.md, inconclusive back-and-forth, anything obvious from the docs, and pleasantries. If nothing material emerged, say so and stop.
-
-4. **Cluster by topic** — one `_raw/` file per topic cluster, not per finding. Name each as a kebab-case slug (e.g. `swift-actor-reentrancy`, `nextjs-hydration-mismatch`).
-
-5. **Infer project context** from repo names, file paths, framework mentions, error messages. Use the most specific name you can reliably infer; else `null`.
-
-6. **Write raw files** — for each cluster, write `$OBSIDIAN_RAW_DIR/<ISO-date>-<slug>.md`. Read `references/RAW-FORMAT.md` for the full frontmatter spec, finding-block body structure, and provenance/confidence calibration. Per-cluster fields that vary: `title`, `tags` (2–4 from taxonomy), `summary` (≤200 chars), `project` (inferred or `null`), `base_confidence` (0.6 discussed → 0.75 fix applied → 0.9 test confirmed), `provenance.extracted`/`provenance.inferred` (sum to 1.0), `lifecycle_changed` (today), `sources` (`"<project> session (<YYYY-MM-DD>)"`).
-
-7. **Confirm** — list staged files and tell the user to run `/wiki-ingest` to promote them:
+3. **Confirm** — list staged files and tell the user to run `/wiki-ingest` to promote them:
    ```
    Staged to _raw/:
      _raw/2026-05-27-swift-actor-reentrancy.md   — "Actor reentrancy causes deadlock in async forEach"
@@ -62,8 +115,6 @@ Trigger when invoked as `/wiki-capture --quick`, by "quick capture" / "capture t
 ## Correction Mode (`--correction`)
 
 Use this mode when a user or stronger authority corrects a claim derived from an immutable conversation, tool result, or other raw source. Never edit or copy the raw source. Resolve config, read the vault `AGENTS.md`, and update an existing derived page when one owns the claim; otherwise create the smallest owner-compliant derived correction page.
-
-**Portable Write Protocol branch:** After resolving config, Portable Repository mode requires the correction's immutable source to be an authoritative file below a configured `sources` path. Follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`, write the corrected page only in `candidate_vault`, and suppress the direct manifest, `log.md`, `hot.md`, snapshot, and Git steps below. If the correction cannot be represented as a transaction, stop without changing the live vault. Personal mode retains the workflow below.
 
 Record exactly one atomic claim pair. `speaker_type` is semantic and must be assessed independently of a serialized message `role` (a tool result may be serialized as `role=user`). Do not include raw transcript excerpts.
 
@@ -107,7 +158,6 @@ After writing the derived correction, link the immutable source to the created/u
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, require an actual authoritative source file and follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Create the finished note only below `candidate_vault` and suppress direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git steps below. If the conversation has not been preserved as an authoritative source, stop with guidance instead of direct-writing the vault. In Personal mode, retain the workflow below unchanged.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand existing wiki content (avoid duplicates)
 3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it gives context on recent activity
 

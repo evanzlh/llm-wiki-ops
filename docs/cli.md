@@ -51,7 +51,11 @@ first-release CLI support boundary.
 
 Portable setup accepts a missing or empty target, or one containing only an ordinary `.git` directory; it preserves that directory and rejects arbitrary non-portable content. It does not run `git init`, commit, or configure a remote: for a new repository, run setup first and then `git init`; use `repo migrate` for legacy layouts.
 
-Commands other than `setup`, `info`, and `doctor` warn you when the install has gone stale (the package upgraded but skills weren't re-linked). Re-run `obsidian-wiki setup` to fix.
+Human-output commands other than `setup`, `info`, and `doctor` may warn when
+the global Personal installation has gone stale (the package upgraded but
+skills were not re-linked). Always-structured cache commands and `hot inputs`
+do not mix this unrelated global setup warning into their output. Re-run
+`obsidian-wiki setup` to repair a stale Personal installation.
 
 ### Upgrade portable CLI compatibility and managed skills
 
@@ -220,33 +224,71 @@ directory. They fail outside portable mode and never invoke `git add`,
 | `transaction begin --source PATH [PATH ...]` | Lock the repository, resolve actual authoritative sources, record preimages, and return a local `candidate_vault`. |
 | `transaction list` | List active and retained recovery transactions, including workspace and status. |
 | `transaction delete ID PAGE` | Declare removal of one safe vault-relative knowledge page. |
+| `transaction validate ID` | Read-only preflight of candidate metadata and the complete prospective knowledge graph. |
 | `transaction commit ID` | Validate and promote a reviewed active transaction. |
 | `transaction retry ID` | Retry a retained failed transaction after rechecking preimages. |
 | `transaction restore ID` | Restore recorded originals for interrupted `promoting`, failed, or completed work without overwriting later postimage drift. |
 | `transaction abort ID` | Abandon active or failed staged work and release its lock. |
 | `transaction discard ID` | Remove retained failed, completed, or restored recovery state after review. |
 | `hot status` | Report freshness and invalidate only stale local `hot.md`. |
+| `hot inputs` | Return bounded deterministic inputs for an agent-written `hot.md`; never write semantic prose. |
 | `hot mark-current` | Record an agent-written `hot.md` against the current authoritative fingerprint. |
 
 A normal write looks like this:
 
 ```bash
 obsidian-wiki transaction begin --source sources/design.md --json --pretty
-# Write final vault-relative pages only below the returned candidate_vault.
+# From the repository-root CWD, write final vault-relative pages below the
+# returned absolute runtime candidate_vault. Do not cd into that directory.
 obsidian-wiki transaction delete <id> concepts/obsolete.md --json
+obsidian-wiki transaction validate <id> --json --pretty
 obsidian-wiki transaction commit <id> --json --pretty
 ```
 
 `begin --source` accepts one or more repository-relative paths or filesystem
 paths that resolve to ordinary files below the configured source root. The
-JSON result includes `transaction_id`, `candidate_vault`, `snapshots`,
-`source_ids`, and `status`. Candidate pages must use a supported knowledge
-category, required frontmatter, and a non-empty `sources` list drawn only from
-that transaction. Reserved central files and `journal/operations/**` cannot be
-agent candidates.
+JSON result includes at least `transaction_id`, `status`, `started_at`,
+`source_ids`, `workspace`, `candidate_vault`, `snapshots`, and `deletions`.
+Candidate pages must use a supported knowledge category, required frontmatter,
+and a non-empty `sources` list drawn only from that transaction. Reserved
+central files and `journal/operations/**` cannot be agent candidates.
 
-Commit checks only affected output preimages. A dirty source worktree and
-unrelated edits are allowed. If an affected page or manifest shard drifted,
+Keep the repository root as the command working directory throughout this
+flow. `candidate_vault` is an absolute runtime destination, not a durable
+Source ID or a value to write into tracked files. Use the `started_at` returned
+by `begin` for page timestamps: a new page uses
+`created = updated = started_at`; an update preserves `created` and sets
+`updated = started_at`.
+
+`transaction validate ID` is read-only. Its JSON report contains
+`transaction_id`, `status`, `candidate_pages`, `deletions`, `issues`, and
+`warnings`. Each finding has `code`, `path`, and `message`; `target` is present
+when the finding refers to a link, source, or expected category.
+Exit status is `0` for `pass` and `1` for `fail`; CLI/configuration failures
+retain the transaction error envelope described below. Content validation
+uses this in-memory overlay:
+
+```text
+prospective vault = (live knowledge pages - declared deletions) + candidate replacements
+```
+
+The overlay is keyed by vault-relative path, so a candidate replaces the
+same-path live page rather than creating a duplicate copy.
+
+Candidate checks cover supported output paths, strict UTF-8, restricted YAML
+frontmatter, required non-empty scalar fields, list-shaped `tags` and
+`sources`, duplicate-free sources, ISO dates or timezone-aware timestamps,
+and directory/category agreement. Each candidate may cite a non-empty subset
+of the transaction's `source_ids`; it may not cite a foreign Source ID. Graph
+checks resolve both wikilinks and local Markdown `.md` links across candidates
+and unchanged live pages, and report broken or ambiguous identities—including
+links broken by a declared deletion. `commit` enforces the same preflight
+before any recovery snapshot or live-vault promotion; `retry` rechecks content
+before resuming a retained failure. A failing report cannot be bypassed by
+skipping the explicit validate command.
+
+After preflight, commit checks only affected output preimages. A dirty source
+worktree and unrelated edits are allowed. If an affected page or manifest shard drifted,
 commit fails without silently overwriting it and retains the workspace. Inspect
 it with `transaction list --json`, then deliberately `retry`, `restore`,
 `abort`, or `discard` according to its status. A completed transaction remains
@@ -380,7 +422,9 @@ Before a skill uses local semantic context, it runs:
 
 ```bash
 obsidian-wiki hot status --json
-# If stale: regenerate ignored <vault>/hot.md from current pages and operations.
+# If stale, collect bounded deterministic inputs (defaults shown):
+obsidian-wiki hot inputs --pages 50 --operations 10 --json --pretty
+# The agent semantically rewrites ignored <vault>/hot.md from those inputs.
 obsidian-wiki hot mark-current --json
 ```
 
@@ -388,6 +432,15 @@ The fingerprint covers authoritative knowledge, manifest state, operations,
 and the current branch or detached HEAD. `hot status` deletes stale `hot.md`
 only; it never invents semantic content. Git diff and pull-request review are
 the portable content boundary, and publishing remains an explicit human step.
+`hot inputs` is read-only and emits JSON by default with `fingerprint`, `pages`,
+and `operations`. Each page summary contains `path`, `title`, `summary`, and
+`updated`. Each validated immutable operation record contains `transaction_id`,
+`completed_at`, `source_ids`, `created`, `updated`, and `removed`. Pages are
+sorted and bounded by `--pages 50`; operations are bounded by
+`--operations 10`. Zero disables that output list and negative limits fail.
+The command validates every authoritative page and operation even when a limit
+is zero, and fails closed
+on malformed or changing input. It neither writes `hot.md` nor calls a model.
 
 ## Querying & linting
 
@@ -524,8 +577,9 @@ Available for automation, scripting, and debugging. Skills call some of these in
 | `graph-query <vault> <question>` | Answer from the wikilink index without reading page bodies |
 | `graph-analyse <vault>` | God nodes, communities, surprising connections |
 | `batch-plan <vault> <source_dir>` | Split a source directory into parallel-ingest batches, skipping unchanged files |
-| `cache-check <vault> <sources...>` | Which sources are new / modified / unchanged in the mode-appropriate manifest |
-| `cache-update <vault> <source>` | Record a source hash and pages in personal v1 or the portable v2 shard |
+| `cache-check <vault> <sources...>` | Legacy explicit-vault form: which sources are new / modified / unchanged in the mode-appropriate manifest |
+| `cache-check --configured <sources...>` | Resolve the vault and mode from CWD configuration; every positional path is a source |
+| `cache-update <vault> <source>` | Low-level compatibility interface: record a source hash and pages in personal v1 or a portable v2 shard |
 | `cache-hash <path>` | Compute a file or directory hash (no manifest I/O) |
 | `ast-extract <path>` | Extract classes, functions, and imports from code — no LLM, no API calls |
 
@@ -533,12 +587,30 @@ Available for automation, scripting, and debugging. Skills call some of these in
 obsidian-wiki graph-query /path/to/vault "transformer architecture" --pretty
 obsidian-wiki graph-analyse /path/to/vault --top 30 --pretty
 obsidian-wiki batch-plan /path/to/vault ~/research --max-mb 4 --max-files 30
-obsidian-wiki cache-check /path/to/vault ~/research/*.pdf
-obsidian-wiki cache-update /path/to/vault ~/research/paper.pdf --pages concepts/attention.md
+obsidian-wiki cache-check --configured sources/design.md --json --pretty
+obsidian-wiki cache-check /resolved/vault /resolved/source.md --json --pretty
+obsidian-wiki cache-update /resolved/vault /resolved/source.md --json --pretty
+obsidian-wiki cache-hash /resolved/source.md --json --pretty
 obsidian-wiki ast-extract ./src --pretty
 ```
 
-Most commands accept `--json` and/or `--pretty` for machine-readable output.
+`cache-update` is a low-level compatibility interface for explicit manifest
+maintenance and legacy automation; the positional example documents its real
+CLI form. It is not a Portable transaction completion step: ordinary Portable
+write skills use `transaction commit`, which derives and owns the affected
+shards.
+
+Cache output is JSON by default. `cache-check`, `cache-update`, and
+`cache-hash` also accept explicit `--json` idempotently, and `--pretty` only
+adds indentation. Without `--configured`, `cache-check` preserves the legacy
+`VAULT SOURCE...` interpretation; with it, the normal CWD config protocol
+resolves the vault and every path is a source. When a legacy explicit-vault
+`cache-check` overrides a Portable context discovered from CWD, its relevant
+warning appears in `context_warnings`; because cache commands are always
+structured, structured JSON stdout remains parseable and stderr stays empty.
+Unrelated global Personal setup warnings are suppressed.
+
+Most other commands accept `--json` and/or `--pretty` for machine-readable output.
 
 ## Portable repository validation
 
@@ -562,8 +634,26 @@ Exit behavior is suitable for any CI platform:
 Portable manifest drift uses three stable error codes: `source-new` means an
 authoritative source has no shard, `source-stale` means its content hash no
 longer matches, and `source-orphaned` means a shard has no source file. All
-three are PR blockers: compile or reconcile the source and run `cache-update`, then rerun
-`check` before merging.
+three are PR blockers.
+
+For `source-new` or `source-stale`, compile or recompile the source through a
+transaction. Begin with the complete authoritative source closure, write and
+review candidate pages from the repository-root CWD, and use this completion
+sequence. The closure includes every Source ID cited by a candidate and every
+existing source cited by a page being updated or deleted; pass the actual
+authoritative file for each ID:
+
+```bash
+obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty
+# Compile or recompile reviewed candidate pages below the returned candidate_vault.
+obsidian-wiki transaction validate <id> --json --pretty
+obsidian-wiki transaction commit <id> --json --pretty
+obsidian-wiki check
+```
+
+Commit updates the affected shards. Do not follow transaction completion with
+`cache-update`. After commit, rerun `obsidian-wiki check` and review the
+Git diff before merging.
 
 For `source-orphaned`, restore a source deleted by mistake. If deletion was
 intentional, remove the entire corresponding shard file with

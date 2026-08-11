@@ -17,7 +17,10 @@ You are enforcing consistent tagging across the wiki by normalizing tags to a co
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all changed pages in the returned `candidate_vault`; suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
+   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
+   keeps audit and page-preparation work read-only. Select one terminal workflow
+   after the shared read-only analysis; workers never choose the mode or write.
+   This routes every Portable write through the canonical Portable Write Protocol.
 2. Read `$OBSIDIAN_VAULT_PATH/_meta/taxonomy.md` — this is the canonical tag list
 3. Read `index.md` to understand the wiki's scope
 
@@ -106,6 +109,69 @@ For each tag found, count how many pages use it. Flag:
 | ---------------------- | --------- | -------------------- |
 | `entities/jane-doe.md` | 8         | ai, ml, founder, ... |
 ```
+
+## Portable Repository completion
+
+If the selected intent was Mode 1 audit-only, return the audit report and stop:
+no transaction, no normalization, and no central-file mutation.
+
+Use this branch only after Portable Repository mode was resolved. Keep the
+repository root as the command CWD; keep the absolute `candidate_vault` only in
+memory and do not `cd` into it.
+
+For Mode 2 normalization, if normalization produces no page changes, report no
+changes and stop before source closure. In this no-op case, do not create an
+empty transaction or operation journal, and do not refresh `hot.md`.
+
+Before computing closure, fail closed if the requested logical operation
+requires any `_meta/taxonomy.md` change. In that case the entire logical
+operation is unsupported: stop before `transaction begin` or any page mutation,
+and do not partially normalize pages while leaving the vocabulary unchanged.
+
+1. Compute complete source closure before beginning: the set union of all
+   existing `sources` Source IDs from every updated or deleted live page and all
+   repository-relative Source IDs any candidate `sources` field will cite. This
+   existing source closure applies to page tag changes; these are never compiled
+   vault page paths. Preserve valid Unicode and CJK spellings exactly.
+2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   once with the closure; retain `id`, `started_at`, and `candidate_vault`.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths below `candidate_vault`. New pages use
+   `created = updated = started_at`; updates preserve the existing `created` and
+   set `updated = started_at`. `_meta/taxonomy.md` remains a live central file,
+   not a transaction knowledge candidate.
+4. Declare reviewed page removals with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue before continuing.
+6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   report passes.
+7. Use status-aware recovery on an unclear failure. Follow only
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
+   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
+   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
+   ID, or while the outcome is ambiguous, stop and report.
+8. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+If the selected intent was Mode 1 audit-only, return the audit report and stop:
+no transaction, no normalization, and no central-file mutation.
+
+Use this branch only when config resolution selected Personal mode. For Mode 2
+normalization, if there are no page changes, report no changes and stop without
+tracking or hot-cache writes. Otherwise continue with the normalization,
+taxonomy, and tracking workflow below. Personal central files, QMD refresh, and
+Git snapshot rules remain active.
 
 ## Mode 2: Tag Normalization
 

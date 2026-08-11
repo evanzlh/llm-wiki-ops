@@ -89,11 +89,21 @@ Each project directory has an overview page structured like this:
 ```markdown
 ---
 title: My Project
-category: project
+category: projects
 tags: [ai, web, backend]
-source_path: ~/.claude/projects/-Users-name-Documents-projects-my-project
-created: 2026-03-01T00:00:00Z
-updated: 2026-04-06T00:00:00Z
+sources:
+  - sources/project/my-project.md
+summary: A project overview connecting My Project's durable architecture, techniques, and related knowledge.
+provenance:
+  extracted: 0.70
+  inferred: 0.25
+  ambiguous: 0.05
+base_confidence: 0.59
+lifecycle: draft
+lifecycle_changed: 2026-08-11
+tier: supporting
+created: 2026-08-11T12:00:00+00:00
+updated: 2026-08-11T12:00:00+00:00
 ---
 
 # My Project
@@ -186,9 +196,12 @@ The portable rules are strict:
   source root, even though `[paths].sources` uses TOML list syntax. Multiple
   roots fail config validation; the list shape reserves future schema
   evolution.
-- A repository-relative Source ID uses `/`, is normalized, contains no `.` or
-  `..` segments, and identifies an ordinary file below the configured
-  `sources` root. Absolute paths and backslashes are invalid.
+- A repository-relative Source ID uses canonical path syntax: `/` separators,
+  no `.` or `..` segments, and an ordinary file below the configured `sources`
+  root. Absolute paths and backslashes are invalid. This canonicalization is
+  limited to separators, dot segments, and path containment; it never changes
+  Unicode spelling. Agents must preserve Unicode filenames and Source IDs
+  exactly as supplied and must not transliterate or Unicode-normalize them.
 - Status discovery ignores `.gitkeep` and files beneath hidden source path
   components (any relative component beginning with `.`). They are not
   authoritative tracked sources and do not receive shards.
@@ -196,10 +209,18 @@ The portable rules are strict:
   `sources/design/portable.md` maps to
   `<vault>/.manifest/sources/design/portable.md.json`. There is exactly one shard
   per source.
-- Use `obsidian-wiki cache-check` before compiling and `obsidian-wiki
-  cache-update` after compiling. These commands select manifest v2 from the
-  resolved portable config. Agents must not hand-edit the marker or shards and
-  must not reconstruct a monolithic source collection.
+- Check source freshness from the repository root with the configured portable
+  context:
+
+  ```bash
+  obsidian-wiki cache-check --configured sources/a.md sources/组会纪要.md --json --pretty
+  ```
+
+  Cache commands emit JSON by default; explicit `--json` is also accepted, and
+  `--pretty` only formats that JSON. Transaction commit owns the corresponding
+  cache-update and shard writes, so portable write skills do not run
+  `cache-update`. Agents must not hand-edit the marker or shards or reconstruct
+  a monolithic source collection.
 - A live URL or external filesystem path is not a durable Source ID. When that
   material must be authoritative, capture a small, reviewable snapshot below
   the configured source root and store it as an ordinary Git file. Git LFS
@@ -715,55 +736,92 @@ the operator's responsibility.
 After config resolution, every skill that can write must branch on the resolved
 mode **before any vault mutation**.
 
-### Portable Repository mode
+## Portable Repository completion
 
-Use one CLI transaction for the complete logical write:
+Always keep the repository root as the command working directory. Record the
+absolute, runtime-only `candidate_vault` returned by `transaction begin`. In
+this workflow, do not `cd` into `candidate_vault`, and never persist that
+absolute path in a page, manifest, operation record, skill, or tracked
+configuration.
 
-1. Start it with the actual one-or-more authoritative source paths:
-   `obsidian-wiki transaction begin --source sources/a.md sources/b.md --json`.
-   Record the returned `transaction_id` and `candidate_vault`.
-2. Write new and updated knowledge pages only below `candidate_vault`, using
-   their final vault-relative paths. If a requested mutation cannot be
-   represented as candidate knowledge pages or declared deletions, stop and
-   report that it is unsupported in portable mode; never fall through to a
-   direct live-vault write.
-3. Declare each removal with
-   `obsidian-wiki transaction delete <id> concepts/obsolete.md`.
-4. Review all candidate frontmatter, links, and deletion paths. Only then run
-   `obsidian-wiki transaction commit <id> --json`.
-5. If begin or commit fails, run
-   `obsidian-wiki transaction list --json`, inspect the retained workspace and
-   status, and deliberately choose one recovery action:
-   `obsidian-wiki transaction retry <id> --json`,
-   `obsidian-wiki transaction restore <id> --json`,
-   `obsidian-wiki transaction abort <id> --json`, or
-   `obsidian-wiki transaction discard <id> --json`. Never start a replacement
-   transaction while the failed transaction's outcome is ambiguous.
-6. Never hand-edit manifest shards, manifest markers, or operation pages. The
-   transaction manager owns those files. In portable repositories,
-   **index.md and log.md are stable** collaboration surfaces and ordinary writes
-   do not update them.
+1. Compute source closure before `transaction begin`, because a transaction's
+   source set is immutable. Include every existing `sources` Source ID from
+   each page that will be updated or deleted, plus every new authoritative
+   source used by the logical write. Then begin with that complete set of
+   authoritative source files:
+   `obsidian-wiki transaction begin --source sources/a.md --json --pretty`.
+   Record the returned `transaction_id`, `candidate_vault`, `started_at`, and
+   repository-relative transaction Source IDs. Every candidate page's `sources`
+   must be a non-empty subset of those transaction Source IDs. If source
+   closure was incomplete, abort the active transaction and begin a new one;
+   never try to add a Source ID after begin.
+2. For a new page, set `created = updated = started_at`. For an update,
+   preserve the existing `created` and set `updated = started_at`. Transaction
+   commit does not rewrite these reviewed candidate bytes.
+3. Write new and updated knowledge pages at their final vault-relative paths
+   below `candidate_vault`. Declare every removal with
+   `obsidian-wiki transaction delete <id> concepts/obsolete.md`. If a requested
+   mutation cannot be represented as candidate knowledge pages or declared
+   deletions, report that it is unsupported and do not write to the live vault.
+4. Run `obsidian-wiki transaction validate <id> --json --pretty`.
+   Review every warning; warnings do not block commit.
+   Every issue blocks commit, so fix all issues and rerun validation.
+5. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   candidate report passes.
+6. Recovery is status-aware; never choose from a flat command list. On a JSON
+   command failure, follow only the trusted `recovery.preferred_action` or an
+   alternative whose prerequisites hold. Confirm the retained record with
+   `obsidian-wiki transaction list --json`; its `recommended_action` must agree,
+   and the chosen command must appear in that record's `allowed_actions`.
+   Apply these cases:
+   - An active transaction after a validation or other preflight failure has
+     not mutated the live vault. Fix its candidate, rerun `transaction validate`,
+     and commit only after it passes; otherwise run
+     `obsidian-wiki transaction abort <id> --json`. `retry`, `restore`, and
+     `discard` are invalid while it is active.
+   - After a mutation failure, inspect the retained status and workspace. A
+     `promoting` record permits only its reported
+     `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
+     prefer the reported `obsidian-wiki transaction retry <id> --json` after
+     fixing the cause; use `obsidian-wiki transaction restore <id> --json` or
+     `obsidian-wiki transaction discard <id> --json` only when it is listed in
+     `allowed_actions` and its prerequisites hold. Follow the reported actions
+     for `complete` or `restored` records too.
+   - A configuration or begin failure with no trusted transaction ID, or an
+     empty transaction list, has no retained recovery action. Fix the cause and
+     begin anew.
+
+   Never start a replacement while a retained transaction's outcome is
+   ambiguous.
 7. Treat derived session context separately: **hot.md is local and ignored**.
-   Run `obsidian-wiki hot status --json` before using it. When it reports
-   `stale`, regenerate `hot.md` from current page summaries and recent operation
-   entries (or proceed without it), then run
-   `obsidian-wiki hot mark-current --json` after the replacement is complete.
-8. Do not commit, push, or open a pull request. Transaction promotion updates
-   the working tree only; Git publication always remains an explicit human
-   action.
+   Do not refresh `hot.md` until commit succeeds or recovery is resolved. Then
+   run `obsidian-wiki hot status --json` before using it. If it is stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use those deterministic inputs
+   to write the semantic `hot.md` as the agent, and then run
+   `obsidian-wiki hot mark-current --json`. This local write is not part of the
+   transaction.
+8. Never hand-edit manifest markers or operation pages. The transaction manager
+   owns them, and **index.md and log.md are stable** collaboration surfaces.
+   Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
 
-The transaction is also the safety boundary for destructive skills. Do not
-create a pre-write Git snapshot or automatic Git commit in portable mode.
-`WIKI_STAGED_WRITES` and `_staging/` do not replace transactions there.
+The transaction is also the safety boundary for destructive skills.
+`WIKI_STAGED_WRITES` and `_staging/` do not replace transactions in Portable
+Repository mode. Do not commit, push, or open a pull request; transaction
+promotion updates only the working tree, and Git publication remains an
+explicit human action.
 
-### Personal mode
+Stop the portable workflow here. Do not continue into Personal mode completion.
 
-**Personal mode** retains the existing direct-write workflow and its central
-manifest, `index.md`, `log.md`, and `hot.md` maintenance. Existing personal
-pre-write snapshots and optional `_staging/` review behavior also remain in
-force. Instructions elsewhere in a skill that directly edit those files or
-create a Git snapshot are personal-mode instructions unless they explicitly say
-otherwise.
+## Personal mode completion
+
+Personal mode retains direct page writes, manifest v1, `index.md`, `log.md`,
+`hot.md`, optional `_staging/`, QMD refresh, and the existing Git snapshot rules.
+Continue to apply the established central-manifest bookkeeping and special-file
+maintenance described above. Instructions elsewhere in a skill that directly
+edit those files, refresh Personal QMD tracking, or create a Git snapshot are
+Personal-mode instructions unless they explicitly say otherwise.
 
 ### Vault-scoped state
 

@@ -14,14 +14,26 @@ Two tools available: **Obsidian Bases** (native, GUI-driven, no plugin) and **Da
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Because transaction candidates are knowledge pages, stop and report unsupported rather than directly writing `_meta/*.base` when the requested dashboard cannot be represented by the protocol. In Personal mode, retain the dashboard workflow below unchanged.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not create or modify dashboard files.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand what categories and pages exist.
 3. Ask the user what they want to view if not specified — folder, tag, category, date range?
 4. Ask if they have Dataview installed if you're unsure which tool to use.
 
 ---
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. `_meta/*.base` and Dataview dashboard configuration are unsupported because portable transactions promote knowledge pages, not central or plugin configuration. Report the unsupported boundary, stop before any file mutation or `transaction begin`, do not partially create a knowledge page, and state that no transaction is created.
+
+Whenever a candidate transaction is present in a broader owner-approved workflow, the transaction owner—not this dashboard skill—must run `obsidian-wiki transaction validate <id> --json --pretty`, Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes. It must use status-aware recovery by inspecting `recovery.preferred_action`, `recommended_action`, and `allowed_actions`; when there is no trusted transaction ID or the outcome is ambiguous, it stops rather than guessing. Only after commit succeeds or recovery is fully resolved may that owner run `obsidian-wiki hot status --json`, then, if stale, `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, and run `obsidian-wiki hot mark-current --json`. These conditional commands do not authorize this unsupported dashboard mutation.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue with the Bases/Dataview workflow below, including `_meta` files, embedding, tracking, QMD refresh, and Personal Git behavior. Do not fall through into Portable Repository completion.
 
 ## Option A — Obsidian Bases (`.base` files)
 

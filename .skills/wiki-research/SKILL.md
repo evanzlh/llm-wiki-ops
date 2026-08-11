@@ -13,12 +13,14 @@ You are running an autonomous research loop on a topic, synthesizing what you fi
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Use authoritative research-source files for `transaction begin`, create results only in the returned `candidate_vault`, and suppress direct manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes below. If no authoritative source path exists, stop and ask for one rather than bypassing the protocol. In Personal mode, retain the workflow below unchanged.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch after research. Until then, shared preparation is read-only; network queries are read-only with respect to the vault and no worker may write a source or knowledge page.
 2. Read `$OBSIDIAN_VAULT_PATH/index.md` to understand what's already in the wiki — don't re-research things the wiki covers well
-3. Read `$OBSIDIAN_VAULT_PATH/hot.md` if it exists — it surfaces recent context
-4. Check `$OBSIDIAN_VAULT_PATH/references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault
+3. Select the matching read-only hot-context gate:
+
+   **Portable Repository hot context:** Run `obsidian-wiki hot status --json` first, then read the resolved `hot.md` only when it reports current. When stale, run `obsidian-wiki hot inputs --json --pretty` and use those bounded inputs as context, or skip hot context; do not write `hot.md` or mark it current during shared preparation.
+
+   **Personal mode hot context:** Read `<resolved-vault-path>/hot.md` directly if it exists; config resolution supplies the concrete runtime path and does not export a shell variable.
+4. Check the resolved vault's `references/research-config.md` if it exists — it may define source preferences, domains to skip, or confidence rules for this vault
 
 When writing internal links in generated pages, apply the link format from `llm-wiki/SKILL.md` (Link Format section) using the `OBSIDIAN_LINK_FORMAT` value.
 
@@ -73,6 +75,36 @@ If major contradictions remain unresolved:
 If contradictions are minor or the topic feels well-covered after Round 2, skip additional searching and proceed to filing.
 
 **Halt condition:** Stop when depth is achieved or 3 rounds are complete — do not loop indefinitely.
+
+## Shared in-memory filing plan
+
+Prepare one coherent plan for both completion branches. No source, candidate, or live-vault file is written in this phase.
+
+- **reference candidates:** one per accepted major source, with `category: references`, URL/origin, summary, limitations, claim citations, `provenance`, a source-quality-derived `base_confidence`, and `lifecycle: draft`.
+- **concept candidates:** one per substantive concept, with semantic frontmatter, cross-source claims, links to at least two supporting references when available, `provenance`, calibrated `base_confidence`, and `lifecycle: draft`.
+- **entity candidates:** one per significant tool, organization, or person, linked to the concepts and references that establish it, with the same provenance/confidence/lifecycle fields.
+- **master synthesis candidate:** `synthesis/Research: <Topic>.md`, with the sections `Overview`, `Key Findings`, `Core Concepts`, `Entities & Tools`, `Contradictions & Open Questions`, and `Sources Consulted`. Its frontmatter uses `category: synthesis`, research/domain tags, all accepted source IDs, a summary, `provenance`, multi-source `base_confidence`, and `lifecycle: draft`.
+
+Apply the configured link format, merge with existing semantic owners instead of duplicating them, and plan reciprocal links among all four output classes. Keep timestamps unresolved until the selected completion branch supplies transaction `started_at` or the Personal runtime timestamp.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The network queries are read-only with respect to the vault; only the reviewed source-snapshot and transaction phases below may write.
+
+1. The parent agent materializes each accepted web source as a small, reviewable UTF-8 Markdown source snapshot below a configured `sources` root. Record URL, retrieval time, content hash, excerpts, and page-level citations. Review the snapshot against the research results, preserve valid Unicode filenames and Source IDs, and never persist an absolute runtime path. If adequate evidence cannot be materialized and reviewed, stop before a transaction.
+2. Compute complete authoritative source closure from all accepted snapshots plus the existing Source IDs of pages to replace/delete; use repository-relative IDs, never compiled vault pages. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`, retain its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+3. Materialize the shared in-memory filing plan as candidate knowledge pages only below `candidate_vault`. New page `sources` contains non-empty relevant accepted or authoritative snapshot Source IDs. Updated or merged page `sources` must preserve every existing Source ID that still supports retained content, add the new relevant accepted or authoritative snapshot Source IDs, and deduplicate them. In both cases, `sources` is a non-empty subset of the frozen transaction source closure. Declare approved removals with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+5. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then execute exactly the reported recommended or preferred action whose prerequisites hold. Status mapping: for active or preflight failure, fix candidates, validate, then commit, or abort when that is the chosen allowed action; for promoting, restore; for failed, use only a reported allowed retry, restore, abort, or discard; for complete or restored, accept the reported terminal state and make no further mutation. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Materialize the shared in-memory filing plan directly in the live vault, then continue with manifest v1, central-file, QMD, and Personal Git behavior below. Do not fall through into Portable Repository completion.
 
 ## Filing — Write Wiki Pages
 

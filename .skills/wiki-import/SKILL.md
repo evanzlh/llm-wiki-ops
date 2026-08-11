@@ -19,10 +19,9 @@ Either way, the import writes pages with correct frontmatter and wikilinks, then
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`.
-
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Treat the import bundle files as the actual sources, create imported pages only in the returned `candidate_vault`, declare removals explicitly, and suppress direct central-file, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch after source detection. Until then, shared preparation is read-only; do not copy bundle records or write vault files.
 2. Read `$OBSIDIAN_VAULT_PATH/AGENTS.md` if it exists — apply any owner-specific conventions.
+3. Treat that file as the owner `AGENTS.md` for the selected mode.
 
 ## Step 1: Locate and Detect Source Type
 
@@ -68,13 +67,40 @@ Import preview (OKF bundle — full pages)
 
 ## Step 2: Determine Conflict Resolution Mode
 
-Read the user's phrasing to determine mode. Default is `merge`.
+This is a read-only decision shared by both completion branches. Read the user's phrasing before any snapshot, transaction, or vault write. Default is `merge`.
 
 | Mode | Trigger phrases | Behaviour |
 |---|---|---|
 | `merge` | (default, no special phrasing) | Existing pages: update frontmatter tags/summary/relationships and add missing wikilinks; new pages: create stub. |
 | `skip` | "skip existing", "don't overwrite", "only new pages" | Leave existing pages completely untouched; only create pages that don't exist yet. |
 | `overwrite` | "overwrite", "replace existing", "force import" | Replace all matched pages with freshly reconstructed stubs regardless of existing content. |
+
+## Shared read-only source-specific candidate plan
+
+Build this plan in memory for both completion branches. No candidate or live-vault file is written during this phase.
+
+- **graph.json:** compute an adjacency map from edges in either direction and a typed edge map from outgoing typed edges. For every node, derive its semantic vault-relative path and prepare stub candidates containing mapped frontmatter, summary, typed relationships, and a sorted `## Related` list. Under `merge`, union tags/relationships and append only missing links while preserving the existing body; under `skip`, omit existing paths; under `overwrite`, plan a fresh stub replacement.
+- **OKF bundle:** parse every non-reserved Markdown record, derive the concept ID and semantic path, reverse-map OKF frontmatter/extensions, and reverse-transform internal Markdown `.md` links. Prepare full-body candidates, never graph-style stubs. Under `merge`, retain a substantive existing body while merging metadata/citations/new sections (replace only an existing stub); under `skip`, omit existing paths; under `overwrite`, plan the complete full-body replacement.
+- Record candidate creations/replacements, skipped paths, and any explicitly approved deletions. Validate category/path pairs, required frontmatter, link format, and preserved Unicode in the plan. Filesystem creation and page writes occur only after selecting a completion branch.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The external bundle or import path is transient analysis input; never persist an absolute import path.
+
+1. Before a transaction, materialize the selected data as small, reviewable UTF-8 source snapshots or records below a configured `sources` root. Each record includes origin, format, content hash, and imported records or bounded excerpts sufficient to reproduce the candidate. Review and accept every snapshot. Preserve valid Unicode filenames and repository-relative Source IDs exactly.
+2. Apply the conflict-resolution decision selected during shared read-only preparation and its shared source-specific candidate plan. Compute complete authoritative source closure as the set union of accepted import snapshot IDs plus existing source IDs of every live page replaced or deleted; never use compiled vault page paths. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`, retain its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+3. Write candidate replacements and new pages only below `candidate_vault`. New page `sources` contains non-empty relevant accepted or authoritative snapshot Source IDs. Updated or merged page `sources` must preserve every existing Source ID that still supports retained content, add the new relevant accepted or authoritative snapshot Source IDs, and deduplicate them. In both cases, `sources` is a non-empty subset of the frozen transaction source closure. Represent approved candidate replacements and deletions explicitly, using `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty` for each deletion.
+4. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+5. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then execute exactly the reported recommended or preferred action whose prerequisites hold. Status mapping: for active or preflight failure, fix candidates, validate, then commit, or abort when that is the chosen allowed action; for promoting, restore; for failed, use only a reported allowed retry, restore, abort, or discard; for complete or restored, accept the reported terminal state and make no further mutation. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+6. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Apply the conflict-resolution decision and shared source-specific candidate plan selected during shared read-only preparation, then write that plan directly to the live vault and continue with manifest v1, `index.md`, `log.md`, `hot.md`, and Personal Git behavior below. Do not fall through into Portable Repository completion.
 
 ## Step 3: Build Internal Maps  *(graph.json only — skip for OKF bundles)*
 

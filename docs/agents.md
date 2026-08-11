@@ -55,24 +55,38 @@ while committed adapters and configuration use platform-neutral relative paths.
 ## Portable agent write protocol
 
 Repository-local skills resolve `.obsidian-wiki/config.toml` before personal
-configuration and branch immediately on Portable Repository mode. A write
-agent starts one CLI transaction with the actual authoritative source files,
-writes final vault-relative pages only inside the returned `candidate_vault`,
-declares deletions through the CLI, reviews the candidate, and commits the
-transaction. It never edits live knowledge pages, manifest shards, or operation
-pages by hand.
+configuration and branch immediately on Portable Repository mode. Write skills
+provide explicit adjacent Portable Repository completion and Personal mode
+completion branches; the agent follows exactly one branch and stops at its
+boundary.
+
+Keep the repository root as the command working directory. A write agent starts
+one CLI transaction with the complete authoritative source closure, records the
+returned `candidate_vault` as a runtime-only absolute path; do not `cd` into
+it. It writes final vault-relative pages below that destination, declares
+deletions through the CLI, and uses the transaction `started_at`
+deterministically: a new page sets `created = updated = started_at`; an updated
+page must preserve `created` and set `updated = started_at`.
+
+The agent must validate before commit, review `candidate_pages`, `deletions`,
+`issues`, and `warnings`, and promote only a passing report. It never edits live
+knowledge pages, manifest shards, or operation pages by hand, and it never
+persists the runtime absolute candidate path in a page or repository config.
 
 An edited source worktree is expected and does not block the agent. Promotion
 checks begin-time preimages only for affected live output pages and manifest
 shards. If one drifted, the transaction is retained: the agent reports it and
-uses an explicit retry, restore, abort, or discard action instead of creating a
-replacement transaction with an ambiguous outcome.
+uses status-aware recovery—an explicit retry, restore, abort, or discard action
+instead of creating a replacement transaction with an ambiguous outcome.
 
 Portable `index.md` and `log.md` are stable collaboration surfaces. Agents do
 not update them for ordinary writes; built-in query/status behavior reads pages,
 shards, and immutable `journal/operations/**` entries. `hot.md` is ignored local
 derived state: agents run `obsidian-wiki hot status --json`, rebuild it only
 when stale, and finish with `obsidian-wiki hot mark-current --json`.
+The full hot freshness gate is `hot status` → `hot inputs` → semantic rewrite
+→ `hot mark-current`; the CLI gathers and fingerprints deterministic inputs
+while the agent remains responsible for the prose.
 
 Agents stop after updating the working tree. They do not commit, push, or open
 a pull request for portable knowledge changes. Humans review the Git diff and

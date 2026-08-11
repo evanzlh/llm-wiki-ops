@@ -28,18 +28,28 @@ You are ingesting source documents into an Obsidian wiki. Your job is not to sum
    Only ingest authoritative files below the portable config's `sources`
    paths. Read only the variables you need; never echo unrelated values.
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, immediately follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md`: begin with the actual authoritative source paths, write only below the returned `candidate_vault`, and commit only after review. Suppress every legacy direct manifest, `index.md`, `log.md`, `hot.md`, `_staging/`, pre-write snapshot, and Git step below. In Personal mode, retain the workflow below unchanged.
-2. **Check `WIKI_STAGED_WRITES`** — if set to `true`, all new and updated category pages go to `_staging/<category>/` instead of their final location. Tell the user at the start of the ingest: "Staged writes mode is enabled — pages will land in `_staging/` for your review. Run `/wiki-stage-commit` when ready to promote."
-3. **Select the manifest protocol from the resolved mode.** Personal mode uses
+   Config resolution gives the agent concrete runtime paths in memory; it does
+   **not** export `OBSIDIAN_VAULT_PATH` into the parent shell. Commands below
+   therefore use `--configured` or a concrete `<resolved-vault-path>`, never an
+   assumed shell expansion.
+
+   Select one terminal workflow after the shared analysis and page-preparation
+   steps: **Portable Repository completion** or **Personal mode completion**.
+   The Portable branch is this skill's local application of the canonical
+   Portable Write Protocol in `llm-wiki/SKILL.md`. Never mix the branches'
+   write or tracking operations. In Portable mode, make no vault mutation
+   before the transaction begins.
+2. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 file, including its existing absolute and
    vault-relative source-key behavior. Portable mode uses manifest v2: inspect
    it through the CLI cache commands and refer to each authoritative file by
    its repository-relative Source ID. Never parse the v2 marker as a source
-   collection or hand-edit its shards. In portable mode, manifest v2 schema 1
-   requires exactly one configured source root even though the TOML field is a
-   list.
-4. Read `index.md` to understand current wiki content
-5. Read `log.md` to understand recent activity
+   collection or hand-edit its shards; transaction commit owns
+   `<vault>/.manifest.json` and `<vault>/.manifest/sources/`. In portable mode,
+   manifest v2 schema 1 requires exactly one configured source root even though
+   the TOML field is a list.
+3. Read `index.md` to understand current wiki content
+4. Read `log.md` to understand recent activity
 
 When writing internal links in Step 5, apply the link format described in `llm-wiki/SKILL.md` (Link Format section) according to the `OBSIDIAN_LINK_FORMAT` value you read.
 
@@ -62,8 +72,17 @@ This skill supports three modes. Ask the user or infer from context:
 ### Append Mode (default)
 Only ingest sources that are **new or modified** since last ingest. Use the built-in cache command for a reliable, platform-independent check:
 
+Portable Repository mode, from the repository-root CWD:
+
 ```bash
-obsidian-wiki cache-check "$OBSIDIAN_VAULT_PATH" <source1> [source2 ...]
+obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty
+```
+
+Personal mode, after config resolution has supplied the concrete vault path in
+agent memory:
+
+```bash
+obsidian-wiki cache-check <resolved-vault-path> <source1> [source2 ...] --json --pretty
 ```
 
 Output: `{"new": [...], "modified": [...], "unchanged": [...], "missing": [...]}`.
@@ -71,23 +90,24 @@ Output: `{"new": [...], "modified": [...], "unchanged": [...], "missing": [...]}
 - `new` → ingest these
 - `modified` → re-ingest these (content changed since last run)
 - `unchanged` → skip entirely — hash matches, content is identical
-- `missing` → in manifest but no longer on disk. In personal manifest v1, skip
-  and optionally reconcile the v1 entry. In portable manifest v2, restore an
-  accidentally deleted source; for an intentional deletion, remove the entire
-  corresponding shard file with
-  `git rm <vault>/.manifest/sources/<relative>.json`. That is file deletion,
-  never editing marker or shard JSON fields.
+- `missing` → in manifest but no longer on disk. In Personal manifest v1, skip
+  and optionally reconcile the v1 entry. In Portable manifest v2, restore an
+  accidentally deleted authoritative source; intentional source removal must
+  use the repository's reviewed source-removal workflow, never hand-edit a
+  marker or shard.
 
-After ingesting each source, record its hash:
+After ingesting each source in Personal mode, record its hash using the concrete
+resolved vault path:
 
 ```bash
-obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
+obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
 ```
 
-In a portable repository these commands resolve manifest v2, return
-repository-relative Source ID values, and update exactly one shard below
-`<vault>/.manifest/sources/` per source. Do not replace them with manual JSON
-editing. Portable repositories require the installed CLI.
+Portable transaction commit records source hashes and owns manifest-v2 shard
+updates; Portable ingest never runs `cache-update` or manages shards. Portable
+Source IDs are repository-relative and preserve valid Unicode spelling exactly,
+including CJK paths such as `sources/组会纪要.md`; never transliterate or
+Unicode-normalize them.
 
 **Personal manifest v1 fallback only** (if `obsidian-wiki` is not installed):
 compute hashes manually with `sha256sum -- "<file>"` (Linux) or `shasum -a 256
@@ -104,11 +124,21 @@ Ingest everything regardless of manifest state. Use when:
 - After a `wiki-rebuild` has cleared the vault
 
 ### Raw Mode
+**Personal mode only.** Portable repositories do not use the vault `_raw/`
+inbox as an authoritative source. Preserve Portable material as an ordinary,
+reviewable file below a configured `sources` path before ingesting it.
+
 Process draft pages from the `_raw/` staging directory inside the vault. Use when:
 - The user says "process my drafts", "promote my raw pages", or drops files into `_raw/`
 - After a paste-heavy session where notes were captured quickly without structure
 
-In raw mode, each file in `OBSIDIAN_VAULT_PATH/_raw/` (or `OBSIDIAN_RAW_DIR`) is treated as a source. After promoting a file to a proper wiki page, **move the original into `_raw/_archived/`** (same filename, creating the directory if it doesn't exist) instead of deleting it. Never leave promoted files at the top level of `_raw/` — they'll be double-processed on the next run; moving them into `_raw/_archived/` keeps them out of that scan while preserving the original draft.
+In raw mode, each file in `<resolved-vault-path>/_raw/` (or the concrete
+resolved raw-directory override) is treated as a source. After promoting a file
+to a proper wiki page, **move the original into `_raw/_archived/`** (same
+filename, creating the directory if it doesn't exist) instead of deleting it.
+Never leave promoted files at the top level of `_raw/` — they'll be
+double-processed on the next run; moving them into `_raw/_archived/` keeps them
+out of that scan while preserving the original draft.
 
 This keeps faith with the "immutable raw layer" principle in `llm-wiki/SKILL.md`: even though `_raw/` drafts aren't Layer 1 sources, some have no other copy (e.g. a quick-capture finding typed straight into `_raw/` with no external document behind it), so the promoted file is the only record once it leaves the staging directory.
 
@@ -119,7 +149,7 @@ This keeps faith with the "immutable raw layer" principle in `llm-wiki/SKILL.md`
 - If the file has only `sources:`, copy those entries verbatim.
 - Only fall back to the `_raw/` filename if the file has no `sources:` or `capture_source` fields at all.
 
-**Move safety:** Only move the specific file that was just promoted. Before moving, verify the resolved path is inside `$OBSIDIAN_VAULT_PATH/_raw/` — never touch files outside this directory. Never use wildcards or recursive operations (`rm -rf`, `mv *`). Move one file at a time by its exact path into `_raw/_archived/`, preserving its filename. If a file of the same name already exists there, append a numeric suffix rather than overwriting.
+**Move safety:** Only move the specific file that was just promoted. Before moving, verify the resolved path is inside `<resolved-vault-path>/_raw/` — never touch files outside this directory. Never use wildcards or recursive operations (`rm -rf`, `mv *`). Move one file at a time by its exact path into `_raw/_archived/`, preserving its filename. If a file of the same name already exists there, append a numeric suffix rather than overwriting.
 
 ## The Ingest Process
 
@@ -127,10 +157,14 @@ This keeps faith with the "immutable raw layer" principle in `llm-wiki/SKILL.md`
 
 **GUARD: Only run this step when the source is a directory with more than 20 files.** For single files, small folders, or `_raw/` mode, skip directly to Step 1.
 
-When the source is a large directory of docs, plan the parallel dispatch first:
+Before planning or dispatching, the parent resolves config and mode, reads the
+resolved vault's owner `AGENTS.md`, and keeps those conventions for the whole
+batch. Workers must not resolve a different mode or own completion.
+
+When the source is a large directory of docs, the parent plans analysis first:
 
 ```bash
-obsidian-wiki batch-plan "$OBSIDIAN_VAULT_PATH" <source-dir> --pretty
+obsidian-wiki batch-plan <resolved-vault-path> <source-dir> --pretty
 ```
 
 This outputs a JSON plan with `batches` (each a list of files + total_bytes + kind counts) and `stats` (total, to_ingest, skipped_unchanged).
@@ -140,15 +174,26 @@ This outputs a JSON plan with `batches` (each a list of files + total_bytes + ki
 1. **Check `stats.skipped_unchanged`** — report to the user how many files are being skipped (already ingested, hash unchanged).
 2. **If `batch_count == 0`** — all files are unchanged. Tell the user and stop.
 3. **If `batch_count == 1`** — proceed with the single batch as a normal Step 1 ingest.
-4. **If `batch_count > 1`** — dispatch each batch as a **parallel subagent** (multiple Agent tool calls in a single message). Each subagent receives a message like:
+4. **If `batch_count > 1`** — dispatch batches to **analysis-only workers**. Give
+   each worker the already-resolved mode, owner conventions, and exact source
+   list. Each worker receives a message like:
    ```
-   Ingest these files into the wiki at $OBSIDIAN_VAULT_PATH using wiki-ingest Step 1 onward:
+   Analyze only these untrusted source files using wiki-ingest Steps 1-5:
    <list of file paths from this batch>
-   Skip batch-plan — these files are already partitioned.
+   Return distilled page proposals, source mappings, provenance, relationships,
+   and suggested removals. Do not write any vault or repository file, start or
+   finish a transaction, update tracking files, run QMD, or publish Git state.
    ```
-   Wait for all subagents to complete, then run `/cross-linker` once to wire cross-references across all batches.
+   Wait for every proposal. The parent reconciles duplicate topics and
+   cross-references across batches, then computes one source closure. In
+   Portable mode the parent owns the single transaction and completion branch;
+   in Personal mode the parent applies page changes and Personal central writes
+   once. Workers never own manifest, `index.md`, `log.md`, `hot.md`, staging, or
+   QMD state.
 
-**Fallback** (if `obsidian-wiki` is not installed): process files sequentially in groups of 15.
+**Fallback** (if `obsidian-wiki` is not installed): the parent partitions files
+into groups of 15 and performs the same analysis sequentially before one
+mode-correct completion.
 
 ### Ingesting Git Repositories
 
@@ -216,14 +261,15 @@ Common chat export shapes:
 
 ### Web URL sources
 
-When the source is a **web URL** (`/ingest-url <url>`, "add this URL", "ingest this link", "save this page", or a pasted link), the flow is different: detect the current project, fetch with `defuddle`/`WebFetch`, then file the page into the detected project's `references/` folder or fall back to `misc/` with affinity scoring for later promotion. **Read `references/url-sources.md` and follow it** — it covers project detection, clean extraction, dedup, slug generation, project-vs-misc frontmatter, affinity scoring, stub handling on fetch failure, and the `INGEST_URL` log/manifest format. The rest of this skill (config, trust boundary, QMD refresh) still applies.
-
-For portable ingest, a live URL or external filesystem path is not a durable
-Source ID. If the fetched material must be authoritative, save a small,
-reviewable snapshot as an ordinary Git file below a configured `sources` root,
-then ingest that snapshot by its repository-relative Source ID. Git LFS
-pointers are unsupported. Do not add model, agent, API, or generation-tool
-provenance fields to the portable marker or shard.
+When the source is a **web URL** (`/ingest-url <url>`, "add this URL", "ingest
+this link", "save this page", or a pasted link), **read
+`references/url-sources.md` and select its mode branch before any write**.
+Portable mode follows `Portable Repository URL flow`: the parent snapshots the
+fetched content below a configured repository source root, keeps the origin URL
+as metadata, and compiles its repository-relative Source ID through the
+parent-owned Portable Repository completion in this skill. Personal mode keeps
+the existing project-or-`misc/` affinity flow and Personal tracking. Never run
+the Personal URL steps after selecting Portable mode.
 
 ### Multimodal branch (images)
 
@@ -238,26 +284,35 @@ Vision is interpretive by nature, so image-derived pages will skew heavily towar
 
 For PDFs that are mostly images (scanned docs, slide decks exported to PDF), use `Read pages: "N"` to pull specific pages and treat each page as an image source.
 
-### Long-PDF preprocessing — PageIndex (optional — requires `PAGEINDEX_REPO` in `.env`)
+### Long-PDF preprocessing — PageIndex (optional)
 
-When the source is a **text PDF with ≥ `PAGEINDEX_MIN_PAGES` pages** (default 30) and
-`PAGEINDEX_REPO` is set, don't read the whole document linearly. Build a structure-aware
-table-of-contents tree first, reason over it, and read only the relevant page ranges —
-**read `references/pageindex.md` and follow it.** It yields section titles, summaries, and
-page ranges, giving precise page-cited provenance at a fraction of the context cost.
-
-If `PAGEINDEX_REPO` is unset, the repo is missing, or PageIndex errors, **fall back** to
-reading the PDF directly with page ranges. Never block an ingest on PageIndex.
+When the source is a text PDF with at least the resolved
+`PAGEINDEX_MIN_PAGES` value (default 30), **read `references/pageindex.md` and
+select its mode branch**. In Portable Repository mode, skip PageIndex by default
+or use its output only as analysis backed by the reviewable text snapshot that
+serves as the Portable source; a local PDF is transient analysis input, not a
+Source ID. Keep repository-root CWD and never edit manifests. In Personal mode,
+the resolved PageIndex repo, workspace, model, and optional `.env` workflow may
+be used directly. In either mode, never block ingest on PageIndex.
 
 ### Academic papers
 
 Research papers (arXiv/conference PDFs) carry their substance in figures, equations, and results tables — exactly what plain text extraction drops. A normal arXiv PDF has a text layer, so the image branch above never fires and its diagrams are skipped by default. When a source is an academic paper, override that:
 
 1. **Read the text layer** for the narrative (problem, method, claims), then **re-read the figure- and equation-dense pages with vision** (`Read pages: "N"`) — the architecture/method figure (often Figure 1) and the main results table rarely live in the text layer.
-2. **Capture the method visually — prefer the paper's real figures.**
-   - **Embed the paper's own architecture/method figure as the primary visual.** Most arXiv figures are a single embedded raster. With PyMuPDF (`fitz`): use `page.get_image_info(xrefs=True)` to find the figure's `xref` and bbox — it is usually the wide image sitting just above its caption (locate the caption with `page.search_for("Figure N")`) — then `img = doc.extract_image(xref)` and save `img["image"]` to `attachments/<slug>-figN.<ext>` using the native `img["ext"]` (it may be JPEG, not PNG — don't hardcode the extension; downscale oversized figures, e.g. `sips -Z 1800 <file>`). If the figure is vector rather than raster (`extract_image` returns nothing and `page.get_drawings()` is non-empty), render the bbox region instead: `page.get_pixmap(clip=rect, matrix=fitz.Matrix(4, 4))` — compute `rect` by unioning `get_drawings()` rects (drawings-only; text blocks pull in body text) within one column above the caption, and in multi-column papers bound the window below the previous element so adjacent tables/text aren't caught; verify the render and re-crop if needed. Embed with `![[<slug>-figN.<ext>]]` plus an italic caption.
-   - **Also embed a key results / motivating figure** when the paper has one — a scaling plot, a benchmark chart, or a capability collage — in the Results section alongside the table.
-   - **Mermaid is the dependency-free fallback.** If PyMuPDF/poppler isn't available or a figure can't be extracted, draw the architecture as a Mermaid diagram instead — Obsidian renders Mermaid fenced code blocks natively with no dependencies. `![[<source>.pdf#page=N]]` (the whole source page) is another no-extract option.
+2. **Capture the method visually according to mode.**
+   - **Portable Repository mode:** a local or downloaded binary PDF or image may be read as transient analysis input only.
+     Before beginning the transaction, create a small, reviewable Markdown or plain-text snapshot strictly below a configured repository `sources` root.
+     Record the origin URL or identifier, the relevant extracted text, a content hash when available, and precise page citations.
+     The candidate `sources` cites only the snapshot's repository-relative Source ID.
+     Binary PDFs, images, and attachments are Personal-only and are never Portable Source IDs; do not copy them into the repository, vault, manifest, or candidate.
+     Produce Markdown candidate pages only. Never write `candidate_vault/attachments`, an extracted image, a PDF, or any other non-Markdown candidate; describe the figure and use Mermaid when a visual is important.
+     If an adequate text snapshot cannot be produced, report the ingest as unsupported in Portable mode or use Personal mode.
+   - **Personal mode — prefer the paper's real figures.** Personal vault
+     attachments use the extraction workflow below:
+     - **Embed the paper's own architecture/method figure as the primary visual.** Most arXiv figures are a single embedded raster. With PyMuPDF (`fitz`): use `page.get_image_info(xrefs=True)` to find the figure's `xref` and bbox — it is usually the wide image sitting just above its caption (locate the caption with `page.search_for("Figure N")`) — then `img = doc.extract_image(xref)` and save `img["image"]` to `attachments/<slug>-figN.<ext>` using the native `img["ext"]` (it may be JPEG, not PNG — don't hardcode the extension; downscale oversized figures, e.g. `sips -Z 1800 <file>`). If the figure is vector rather than raster (`extract_image` returns nothing and `page.get_drawings()` is non-empty), render the bbox region instead: `page.get_pixmap(clip=rect, matrix=fitz.Matrix(4, 4))` — compute `rect` by unioning `get_drawings()` rects (drawings-only; text blocks pull in body text) within one column above the caption, and in multi-column papers bound the window below the previous element so adjacent tables/text aren't caught; verify the render and re-crop if needed. Embed with `![[<slug>-figN.<ext>]]` plus an italic caption.
+     - **Also embed a key results / motivating figure** when the paper has one — a scaling plot, a benchmark chart, or a capability collage — in the Results section alongside the table.
+     - **Mermaid is the dependency-free fallback.** If PyMuPDF/poppler isn't available or a figure can't be extracted, draw the architecture as a Mermaid diagram instead — Obsidian renders Mermaid fenced code blocks natively with no dependencies. `![[<source>.pdf#page=N]]` (the whole source page) is another no-extract option.
 3. **Keep the math as math.** Set the 1–3 core equations as `$$…$$` display LaTeX, not backtick code.
 4. **Tabulate results.** Render headline benchmark numbers as a markdown table, not a comma-separated blob.
 5. **Write the page with the Paper Deep-Dive Template** (`llm-wiki/SKILL.md`) into `references/`, in addition to the distilled concept/entity cross-links. This is the deliberate exception to "aim for 10–15 small pages" (Step 4) — a paper earns one rich, self-contained page.
@@ -266,18 +321,19 @@ See the *Paper Extraction Frame* in `references/ingest-prompts.md` for the readi
 
 ### Step 1b: QMD Source Discovery (optional — requires `QMD_PAPERS_COLLECTION` in `.env`)
 
-**GUARD: If `$QMD_PAPERS_COLLECTION` is empty or unset, skip this entire step and proceed to Step 2.**
+**GUARD: If the resolved `QMD_PAPERS_COLLECTION` value is empty or unset, skip this entire step and proceed to Step 2.**
 
 > **No QMD?** Skip this step entirely. Use `Grep` in Step 4 to check for existing pages on the same topic before creating new ones. See `.env.example` for QMD setup instructions.
 
-When `QMD_PAPERS_COLLECTION` is set:
+When `QMD_PAPERS_COLLECTION` is set, use its concrete resolved value from agent
+memory; config resolution does not export it into the parent shell.
 
 Before extracting knowledge from a document, check whether related papers are already indexed that could enrich the page you're about to write:
 
-Choose the QMD transport from `$QMD_TRANSPORT`:
+Choose the QMD transport from the resolved `QMD_TRANSPORT` value:
 
 - `mcp` (default): use the QMD MCP tool configured in the agent.
-- `cli`: run the local qmd CLI. Use `$QMD_CLI` if set; otherwise use `qmd`.
+- `cli`: run the concrete resolved QMD CLI path (or `qmd` when no override is configured).
 
 If the selected transport is unavailable (no MCP tool, `qmd` not on PATH, or the command errors), skip QMD and continue with Step 2.
 
@@ -285,7 +341,7 @@ For MCP transport:
 
 ```
 mcp__qmd__query:
-  collection: <QMD_PAPERS_COLLECTION>   # e.g. "papers"
+  collection: <resolved-qmd-papers-collection>   # e.g. "papers"
   intent: <what this document is about>
   searches:
     - type: vec    # semantic — finds papers on the same topic even with different vocabulary
@@ -294,22 +350,22 @@ mcp__qmd__query:
       query: <key terms, author names, method names from the source>
 ```
 
-For CLI transport, pick the command from `$QMD_CLI_SEARCH_MODE`:
+For CLI transport, pick the command from the resolved `QMD_CLI_SEARCH_MODE` value:
 
 - `quality` (default): best relevance; slower on CPU.
   ```bash
-  ${QMD_CLI:-qmd} query $'vec: <topic or thesis of the source>\nlex: <key terms, author names, method names>' -c "$QMD_PAPERS_COLLECTION" -n 8 --files
+  <resolved-qmd-cli> query $'vec: <topic or thesis of the source>\nlex: <key terms, author names, method names>' -c <resolved-qmd-papers-collection> -n 8 --files
   ```
 - `balanced`: hybrid search without LLM reranking; use when `quality` is too slow.
   ```bash
-  ${QMD_CLI:-qmd} query $'vec: <topic or thesis of the source>\nlex: <key terms, author names, method names>' -c "$QMD_PAPERS_COLLECTION" -n 8 --no-rerank --files
+  <resolved-qmd-cli> query $'vec: <topic or thesis of the source>\nlex: <key terms, author names, method names>' -c <resolved-qmd-papers-collection> -n 8 --no-rerank --files
   ```
 - `fast`: semantic-only source discovery.
   ```bash
-  ${QMD_CLI:-qmd} vsearch "<topic or thesis of the source>" -c "$QMD_PAPERS_COLLECTION" -n 8 --files
+  <resolved-qmd-cli> vsearch "<topic or thesis of the source>" -c <resolved-qmd-papers-collection> -n 8 --files
   ```
 
-Use `${QMD_CLI:-qmd} get "#docid"` to retrieve a ranked source by docid when CLI output provides one.
+Use `<resolved-qmd-cli> get "#docid"` to retrieve a ranked source by docid when CLI output provides one.
 
 Use the returned snippets to:
 1. **Surface related papers** you may not have thought to link — add them as cross-references in the wiki page
@@ -385,7 +441,7 @@ If the source is not project-specific, put everything in global categories.
 ### Step 4: Plan Updates
 
 Before writing anything, plan which pages to update or create. Aim for 10-15 pages per ingest. For each:
-- Does this page already exist? (Check `index.md` and use Glob to search `OBSIDIAN_VAULT_PATH`)
+- Does this page already exist? (Check `index.md` and use Glob to search `<resolved-vault-path>`)
 - If it exists, what new information does this source add?
 - If it's new, which category does it belong in?
 - What `[[wikilinks]]` should connect it to existing pages?
@@ -400,37 +456,11 @@ Before writing anything, plan which pages to update or create. Aim for 10-15 pag
 
 Pages without a `tier:` field are treated as `supporting`. When in doubt, err toward updating — the tier is a cost-control hint, not a hard lock.
 
-### Step 5: Write/Update Pages
+### Step 5: Prepare Page Content
 
-For each page in your plan:
-
-**If `WIKI_STAGED_WRITES=true`, apply the staging rules below before writing anything:**
-
-- **New pages** go to `_staging/<category>/page.md` instead of `<category>/page.md`. The page content is identical to what it would be in the live wiki — only the location differs.
-- **Updates to existing pages** go to `_staging/<category>/page.patch.md`. The patch file format:
-  ```markdown
-  ---
-  title: <same as target page>
-  patch_target: <category>/page.md
-  ingested_at: <ISO timestamp>
-  source: <source path>
-  ---
-  # Proposed Update: <page title>
-
-  ## Additions
-  <new paragraphs/bullets to merge into the page>
-
-  ## Deletions
-  <lines to remove, verbatim from current page>
-
-  ## Updated Fields
-  updated: <new ISO timestamp>
-  sources: [<new source added>]
-  ```
-- `index.md` and `log.md` are always updated immediately (low-risk tracking files). `hot.md` notes that staged writes are pending.
-- When writing staged pages, use the path `_staging/<category>/` — create the directory if it doesn't exist.
-
-**If `WIKI_STAGED_WRITES` is not set or is `false` (default):**
+For each page in your plan, prepare its final content without mutating the live
+vault. The selected completion branch determines whether it is written as a
+Portable candidate, a Personal live page, or a Personal staged proposal.
 
 **If creating a new page:**
 - Use the page template from the llm-wiki skill (frontmatter + sections). **For academic papers landing in `references/`, use the Paper Deep-Dive Template** from `llm-wiki/SKILL.md` instead of the generic one (see *Academic papers* in Step 1).
@@ -441,7 +471,7 @@ For each page in your plan:
 **If updating an existing page:**
 - Read the current page first
 - Merge new information — don't just append
-- Update the `updated` timestamp in frontmatter
+- Prepare the `updated` timestamp required by the selected completion branch
 - Add the new source to the `sources` list
 - Resolve any contradictions between old and new information (note them if unresolvable)
 
@@ -486,11 +516,141 @@ When **updating** an existing page, recompute `base_confidence` only if sources 
 - Extracted claims need no marker
 - After writing the page, count rough fractions and write them to a `provenance:` frontmatter block (extracted/inferred/ambiguous summing to ~1.0). When updating an existing page, recompute and update the block.
 
-### Step 6: Update Cross-References
+### Step 6: Check Cross-References
 
-After writing pages, check that wikilinks work in both directions. If page A links to page B, consider whether page B should also link back to page A.
+Before writing pages, check that planned wikilinks work in both directions. If
+page A links to page B, consider whether page B should also link back to page A.
 
-### Step 7: Update Manifest and Special Files
+### Handling Multiple Sources
+
+When ingesting a directory, process sources one at a time but maintain a running awareness of the full batch. Later sources may strengthen or contradict earlier ones — that's fine, just update the prepared pages as you go.
+
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode.
+Keep the repository root as the command CWD throughout. The absolute
+`candidate_vault` is a runtime destination only: keep it in agent memory, do
+not `cd` into it, and never persist that absolute path in repository content or
+configuration.
+
+1. **Compute source closure before beginning.** A transaction's source set is
+   immutable. Include every existing repository-relative Source ID cited by
+   each page that will be updated or deleted, plus every new authoritative
+   source used by the prepared pages. Preserve valid Unicode Source IDs and
+   filenames exactly, including CJK paths such as `sources/组会纪要.md`; do not
+   transliterate or Unicode-normalize them.
+2. **Begin one transaction from the repository root** with the complete source
+   closure:
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Record its `transaction_id`, absolute `candidate_vault`, `started_at`, and
+   canonical transaction Source IDs. Every candidate page's `sources` must be
+   a non-empty subset of those Source IDs. If closure was incomplete, abort
+   this transaction and begin a new one; never add a Source ID after begin.
+3. **Apply timestamps and write candidates.** For a new page, set
+   `created = updated = started_at`. For an existing page, preserve the
+   existing `created` and set `updated = started_at`. Write new and updated
+   knowledge pages only at their final vault-relative paths below the returned
+   absolute `candidate_vault`, without changing CWD. The transaction will not
+   rewrite these reviewed candidate bytes.
+4. **Declare every removal** with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. If a
+   requested change cannot be represented as candidate knowledge pages or a
+   declared deletion, report it as unsupported and do not mutate the live
+   vault.
+5. **Validate before commit.** Run
+   `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning; warnings do not block commit. Fix every issue and rerun validation,
+   because issues do block commit.
+6. **Commit only a passing candidate report** with
+   `obsidian-wiki transaction commit <id> --json --pretty`.
+7. **Use status-aware recovery.** On a JSON command failure, follow only the
+   trusted `recovery.preferred_action` or a reported alternative whose
+   prerequisites hold. Confirm the retained record with
+   `obsidian-wiki transaction list --json`: its `recommended_action` must
+   agree, and the chosen command must appear in `allowed_actions`.
+   - An active transaction after validation or another preflight failure has
+     not changed the live vault. Fix the candidate and validate again, or run
+     `obsidian-wiki transaction abort <id> --json`; `retry`, `restore`, and
+     `discard` are invalid while it is active.
+   - After a mutation failure, inspect the retained status and workspace. A
+     `promoting` record permits only its reported
+     `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
+     prefer the reported `obsidian-wiki transaction retry <id> --json` after
+     fixing the cause; use `obsidian-wiki transaction restore <id> --json` or
+     `obsidian-wiki transaction discard <id> --json` only when listed in
+     `allowed_actions` and its prerequisites hold. Follow the reported actions
+     for `complete` and `restored` records too.
+   - A configuration or begin failure with no trusted transaction ID, or an
+     empty transaction list, has no recovery action. Fix the cause and begin
+     anew. Never start a replacement while a retained transaction's outcome is
+     ambiguous.
+8. **Refresh local hot context only after commit succeeds or recovery is
+   resolved.** Run `obsidian-wiki hot status --json`. If it is stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`. This ignored local write is not
+   part of the transaction.
+9. **Report and stop.** Report created, updated, and removed pages, along with
+   validation warnings and the hot-cache result.
+
+Portable quality checks:
+
+- [ ] Every candidate page has valid frontmatter, a non-empty repository-relative `sources` subset, a concise `summary:`, and correct transaction timestamps.
+- [ ] Every new page has at least 2 working links and no candidate becomes an orphan.
+- [ ] Every new claim has source attribution; inferred and ambiguous claims have the required markers and `provenance:` fractions.
+- [ ] Typed `relationships:` use only allowed relationship types when the source makes the connection clear.
+- [ ] Validation passes after every issue is fixed and every warning is reviewed.
+- [ ] No live central file, manifest shard, operation page, or unsupported path was edited by the agent.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Write the
+prepared pages directly to the concrete resolved vault path, subject to the
+optional staged-writes behavior below, and then perform Personal tracking. For
+a new page, set `created` and `updated` to the current ISO timestamp; for an
+update, preserve `created` and set `updated` to the current ISO timestamp. Hold
+the concrete vault and QMD values in agent memory: config resolution does not export these values into the parent shell.
+
+### Personal Page Writes and Staging
+
+Check `WIKI_STAGED_WRITES`. If it is `true`, tell the user at the start of the
+ingest: "Staged writes mode is enabled — pages will land in `_staging/` for
+your review. Run `/wiki-stage-commit` when ready to promote."
+
+When staged writes are enabled:
+
+- **New pages** go to `_staging/<category>/page.md` instead of `<category>/page.md`. The page content is identical to what it would be in the live wiki — only the location differs.
+- **Updates to existing pages** go to `_staging/<category>/page.patch.md`. The patch file format:
+  ```markdown
+  ---
+  title: <same as target page>
+  patch_target: <category>/page.md
+  ingested_at: <ISO timestamp>
+  source: <source path>
+  ---
+  # Proposed Update: <page title>
+
+  ## Additions
+  <new paragraphs/bullets to merge into the page>
+
+  ## Deletions
+  <lines to remove, verbatim from current page>
+
+  ## Updated Fields
+  updated: <new ISO timestamp>
+  sources: [<new source added>]
+  ```
+- `index.md` and `log.md` are always updated immediately (low-risk tracking files). `hot.md` notes that staged writes are pending.
+- Use `_staging/<category>/`, creating that directory if needed.
+
+If `WIKI_STAGED_WRITES` is unset or `false`, write new and updated pages to
+their final category paths in the resolved Personal vault.
+
+### Personal Step 7: Update Manifest and Special Files
 
 **Personal mode — manifest v1.** For each source file ingested, add or update
 its entry in the monolithic `.manifest.json`:
@@ -511,17 +671,6 @@ If the personal manifest doesn't exist yet, create it with `version: 1`.
 Preserve existing v1 source identity behavior: canonical expanded absolute
 keys for external sources and vault-relative keys for in-vault sources.
 
-**Portable mode — manifest v2.** The source must be an ordinary file below the
-configured source root, identified by its repository-relative Source ID. Run:
-
-```bash
-obsidian-wiki cache-update "$OBSIDIAN_VAULT_PATH" <source> --pages <page1> [page2 ...]
-```
-
-This updates its single shard below `<vault>/.manifest/sources/`. Never manually
-edit the v2 marker or shard, never add live URLs or external paths as durable
-IDs, and never add model/agent/API/generation-tool provenance fields.
-
 **`index.md`** — Add entries for any new pages, update summaries for modified pages.
 
 **`log.md`** — Append an entry:
@@ -529,7 +678,7 @@ IDs, and never add model/agent/API/generation-tool provenance fields.
 - [TIMESTAMP] INGEST source="path/to/source" pages_updated=N pages_created=M mode=append|full
 ```
 
-**`hot.md`** — Read `$OBSIDIAN_VAULT_PATH/hot.md` (create from template below if missing). Rewrite the **Recent Activity** section to reflect what you just ingested — keep it to the last 3 operations max. Update **Key Takeaways** and **Active Threads** if the content materially shifted them. Update the `updated` timestamp.
+**`hot.md`** — Read `<resolved-vault-path>/hot.md` (create from template below if missing). Rewrite the **Recent Activity** section to reflect what you just ingested — keep it to the last 3 operations max. Update **Key Takeaways** and **Active Threads** if the content materially shifted them. Update the `updated` timestamp.
 
 Write the *conceptual* change, not a file list. Example: "Ingested Fowler's microservices article — 3 new concept pages on service decomposition, API gateway, bounded contexts."
 
@@ -545,36 +694,39 @@ updated: TIMESTAMP
 ## Flagged Contradictions
 ```
 
-### Step 8: Refresh QMD Wiki Index (optional — requires `QMD_WIKI_COLLECTION`)
+### Personal Step 8: Refresh QMD Wiki Index
 
-**GUARD: If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step.** The markdown vault is still the source of truth; QMD is a search index.
+**GUARD: If the resolved `QMD_WIKI_COLLECTION` value is empty or unset, skip this step.** The markdown vault is still the source of truth; QMD is a search index.
 
 Run this step only after pages and special files have been written. If the source was skipped because manifest hash matched, do not refresh QMD.
 
-This refresh currently requires the local QMD CLI. Use `$QMD_CLI` if set; otherwise use `qmd`. If the CLI is unavailable or returns an error, do not roll back the wiki ingest; report that the wiki was updated but QMD refresh was skipped or failed.
+This refresh currently requires the local QMD CLI. Use the concrete resolved
+QMD CLI path held in agent memory, or `qmd` when no override is configured. If
+the CLI is unavailable or returns an error, do not roll back the wiki ingest;
+report that the wiki was updated but QMD refresh was skipped or failed.
 
 For CLI refresh:
 
 ```bash
-${QMD_CLI:-qmd} update
+<resolved-qmd-cli> update
 ```
 
 If the output says new hashes need vectors, or if pages were created/updated and embeddings may be stale, run:
 
 ```bash
-${QMD_CLI:-qmd} embed
+<resolved-qmd-cli> embed
 ```
 
 Verify at least one created or materially updated page is visible in the wiki collection:
 
 ```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/projects/<project>/<category>/<page>.md" -l 5
+<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/projects/<project>/<category>/<page>.md" -l 5
 ```
 
 If the exact `qmd://` path is uncertain, use:
 
 ```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION" | rg "<page-slug>"
+<resolved-qmd-cli> ls <resolved-qmd-wiki-collection> | rg "<page-slug>"
 ```
 
 Record QMD refresh in the final report as one of:
@@ -583,11 +735,7 @@ Record QMD refresh in the final report as one of:
 - `QMD skipped: qmd CLI unavailable`
 - `QMD failed: <short error summary>`
 
-## Handling Multiple Sources
-
-When ingesting a directory, process sources one at a time but maintain a running awareness of the full batch. Later sources may strengthen or contradict earlier ones — that's fine, just update pages as you go.
-
-## Quality Checklist
+### Personal Quality Checklist
 
 After ingesting, verify:
 - [ ] Every new page has frontmatter with title, category, tags, sources
@@ -599,6 +747,8 @@ After ingesting, verify:
 - [ ] Inferred and ambiguous claims are marked with `^[inferred]` / `^[ambiguous]`; `provenance:` frontmatter block is present on new and updated pages
 - [ ] Every new/updated page has a `summary:` frontmatter field (1–2 sentences, ≤200 chars)
 - [ ] `relationships:` block is present on pages where source text made typed connections clear; all entries use an allowed type from `llm-wiki/SKILL.md`
+- [ ] If staged writes are enabled, every new page or update is in the correct `_staging/` path and remains pending review
+- [ ] `hot.md` reflects the conceptual change and any pending `_staging/` review
 - [ ] If `QMD_WIKI_COLLECTION` is set and the QMD CLI is available, `qmd update` has run after writing pages
 - [ ] If QMD reports missing vectors or embeddings may be stale, `qmd embed` has run
 - [ ] QMD refresh status is included in the final report

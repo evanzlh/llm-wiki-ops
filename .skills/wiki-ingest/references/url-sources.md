@@ -4,10 +4,12 @@ Reference for the `wiki-ingest` skill when the source is a **web URL** rather th
 Triggered by `/ingest-url <url>`, "add this URL", "ingest this link", "save this page", or a pasted
 URL with "add this" / "save this to my wiki".
 
-Where the page lands depends on whether you can detect a current project — if yes, it goes straight
-into that project's folder; if not, it goes to `misc/` and is promoted later based on connection
-affinity. Config resolution, the content trust boundary, and the QMD refresh step are the same as the
-main `wiki-ingest/SKILL.md` — follow those; this file only covers the URL-specific mechanics.
+Where the page lands depends on both the resolved configuration mode and project
+context. Portable Repository mode compiles a repository snapshot into supported
+knowledge-page candidates; Personal mode retains the project-or-`misc/` affinity
+workflow. Config resolution, the content trust boundary, and completion rules are
+the same as the main `wiki-ingest/SKILL.md` — follow those; this file only covers
+URL-specific mechanics.
 
 ## Step U0: Detect Current Project
 
@@ -18,17 +20,20 @@ Before fetching anything, determine whether the user is working inside a specifi
 1. **Git remote name** — run `git remote get-url origin 2>/dev/null` from the current working directory. Strip the host, org, and `.git` suffix to get the repo name. Example: `https://github.com/acme/my-app.git` → `my-app`.
 2. **Package metadata** — if no git remote, check `package.json` (`name` field), `pyproject.toml` (`[project] name`), `Cargo.toml` (`[package] name`), `go.mod` (module path last segment), in that order.
 3. **Directory name** — if none of the above work, use the basename of the current working directory.
-4. **No project context** — if the current directory IS the obsidian-wiki repo itself, or if detection produces a name that matches the wiki vault directory, treat it as "no project context" and fall back to `misc/`.
+4. **No project context** — if the current directory IS the obsidian-wiki repo itself, or if detection produces a name that matches the wiki vault directory, treat it as "no project context". Portable mode targets global `references/`; Personal mode falls back to `misc/`.
 
 **Normalise the project name:** lowercase, replace spaces and underscores with `-`, strip leading dots.
 
-Once you have a candidate name, check whether `$OBSIDIAN_VAULT_PATH/projects/<project-name>/` exists:
+Once you have a candidate name, check whether
+`<resolved-vault-path>/projects/<project-name>/` exists. Config resolution gives
+the agent this concrete value in memory; it does not export a parent-shell
+variable.
 
 | Situation | Action |
 |---|---|
-| Project detected + folder **exists** | Add page to existing project (Step U3a) |
-| Project detected + folder **does not exist** | Create project structure, then add page (Step U3b) |
-| No project context | Fall back to `misc/` (Step U3c) |
+| Project detected + folder **exists** | Prepare an existing-project reference |
+| Project detected + folder **does not exist** | Prepare the mode-appropriate project pages |
+| No project context | Portable: global `references/`; Personal: `misc/` |
 
 ## Step U0.5: Clean Extraction Preflight
 
@@ -45,19 +50,63 @@ which defuddle
 
 Use `WebFetch` to retrieve the content at the provided URL (or skip if `defuddle` was used in Step U0.5).
 
-- If the page is paywalled, JS-rendered (blank body), or returns an error: create a **stub page** with the title (inferred from the URL), the URL, and `stub: true` in frontmatter. Append this to the body: `> [Stub] Page could not be fetched — enrich manually.` Then skip to Step U7.
+- If the page is paywalled, JS-rendered (blank body), or returns an error: prepare **stub content** with the title (inferred from the URL), the URL, `stub: true`, and `> [Stub] Page could not be fetched — enrich manually.` Do not write a page yet; continue into the selected mode flow.
 - If the page fetches successfully: proceed to Step U2.
 
 ## Step U2: Check for Duplicate
 
-Before creating a new page, check whether this URL was already ingested:
-- Grep `.manifest.json` for the URL string in any `source_url` field
-- If in project mode: grep `$OBSIDIAN_VAULT_PATH/projects/<project-name>/` for the URL string
-- If in misc mode: grep `$OBSIDIAN_VAULT_PATH/misc/` for the URL string
+Before preparing a new page, check whether this URL was already ingested:
+
+- **Portable Repository mode:** search existing knowledge pages below
+  `<resolved-vault-path>` for matching `origin_url` metadata, and search
+  configured repository source roots for an existing snapshot with that
+  origin. Do not parse or edit manifest shards.
+- **Personal mode:** grep `.manifest.json` for the URL in `source_url`; in
+  project mode search
+  `<resolved-vault-path>/projects/<project-name>/`, otherwise search
+  `<resolved-vault-path>/misc/`.
 
 If found: report which page covers it and offer to re-ingest (update) if the user wants fresh content. Do not create a duplicate page.
 
-## Step U3: Determine Target Path and Generate Slug
+## Portable Repository URL flow
+
+Use this branch only after the parent has resolved Portable Repository mode and
+read the owner `AGENTS.md`.
+
+1. Derive a stable `web-<slug>` from the origin URL. Fetching and extraction
+   are analysis only; if a helper performs them, it returns the fetched text,
+   stub status, distilled page proposals, and source mapping to the parent. It
+   never writes or completes an ingest independently.
+2. The parent saves a small, reviewable Markdown snapshot strictly below a configured `sources` root.
+   Include `origin_url` metadata and capture status
+   in the snapshot, followed by the fetched text or stub evidence. Preserve
+   Unicode exactly. This repository file—not the live URL—is authoritative.
+3. Resolve the snapshot's repository-relative Source ID. A live URL must never appear in `sources`;
+   retain it only as `origin_url` metadata on the snapshot
+   and resulting knowledge page.
+4. Prepare candidate knowledge pages only at supported Markdown paths. Use
+   `projects/<project-name>/references/<slug>.md` when a project is known and
+   `references/<slug>.md` otherwise. `misc/` is Personal-only. If a project
+   overview must be created, it cites the same Source ID. `sources: []` is invalid
+   in Portable mode. Do not create vault attachments or a non-Markdown candidate.
+5. The parent combines these proposals with any other batch results, computes
+   complete source closure, and uses the snapshot Source ID in one parent-owned transaction.
+   It writes only below the returned `candidate_vault` and
+   declares any removals through that transaction.
+6. Return to the main skill's parent-owned Portable Repository completion for
+   timestamps, validation and warning review, commit, recovery, hot freshness,
+   reporting, and the stop boundary.
+
+Do not write directly to the live vault, manifest, `index.md`, `log.md`, or `hot.md`.
+Do not run Personal QMD refresh or the Personal URL steps below.
+
+## Personal mode URL flow
+
+The existing U3–U7 project/`misc/` write and tracking workflow is Personal-only.
+Use the concrete resolved vault path held in agent memory; do not assume config
+resolution exported a shell variable.
+
+### Step U3: Determine Target Path and Generate Slug
 
 Derive a slug from the URL:
 1. Strip `https://`, `http://`, and trailing slashes
@@ -71,13 +120,13 @@ Examples:
 - `https://martinfowler.com/articles/microservices.html` → `web-martinfowler-com-articles-microservices`
 - `https://arxiv.org/abs/1706.03762` → `web-arxiv-org-abs-1706-03762`
 
-### Step U3a: Existing project
+#### Step U3a: Existing project
 
-Target: `$OBSIDIAN_VAULT_PATH/projects/<project-name>/references/<slug>.md`
+Target: `<resolved-vault-path>/projects/<project-name>/references/<slug>.md`
 
 Create `references/` inside the project folder if it doesn't exist yet. This is a reference page, not a synthesis or concept page — it documents an external source that's relevant to the project.
 
-### Step U3b: New project
+#### Step U3b: New project
 
 First, create the project skeleton:
 
@@ -106,13 +155,13 @@ Then add the page to: `projects/<project-name>/references/<slug>.md`
 
 Report to the user: "Created new project `<project-name>` in the vault."
 
-### Step U3c: No project context (misc fallback)
+#### Step U3c: No project context (misc fallback)
 
-Target: `$OBSIDIAN_VAULT_PATH/misc/<slug>.md`
+Target: `<resolved-vault-path>/misc/<slug>.md`
 
 Create the `misc/` directory if it does not exist yet.
 
-## Step U4: Extract Knowledge
+### Step U4: Extract Knowledge
 
 From the fetched content, identify:
 - **Title** — the page's actual title (from `<title>` or `# heading`)
@@ -127,7 +176,7 @@ Track provenance per claim:
 - *Inferred* — you're generalizing or connecting to external context → `^[inferred]`
 - *Ambiguous* — page is vague or internally contradictory → `^[ambiguous]`
 
-## Step U5: Write the Page
+### Step U5: Write the Page
 
 The frontmatter differs slightly between modes:
 
@@ -208,7 +257,7 @@ Apply `visibility/internal` or `visibility/pii` tags if the content warrants the
 
 **Minimum wikilinks:** every page must link to at least 2 existing pages. Search `index.md` before writing. If fewer than 2 related pages exist, create minimal stub pages for the most important concepts mentioned.
 
-## Step U5b: Affinity scoring (misc mode only)
+### Step U5b: Affinity scoring (misc mode only)
 
 Skip this step entirely if in project mode.
 
@@ -225,7 +274,7 @@ If any project's score ≥ 3, surface it:
 
 > ⚡ Strong affinity detected: this page has **3+ connections** to `<project-name>`. Run the `cross-linker` skill to recompute affinity and then consider promoting this page to `projects/<project-name>/references/`.
 
-## Step U6: Update Project Overview (project mode only)
+### Step U6: Update Project Overview (project mode only)
 
 Skip this step if in misc mode.
 
@@ -239,7 +288,7 @@ Read the project overview at `projects/<project-name>/<project-name>.md`. If the
 
 If a `## References` section already exists, append to it. Update the `updated` timestamp in frontmatter.
 
-## Step U7: Update Manifest and Special Files
+### Step U7: Update Manifest and Special Files
 
 **`.manifest.json`** — add or update the entry:
 
@@ -276,7 +325,7 @@ Misc mode:
 
 **`hot.md`** — Update **Recent Activity** with what was just ingested — keep the last 3 operations. Update **Key Takeaways** if the page introduced a concept worth flagging. Update `updated` timestamp.
 
-## Quality Checklist (URL sources)
+### Personal Quality Checklist (URL sources)
 
 - [ ] Target path determined correctly based on project detection
 - [ ] Page written with correct frontmatter for the mode (project vs. misc)

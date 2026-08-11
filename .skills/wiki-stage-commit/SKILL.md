@@ -14,9 +14,26 @@ You are reviewing LLM-written pages that are waiting in `_staging/` for human ap
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md`. This gives `OBSIDIAN_VAULT_PATH` and `WIKI_STAGED_WRITES`.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch. Until then, shared preparation is read-only; do not inspect `_staging/`, alter a transaction, or move a file.
 
-   **Portable Write Protocol branch:** In Portable Repository mode, run `obsidian-wiki transaction list --json` and review each retained transaction's status, candidate pages, and deletions. If the transaction list is empty, report that no portable writes are pending and return immediately. Commit a reviewed active transaction; retry a failed transaction only when the user chooses to continue; restore only for an explicit rollback; abort an active/failed transaction the user abandons; discard retained recovery state only after its outcome is understood. Use only the canonical Portable Write Protocol commands from `llm-wiki/SKILL.md`. Never move files directly into the live vault and never create a Git commit. `_staging/ remains personal-mode` behavior. Return immediately after the selected portable action; do not execute any numbered `_staging/`, manifest, `index.md`, `log.md`, or `hot.md` step below.
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. `_staging/` remains Personal-mode-only (in shorthand, `_staging/ remains personal-mode`); portable review operates only on retained transactions and must never begin an empty or replacement transaction.
+
+1. Run `obsidian-wiki transaction list --json --pretty`. If the transaction list is empty, report no pending portable writes and stop with no transaction or hot refresh. Select one retained record and inspect the selected list record's `status`, `source_ids`, `candidate_vault`, `deletions`, `recommended_action`, and `allowed_actions`. Keep repo-root CWD and use the runtime-only absolute `candidate_vault` to review candidate bytes; do not `cd` into it or persist that path.
+2. For approval, validate an active candidate transaction before commit: Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty` and inspect its `candidate_pages`, `deletions`, `issues`, and `warnings`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+3. Commit a reviewed active transaction only through Step 2. For a failed command, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next rerun `obsidian-wiki transaction list --json --pretty`; then cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then perform an allowed retry, restore, abort, or discard action. To retry a failed transaction, require that action to be allowed; restore only for an explicit rollback, and a reject means abort or discard according to status. Never move candidates to `_raw/`. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+4. Only after commit succeeds or recovery is fully resolved, check whether knowledge changed. After a successful commit run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`. Recovery with no knowledge change ends without a hot refresh.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+Return immediately after the selected portable action.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue with the `_staging/` review and promotion workflow below, including manifest v1, central files, rejection to `_raw/`, and Personal Git behavior. Do not fall through into Portable Repository completion.
+
 2. If `WIKI_STAGED_WRITES` is not set or is `false`, tell the user: "Staged writes mode is not enabled. Set `WIKI_STAGED_WRITES=true` in your `.env` to use this feature." Then stop.
 3. Read the `_staging/` directory inventory.
 

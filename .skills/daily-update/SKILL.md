@@ -14,9 +14,28 @@ You run a lightweight maintenance pass over the wiki: check source freshness, re
 
 ## Before You Start
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_WIKI_REPO`.
+1. **Resolve mode before work** — the parent agent resolves config and mode with the Config Resolution Protocol in `llm-wiki/SKILL.md`, then reads the owner `AGENTS.md`. The Portable Write Protocol is the only allowed portable mutation path. Select exactly one terminal completion branch below. Until that selection, shared preparation is read-only: do not create state directories, update central files, or dispatch a writer.
 
-   **Portable Write Protocol branch:** In Portable Repository mode, report active transactions first and use the canonical Portable Write Protocol in `llm-wiki/SKILL.md` for any knowledge-page repair. Do not directly refresh stable `index.md`/`log.md`, create legacy state inside the repository, or run pre-write/Git steps. Check local derived context with `obsidian-wiki hot status --json`, rebuilding and marking it current only as the canonical protocol permits. If a requested maintenance write cannot be represented by a transaction, report it instead of mutating the live vault. In Personal mode, retain the workflow below unchanged.
+## Portable Repository completion
+
+Use this branch only when config resolution selected Portable Repository mode. Keep the repository root as the command CWD. The ordinary daily pass is read-only:
+
+1. Run `obsidian-wiki transaction list --json`, `obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty`, and `obsidian-wiki hot status --json`. The read-only daily check creates no transaction. Report active/recovery transactions, exact freshness results, and hot-cache freshness. If a retained transaction has an ambiguous outcome, report it and stop before regenerating hot state.
+2. If no knowledge-page repair is selected, finish the hot freshness flow, report, and stop: when stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`. In this no-op path, do not create an empty transaction or operation journal. Stable `index.md` and `log.md`, cron and terminal-notification setup are Personal-mode-only.
+3. For a selected knowledge-page repair, Compute complete authoritative source closure from every updated or deleted page's existing repository-relative Source IDs plus sources cited by new candidates; never use compiled vault page paths. Preserve valid Unicode Source IDs and filenames. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`, keep its absolute `candidate_vault` only in memory, and use `started_at`: new pages use `created = updated = started_at`; updates preserve the existing `created` and set `updated = started_at`.
+4. Write only candidate replacements/new pages below `candidate_vault`. New page `sources` contains non-empty relevant accepted or authoritative snapshot Source IDs. Updated or merged page `sources` must preserve every existing Source ID that still supports retained content, add the new relevant accepted or authoritative snapshot Source IDs, and deduplicate them. In both cases, `sources` is a non-empty subset of the frozen transaction source closure. Declare each removal with `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+5. Whenever a candidate transaction is present, run `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning, Fix every issue, and run `obsidian-wiki transaction commit <id> --json --pretty` only after validation passes.
+6. On failure, use status-aware recovery: first read the failure response envelope's `recovery.preferred_action`; next run `obsidian-wiki transaction list --json --pretty`; cross-check the refreshed record's `recommended_action` and `allowed_actions`; only then execute exactly the reported recommended or preferred action whose prerequisites hold. Status mapping: for active or preflight failure, fix candidates, validate, then commit, or abort when that is the chosen allowed action; for promoting, restore; for failed, use only a reported allowed retry, restore, abort, or discard; for complete or restored, accept the reported terminal state and make no further mutation. If there is no trusted transaction ID or the outcome is ambiguous, stop and report rather than guessing.
+7. Only after commit succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`. If stale, run `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write the semantic `hot.md` as the agent, then run `obsidian-wiki hot mark-current --json`.
+
+Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue with the existing modes below, including Personal central files, vault-scoped state, QMD refresh, cron/notification support, and Git rules. Do not fall through into Portable Repository completion.
+
 2. **Derive vault-scoped state dir** — all runtime state is scoped to the resolved vault, not global:
    ```bash
    VAULT_ID=$(echo "$OBSIDIAN_VAULT_PATH" | md5sum 2>/dev/null | cut -c1-8 || md5 -q - <<< "$OBSIDIAN_VAULT_PATH" | cut -c1-8)
