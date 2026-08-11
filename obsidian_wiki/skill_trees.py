@@ -32,6 +32,7 @@ _SOURCE_IGNORED_DIRECTORIES = frozenset(
 _SOURCE_IGNORED_FILES = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"}
 )
+_SUPPORTED_DESCRIPTION_BLOCKS = frozenset({">", ">-", ">+"})
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,73 @@ def _digest(name: str, entries: tuple[SkillEntry, ...]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _normalized_skill_frontmatter(text: str) -> str:
+    """Adapt the bundled skill description subset for the strict parser."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    closing = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        None,
+    )
+    if closing is None:
+        return text
+
+    description_lines: list[int] = []
+    folded_line: int | None = None
+    for index in range(1, closing):
+        line = lines[index]
+        if not line or line[0].isspace() or ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        value = raw.strip()
+        if key.strip() == "description":
+            description_lines.append(index)
+            if value in _SUPPORTED_DESCRIPTION_BLOCKS:
+                folded_line = index
+            elif value.startswith((">", "|")):
+                raise FrontmatterError("unsupported folded skill description style")
+        elif value.startswith((">", "|")):
+            raise FrontmatterError("unsupported skill metadata block field")
+
+    if len(description_lines) > 1:
+        raise FrontmatterError("duplicate skill description")
+    if folded_line is None:
+        return text
+
+    content: list[str] = []
+    indentation: int | None = None
+    end = folded_line + 1
+    while end < closing:
+        line = lines[end]
+        if line and not line[0].isspace():
+            break
+        if line:
+            leading = line[: len(line) - len(line.lstrip())]
+            if "\t" in leading:
+                raise FrontmatterError("folded skill description has bad indentation")
+            current = len(leading)
+            if indentation is None:
+                indentation = current
+            if current != indentation:
+                raise FrontmatterError("folded skill description has bad indentation")
+            content.append(line[current:])
+        else:
+            content.append("")
+        end += 1
+
+    if indentation is None:
+        raise FrontmatterError("folded skill description is empty")
+    folded = " ".join(part.strip() for part in content if part.strip()).strip()
+    if not folded:
+        raise FrontmatterError("folded skill description is empty")
+    quoted = folded.replace("'", "''")
+    normalized = lines[:folded_line]
+    normalized.append("description: '" + quoted + "'")
+    normalized.extend(lines[end:])
+    return "\n".join(normalized) + "\n"
+
+
 def discover_skill_collection(
     root: Path, *, ignore_source_artifacts: bool = False
 ) -> SkillCollection:
@@ -241,7 +309,8 @@ def discover_skill_collection(
         if skill_entry.kind != "file":
             raise _error(skill_file, "SKILL.md must be an ordinary file")
         try:
-            frontmatter = parse_frontmatter(skill_entry.content.decode("utf-8"))
+            skill_text = skill_entry.content.decode("utf-8")
+            frontmatter = parse_frontmatter(_normalized_skill_frontmatter(skill_text))
         except (FrontmatterError, UnicodeDecodeError) as exc:
             raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
         name = frontmatter.scalars.get("name", "")

@@ -145,6 +145,95 @@ def test_skill_metadata_comes_from_the_captured_skill_entry(
     assert skill_reads == 1
 
 
+def test_folded_description_preserves_captured_bytes_and_digest(tmp_path: Path) -> None:
+    from obsidian_wiki import skill_trees
+
+    original = (
+        b"---\r\n"
+        b"name: example\r\n"
+        b"description: >-\r\n"
+        b"  It's: a # literal, with \"quotes\", 'apostrophes', and \xe4\xb8\xad\xe6\x96\x87.\r\n"
+        b"  Continue the selection here.\r\n"
+        b"---\r\n"
+        b"\r\n# Example\r\n"
+    )
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(original)
+
+    tree = skill_trees.discover_skill_collection(tmp_path).skills[0]
+    captured = next(entry for entry in tree.entries if entry.path == "SKILL.md")
+
+    assert tree.description == (
+        "It's: a # literal, with \"quotes\", 'apostrophes', and 中文. "
+        "Continue the selection here."
+    )
+    assert captured.content == original
+    assert tree.digest == skill_trees._digest("example", tree.entries)
+
+
+@pytest.mark.parametrize("indicator", [">", ">-", ">+"])
+def test_accepts_supported_folded_description_indicators(
+    tmp_path: Path, indicator: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: "
+        + indicator
+        + "\n  First line.\n  Second line.\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    tree = discover_skill_collection(tmp_path).skills[0]
+    assert tree.description == "First line. Second line."
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "name: example\ndescription: >\n---",
+        "name: example\ndescription: >\n\tTabbed content.\n---",
+        "name: example\ndescription: >2\n  Explicit indentation.\n---",
+        "name: example\ndescription: |\n  Literal style.\n---",
+        (
+            "name: example\ndescription: >\n  First description.\n"
+            "description: Second description.\n---"
+        ),
+        "name: >\n  example\ndescription: Use this skill.\n---",
+        "metadata:\n  description: >\n    Nested value.\nname: example\n---",
+    ],
+)
+def test_rejects_ambiguous_or_unsupported_folded_metadata(
+    tmp_path: Path, frontmatter: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\n" + frontmatter + "\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="frontmatter|required|description"):
+        discover_skill_collection(tmp_path)
+
+
+def test_discovers_every_current_bundled_skill_with_nonempty_description() -> None:
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    root = Path(__file__).resolve().parents[1] / ".skills"
+    collection = discover_skill_collection(root, ignore_source_artifacts=True)
+
+    assert collection.names == tuple(
+        sorted(path.name for path in root.iterdir() if path.is_dir())
+    )
+    assert all(skill.description for skill in collection.skills)
+
+
 @pytest.mark.parametrize("path", ["SKILL.md", "nested.txt"])
 def test_rejects_multiply_linked_regular_files(tmp_path: Path, path: str) -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
