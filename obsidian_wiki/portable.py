@@ -220,8 +220,31 @@ def _assert_single_link_ordinary_file(
     return metadata
 
 
-def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
-    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+def _stat_timestamp_ns(metadata: os.stat_result, name: str) -> int:
+    nanoseconds = getattr(metadata, name + "_ns", None)
+    if nanoseconds is not None:
+        return int(nanoseconds)
+    return int(getattr(metadata, name) * 1_000_000_000)
+
+
+def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev,
+        left.st_ino,
+        left.st_mode,
+        left.st_nlink,
+        left.st_size,
+        _stat_timestamp_ns(left, "st_mtime"),
+        _stat_timestamp_ns(left, "st_ctime"),
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        right.st_mode,
+        right.st_nlink,
+        right.st_size,
+        _stat_timestamp_ns(right, "st_mtime"),
+        _stat_timestamp_ns(right, "st_ctime"),
+    )
 
 
 def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> bytes:
@@ -245,7 +268,7 @@ def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> byte
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
-            or not _same_file_identity(observed, opened)
+            or not _same_file_snapshot(observed, opened)
         ):
             raise ValueError(f"portable {label} changed while being read: {path}")
 
@@ -260,10 +283,12 @@ def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> byte
         if (
             not stat.S_ISREG(final.st_mode)
             or final.st_nlink != 1
-            or not _same_file_identity(opened, final)
+            or not _same_file_snapshot(opened, final)
         ):
             raise ValueError(f"portable {label} changed while being read: {path}")
         content = b"".join(chunks)
+        if len(content) != final.st_size:
+            raise ValueError(f"portable {label} changed while being read: {path}")
     except BaseException as exc:  # noqa: BLE001 - close must not mask any primary failure
         failure = exc
     try:
@@ -288,7 +313,7 @@ def _read_single_link_ordinary_bytes(root: Path, path: Path, label: str) -> byte
     if (
         not stat.S_ISREG(current.st_mode)
         or current.st_nlink != 1
-        or not _same_file_identity(final, current)
+        or not _same_file_snapshot(final, current)
     ):
         raise ValueError(f"portable {label} changed while being read: {path}")
     return content

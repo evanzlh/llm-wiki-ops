@@ -459,6 +459,114 @@ def test_read_inventory_revalidates_path_after_successful_close(
         read_inventory(root)
 
 
+def test_read_inventory_rejects_same_inode_rewrite_during_first_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    before = path.stat()
+    changed = render_inventory(
+        ManagedSkillsInventory(
+            skills_version="2026.8.4",
+            managed_skills=("wiki-ingest", "wiki-query"),
+            managed_skill_digests={
+                "wiki-ingest": DIGEST_1,
+                "wiki-query": DIGEST_2,
+            },
+        )
+    ).encode("utf-8")
+    assert len(changed) == before.st_size
+    real_read = os.read
+    rewritten = False
+
+    def rewrite_before_first_read(descriptor: int, count: int) -> bytes:
+        nonlocal rewritten
+        if not rewritten:
+            rewritten = True
+            path.write_bytes(changed)
+            os.utime(
+                path,
+                ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+            )
+            assert path.stat().st_ino == before.st_ino
+        return real_read(descriptor, count)
+
+    monkeypatch.setattr(portable.os, "read", rewrite_before_first_read)
+
+    with pytest.raises(ValueError, match="changed"):
+        read_inventory(root)
+
+
+def test_read_inventory_rejects_same_inode_rewrite_during_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    path = write_inventory(root)
+    before = path.stat()
+    changed = render_inventory(
+        ManagedSkillsInventory(
+            skills_version="2026.8.4",
+            managed_skills=("wiki-ingest", "wiki-query"),
+            managed_skill_digests={
+                "wiki-ingest": DIGEST_1,
+                "wiki-query": DIGEST_2,
+            },
+        )
+    ).encode("utf-8")
+    assert len(changed) == before.st_size
+    real_close = os.close
+    rewritten = False
+
+    def rewrite_during_close(descriptor: int) -> None:
+        nonlocal rewritten
+        real_close(descriptor)
+        if not rewritten:
+            rewritten = True
+            path.write_bytes(changed)
+            os.utime(
+                path,
+                ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+            )
+            assert path.stat().st_ino == before.st_ino
+
+    monkeypatch.setattr(portable.os, "close", rewrite_during_close)
+
+    with pytest.raises(ValueError, match="changed"):
+        read_inventory(root)
+
+
+def test_read_inventory_rejects_short_read_even_when_json_is_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import portable
+
+    root = tmp_path / "repo"
+    padding = b" " * 64
+    path = root / MANAGED_SKILLS_INVENTORY
+    path.parent.mkdir(parents=True)
+    path.write_bytes(render_inventory(make_inventory()).encode("utf-8") + padding)
+    real_read = os.read
+    first_read = True
+
+    def omit_trailing_bytes(descriptor: int, count: int) -> bytes:
+        nonlocal first_read
+        data = real_read(descriptor, count)
+        if first_read:
+            first_read = False
+            assert data.endswith(padding)
+            return data[: -len(padding)]
+        return data
+
+    monkeypatch.setattr(portable.os, "read", omit_trailing_bytes)
+
+    with pytest.raises(ValueError, match="changed"):
+        read_inventory(root)
+
+
 def test_read_inventory_preserves_primary_failure_when_close_also_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
