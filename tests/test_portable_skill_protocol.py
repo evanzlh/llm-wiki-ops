@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import shlex
 from datetime import date
 from pathlib import Path
 
@@ -408,6 +409,42 @@ def test_portable_write_skills_have_local_completion_branches(relative: str) -> 
     for command, pattern in PORTABLE_EXECUTABLE_COMMANDS:
         assert pattern.search(portable) is None, (
             f"{relative}: portable branch contains executable {command} command"
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    PORTABLE_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_portable_transaction_begin_uses_one_source_flag_with_multi_source_values(
+    relative: str,
+) -> None:
+    portable = _h2_section(
+        _text(relative),
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    commands = re.findall(
+        r"obsidian-wiki[ \t]+transaction[ \t]+begin[^\n`]*",
+        portable,
+    )
+    for command in commands:
+        tokens = shlex.split(command.rstrip(".,;:"))
+        source_flags = [token for token in tokens if token.lstrip("[") == "--source"]
+        assert len(source_flags) == 1, (
+            f"{relative}: transaction begin accepts one --source followed by all values: "
+            f"{command!r}"
+        )
+        source_index = tokens.index("--source")
+        json_index = tokens.index("--json")
+        source_values = tokens[source_index + 1 : json_index]
+        assert len(source_values) >= 3, (
+            f"{relative}: transaction begin must show required + optional sources: {command!r}"
+        )
+        assert any(token.startswith("[") and "source" in token for token in source_values), (
+            f"{relative}: transaction begin must show the multi-source value form: {command!r}"
         )
 
 
