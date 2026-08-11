@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -17,12 +19,18 @@ from obsidian_wiki import cli as cli_module
 from obsidian_wiki import portable_manifest as portable_manifest_module
 from obsidian_wiki import transaction as transaction_module
 from obsidian_wiki import transaction_guidance as transaction_guidance_module
+from obsidian_wiki import transaction_validation as transaction_validation_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.transaction import (
     TransactionError,
     TransactionManager,
     validate_candidate_path,
+)
+from obsidian_wiki.transaction_validation import (
+    ProspectivePage,
+    ValidationIssue,
+    validate_prospective_pages,
 )
 
 PAGE = """---
@@ -3914,3 +3922,572 @@ def test_global_stale_warning_is_skipped_for_non_transaction_json_command(
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"status": "current"}
     assert captured.err == ""
+
+
+def _prospective_page(
+    path: str,
+    *,
+    title: str = "Example",
+    category: str = "concepts",
+    tags: str = "  - example",
+    sources: str = "  - sources/a.md",
+    tags_line: Optional[str] = None,
+    sources_line: Optional[str] = None,
+    created: str = "2026-08-07",
+    updated: str = "2026-08-07",
+    body: str = "# Example\n",
+    candidate: bool = True,
+) -> ProspectivePage:
+    return ProspectivePage(
+        path,
+        "\n".join(
+            (
+                "---",
+                f"title: {title}",
+                f"category: {category}",
+                *( (f"tags: {tags_line}",) if tags_line is not None else ("tags:", tags) ),
+                *(
+                    (f"sources: {sources_line}",)
+                    if sources_line is not None
+                    else ("sources:", sources)
+                ),
+                f"created: {created}",
+                f"updated: {updated}",
+                "---",
+                body,
+            )
+        ),
+        candidate,
+    )
+
+
+def _validation_codes(*pages: ProspectivePage, sources: tuple[str, ...] = ("sources/a.md",)) -> list[str]:
+    return [
+        issue.code
+        for issue in validate_prospective_pages(tuple(pages), sources)
+    ]
+
+
+def test_transaction_validation_issue_is_frozen_and_serializes_stably() -> None:
+    issue = ValidationIssue(
+        "broken-link", "concepts/a.md", "link does not resolve", "missing"
+    )
+
+    assert issue.as_dict() == {
+        "code": "broken-link",
+        "path": "concepts/a.md",
+        "message": "link does not resolve",
+        "target": "missing",
+    }
+    assert ValidationIssue("frontmatter-invalid", "concepts/a.md", "invalid").as_dict() == {
+        "code": "frontmatter-invalid",
+        "path": "concepts/a.md",
+        "message": "invalid",
+    }
+    with pytest.raises(AttributeError):
+        issue.code = "other"  # type: ignore[misc]
+
+
+def test_candidate_semantics_reports_invalid_timestamp_category_and_empty_scalar() -> None:
+    page = _prospective_page(
+        "entities/example.md",
+        title='""',
+        category="concepts",
+        created="not-a-date",
+        updated="2026-08-07T10:00:00",
+    )
+
+    assert _validation_codes(page) == [
+        "frontmatter-category-path",
+        "frontmatter-created-invalid",
+        "frontmatter-title-empty",
+        "frontmatter-updated-invalid",
+    ]
+
+
+def test_candidate_semantics_requires_list_tags_and_sources() -> None:
+    page = _prospective_page(
+        "concepts/example.md", tags_line="example", sources_line="sources/a.md"
+    )
+
+    assert _validation_codes(page) == [
+        "frontmatter-sources-type",
+        "frontmatter-tags-type",
+    ]
+
+
+def test_candidate_semantics_accepts_dates_aware_timestamps_and_source_subset() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        tags="  - example\n  - validation",
+        sources="  - sources/b.md",
+        created="2026-08-07T10:00:00+08:00",
+        updated="2026-08-07",
+    )
+
+    assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == []
+
+
+def test_project_category_accepts_overviews_and_nested_semantic_pages() -> None:
+    overview = _prospective_page("projects/widget.md", category="projects")
+    named_overview = _prospective_page("projects/gadget/gadget.md", category="projects")
+    nested = _prospective_page("projects/widget/concepts/design.md", category="concepts")
+
+    assert _validation_codes(overview, named_overview, nested) == []
+
+
+def test_project_category_rejects_non_overview_and_nonsemantic_nested_paths() -> None:
+    misplaced_overview = _prospective_page(
+        "projects/widget/not-widget.md", category="projects"
+    )
+    unsupported_nested = _prospective_page(
+        "projects/widget/misc/note.md", category="projects"
+    )
+
+    assert _validation_codes(misplaced_overview, unsupported_nested) == [
+        "frontmatter-category-path",
+        "frontmatter-category-path",
+    ]
+
+
+def test_multi_source_validation_rejects_foreign_and_duplicate_sources() -> None:
+    page = _prospective_page(
+        "concepts/example.md",
+        sources="  - sources/a.md\n  - sources/a.md\n  - sources/foreign.md",
+    )
+
+    assert _validation_codes(page, sources=("sources/a.md", "sources/b.md")) == [
+        "frontmatter-sources-duplicate",
+        "frontmatter-sources-foreign",
+    ]
+
+
+def test_prospective_graph_accepts_candidate_to_candidate_and_live_links() -> None:
+    candidate = _prospective_page(
+        "concepts/alpha.md", body="[[Beta]]\n[[Live Page]]\n"
+    )
+    beta = _prospective_page("concepts/beta.md")
+    live = _prospective_page(
+        "references/live-page.md", candidate=False, body="[[Alpha]]\n"
+    )
+
+    assert _validation_codes(candidate, beta, live) == []
+
+
+def test_prospective_graph_reports_live_links_broken_by_deleted_page() -> None:
+    live = _prospective_page(
+        "concepts/retained.md", candidate=False, body="[[Deleted]]\n"
+    )
+
+    assert validate_prospective_pages((live,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/retained.md",
+            "broken link target: deleted",
+            "deleted",
+        ),
+    )
+
+
+def test_prospective_graph_validates_markdown_links_and_allows_self_links() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body="[Beta](../references/beta.md#details)\n[[Alpha]]\n",
+    )
+    beta = _prospective_page("references/beta.md", category="references")
+
+    assert _validation_codes(page, beta) == []
+
+
+def test_prospective_graph_ignores_external_and_nonmarkdown_links() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body=(
+            "[External](https://example.com/doc.md)\n"
+            "[Asset](asset.md.png)\n"
+            "[Gamma](../references/gamma.md#section)\n"
+        ),
+    )
+    gamma = _prospective_page("references/gamma.md", category="references")
+
+    assert _validation_codes(page, gamma) == []
+
+
+def test_prospective_graph_ignores_attachment_wikilinks_but_checks_page_targets() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body="[[asset.png]]\n![[asset.png]]\n[[Missing]]\n[[missing.md]]\n",
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+def test_prospective_graph_parses_markdown_destination_forms_before_classifying() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md",
+        body=(
+            '[Title](missing.md "title")\n'
+            "[Angle](<missing.md>)\n"
+            "[Query](missing.md?raw=1)\n"
+            "[Fragment](missing.md#section)\n"
+        ),
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+    )
+
+
+def test_prospective_graph_ignores_malformed_bracket_heavy_text() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body=("[" * 4096) + ("[[" * 4096), candidate=False
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("[ stray ", "[[ stray ", "[" * 4096),
+    ids=("markdown", "wikilink", "bracket-heavy"),
+)
+def test_prospective_graph_recovers_valid_wikilinks_after_malformed_prefixes(
+    prefix: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=prefix + "[[Missing]]\n")
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[bad](unfinished [[Missing]]\n", "missing"),
+        ("[bad](unfinished [Missing](missing.md)\n", "concepts/missing"),
+        ("[[bad [Missing](missing.md)\n", "concepts/missing"),
+        ('[bad](unfinished.md "title [Missing](missing.md)\n', "concepts/missing"),
+        ("[bad](<unfinished.md [Missing](missing.md)\n", "concepts/missing"),
+        ("[bad [Missing](missing.md)\n", "concepts/missing"),
+        ("[[bad [text] [[Missing]]\n", "missing"),
+    ),
+    ids=(
+        "unterminated-destination-wikilink",
+        "unterminated-destination-markdown",
+        "unterminated-wikilink-body",
+        "unterminated-title",
+        "unterminated-angle",
+        "nested-markdown-label",
+        "nested-wikilink-body",
+    ),
+)
+def test_prospective_graph_recovers_links_from_all_malformed_scanner_states(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("[", "[" * 4095, "[" * 4096),
+    ids=("overlap", "odd-bracket-run", "even-bracket-run"),
+)
+def test_prospective_graph_recovers_overlapping_wikilinks_after_bracket_runs(
+    prefix: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=prefix + "[[Missing]]\n")
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: missing",
+            "missing",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[See [draft]](missing.md)\n", "concepts/missing"),
+        ('[x](missing.md "title [draft]")\n', "concepts/missing"),
+        ("[x](<missing[1].md>)\n", "concepts/missing[1]"),
+        ("[[Missing|[draft]]]\n", "missing"),
+    ),
+    ids=("nested-label", "quoted-title", "angle-destination", "wikilink-alias"),
+)
+def test_prospective_graph_accepts_valid_brackets_inside_link_syntax(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+def test_prospective_graph_ignores_malformed_external_destinations() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body="[x](http://[example.com/doc.md)\n"
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[x](<missing(and.md>)\n", "concepts/missing(and"),
+        ("[x](<missing)and.md>)\n", "concepts/missing)and"),
+        ('[x](missing.md "title (draft")\n', "concepts/missing"),
+        ('[x](missing.md "title ) draft")\n', "concepts/missing"),
+        ("[x](missing.md 'title (draft')\n", "concepts/missing"),
+        ("[x](missing.md 'title ) draft')\n", "concepts/missing"),
+    ),
+    ids=(
+        "angle-open-parenthesis",
+        "angle-close-parenthesis",
+        "double-quote-open-parenthesis",
+        "double-quote-close-parenthesis",
+        "single-quote-open-parenthesis",
+        "single-quote-close-parenthesis",
+    ),
+)
+def test_prospective_graph_keeps_destination_context_parentheses_as_content(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[x](missing'quote.md)\n", "concepts/missing'quote"),
+        ('[x](missing"quote.md)\n', 'concepts/missing"quote'),
+    ),
+    ids=("single-quote-in-path", "double-quote-in-path"),
+)
+def test_prospective_graph_treats_quotes_in_bare_destinations_as_path_content(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        (
+            "[outer [Missing](missing.md)](../references/present.md)\n",
+            "concepts/missing",
+        ),
+        (
+            "[outer [[Missing]]](../references/present.md)\n",
+            "missing",
+        ),
+    ),
+    ids=("nested-markdown", "embedded-wikilink"),
+)
+def test_prospective_graph_keeps_nested_syntax_links_inside_present_outer_targets(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page(
+        "references/present.md", category="references", candidate=False
+    )
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "[x](https://example.com/[[Missing]].md)\n",
+        '[x](present.md "see [Missing](missing.md)")\n',
+        "[x](present.md 'see [Missing](missing.md)')\n",
+    ),
+    ids=("external-destination", "double-quoted-title", "single-quoted-title"),
+)
+def test_prospective_graph_suppresses_syntax_inside_completed_destinations_and_titles(
+    body: str,
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == ()
+
+
+def test_prospective_graph_keeps_present_nested_markdown_and_discards_outer_missing() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body="[outer [Present](present.md)](missing.md)\n"
+    )
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "target"),
+    (
+        ("[outer [Present](present.md)]([[Missing]])\n", "missing"),
+        (
+            "[outer [Present](present.md)]([Missing](missing.md))\n",
+            "concepts/missing",
+        ),
+    ),
+    ids=("wikilink-destination", "markdown-destination"),
+)
+def test_prospective_graph_retains_destination_syntax_after_discarding_invalid_outer_markdown(
+    body: str, target: str
+) -> None:
+    page = _prospective_page("concepts/alpha.md", body=body)
+    present = _prospective_page("concepts/present.md", candidate=False)
+
+    assert validate_prospective_pages((page, present), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: " + target,
+            target,
+        ),
+    )
+
+
+def test_span_precedence_avoids_pairwise_candidate_scans_for_large_link_streams() -> None:
+    source = inspect.getsource(transaction_validation_module._apply_span_precedence)
+    body = "".join(f"[label {index}](target-{index}.md)\n" for index in range(5_000))
+
+    assert "any(" not in source
+    assert transaction_validation_module._page_links("concepts/alpha.md", body) == tuple(
+        f"concepts/target-{index}" for index in range(5_000)
+    )
+
+
+def test_prospective_graph_avoids_duplicate_title_pseudolinks() -> None:
+    page = _prospective_page(
+        "concepts/alpha.md", body='[Missing](missing.md "see [x](missing.md)")\n'
+    )
+
+    assert validate_prospective_pages((page,), ("sources/a.md",)) == (
+        ValidationIssue(
+            "broken-link",
+            "concepts/alpha.md",
+            "broken link target: concepts/missing",
+            "concepts/missing",
+        ),
+    )
+
+
+def test_prospective_graph_reports_duplicate_identity_and_uses_path_qualified_targets() -> None:
+    first = _prospective_page("concepts/shared.md")
+    second = _prospective_page("references/shared.md", category="references")
+    ambiguous = _prospective_page(
+        "skills/ambiguous.md", category="skills", body="[[Shared]]\n"
+    )
+    qualified = _prospective_page(
+        "skills/qualified.md", category="skills", body="[[concepts/shared]]\n"
+    )
+
+    assert validate_prospective_pages(
+        (first, second, ambiguous, qualified), ("sources/a.md",)
+    ) == (
+        ValidationIssue(
+            "duplicate-page-identity",
+            "concepts/shared.md",
+            "duplicate page identity: shared",
+            "shared",
+        ),
+        ValidationIssue(
+            "duplicate-page-identity",
+            "references/shared.md",
+            "duplicate page identity: shared",
+            "shared",
+        ),
+        ValidationIssue(
+            "ambiguous-link",
+            "skills/ambiguous.md",
+            "ambiguous link target: shared",
+            "shared",
+        ),
+    )
