@@ -413,6 +413,70 @@ def test_nested_quoted_or_non_indicator_values_remain_scalars(
     )
 
 
+@pytest.mark.parametrize("comment", ["", " # inline comment"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "description:foo: >",
+        "description:foo: > extra",
+        "description:x:y: | text",
+    ],
+)
+def test_rejects_colon_bearing_description_key_with_block_suffix(
+    tmp_path: Path, metadata: str, comment: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\n" + metadata + comment + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="colon-bearing|block field"):
+        discover_skill_collection(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Compare syntax: > is literal.", "Compare syntax: > is literal."),
+        ("'Compare syntax: >'", "Compare syntax: >"),
+        ('"Compare syntax: >"', "Compare syntax: >"),
+    ],
+)
+def test_space_delimited_description_values_keep_literal_colons(
+    tmp_path: Path, description: str, expected: str
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription: " + description + "\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    assert discover_skill_collection(tmp_path).skills[0].description == expected
+
+
+def test_empty_description_mapping_still_fails_required_scalar_validation(
+    tmp_path: Path,
+) -> None:
+    skill = tmp_path / "example"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: example\ndescription:\n---\n",
+        encoding="utf-8",
+    )
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    with pytest.raises(ValueError, match="required"):
+        discover_skill_collection(tmp_path)
+
+
 @pytest.mark.parametrize(
     "description",
     ["'Compare syntax: >'", '"Compare syntax: >"'],

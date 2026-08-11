@@ -286,6 +286,22 @@ def _normalized_skill_frontmatter(text: str) -> str:
         if mapping is None:
             continue
         key_region, raw_region = mapping
+        if raw_region and not raw_region.startswith(" "):
+            block_value = _skill_block_value(raw_region)
+            if block_value is not None:
+                _value, value_structure_is_ascii = block_value
+                if not value_structure_is_ascii:
+                    raise FrontmatterError(
+                        "skill metadata block header has non-ASCII structural whitespace"
+                    )
+                raise FrontmatterError(
+                    "unsupported colon-bearing skill metadata block field"
+                )
+            if _has_nested_skill_block_metadata(raw_region):
+                raise FrontmatterError(
+                    "unsupported colon-bearing skill metadata block field"
+                )
+            continue
         key_end = len(key_region)
         while key_end and _structural_whitespace(key_region[key_end - 1]):
             key_end -= 1
