@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 import subprocess
 from pathlib import Path
 
@@ -82,6 +83,7 @@ def migration_skills(tmp_path: Path) -> Path:
         reference = skill / "references/迁移说明.md"
         reference.parent.mkdir()
         reference.write_text("# 迁移说明\n", encoding="utf-8")
+        (skill / "references/empty/nested").mkdir(parents=True)
     return source
 
 
@@ -1114,6 +1116,100 @@ def test_apply_preserves_executable_mode_in_canonical_skill_assets(
     assert inventory.managed_skill_digests == {
         skill.name: skill.digest for skill in canonical.skills
     }
+
+
+def test_apply_preserves_empty_directories_in_all_skill_trees(tmp_path: Path) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    apply_migration(
+        plan, installed_version="2026.8", source_skills=source_skills
+    )
+
+    empty_relative = Path("wiki-ingest/references/empty/nested")
+    assert (root / ".skills" / empty_relative).is_dir()
+    canonical = discover_skill_collection(root / ".skills")
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        assert (root / agent_relative / empty_relative).is_dir()
+        assert discover_skill_collection(root / agent_relative) == canonical
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skill_digests == {
+        skill.name: skill.digest for skill in canonical.skills
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes are not portable")
+def test_apply_empty_skill_directories_use_materializer_mode(tmp_path: Path) -> None:
+    root, sources, vault, _source, _page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+
+    original_umask = os.umask(0o077)
+    try:
+        apply_migration(
+            plan, installed_version="2026.8", source_skills=source_skills
+        )
+    finally:
+        os.umask(original_umask)
+
+    empty_relative = Path("wiki-ingest/references/empty/nested")
+    directories = (
+        root / ".skills" / empty_relative,
+        *(
+            root / agent_relative / empty_relative
+            for agent_relative, _label in PROJECT_AGENT_DIRS
+        ),
+    )
+    assert all(
+        stat.S_IMODE(directory.stat().st_mode) == 0o755
+        for directory in directories
+    )
+
+
+def test_apply_rollback_removes_new_empty_skill_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, sources, vault, _source, page = make_legacy_repo(tmp_path)
+    source_skills = migration_skills(tmp_path)
+    plan = analyze_migration(root=root, vault=vault, source_root=sources)
+    empty_relative = Path("wiki-ingest/references/empty/nested")
+    empty_directories = (
+        root / ".skills" / empty_relative,
+        *(
+            root / agent_relative / empty_relative
+            for agent_relative, _label in PROJECT_AGENT_DIRS
+        ),
+    )
+    original_replace = migration_module._atomic_replace_bytes
+    page_applied = False
+    failed = False
+    observed_empty_directories = False
+
+    def fail_after_page(path: Path, data: bytes, **kwargs) -> None:
+        nonlocal failed, observed_empty_directories, page_applied
+        observed_empty_directories = observed_empty_directories or all(
+            directory.is_dir() for directory in empty_directories
+        )
+        if page_applied and not failed:
+            failed = True
+            raise OSError("fail after empty skill directories")
+        original_replace(path, data, **kwargs)
+        if path == page:
+            page_applied = True
+
+    monkeypatch.setattr(migration_module, "_atomic_replace_bytes", fail_after_page)
+
+    with pytest.raises(
+        MigrationError, match="rolled back: fail after empty skill directories"
+    ):
+        apply_migration(
+            plan, installed_version="2026.8", source_skills=source_skills
+        )
+
+    assert observed_empty_directories
+    assert all(not directory.exists() for directory in empty_directories)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not portable")

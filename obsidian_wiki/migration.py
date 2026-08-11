@@ -1114,12 +1114,21 @@ def _ensure_directory_path(root: Path, directory: Path) -> None:
     descriptor = os.open(root, flags)
     try:
         for part in relative.parts:
+            created = False
             try:
                 os.mkdir(part, mode=0o755, dir_fd=descriptor)
+                created = True
                 os.fsync(descriptor)
             except FileExistsError:
                 pass
             child = os.open(part, flags, dir_fd=descriptor)
+            try:
+                if created:
+                    os.fchmod(child, 0o755)
+                    os.fsync(child)
+            except BaseException:
+                os.close(child)
+                raise
             os.close(descriptor)
             descriptor = child
     finally:
@@ -1532,7 +1541,12 @@ def _build_migration_candidates(
     source_skills: Path,
     completed_at: str,
     operation_suffix: str,
-) -> tuple[dict[str, _CandidateArtifact], str, dict[str, bytes | None]]:
+) -> tuple[
+    dict[str, _CandidateArtifact],
+    tuple[str, ...],
+    str,
+    dict[str, bytes | None],
+]:
     root = plan.root
     vault_relative = PurePosixPath(_repo_relative(root, plan.vault))
     source_relative = PurePosixPath(_repo_relative(root, plan.source_root))
@@ -1633,20 +1647,34 @@ def _build_migration_candidates(
     operation_relative = _repo_relative(candidate_root, operation_target)
 
     candidates: dict[str, _CandidateArtifact] = {}
+    candidate_directories: list[str] = []
     local_prefix = PurePosixPath(".obsidian-wiki/local")
     for path in sorted(candidate_root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
         relative = PurePosixPath(path.relative_to(candidate_root).as_posix())
         if _is_below(relative, source_relative) or _is_below(relative, local_prefix):
             continue
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise MigrationError(
+                f"migration candidate contains a symbolic link: {relative}"
+            )
+        if stat.S_ISDIR(metadata.st_mode):
+            candidate_directories.append(relative.as_posix())
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MigrationError(f"migration candidate is not ordinary: {relative}")
         if relative.as_posix() in preserved_owner_settings:
             continue
         candidates[relative.as_posix()] = _CandidateArtifact(
             data=path.read_bytes(),
-            mode=stat.S_IMODE(path.lstat().st_mode),
+            mode=stat.S_IMODE(metadata.st_mode),
         )
-    return candidates, operation_relative, owner_dependencies
+    return (
+        candidates,
+        tuple(sorted(candidate_directories)),
+        operation_relative,
+        owner_dependencies,
+    )
 
 
 def _target_preimage(path: Path, *, root: Path) -> bytes | None:
@@ -1959,15 +1987,18 @@ def apply_migration(
 
     try:
         completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        candidates, operation_relative, candidate_dependencies = (
-            _build_migration_candidates(
+        (
+            candidates,
+            candidate_directories,
+            operation_relative,
+            candidate_dependencies,
+        ) = _build_migration_candidates(
             plan,
             candidate_root=candidate_root,
             installed_version=installed_version,
             source_skills=Path(source_skills),
             completed_at=completed_at,
             operation_suffix=operation_suffix,
-            )
         )
         _verify_preimages(plan)
         _verify_candidate_dependencies(root, candidate_dependencies)
@@ -2015,6 +2046,9 @@ def apply_migration(
             plan.vault / PurePosixPath(relative) for relative in PORTABLE_VAULT_DIRS
         }
         required_directories.add(plan.vault / ".manifest/sources")
+        required_directories.update(
+            root / PurePosixPath(relative) for relative in candidate_directories
+        )
         for directory in required_directories:
             if _has_symlink_component(directory, below=root):
                 raise MigrationError(
