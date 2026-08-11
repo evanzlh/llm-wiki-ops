@@ -222,26 +222,6 @@ def discover_skill_collection(
             raise _error(directory, "special files are not allowed")
         if not _SKILL_NAME.fullmatch(directory.name):
             raise _error(directory, "unsafe skill directory name")
-        skill_file = directory / "SKILL.md"
-        try:
-            skill_metadata = skill_file.lstat()
-        except FileNotFoundError:
-            raise _error(skill_file, "SKILL.md is missing")
-        if stat.S_ISLNK(skill_metadata.st_mode) or not stat.S_ISREG(
-            skill_metadata.st_mode
-        ):
-            raise _error(skill_file, "SKILL.md must be an ordinary file")
-        try:
-            skill_bytes = _read_ordinary_file(skill_file, skill_metadata)
-            frontmatter = parse_frontmatter(skill_bytes.decode("utf-8"))
-        except (FrontmatterError, UnicodeDecodeError) as exc:
-            raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
-        name = frontmatter.scalars.get("name", "")
-        description = frontmatter.scalars.get("description", "")
-        if not name or not description:
-            raise _error(skill_file, "frontmatter name and description are required")
-        if name != directory.name:
-            raise _error(skill_file, "frontmatter name must equal directory name")
         entries: list[SkillEntry] = []
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
             _snapshot_entry(
@@ -252,6 +232,24 @@ def discover_skill_collection(
             )
         _validate_directory_unchanged(directory, metadata)
         frozen_entries = tuple(sorted(entries, key=lambda entry: entry.path))
+        skill_file = directory / "SKILL.md"
+        skill_entry = next(
+            (entry for entry in frozen_entries if entry.path == "SKILL.md"), None
+        )
+        if skill_entry is None:
+            raise _error(skill_file, "SKILL.md is missing")
+        if skill_entry.kind != "file":
+            raise _error(skill_file, "SKILL.md must be an ordinary file")
+        try:
+            frontmatter = parse_frontmatter(skill_entry.content.decode("utf-8"))
+        except (FrontmatterError, UnicodeDecodeError) as exc:
+            raise _error(skill_file, "invalid UTF-8 frontmatter: {}".format(exc)) from exc
+        name = frontmatter.scalars.get("name", "")
+        description = frontmatter.scalars.get("description", "")
+        if not name or not description:
+            raise _error(skill_file, "frontmatter name and description are required")
+        if name != directory.name:
+            raise _error(skill_file, "frontmatter name must equal directory name")
         skills.append(SkillTree(name, description, frozen_entries, _digest(name, frozen_entries)))
     _validate_directory_unchanged(root, root_metadata)
     if not skills:

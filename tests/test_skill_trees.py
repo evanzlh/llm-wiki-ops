@@ -111,6 +111,40 @@ def test_rejects_file_replaced_by_symlink_before_descriptor_open(
         skill_trees.discover_skill_collection(tmp_path)
 
 
+def test_skill_metadata_comes_from_the_captured_skill_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = write_skill(tmp_path, "example", "Before save.")
+    skill_file = skill / "SKILL.md"
+
+    from obsidian_wiki import skill_trees
+    from obsidian_wiki.frontmatter import parse_frontmatter
+
+    real_read = skill_trees._read_ordinary_file
+    skill_reads = 0
+
+    def save_after_first_read(path: Path, observed: os.stat_result) -> bytes:
+        nonlocal skill_reads
+        content = real_read(path, observed)
+        if path == skill_file and skill_reads == 0:
+            skill_reads += 1
+            skill_file.write_text(
+                "---\nname: example\ndescription: After save.\n---\n",
+                encoding="utf-8",
+            )
+        return content
+
+    monkeypatch.setattr(skill_trees, "_read_ordinary_file", save_after_first_read)
+
+    tree = skill_trees.discover_skill_collection(tmp_path).skills[0]
+    captured = next(entry for entry in tree.entries if entry.path == "SKILL.md")
+    captured_frontmatter = parse_frontmatter(captured.content.decode("utf-8"))
+
+    assert tree.name == captured_frontmatter.scalars["name"]
+    assert tree.description == captured_frontmatter.scalars["description"]
+    assert skill_reads == 1
+
+
 @pytest.mark.parametrize("path", ["SKILL.md", "nested.txt"])
 def test_rejects_multiply_linked_regular_files(tmp_path: Path, path: str) -> None:
     from obsidian_wiki.skill_trees import discover_skill_collection
