@@ -16,12 +16,67 @@ You are performing a destructive operation on the wiki. Always archive first, al
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and optional QMD settings such as `QMD_WIKI_COLLECTION`
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, use the canonical Portable Write Protocol in `llm-wiki/SKILL.md` as the destructive safety boundary and never create a Git snapshot or commit. Represent replacements in `candidate_vault` and removals with `transaction delete`; if archive or restore metadata cannot be represented, stop rather than mutating the live vault. In Personal mode, retain the archive, direct-write, and pre-write snapshot workflow below unchanged.
+   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
+   keeps inventory, intent confirmation, and planning read-only. Select one
+   terminal workflow after the shared read-only analysis; workers never choose
+   mode or mutate the vault.
 2. Read `.manifest.json` to understand current state
 3. **Confirm the user's intent.** This skill supports three modes:
    - **Archive only** — snapshot current wiki, no rebuild
    - **Archive + Rebuild** — snapshot, then reprocess all sources from scratch
    - **Restore** — bring back a previous archive
+
+## Portable Repository completion
+
+The current archive, restore, or bulk clear modes require `_archives/`, manifest,
+or other central-file mutations that transactions cannot represent. They are
+unsupported in Portable Repository mode: explain the limitation and stop before
+any mutation. Do not approximate them with direct copies, deletes, Git, or a
+partially committed transaction.
+
+Only if a requested rebuild has first been reduced to a supported set of
+candidate replacements or new knowledge pages and reviewed removals, with no
+archive or central-file operation, use the guarded flow below. Keep the
+repository root as the command CWD, retain `candidate_vault` only in memory, and
+do not `cd` into it.
+
+1. Compute complete source closure: the set union of the existing `sources`
+   Source IDs from each updated or deleted live page and every Source ID any
+   candidate `sources` field will cite. All are repository-relative Source IDs; these
+   IDs are never compiled vault page paths. Preserve valid Unicode and CJK
+   spellings exactly.
+2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   once and retain `id`, `started_at`, and `candidate_vault`.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths. New pages use `created = updated = started_at`; updates preserve the
+   existing `created` and set `updated = started_at`.
+4. Declare reviewed removals with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue before continuing.
+6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   report passes.
+7. Use status-aware recovery on an unclear failure. Follow only
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
+   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
+   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
+   ID, or while the outcome is ambiguous, stop and report.
+8. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue
+with the complete archive/rebuild/restore procedures below. Personal central
+files, QMD refresh, and Git snapshot rules remain active.
 
 ## The Archive System
 

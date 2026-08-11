@@ -20,7 +20,10 @@ You are performing a health check on an Obsidian wiki. Your goal is to find and 
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` plus any `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`, `OBSIDIAN_REQUIRED_TRUST_FIELDS`, and `OBSIDIAN_SCHEMA_SOURCE` values.
 
-   **Portable Write Protocol branch:** Read-only lint may continue without a transaction. If resolution selected Portable Repository mode and a consolidate/fix mode will write, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before the first mutation; build repairs in `candidate_vault` and suppress direct live-page, central-file, pre-write snapshot, and Git writes below. In Personal mode, retain the workflow below unchanged.
+   The parent agent resolves config and mode and reads the owner `AGENTS.md`.
+   Keep checks, report generation, dry-run, and confirmation read-only. Select
+   one terminal workflow after the shared read-only analysis; workers never
+   choose the mode or write fixes.
 2. **Read owner rules** — if `$OBSIDIAN_VAULT_PATH/AGENTS.md` exists, read it before interpreting any schema. Owner rules override framework defaults.
 3. **Form the effective schema** — record the schema source locator plus effective required/optional frontmatter, lifecycle values, relationship types, and provenance markers. Framework values are defaults; preserve owner extensions and relaxed requiredness exactly. Never coerce an owner type to a framework type.
 4. Read `index.md` for the full page inventory
@@ -419,6 +422,54 @@ Concept pairs that co-occur frequently but have no synthesis page:
 | [[Caching]] × [[Consistency]] | 5 pages | Run `/wiki-synthesize` |
 | [[Testing]] × [[Observability]] | 3 pages | Run `/wiki-synthesize` |
 ```
+
+## Portable Repository completion
+
+Read-only lint requires no transaction: return the report and stop. If the user
+approved consolidate/fix candidates, keep the repository root as the command
+CWD, retain the absolute `candidate_vault` only in memory, and do not `cd` into
+it.
+
+1. Compute complete source closure before beginning: the set union of every
+   existing `sources` Source IDs from each updated or deleted live page and all
+   repository-relative Source IDs any candidate `sources` field will cite. This
+   existing source closure covers repairs, moves, backlink updates, and
+   removals. These IDs are never compiled vault page paths. Preserve valid
+   Unicode and CJK spellings exactly.
+2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   exactly once; retain `id`, `started_at`, and `candidate_vault`.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths. New pages use `created = updated = started_at`; updates preserve the
+   existing `created` and set `updated = started_at`. A fix to a stable central
+   file that cannot be represented as a knowledge candidate is unsupported in
+   Portable mode; report it without mutating the live vault.
+4. Declare reviewed removals with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue before continuing.
+6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   report passes.
+7. Use status-aware recovery on an unclear failure. Follow only
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
+   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
+   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
+   ID, or while the outcome is ambiguous, stop and report.
+8. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue
+with logging and, if confirmed, consolidate/fix actions below. Personal central
+files, QMD refresh, and Git snapshot rules remain active.
 
 ## After Linting
 

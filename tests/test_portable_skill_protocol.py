@@ -62,6 +62,15 @@ HISTORY_WRITE_SKILLS = (
     ".skills/wiki-agent/SKILL.md",
 )
 BULK_HISTORY_WRITE_SKILLS = HISTORY_WRITE_SKILLS[:-1]
+MAINTENANCE_WRITE_SKILLS = (
+    ".skills/cross-linker/SKILL.md",
+    ".skills/tag-taxonomy/SKILL.md",
+    ".skills/wiki-dedup/SKILL.md",
+    ".skills/wiki-lint/SKILL.md",
+    ".skills/wiki-rebuild/SKILL.md",
+    ".skills/wiki-status/SKILL.md",
+    ".skills/wiki-synthesize/SKILL.md",
+)
 PORTABLE_COMPLETION_REQUIREMENTS = (
     "obsidian-wiki transaction validate",
     "obsidian-wiki transaction commit",
@@ -409,6 +418,125 @@ def test_portable_ingest_completion_forbids_personal_tracking_steps() -> None:
         assert forbidden not in portable, (
             f"{relative}: contains legacy action {forbidden!r}"
         )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    MAINTENANCE_WRITE_SKILLS,
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_maintenance_family_has_safe_portable_completion(relative: str) -> None:
+    text = _text(relative)
+    shared = text.split("## Portable Repository completion", 1)[0]
+    portable = _h2_section(
+        text,
+        "Portable Repository completion",
+        relative=relative,
+        next_heading="Personal mode completion",
+    )
+    shared_flat = " ".join(shared.split())
+    portable_flat = " ".join(portable.split())
+    personal_flat = " ".join(
+        _h2_section(text, "Personal mode completion", relative=relative).split()
+    )
+
+    for required in (
+        "Select one terminal workflow after the shared read-only analysis",
+        "parent agent resolves config and mode",
+        "owner `AGENTS.md`",
+    ):
+        assert required in shared_flat, f"{relative}: missing shared gate {required!r}"
+
+    for required in (
+        "repository root as the command CWD",
+        "Compute complete source closure",
+        "existing `sources` Source IDs",
+        "updated or deleted live page",
+        "candidate `sources` field",
+        "set union",
+        "never compiled vault page paths",
+        "repository-relative Source IDs",
+        "Preserve valid Unicode",
+        "created = updated = started_at",
+        "preserve the existing `created`",
+        "candidate replacements or new knowledge pages",
+        "transaction delete",
+        "Review every warning",
+        "Fix every issue",
+        "status-aware recovery",
+        "recovery.preferred_action",
+        "recommended_action",
+        "allowed_actions",
+        "no trusted transaction ID",
+        "outcome is ambiguous",
+        "after commit succeeds or recovery is fully resolved",
+        "use only those bounded inputs to write the semantic `hot.md` as the agent",
+    ):
+        assert required in portable_flat, (
+            f"{relative}: missing Portable maintenance rule {required!r}"
+        )
+
+    assert "Use this branch only when config resolution selected Personal mode" in personal_flat
+    assert "Personal central files, QMD refresh, and Git snapshot rules" in personal_flat
+
+    special_requirements = {
+        ".skills/cross-linker/SKILL.md": ("existing source closure",),
+        ".skills/tag-taxonomy/SKILL.md": ("existing source closure",),
+        ".skills/wiki-dedup/SKILL.md": ("existing source closure", "redirect stubs"),
+        ".skills/wiki-lint/SKILL.md": (
+            "existing source closure",
+            "Read-only lint requires no transaction",
+        ),
+        ".skills/wiki-rebuild/SKILL.md": (
+            "unsupported in Portable Repository mode",
+            "archive, restore, or bulk clear",
+        ),
+        ".skills/wiki-status/SKILL.md": (
+            "small, reviewable authoritative source snapshot",
+            "return the insights analysis without writing",
+        ),
+        ".skills/wiki-synthesize/SKILL.md": (
+            "union of the input pages' actual authoritative Source IDs",
+            "report the synthesis opportunity without writing",
+        ),
+    }
+    for required in special_requirements[relative]:
+        assert required in portable, f"{relative}: missing special rule {required!r}"
+
+
+def test_maintenance_replacement_and_deletion_share_source_closure(
+    tmp_path: Path,
+) -> None:
+    retained_source = "sources/维护/设计.md"
+    removed_source = "sources/维护/旧方案.md"
+    _, config, record = _portable_transaction(
+        tmp_path, (retained_source, removed_source)
+    )
+    candidate = _write_candidate(
+        record,
+        "concepts/维护策略.md",
+        f"""---
+title: 维护策略
+category: concepts
+tags: [maintenance]
+sources:
+  - {retained_source}
+summary: 以完整来源闭包维护候选替换与删除。
+created: 2026-08-01T12:00:00+00:00
+updated: {record.started_at}
+---
+# 维护策略
+""",
+    )
+    manager = TransactionManager(config)
+    manager.mark_delete(record.transaction_id, "concepts/旧维护策略.md")
+
+    assert validate_candidate_page(candidate, record.source_ids) == (retained_source,)
+    loaded = manager.load(record.transaction_id)
+    assert loaded.source_ids == tuple(sorted((retained_source, removed_source)))
+    assert loaded.deletions == ("concepts/旧维护策略.md",)
+    parsed = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+    assert parsed.scalars["updated"] == record.started_at
 
 
 @pytest.mark.parametrize(

@@ -22,7 +22,12 @@ You are computing the current state of the wiki: what's been ingested, what's ne
    guidance. This gives `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_SOURCES_DIR`,
    `CLAUDE_HISTORY_PATH`, and `CODEX_HISTORY_PATH`.
 
-   **Portable Write Protocol branch:** In Portable Repository mode, begin every read-only report with `obsidian-wiki transaction list --json` and surface retained/failed transactions before other status. For insights or another write mode, trace the analyzed pages' provenance to actual authoritative source files below the configured `sources` paths, begin a transaction with those files, write the result as the candidate knowledge page `synthesis/wiki-insights.md`, then review and commit the candidate through the canonical Portable Write Protocol in `llm-wiki/SKILL.md`. The legacy `_insights.md` remains Personal-mode-only. Suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes. If no authoritative source set can be established, return the analysis without writing. In Personal mode, retain the workflow below unchanged.
+   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
+   keeps status discovery and insights analysis read-only. Select one terminal
+   workflow after the shared read-only analysis; workers never choose the mode
+   or write reports. Portable read-only status begins with
+   `obsidian-wiki transaction list --json` and surfaces retained or failed
+   transactions first.
 2. **Select the manifest protocol from the resolved mode.** Personal mode uses
    the monolithic manifest v1 ledger. Portable mode uses manifest v2: its
    `.manifest.json` is only a marker, shards are below
@@ -463,27 +468,77 @@ You'll reuse this data across all sections below.
 
 ---
 
+## Portable Repository completion
+
+For ordinary status, return the read-only report and stop without a transaction.
+For an insights write, keep the repository root as the command CWD; keep the
+absolute `candidate_vault` only in memory and do not `cd` into it.
+
+1. Trace the analyzed input pages through their frontmatter to actual
+   authoritative files below configured source roots. If genuinely
+   authoritative external text must be captured, the parent may first create
+   and review a small, reviewable authoritative source snapshot below a
+   configured source root; a compiled vault page or graph inventory is not such
+   a source. If no valid authority exists, return the insights analysis without writing.
+2. Compute complete source closure as the set union of the existing `sources`
+   Source IDs from every updated or deleted live page and every
+   Source ID any candidate `sources` field will cite. All are
+   repository-relative Source IDs and never compiled vault page paths. Preserve
+   valid Unicode and CJK spellings
+   exactly.
+3. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   once and retain `id`, `started_at`, and `candidate_vault`.
+4. Write candidate replacements or new knowledge pages; for this skill the path
+   is `synthesis/wiki-insights.md`. New pages use
+   `created = updated = started_at`; updates
+   preserve the existing `created` and set `updated = started_at`. Its `sources`
+   cites only transaction Source IDs. Use transaction-compatible frontmatter:
+
+   ```yaml
+   ---
+   title: Wiki Insights
+   category: synthesis
+   tags: [wiki-insights, meta/graph]
+   sources: [<transaction Source IDs>]
+   created: <started_at, or preserved value on update>
+   updated: <started_at>
+   summary: "Current structural analysis of the portable wiki graph."
+   ---
+   ```
+5. If this or a future supported status write removes a knowledge page, declare
+   it with `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
+6. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue before continuing.
+7. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   report passes.
+8. Use status-aware recovery on an unclear failure. Follow only
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
+   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
+   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
+   ID, or while the outcome is ambiguous, stop and report.
+9. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+10. Do not run `cache-update`, edit manifest shards, update `index.md` or
+    `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD
+    tracking, create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue
+with the `_insights.md`, logging, and direct-write output below. Personal central
+files, QMD refresh, and Git snapshot rules remain active.
+
 ### Output
 
-In Portable Repository mode, write this result and its compact graph snapshot only to the transaction candidate `synthesis/wiki-insights.md`, then review and commit as required by the portable branch above. In Personal mode, write `_insights.md` at the vault root and overwrite it freely because it is regenerable. `_insights.md` reads and writes are Personal-mode-only. At the very end of either output, embed the snapshot as an HTML comment so the next run can diff against the same mode-specific page.
-
-For the Portable candidate, prepend required transaction-compatible frontmatter. Replace the placeholder with the non-empty, repository-relative Source IDs returned for this transaction; do not use compiled vault page paths:
-
-```yaml
----
-title: Wiki Insights
-category: synthesis
-tags: [wiki-insights, meta/graph]
-sources: [<transaction Source IDs>]
-created: TIMESTAMP
-updated: TIMESTAMP
-summary: "Current structural analysis of the portable wiki graph."
----
-```
-
-On the first creation, set both timestamps to the current time. On later runs, preserve the existing `created` value from the live `synthesis/wiki-insights.md` and update only `updated`.
-
-The Personal `_insights.md` output does not use this transaction-only source placeholder.
+Write `_insights.md` at the Personal vault root and overwrite it freely because
+it is regenerable. At the end, embed the compact graph snapshot as an HTML
+comment so the next Personal run can compute a delta. This Personal output does
+not use transaction frontmatter.
 
 ```markdown
 # Wiki Insights — <TIMESTAMP>

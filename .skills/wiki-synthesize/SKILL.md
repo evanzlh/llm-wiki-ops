@@ -16,7 +16,10 @@ You are scanning the wiki for concepts that co-occur across many pages but have 
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Resolve actual authoritative source files traced from the selected pages' provenance, require those files to be below the configured `sources` paths, and pass them to `transaction begin`; never use compiled vault pages as transaction sources. Build synthesis pages only in the returned `candidate_vault`, and suppress direct manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git writes below. If no valid authoritative source set can be established, report the opportunity without writing. In Personal mode, retain the workflow below unchanged.
+   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
+   keeps discovery, scoring, and page preparation read-only. Select one terminal
+   workflow after the shared read-only analysis; workers never choose the mode
+   or write pages.
 2. Read `index.md` to get the full page inventory.
 3. Read `hot.md` if it exists — it surfaces recent activity and active threads that may already point to synthesis opportunities.
 4. Read `_meta/taxonomy.md` to understand the tag vocabulary.
@@ -126,6 +129,54 @@ lifecycle_changed: TIMESTAMP_DATE
 **Synthesis pages are mostly `^[inferred]`.** You are drawing connections across sources — that's synthesis by definition. Apply `^[inferred]` to cross-cutting conclusions and `^[ambiguous]` where sources disagree.
 
 **The title format is `A × B`** — this signals to readers that it's a synthesis page, not a page about either concept alone.
+
+## Portable Repository completion
+
+Use this branch only after Portable Repository mode was resolved. Keep the
+repository root as the command CWD; retain the absolute `candidate_vault` only
+in memory and do not `cd` into it.
+
+1. Trace every selected input page to its actual authoritative Source IDs.
+   Compute complete source closure as the set union of the existing `sources`
+   Source IDs from every updated or deleted live page, the
+   union of the input pages' actual authoritative Source IDs, and every Source ID any candidate
+   `sources` field will cite. All are repository-relative Source IDs and never compiled vault
+   page paths. If this closure cannot be established, report the synthesis opportunity without writing.
+   Preserve valid Unicode and CJK spellings exactly.
+2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   once and retain `id`, `started_at`, and `candidate_vault`.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths below `candidate_vault`: synthesis pages plus all backlink updates.
+   New pages use `created = updated = started_at`; updates preserve the existing
+   `created` and set `updated = started_at`. Each candidate cites only the
+   authoritative transaction Source IDs supporting it.
+4. Declare any reviewed removal with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue before continuing.
+6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   report passes.
+7. Use status-aware recovery on an unclear failure. Follow only
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
+   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
+   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
+   ID, or while the outcome is ambiguous, stop and report.
+8. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Write the
+prepared pages directly and continue with backlinks and tracking below. Personal
+central files, QMD refresh, and Git snapshot rules remain active.
 
 ## Step 5: Back-link from Source Pages
 

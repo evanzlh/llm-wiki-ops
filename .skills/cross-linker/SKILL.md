@@ -20,7 +20,9 @@ You are weaving the wiki's knowledge graph tighter by finding and inserting miss
 
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
 
-   **Portable Write Protocol branch:** If resolution selected Portable Repository mode, follow the canonical Portable Write Protocol in `llm-wiki/SKILL.md` before any write. Build all changed pages in the returned `candidate_vault`; suppress direct live-page, manifest, `index.md`, `log.md`, `hot.md`, pre-write snapshot, and Git mutations below. In Personal mode, retain the workflow below unchanged.
+   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
+   keeps Steps 1–3 read-only. Select one terminal workflow after the shared
+   read-only analysis; do not let a worker choose a mode or write files.
 2. Read `index.md` to get the full inventory of pages and their one-line descriptions
 3. Skim `log.md` to see what was recently ingested (focus linking effort on new pages)
 
@@ -96,6 +98,56 @@ Tag each candidate with a confidence label based on its score:
 | 1–2 | **AMBIGUOUS** | Weak or partial match. Skip unless user specifically asks to connect loose pages. |
 
 Only act on **EXTRACTED** and **INFERRED** candidates. Include the confidence label in the Cross-Link Report so the user can review INFERRED links before trusting them.
+
+## Portable Repository completion
+
+Use this branch only after Portable Repository mode was resolved. Keep the
+repository root as the command CWD. Keep `candidate_vault` absolute only in
+memory and do not `cd` into it.
+
+1. Compute complete source closure before beginning: the set union of every
+   existing `sources` Source IDs on each updated or deleted live page and every
+   repository-relative Source ID that a candidate `sources` field will cite.
+   This is the existing source closure for all pages whose links will change.
+   These repository-relative Source IDs must resolve below configured source
+   roots; they are never
+   compiled vault page paths. Preserve valid Unicode and CJK spellings exactly.
+2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
+   once with that closure and retain its `id`, `started_at`, and
+   `candidate_vault`.
+3. Write candidate replacements or new knowledge pages at final vault-relative
+   paths below `candidate_vault`. New pages use
+   `created = updated = started_at`; updates preserve the existing `created`
+   and set `updated = started_at`.
+4. Declare each reviewed removal with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`; do not
+   delete live pages directly.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
+   warning and Fix every issue; do not commit a failing report.
+6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
+   validation report passes.
+7. Use status-aware recovery if commit does not clearly succeed. Inspect
+   `recovery.preferred_action`, `recommended_action`, and `allowed_actions`;
+   choose only a listed `obsidian-wiki transaction abort <id> --json`,
+   `retry <id> --json`, `restore <id> --json`, or `discard <id> --json` action.
+   With no trusted transaction ID, or while the outcome is ambiguous, stop and
+   report instead of guessing.
+8. Only after commit succeeds or recovery is fully resolved, run
+   `obsidian-wiki hot status --json`. If stale, run
+   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
+   write the semantic `hot.md` as the agent, then run
+   `obsidian-wiki hot mark-current --json`.
+9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
+   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
+   create a Git snapshot, commit, or push.
+
+Stop the portable workflow here. Do not continue into Personal mode completion.
+
+## Personal mode completion
+
+Use this branch only when config resolution selected Personal mode. Continue
+with Step 4 and the remaining direct-write workflow below. Personal central
+files, QMD refresh, and Git snapshot rules remain active.
 
 ## Step 4: Apply Links
 
