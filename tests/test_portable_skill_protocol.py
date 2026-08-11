@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_INSTALL_COMMAND
+from obsidian_wiki.cli import _list_record_payload
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.transaction import (
@@ -71,6 +72,7 @@ MAINTENANCE_WRITE_SKILLS = (
     ".skills/wiki-status/SKILL.md",
     ".skills/wiki-synthesize/SKILL.md",
 )
+from obsidian_wiki.transaction_guidance import guidance_for_record
 SPECIAL_WRITE_SKILLS = (
     ".skills/daily-update/SKILL.md",
     ".skills/wiki-capture/SKILL.md",
@@ -625,6 +627,67 @@ def test_special_transaction_recovery_uses_only_real_cli_surfaces(relative: str)
     ) < portable.index("cross-check") < portable.index("only then")
 
 
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".skills/daily-update/SKILL.md",
+        ".skills/wiki-capture/SKILL.md",
+        ".skills/wiki-import/SKILL.md",
+        ".skills/wiki-research/SKILL.md",
+    ),
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_special_recovery_maps_status_to_complete_reported_actions(relative: str) -> None:
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "execute exactly the reported recommended or preferred action whose prerequisites hold",
+        "active or preflight failure",
+        "fix candidates, validate, then commit",
+        "abort when that is the chosen allowed action",
+        "promoting",
+        "restore",
+        "failed",
+        "only a reported allowed retry, restore, abort, or discard",
+        "complete or restored",
+        "reported terminal state",
+        "no further mutation",
+    ):
+        assert required in portable, f"{relative}: missing status mapping {required!r}"
+
+
+def test_active_transaction_list_shape_recommends_commit_and_allows_abort(
+    tmp_path: Path,
+) -> None:
+    _, config, begun = _portable_transaction(tmp_path, ("sources/recovery.md",))
+    listed = TransactionManager(config).list_transactions()
+    assert len(listed) == 1
+    record = listed[0]
+    assert record.transaction_id == begun.transaction_id
+    payload = _list_record_payload(record, guidance_for_record(record))
+
+    assert payload["status"] == "active"
+    assert "recovery" not in payload
+    recommended = payload["recommended_action"]
+    allowed = payload["allowed_actions"]
+    assert isinstance(recommended, dict)
+    assert recommended["command"] == (
+        f"obsidian-wiki transaction commit {record.transaction_id}"
+    )
+    assert isinstance(allowed, list)
+    assert recommended in allowed
+    assert any(
+        action["command"] == f"obsidian-wiki transaction abort {record.transaction_id}"
+        for action in allowed
+    )
+
+
 def test_capture_portable_materializes_source_before_transaction_and_never_writes_raw() -> None:
     relative = ".skills/wiki-capture/SKILL.md"
     text = _text(relative)
@@ -651,7 +714,7 @@ def test_capture_portable_materializes_source_before_transaction_and_never_write
         "below a configured `sources` root",
         "origin, capture time, content hash, and the exact captured text",
         "quick/raw-only request is unsupported",
-        "candidate `sources` cites only accepted snapshot Source IDs",
+        "New page `sources` contains non-empty relevant accepted snapshot Source IDs",
         "Preserve valid Unicode",
     ):
         assert required in flat
@@ -705,6 +768,107 @@ def test_capture_shared_submode_skip_and_correction_are_portable_reachable() -> 
         "fail closed before `transaction begin`",
     ):
         assert required in portable_flat
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".skills/wiki-capture/SKILL.md",
+        ".skills/wiki-research/SKILL.md",
+    ),
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_snapshot_candidates_preserve_relevant_existing_provenance(relative: str) -> None:
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "New page `sources`",
+        "non-empty relevant accepted snapshot Source IDs",
+        "Updated or merged page `sources`",
+        "preserve every existing Source ID that still supports retained content",
+        "add the new relevant accepted snapshot Source IDs",
+        "deduplicate",
+        "non-empty subset of the frozen transaction source closure",
+    ):
+        assert required in portable, f"{relative}: missing provenance rule {required!r}"
+    assert "sources` cites only accepted snapshot Source IDs" not in portable
+
+
+def test_new_and_updated_snapshot_candidates_validate_against_frozen_closure(
+    tmp_path: Path,
+) -> None:
+    old_source = "sources/history/既有资料.md"
+    new_source = "sources/captures/新增资料.md"
+    _, _, record = _portable_transaction(tmp_path, (old_source, new_source))
+    new_page = _write_candidate(
+        record,
+        "concepts/新增知识.md",
+        f"""---
+title: 新增知识
+category: concepts
+tags: [capture]
+sources: [{new_source}]
+summary: 新页面只引用相关的新快照。
+created: {record.started_at}
+updated: {record.started_at}
+---
+# 新增知识
+""",
+    )
+    updated_page = _write_candidate(
+        record,
+        "concepts/合并知识.md",
+        f"""---
+title: 合并知识
+category: concepts
+tags: [capture]
+sources:
+  - {old_source}
+  - {new_source}
+summary: 更新页面保留仍支持正文的既有来源并加入新快照。
+created: 2026-08-01T00:00:00+00:00
+updated: {record.started_at}
+---
+# 合并知识
+""",
+    )
+    assert validate_candidate_page(new_page, record.source_ids) == (new_source,)
+    assert validate_candidate_page(updated_page, record.source_ids) == tuple(
+        sorted((old_source, new_source))
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".skills/daily-update/SKILL.md",
+        ".skills/wiki-import/SKILL.md",
+    ),
+    ids=lambda relative: Path(relative).parent.name,
+)
+def test_other_special_updates_do_not_drop_existing_source_provenance(
+    relative: str,
+) -> None:
+    portable = " ".join(
+        _h2_section(
+            _text(relative),
+            "Portable Repository completion",
+            relative=relative,
+            next_heading="Personal mode completion",
+        ).split()
+    )
+    for required in (
+        "updated or merged candidate `sources`",
+        "preserve every existing Source ID that still supports retained content",
+        "non-empty subset of the frozen transaction source closure",
+    ):
+        assert required in portable, f"{relative}: missing source retention {required!r}"
 
 
 def test_dashboard_portable_fails_closed_before_central_configuration_mutation() -> None:
@@ -808,7 +972,7 @@ def test_research_portable_preserves_reviewable_web_evidence_before_begin() -> N
         "URL, retrieval time, content hash, excerpts, and page-level citations",
         "below a configured `sources` root",
         "If adequate evidence cannot be materialized and reviewed, stop before a transaction",
-        "candidate `sources` cites only accepted snapshot Source IDs",
+        "Updated or merged page `sources`",
     ):
         assert required in portable
     assert portable.index("reviewable UTF-8 Markdown source snapshot") < portable.index(
