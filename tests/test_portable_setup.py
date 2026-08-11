@@ -837,6 +837,24 @@ def test_skill_sync_plan_rejects_an_ancestor_symlink_without_following_it(
     assert snapshot_tree(root) == before
 
 
+def test_skill_sync_plan_root_level_unsafe_suppresses_all_safe_drift(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    target = root / ".kiro/skills"
+    shutil.rmtree(target)
+    target.write_text("not a directory\n", encoding="utf-8")
+    before = snapshot_tree(root)
+
+    report = plan_portable_skill_sync(root)
+    change = next(item for item in report.targets if item.path == ".kiro/skills")
+
+    assert change.unsafe == (".",)
+    assert not change.added and not change.changed and not change.removed
+    assert snapshot_tree(root) == before
+
+
 def test_skill_sync_plan_warns_for_managed_canonical_digest_divergence(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

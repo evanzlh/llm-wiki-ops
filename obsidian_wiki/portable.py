@@ -1370,6 +1370,8 @@ def _minimal_changed_paths(
 ) -> tuple[str, ...]:
     selected: list[str] = []
     blockers = set(blocking_ancestors)
+    if "." in blockers:
+        return ()
     for path in sorted(set(paths)):
         if path in blockers:
             continue
@@ -1408,12 +1410,15 @@ def _plan_one_skill_mirror(
 
     canonical = {entry.path: entry for entry in canonical_entries}
     mirror = {entry.path: entry for entry in mirror_snapshot}
-    changed = _minimal_changed_paths(
-        path
-        for path in set(canonical) & set(mirror)
-        if canonical[path] != mirror[path]
-    )
     unsafe = _minimal_changed_paths(unsafe)
+    changed = _minimal_changed_paths(
+        (
+            path
+            for path in set(canonical) & set(mirror)
+            if canonical[path] != mirror[path]
+        ),
+        blocking_ancestors=unsafe,
+    )
     blockers = (*changed, *unsafe)
     added = _minimal_changed_paths(
         set(canonical) - set(mirror), blocking_ancestors=blockers
