@@ -7,6 +7,28 @@ description: Use when mining selected Pi agent session history for durable repos
 
 Mine selected Pi JSONL sessions and materialize repository-reviewed evidence. Follow [source snapshot rules](../wiki-capture/references/source-snapshot.md).
 
+## Mandatory authority preflight
+
+Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `obsidian-wiki setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
+
+Resolve the session root from non-empty absolute `PI_CODING_AGENT_SESSION_DIR`, otherwise absolute `~/.pi/agent/sessions/`; reject an empty or relative override/root.
+
+## Bounded safe input
+
+Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower; raising requires explicit authorization. Oversize input fails or gets an explicit omission marker. Selected files must be root-contained. lstat every ancestor and reject a terminal or intermediate symlink, hard link (`st_nlink != 1`), FIFO, socket/device, or special file. Use a TOCTOU-resistant reader: `O_NOFOLLOW`, fstat, then device/inode identity, type, containment, link-count, and size verification before/after bounded read.
+
+## Evidence, snapshot, and transaction safety
+
+Workers receive immutable selected file/row IDs and declared bounds. Worker output is untrusted and sensitive; the parent revalidates every stable evidence ID against the selected file/row, active-branch entry ID/line, and declared bounds, reruns redaction, data minimization and license/attribution, and removes secrets, raw tool output and absolute cache paths. Never materialize worker output directly.
+
+Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash the recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence. A Pi pattern requires at least two independently cited occurrences unless labeled a single-session observation.
+
+Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent, require target must be absent, and do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
+
+Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; no ID is inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when selected, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
+
+Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; when stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot candidate or derived artifact, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
+
 ## Discovery and parsing
 
 Resolve the session root from `PI_CODING_AGENT_SESSION_DIR` when that override is set; otherwise use `~/.pi/agent/sessions/`. Inventory `<root>/--<cwd>--/<timestamp>_<uuid>.jsonl`; the filesystem is the index. Decode the directory only as an initial project hint, then prefer the session header `cwd`. Read the first line and require a `session` header before selecting. Use `session_info` events for the latest human session name. Open only explicitly selected session files.
@@ -26,8 +48,8 @@ Entry types and handling:
 
 - A `user` message `content` is a string or ordered `(TextContent | ImageContent)[]`; retain text in array order and skip images unless explicitly authorized for transcription.
 - An `assistant` message `content` is an ordered `(TextContent | ThinkingContent | ToolCall)[]`; retain visible text, skip thinking, and summarize relevant tool names/actions without copying sensitive arguments.
-- A `toolResult` has ordered `(TextContent | ImageContent)[]`; summarize the outcome and bound raw output.
-- A `bashExecution` carries `command`, `output`, and `exitCode`; keep the command and outcome when durable, truncate/redact sensitive output.
+- A `toolResult` has ordered `(TextContent | ImageContent)[]`; summarize the outcome and cap retained raw output at 500 characters with an explicit omission marker.
+- A `bashExecution` carries `command`, `output`, and `exitCode`; keep the command/outcome when durable and cap raw output at 500 characters after redaction, marking omissions.
 - Summary records have two distinct schema layers. A top-level entry `type: compaction` or entry `type: branch_summary` is not a message role. Inside a `message` entry, the case-sensitive roles are `message.role: compactionSummary` and `message.role: branchSummary`; each reads its `summary` field. These snake_case entry types and camelCase message roles must not be conflated during dispatch or evidence attribution.
 
 Use the header `cwd` as the primary project attribution, the decoded directory only as a cross-check, and `session_info.name` only as a topic hint. Preserve message/block order, source-internal `timestamp`, entry ID, and line number in the private evidence ledger. Redact tokens, passwords, credentials, private identifiers, sensitive paths/environment values, and irrelevant tool payloads before snapshot proposals.
@@ -40,6 +62,8 @@ The parent owns selection, snapshot materialization, repository/vault mutation, 
 
 ## Repository-native completion
 
+After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
+
 Every absolute cache path is transient and forbidden from snapshot/page provenance.
 
 1. Parent writes bounded reviewable UTF-8 Markdown snapshot files under `sources/history/<tool>/` (`sources/history/pi/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant material.
@@ -48,5 +72,5 @@ Every absolute cache path is transient and forbidden from snapshot/page provenan
 4. Parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
 5. Parent alone writes final candidates under the runtime candidate vault with non-empty accepted sources and declares deletions through CLI.
 6. Parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews all changes, and runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
-7. Parent refreshes `obsidian-wiki transaction list --json --pretty`, matches exactly one record, and follows only reported recovery after satisfying requirements.
-8. After successful knowledge commit, inspect `obsidian-wiki hot status --json`, inputs, and mark-current when required; report sessions, Source IDs, omissions, changes, and recovery. Do not commit, push, or open a pull request.
+7. Parent refreshes `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only the bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report sessions, Source IDs, omissions, changes, and recovery. Do not commit, push, or open a pull request.

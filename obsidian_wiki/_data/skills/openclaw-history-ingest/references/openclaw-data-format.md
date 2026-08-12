@@ -26,7 +26,8 @@ Plain markdown. No required frontmatter — structure varies by user and agent c
 - Debugging: always check logs before code changes
 ```
 
-This is the single most valuable source in the entire `~/.openclaw/` tree. Read it fully before touching session logs.
+This is high-signal triage input. Read it only through the skill's bounded safe
+reader; do not perform an unbounded full read before touching session logs.
 
 ## workspace/memory/YYYY-MM-DD.md
 
@@ -52,25 +53,30 @@ Optional. Some OpenClaw configurations generate end-of-day summaries here. Plain
 
 ## agents/\<agentId\>/sessions/sessions.json
 
-Session index. JSON array:
+Legacy/archive session index. It is a JSON keyed object, not an array. Each
+property is a routing/session key and each value is a session entry:
 
 ```json
-[
-  {
-    "id": "abc123",
-    "name": "my-api refactor",
-    "created_at": "2026-04-15T10:00:00Z",
-    "updated_at": "2026-04-15T12:30:00Z",
-    "message_count": 47,
-    "agent_id": "default"
+{
+  "agent:main:main": {
+    "sessionId": "abc123",
+    "sessionFile": "/resolved/state/agents/main/sessions/abc123.jsonl",
+    "displayName": "my-api refactor",
+    "sessionStartedAt": 1776247200000,
+    "updatedAt": 1776256200000
   }
-]
+}
 ```
 
 Use this to:
 - Build a session inventory before opening JSONL files
 - Prioritize by `updated_at` (most recent = highest signal)
-- Map session IDs to human-readable names
+- Map keyed entries to native `sessionId` and human-readable labels
+
+`sessionFile` is untrusted path metadata. Accept it only when the resolved file
+passes containment and ordinary-file checks below the selected per-agent
+sessions root; otherwise derive the conventional `<sessionId>.jsonl` candidate
+and validate it independently.
 
 ## agents/\<agentId\>/sessions/\<sessionId\>.jsonl
 

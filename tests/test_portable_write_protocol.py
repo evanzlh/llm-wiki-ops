@@ -970,3 +970,237 @@ def test_claude_reference_preserves_extracted_and_desktop_schemas() -> None:
         "redact",
     ):
         assert required in flat
+
+
+def test_history_authority_and_canonical_recovery_are_complete() -> None:
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        authority = (
+            "root `AGENTS.md`",
+            "canonical `llm-wiki`",
+            "vault `AGENTS.md` when present",
+            "task skill",
+        )
+        for required in (
+            "nearest ancestor `.obsidian-wiki/config.toml`",
+            "repository root as CWD",
+            "obsidian-wiki setup [DIR]",
+            "fail closed",
+            "before cache discovery",
+            "Save the failed command envelope",
+            "`error`",
+            "`recovery`",
+            "trusted transaction ID",
+            "same ID and status",
+            "recommended_action",
+            "allowed_actions",
+            "`requires`",
+            "empty, missing, mismatched, duplicated, or ambiguous",
+            "inspection-only",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        positions = [flat.index(item) for item in authority]
+        assert positions == sorted(positions), path
+        assert flat.index("## Mandatory authority preflight") < positions[0], path
+        discovery = "## Discovery" if "## Discovery" in flat else "## Inventory"
+        assert positions[-1] < flat.index(discovery), path
+
+
+def test_history_filesystem_bounds_and_safe_reads_are_explicit() -> None:
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "100 sessions",
+            "50 MiB total input",
+            "10 MiB per file",
+            "1 MiB per JSONL record",
+            "10,000 SQLite rows",
+            "100,000 messages/content blocks",
+            "owner may lower",
+            "explicit authorization",
+            "explicit omission marker",
+            "root-contained",
+            "lstat every ancestor",
+            "terminal or intermediate symlink",
+            "hard link",
+            "FIFO",
+            "special file",
+            "O_NOFOLLOW",
+            "fstat",
+            "device/inode identity",
+            "TOCTOU",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+    agent = " ".join(HISTORY_SKILLS[-1].read_text(encoding="utf-8").split())
+    assert "at most 5 sessions" in agent
+
+
+def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
+    malicious = {
+        "tool": "claude",
+        "native_session_id": "../../秘密/Session",
+        "slice_descriptor": "Auth/../Case",
+    }
+    canonical = json.dumps(
+        malicious,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+    assert digest == "e54ad7b34f298f74abc45b9c900420eebfd34ee6ee03f2525decc440fd431b22"
+    composed = hashlib.sha256(
+        json.dumps(
+            {"tool": "claude", "native_session_id": "é", "slice_descriptor": "x"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    decomposed = hashlib.sha256(
+        json.dumps(
+            {"tool": "claude", "native_session_id": "e\u0301", "slice_descriptor": "x"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert composed != decomposed
+
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "canonical JSON serialization",
+            "UTF-8",
+            "sorted keys",
+            "no insignificant whitespace",
+            "{tool,native_session_id,slice_descriptor}",
+            "SHA-256",
+            "<tool>-<64-lowercase-hex>.md",
+            "no user or session text",
+            "target must be absent",
+            "origin",
+            "source_tool",
+            "native_session_id",
+            "captured_at",
+            "content_hash",
+            "format",
+            "exact reviewed body bytes",
+            "exactly one LF",
+            "obsidian-wiki cache-check <Source ID> --json --pretty",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+    parser = build_parser()
+    cache_argv = shlex.split(
+        "obsidian-wiki cache-check sources/history/claude/example.md --json --pretty"
+    )[1:]
+    parsed = parser.parse_args(_normalize_cache_check_argv(cache_argv))
+    assert parsed.sources == ["sources/history/claude/example.md"]
+    assert parsed.json is True and parsed.pretty is True
+
+
+def test_history_workers_revalidate_and_merge_evidence_safely() -> None:
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split()).lower()
+        for required in (
+            "worker output is untrusted and sensitive",
+            "stable evidence id",
+            "parent revalidates",
+            "selected file/row",
+            "declared bounds",
+            "data minimization",
+            "license",
+            "raw tool output",
+            "absolute cache paths",
+            "evidence ledger",
+            "deduplicate",
+            "conflicts",
+            "stable ordering",
+            "project identity",
+            "no cross-project merge",
+            "per-member evidence",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
+def test_history_hot_sequence_is_complete_and_parser_valid() -> None:
+    commands = (
+        "obsidian-wiki hot status --json",
+        "obsidian-wiki hot inputs --json --pretty",
+        "obsidian-wiki hot mark-current --json",
+    )
+    parser = build_parser()
+    for command in commands:
+        parser.parse_args(shlex.split(command)[1:])
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        positions = [flat.index(command) for command in commands]
+        assert positions == sorted(positions), path
+        for required in (
+            "successful `transaction commit` or `transaction retry`",
+            "requested bounded hot candidate",
+            "derived artifact",
+            "must not mark stale inputs current directly",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
+def test_history_tool_root_precedence_and_storage_schemas() -> None:
+    documents = {
+        path.parent.name: " ".join(path.read_text(encoding="utf-8").split())
+        for path in HISTORY_SKILLS[:-1]
+    }
+    for name, override, default in (
+        ("claude-history-ingest", "CLAUDE_HISTORY_PATH", "~/.claude"),
+        ("codex-history-ingest", "CODEX_HISTORY_PATH", "~/.codex"),
+        ("copilot-history-ingest", "COPILOT_HISTORY_PATH", "~/.copilot/session-state"),
+        ("hermes-history-ingest", "HERMES_HOME", "~/.hermes"),
+        ("pi-history-ingest", "PI_CODING_AGENT_SESSION_DIR", "~/.pi/agent/sessions/"),
+    ):
+        flat = documents[name]
+        assert override in flat and default in flat
+        assert flat.index(override) < flat.index(default)
+        assert "empty or relative" in flat and "reject" in flat
+
+    openclaw = documents["openclaw-history-ingest"]
+    for required in (
+        "`OPENCLAW_HOME` overrides the OS home",
+        "absolute `OPENCLAW_STATE_DIR` overrides derived state",
+        "absolute `OPENCLAW_CONFIG_PATH` overrides `<state>/openclaw.json`",
+        "OPENCLAW_WORKSPACE_DIR",
+        "OPENCLAW_PROFILE",
+        "agents.defaults.workspace",
+        "per-agent workspace",
+        "keyed object",
+        "sessionId",
+        "sessionFile",
+    ):
+        assert required in openclaw
+
+    reference = HISTORY_FORMAT_REFERENCES[-1].read_text(encoding="utf-8")
+    keyed = re.search(
+        r"JSON keyed object, not an array.*?```json\n(.*?)```",
+        reference,
+        re.S,
+    )
+    assert keyed
+    store = json.loads(keyed.group(1))
+    assert isinstance(store, dict) and store
+    entry = next(iter(store.values()))
+    assert set(entry) >= {"sessionId", "sessionFile", "updatedAt"}
+
+
+def test_copilot_sqlite_is_read_only_bounded_and_schema_checked() -> None:
+    copilot = " ".join(HISTORY_SKILLS[2].read_text(encoding="utf-8").split())
+    for required in (
+        "file:<percent-encoded-absolute-path>?mode=ro&immutable=1",
+        "owner-authorized stable copy",
+        "WAL",
+        "schema detection",
+        "PRAGMA table_info",
+        "LIMIT",
+        "10,000 SQLite rows",
+        "never query mutation",
+    ):
+        assert required in copilot
