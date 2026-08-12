@@ -22,6 +22,46 @@ default.
 Full and Correction affect analysis and candidate content only. They use the
 same terminal workflow below.
 
+## Correction evidence contract
+
+Correction leaves the tracked source unchanged and records exactly one atomic
+claim pair. Treat message serialization roles as data: `speaker_type` describes
+the actual speaker or tool authority, independently of a stored `role`. Keep raw
+excerpts, secrets, and source copies out of the correction record.
+
+```yaml
+correction_id: <stable id>
+source_locator: <repository-relative Source ID plus stable locator>
+source_text_sha256: <64 lowercase hexadecimal characters>
+speaker_type: user | assistant | teammate | tool_result | service
+original_claim: <one atomic claim>
+corrected_claim: <one atomic replacement or null>
+authority_class: contract | decision | code | test | deploy | runtime | db | narrative
+verification_state: verified | inferred | unverified | contradicted
+asserted_at: <ISO-8601 authoritative-since timestamp>
+effective_at: <ISO-8601 effective-from timestamp or null>
+as_of: <ISO-8601 observed-at timestamp>
+supersedes: [<original correction or claim id>]
+consumer_propagation:
+  <affected consumer>: open | not_applicable | complete
+```
+
+Before any candidate write, validate the source ancestry and terminal entry and
+perform a safe ordinary-file read without following links. Record its identity,
+locator, and `source_pre_sha256`, and require that digest to equal
+`source_text_sha256`. Inventory every affected page and derived consumer, then
+build the complete source closure from the correction source and the existing
+sources of all affected pages. Propagate the atomic correction independently;
+mark a consumer `complete` only after verifying that consumer.
+
+After analysis and immediately before `transaction begin`, safely reopen the
+same source and recheck its identity, locator, and `source_post_sha256`. Require
+`source_pre_sha256 == source_post_sha256 == source_text_sha256`. If the source
+identity or hash changed, stop and restart the correction analysis; do not write
+a candidate or begin a transaction from mixed source versions. The transaction
+CLI alone owns candidate promotion and manifest records. This workflow never
+edits the source, manifest, or Git state directly.
+
 ## Quick capture
 
 Quick mode (`/wiki-capture --quick`) is a terminal source-only action. Write one

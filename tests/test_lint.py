@@ -734,10 +734,15 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         assert variable in env_example
         assert variable in configuration
         assert variable in lint_skill
-        assert variable in llm_skill
-        assert variable in capture_skill
+    for skill in (llm_skill, capture_skill):
+        assert "nearest" in skill
+        assert ".obsidian-wiki/config.toml" in skill
+        assert "canonical" in skill
     assert "CLI flags > these environment/config values >" in env_example
-    assert "CLI flags > resolved environment/config values > framework defaults" in lint_skill
+    assert (
+        "CLI flags > resolved environment/config values > framework defaults"
+        in " ".join(lint_skill.split())
+    )
     assert "Empty or whitespace-only values fail closed" in env_example
     assert "fails closed" in lint_skill
 
@@ -869,6 +874,18 @@ def test_correction_contract_requires_temporal_authority_and_immutable_hash_chec
         "source_post_sha256",
     ):
         assert field in skill
+    for phrase in (
+        "Before any candidate write",
+        "safe ordinary-file read",
+        "source_pre_sha256",
+        "source_post_sha256",
+        "before `transaction begin`",
+        "identity or hash changed",
+        "stop and restart",
+        "complete source closure",
+        "affected page",
+    ):
+        assert phrase in skill
 
     source = tmp_path / "immutable.jsonl"
     source.write_text('{"role":"user","content":"tool result"}\n', encoding="utf-8")

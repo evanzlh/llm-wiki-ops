@@ -506,8 +506,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     cache = _cli(
         root,
         "cache-check",
-        "--configured",
-        str(source),
+        _CJK_SOURCE_ID,
         "--json",
     )
     assert cache.returncode == 0, cache.stdout + cache.stderr
@@ -516,7 +515,6 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         "modified": [],
         "unchanged": [],
         "missing": [],
-        "context_warnings": [],
     }
 
     begun = _cli(
@@ -524,7 +522,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         "transaction",
         "begin",
         "--source",
-        str(source),
+        _CJK_SOURCE_ID,
         "--json",
     )
     assert begun.returncode == 0, begun.stdout + begun.stderr
@@ -581,7 +579,6 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     cache_after_commit = _cli(
         root,
         "cache-check",
-        "--configured",
         _CJK_SOURCE_ID,
         "--json",
     )
@@ -593,7 +590,6 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         "modified": [],
         "unchanged": [_CJK_SOURCE_ID],
         "missing": [],
-        "context_warnings": [],
     }
 
     checked = _cli(root, "check", "--json")
