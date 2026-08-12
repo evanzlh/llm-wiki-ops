@@ -28,7 +28,7 @@ Entry types and handling:
 - An `assistant` message `content` is an ordered `(TextContent | ThinkingContent | ToolCall)[]`; retain visible text, skip thinking, and summarize relevant tool names/actions without copying sensitive arguments.
 - A `toolResult` has ordered `(TextContent | ImageContent)[]`; summarize the outcome and bound raw output.
 - A `bashExecution` carries `command`, `output`, and `exitCode`; keep the command and outcome when durable, truncate/redact sensitive output.
-- Compaction/branch summary message variants carry a `summary` string.
+- Summary records have two distinct schema layers. A top-level entry `type: compaction` or entry `type: branch_summary` is not a message role. Inside a `message` entry, the case-sensitive roles are `message.role: compactionSummary` and `message.role: branchSummary`; each reads its `summary` field. These snake_case entry types and camelCase message roles must not be conflated during dispatch or evidence attribution.
 
 Use the header `cwd` as the primary project attribution, the decoded directory only as a cross-check, and `session_info.name` only as a topic hint. Preserve message/block order, source-internal `timestamp`, entry ID, and line number in the private evidence ledger. Redact tokens, passwords, credentials, private identifiers, sensitive paths/environment values, and irrelevant tool payloads before snapshot proposals.
 

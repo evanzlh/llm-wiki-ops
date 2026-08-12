@@ -924,6 +924,23 @@ def test_pi_tree_jsonl_parser_contract_survives_repository_completion() -> None:
     assert flat.index("active branch") < flat.index("chronological")
 
 
+def test_pi_entry_types_and_message_summary_roles_are_distinct() -> None:
+    pi = (ROOT / "obsidian_wiki/_data/skills/pi-history-ingest/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(pi.split())
+    for required in (
+        "entry `type: compaction`",
+        "entry `type: branch_summary`",
+        "`message.role: compactionSummary`",
+        "`message.role: branchSummary`",
+        "case-sensitive",
+        "`summary` field",
+        "must not be conflated",
+    ):
+        assert required in flat
+
+
 def test_claude_reference_preserves_extracted_and_desktop_schemas() -> None:
     path = HISTORY_FORMAT_REFERENCES[0]
     claude = path.read_text(encoding="utf-8")
