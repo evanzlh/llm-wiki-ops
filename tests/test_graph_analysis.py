@@ -128,6 +128,17 @@ class TestParseVaultGraph:
 
         assert "SECRET-MARKER" not in str(raised.value)
 
+    def test_ignores_unrelated_non_markdown_symlink(self, vault, tmp_path):
+        _page(vault, "kept", [])
+        secret = tmp_path / "image.png"
+        secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+        (vault / "image.png").symlink_to(secret)
+
+        outgoing, tags = parse_vault_graph(vault)
+
+        assert "kept" in outgoing
+        assert "SECRET-MARKER" not in str((outgoing, tags))
+
 
 # ---------------------------------------------------------------------------
 # god_nodes

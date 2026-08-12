@@ -157,6 +157,21 @@ def test_trust_ledger_rejects_external_symlink_without_leaking_content(
     assert "SECRET-MARKER" not in str(raised.value)
 
 
+def test_trust_scanner_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    secret = tmp_path / "secret.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "unrelated.json").symlink_to(secret)
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert list(ledger["pages"]) == ["concepts/alpha.md"]
+    assert "SECRET-MARKER" not in json.dumps(ledger)
+
+
 def test_claim_change_invalidates_review_but_updated_timestamp_does_not(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md", confidence=0.53)
@@ -669,10 +684,16 @@ def test_linked_ledger_path_fails_cleanly_without_reading_target(
         ledger_path = meta / "trust-ledger.json"
         ledger_path.symlink_to(secret)
 
-    with pytest.raises(RuntimeError, match="symlink") as raised:
-        check_trust_ledger(vault, ledger_path)
-
-    assert "SECRET-MARKER" not in str(raised.value)
+    if kind == "intermediate_symlink":
+        with pytest.raises(RuntimeError, match="symlink") as raised:
+            check_trust_ledger(vault, ledger_path)
+        assert "SECRET-MARKER" not in str(raised.value)
+    else:
+        report = check_trust_ledger(vault, ledger_path)
+        assert report["status"] == "fail"
+        assert report["errors"][0]["issue"] == "ledger_unreadable"
+        assert "symlink" in report["errors"][0]["detail"]
+        assert "SECRET-MARKER" not in json.dumps(report)
 
 
 @pytest.mark.parametrize(

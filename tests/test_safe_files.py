@@ -68,6 +68,23 @@ def test_scan_markdown_files_ignores_non_markdown_special_and_hardlinked_files(
     assert [item.relative for item in snapshots] == ["page.md"]
 
 
+@pytest.mark.parametrize("name", ["unrelated.json", "image.png"])
+def test_scan_markdown_files_ignores_terminal_non_markdown_symlinks(
+    tmp_path: Path, name: str
+) -> None:
+    vault = tmp_path / "wiki"
+    vault.mkdir()
+    (vault / "page.md").write_text("# Page\n", encoding="utf-8")
+    secret = tmp_path / name
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / name).symlink_to(secret)
+
+    snapshots = safe_files.scan_markdown_files(vault)
+
+    assert [item.relative for item in snapshots] == ["page.md"]
+    assert "SECRET-MARKER" not in snapshots[0].text()
+
+
 @pytest.mark.parametrize("kind", ["external", "dangling", "intermediate"])
 def test_scan_markdown_files_rejects_symlinks_without_reading_targets(
     tmp_path: Path, kind: str

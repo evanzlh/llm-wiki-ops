@@ -125,6 +125,17 @@ class TestBuildIndex:
 
         assert "SECRET-MARKER" not in str(raised.value)
 
+    def test_ignores_unrelated_non_markdown_symlink(self, vault, tmp_path):
+        _page(vault, "kept", title="Kept")
+        secret = tmp_path / "secret.json"
+        secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+        (vault / "unrelated.json").symlink_to(secret)
+
+        index = build_index(vault)
+
+        assert "kept" in index
+        assert "SECRET-MARKER" not in str(index)
+
     def test_reads_folded_block_scalar_summary(self, vault):
         # Regression for #156: `summary: >-` puts the real text on the next
         # indented line(s), not on the `summary:` line itself.

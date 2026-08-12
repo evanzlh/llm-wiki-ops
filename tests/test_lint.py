@@ -178,6 +178,18 @@ def test_lint_rejects_external_symlink_without_leaking_content(tmp_path: Path) -
     assert "SECRET-MARKER" not in str(raised.value)
 
 
+def test_lint_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    secret = tmp_path / "image.png"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "image.png").symlink_to(secret)
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert "SECRET-MARKER" not in json.dumps(report)
+
+
 def test_lint_preserves_strict_utf8_trust_validation(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/invalid.md")

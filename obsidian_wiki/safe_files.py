@@ -234,6 +234,8 @@ def _scan_bound_directory(
         assert observed is not None
         mode = observed.st_mode
         if stat.S_ISLNK(mode):
+            if Path(name).suffix and not name.endswith(".md"):
+                continue
             raise _unsafe(child_relative, "symlinks are not allowed")
         if stat.S_ISDIR(mode):
             if name in skip_dirs:

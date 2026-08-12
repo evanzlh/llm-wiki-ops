@@ -97,6 +97,19 @@ def test_load_pages_rejects_external_symlink_without_leaking_content(
     assert "SECRET-MARKER" not in str(raised.value)
 
 
+def test_load_pages_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    write_note(vault, "kept.md", "# Kept\n\nPublic content.\n")
+    secret = tmp_path / "secret.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "unrelated.json").symlink_to(secret)
+
+    pages = load_pages(vault)
+
+    assert [page.path for page in pages] == ["kept.md"]
+    assert "SECRET-MARKER" not in pages[0].body
+
+
 def test_public_only_filters_before_ranking(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     write_note(vault, "internal.md", "---\ntitle: Internal\ntags: [visibility/internal]\nsummary: Secret launch plan.\n---\n# Internal\n")
