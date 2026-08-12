@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import cli
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,6 +62,23 @@ def test_bare_cli_prints_help_without_writing_repository_state(tmp_path: Path) -
     assert "setup" in result.stdout
     assert result.stderr == ""
     assert not (work / ".obsidian-wiki").exists()
+
+
+def test_cli_has_no_global_agent_installation_surface() -> None:
+    assert not hasattr(cli, "GLOBAL_AGENT_DIRS")
+    assert not hasattr(cli, "_agent_install_payload")
+
+
+@pytest.mark.parametrize(
+    ("command", "legacy_label"),
+    [("info", "agent installs"), ("doctor", "agent-installs")],
+)
+def test_inspection_commands_do_not_report_global_agent_installations(
+    command: str, legacy_label: str, tmp_path: Path
+) -> None:
+    result = run_cli(tmp_path / "home", tmp_path, command)
+
+    assert legacy_label not in result.stdout.lower()
 
 
 @pytest.mark.parametrize(

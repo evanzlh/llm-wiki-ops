@@ -129,29 +129,6 @@ def _installed_skill_names(
     return installed
 
 
-# Agents whose skills directory lives under $HOME. (path-under-home, label,
-# subset). All get every skill so they remain globally discoverable from any
-# project.
-GLOBAL_AGENT_DIRS: list[tuple[str, str, tuple[str, ...] | None]] = [
-    (".claude/skills", "~/.claude/skills/ (Claude Code)", None),
-    (".gemini/skills", "~/.gemini/skills/ (Gemini CLI)", None),
-    (
-        ".gemini/antigravity/skills",
-        "~/.gemini/antigravity/skills/ (Antigravity, legacy)",
-        None,
-    ),
-    (".codex/skills", "~/.codex/skills/ (Codex)", None),
-    (".hermes/skills", "~/.hermes/skills/ (Hermes default)", None),
-    (".openclaw/skills", "~/.openclaw/skills/ (OpenClaw)", None),
-    (".copilot/skills", "~/.copilot/skills/ (GitHub Copilot CLI)", None),
-    (".trae/skills", "~/.trae/skills/ (Trae)", None),
-    (".trae-cn/skills", "~/.trae-cn/skills/ (Trae CN)", None),
-    (".kiro/skills", "~/.kiro/skills/ (Kiro CLI)", None),
-    (".pi/agent/skills", "~/.pi/agent/skills/ (Pi)", None),
-    (".agents/skills", "~/.agents/skills/ (OpenCode, Aider, Droid, generic)", None),
-]
-
-
 # (bootstrap-relative source path, destination relative to project dir).
 # Source paths are always resolved against the packaged bootstrap directory.
 BOOTSTRAP_FILES = [
@@ -968,50 +945,6 @@ def run_doctor(
                 detail=f"vault directory not found: {vault}",
                 hint="fix OBSIDIAN_VAULT_PATH or re-run setup",
             )
-
-    agent_summaries: list[str] = []
-    partial_agents: list[str] = []
-    full_agents = 0
-    bundled_set = set(bundled)
-    for rel, label, _subset in GLOBAL_AGENT_DIRS:
-        agent_dir = HOME / rel
-        if not agent_dir.is_dir():
-            continue
-        installed = {
-            p.name for p in agent_dir.iterdir() if (p.is_dir() or p.is_symlink())
-        }
-        missing = bundled_set - installed
-        count = len(installed & bundled_set)
-        agent_summaries.append(f"{label}: {count}/{len(bundled_set)}")
-        if missing:
-            partial_agents.append(label)
-        else:
-            full_agents += 1
-
-    if not agent_summaries:
-        _doctor_add(
-            checks,
-            name="agent-installs",
-            status="warn",
-            detail="no global agent skill installs found",
-            hint="run: obsidian-wiki setup",
-        )
-    elif partial_agents:
-        _doctor_add(
-            checks,
-            name="agent-installs",
-            status="warn",
-            detail="; ".join(agent_summaries),
-            hint="re-run obsidian-wiki setup to fill missing skills",
-        )
-    else:
-        _doctor_add(
-            checks,
-            name="agent-installs",
-            status="pass",
-            detail=f"{full_agents} agent install(s) fully provisioned",
-            hint="",
-        )
 
     if project_dir:
         project = Path(project_dir).expanduser().resolve()
@@ -2370,61 +2303,6 @@ def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
     return payload
 
 
-def _agent_install_payload(
-    bundled: set[str] | None,
-    *,
-    warning_sink: list[dict[str, str]] | None = None,
-) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for rel, label, _subset in GLOBAL_AGENT_DIRS:
-        root = HOME / rel
-        root_metadata_failed = False
-        try:
-            root_is_dir = root.is_dir()
-        except OSError as exc:
-            root_is_dir = True
-            root_metadata_failed = True
-            if warning_sink is not None:
-                warning_sink.append(_agent_skills_inspection_warning(root, exc))
-        installed: set[str] = set()
-        if root_is_dir and not root_metadata_failed:
-            try:
-                installed = _installed_skill_names(
-                    root, warning_sink=warning_sink
-                )
-            except OSError as exc:
-                if warning_sink is not None:
-                    warning_sink.append(_agent_skills_inspection_warning(root, exc))
-        if bundled is None:
-            installed_count: int | None = None
-            bundled_count: int | None = None
-            missing: list[str] | None = None
-            status = "not-installed" if not root_is_dir else "unknown"
-        else:
-            present = installed & bundled
-            missing = sorted(bundled - installed)
-            installed_count = len(present)
-            bundled_count = len(bundled)
-            status = (
-                "not-installed"
-                if not root_is_dir
-                else "complete"
-                if not missing
-                else "partial"
-            )
-        records.append(
-            {
-                "label": label,
-                "path": str(root),
-                "status": status,
-                "installed": installed_count,
-                "bundled": bundled_count,
-                "missing": missing,
-            }
-        )
-    return records
-
-
 def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
     from obsidian_wiki.sync import get_remote
 
@@ -2491,9 +2369,6 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
             "sync_remote": remote,
         },
         "bundled_skills": len(bundled) if bundled is not None else None,
-        "agent_installs": _agent_install_payload(
-            bundled_set, warning_sink=warnings
-        ),
     }
     warnings.extend(
         _stale_install_warnings(
@@ -2539,21 +2414,6 @@ def _print_info(payload: dict[str, object]) -> None:
     global_default = installation["global_default"]
     assert isinstance(global_default, dict)
     print(f"  global vault: {global_default['vault'] or '(unset)'}")
-    agent_installs = installation["agent_installs"]
-    assert isinstance(agent_installs, list)
-    print("  agent installs:")
-    for record in agent_installs:
-        assert isinstance(record, dict)
-        installed = record["installed"]
-        bundled = record["bundled"]
-        counts = (
-            "?/?"
-            if installed is None or bundled is None
-            else f"{installed}/{bundled}"
-        )
-        print(
-            f"    {record['label']}: {counts} ({record['status']})"
-        )
 
 
 def cmd_info(args: argparse.Namespace) -> int:
