@@ -60,7 +60,7 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
     """
     outgoing: dict[str, list[str]] = defaultdict(list)
     tags_map: dict[str, list[str]] = {}
-    skip_dirs = {"_raw", "_archived", "_staging", "_archives", ".obsidian"}
+    skip_dirs = {"_archived", ".obsidian"}
 
     pages: list[Path] = []
     for p in vault.rglob("*.md"):

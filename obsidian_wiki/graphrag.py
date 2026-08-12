@@ -49,7 +49,7 @@ _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
 _BLOCK_SCALAR_RE = re.compile(r"^[>|][+-]?\d*$")
 
 SKIP_DIRS = frozenset(
-    "_raw _archived _staging _archives .obsidian".split()
+    "_archived .obsidian".split()
 )
 
 

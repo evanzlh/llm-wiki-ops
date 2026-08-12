@@ -105,11 +105,13 @@ class TestBuildIndex:
         idx = build_index(vault)
         assert idx == {}
 
-    def test_skips_raw_dir(self, vault):
-        (vault / "_raw").mkdir()
-        _page(vault / "_raw", "draft", title="Draft")
+    @pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+    def test_does_not_hide_personal_artifact_names(self, vault, name):
+        directory = vault / name
+        directory.mkdir()
+        _page(directory, "draft", title="Draft")
         idx = build_index(vault)
-        assert "draft" not in idx
+        assert "draft" in idx
 
     def test_reads_folded_block_scalar_summary(self, vault):
         # Regression for #156: `summary: >-` puts the real text on the next

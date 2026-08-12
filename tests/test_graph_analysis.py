@@ -106,6 +106,16 @@ class TestParseVaultGraph:
         outgoing, _ = parse_vault_graph(vault)
         assert outgoing["orphan"] == []
 
+    @pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+    def test_does_not_hide_personal_artifact_names(self, vault, name):
+        directory = vault / name
+        directory.mkdir()
+        _page(directory, "legacy", [])
+
+        outgoing, _ = parse_vault_graph(vault)
+
+        assert "legacy" in outgoing
+
 
 # ---------------------------------------------------------------------------
 # god_nodes

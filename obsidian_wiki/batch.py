@@ -66,7 +66,7 @@ SKIP_EXTENSIONS = frozenset(
 SKIP_DIRS = frozenset(
     "node_modules .git __pycache__ .pytest_cache dist build target "
     ".venv venv env .mypy_cache .ruff_cache coverage .tox .obsidian "
-    "_raw _archived _staging _archives".split()
+    "_archived".split()
 )
 
 

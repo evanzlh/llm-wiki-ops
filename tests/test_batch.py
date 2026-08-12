@@ -93,6 +93,18 @@ def test_discover_sources_skips_hidden_directories(portable_repo):
     ]
 
 
+@pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+def test_discover_sources_does_not_hide_personal_artifact_names(
+    portable_repo, name: str
+) -> None:
+    _root, config = portable_repo
+    source = _write(config.sources[0] / name / "note.md")
+
+    assert [item["path"] for item in discover_sources(config.sources[0])] == [
+        str(source)
+    ]
+
+
 def test_discover_sources_reports_size(portable_repo):
     _root, config = portable_repo
     _write(config.sources[0] / "note.md", size=512)

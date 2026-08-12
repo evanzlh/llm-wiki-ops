@@ -125,6 +125,21 @@ def test_reviewed_ledger_is_authoritative_instead_of_reclassifying_sources(tmp_p
     }
 
 
+def test_trust_ledger_does_not_hide_personal_artifact_names(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    expected = set()
+    for name in ("_archives", "_raw", "_readouts", "_staging"):
+        relative = f"{name}/legacy.md"
+        _page(vault, relative)
+        expected.add(relative)
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert set(ledger["pages"]) == expected
+
+
 def test_claim_change_invalidates_review_but_updated_timestamp_does_not(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md", confidence=0.53)

@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -360,31 +361,34 @@ def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:
 
 
 def test_personal_vault_artifact_literals_are_centralized() -> None:
-    governed_modules = (
-        "obsidian_wiki/config.py",
-        "obsidian_wiki/portable.py",
-        "obsidian_wiki/portable_check.py",
-        "obsidian_wiki/context_pack.py",
-        "obsidian_wiki/lint.py",
-        "obsidian_wiki/transaction.py",
-    )
-    occurrences: dict[str, list[str]] = {
-        value: []
-        for value in (
-            "OBSIDIAN_RAW_DIR",
-            "_archives",
-            "_raw",
-            "_readouts",
-            "_staging",
-        )
-    }
-    for relative in governed_modules:
-        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and node.value in occurrences:
-                occurrences[node.value].append(f"{relative}:{node.lineno}")
+    artifact_names = ("_archives", "_raw", "_readouts", "_staging")
+    forbidden_tokens = {"OBSIDIAN_RAW_DIR", *artifact_names}
+    violations: list[str] = []
+    for path in sorted((ROOT / "obsidian_wiki").rglob("*.py")):
+        relative = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        allowed_nodes: set[int] = set()
+        if relative == "obsidian_wiki/portable.py":
+            assignments = [
+                node
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name)
+                    and target.id == "UNSUPPORTED_PERSONAL_VAULT_PATHS"
+                    for target in node.targets
+                )
+            ]
+            assert len(assignments) == 1
+            assert ast.literal_eval(assignments[0].value) == artifact_names
+            allowed_nodes.update(id(node) for node in ast.walk(assignments[0].value))
 
-    assert occurrences["OBSIDIAN_RAW_DIR"] == []
-    for value in ("_archives", "_raw", "_readouts", "_staging"):
-        assert len(occurrences[value]) == 1
-        assert occurrences[value][0].startswith("obsidian_wiki/portable.py:")
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", node.value))
+            for token in sorted(tokens & forbidden_tokens):
+                if id(node) not in allowed_nodes:
+                    violations.append(f"{relative}:{node.lineno}: {token}")
+
+    assert violations == []
