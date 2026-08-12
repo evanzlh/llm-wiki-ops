@@ -285,7 +285,10 @@ def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
 
 def test_removal_check_detects_a_dangling_symlink(tmp_path: Path) -> None:
     removed = tmp_path / "removed"
-    removed.symlink_to(tmp_path / "missing-target")
+    try:
+        removed.symlink_to(tmp_path / "missing-target")
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
 
     assert _lexically_exists(removed)
 
@@ -387,19 +390,42 @@ def test_personal_only_skill_directories_are_removed_without_compatibility_stubs
 
 def _git_boundary_violations(source: str) -> list[str]:
     tree = ast.parse(source)
-    launchers = {"run", "check_call", "check_output", "Popen"}
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def scope(node: ast.AST) -> ast.AST:
+        current = node
+        while current in parents:
+            current = parents[current]
+            if isinstance(
+                current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                return current
+        return tree
+
+    launchers = {"call", "run", "check_call", "check_output", "Popen"}
+    shell_launchers = {"getoutput", "getstatusoutput"}
     read_only = {"rev-parse", "symbolic-ref", "ls-files"}
     hosting_clis = {"gh", "glab", "hub"}
     hosting_sdks = {"github", "gitlab"}
     subprocess_aliases = {"subprocess"}
+    os_aliases = {"os"}
     imported_launchers: set[str] = set()
+    imported_shell_launchers: set[str] = set()
+    assignments: dict[tuple[int, str], list[tuple[int, ast.expr]]] = {}
+    assigned_launchers: dict[tuple[int, str], list[tuple[int, str]]] = {}
     findings: list[tuple[int, str]] = []
 
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "subprocess":
                     subprocess_aliases.add(alias.asname or alias.name)
+                if alias.name == "os":
+                    os_aliases.add(alias.asname or alias.name)
                 if alias.name.split(".", 1)[0] in hosting_sdks:
                     findings.append((node.lineno, f"hosting sdk {alias.name}"))
         elif isinstance(node, ast.ImportFrom):
@@ -409,8 +435,78 @@ def _git_boundary_violations(source: str) -> list[str]:
                     for alias in node.names
                     if alias.name in launchers
                 )
+                imported_shell_launchers.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in shell_launchers
+                )
+            elif node.module == "os":
+                imported_shell_launchers.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in {"system", "popen"}
+                )
             elif node.module and node.module.split(".", 1)[0] in hosting_sdks:
                 findings.append((node.lineno, f"hosting sdk {node.module}"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                key = (id(scope(node)), target.id)
+                assignments.setdefault(key, []).append((node.lineno, node.value))
+                value = node.value
+                if (
+                    isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and (
+                        (
+                            value.value.id in os_aliases
+                            and value.attr in {"system", "popen"}
+                        )
+                        or (
+                            value.value.id in subprocess_aliases
+                            and value.attr in shell_launchers
+                        )
+                    )
+                ):
+                    assigned_launchers.setdefault(key, []).append(
+                        (node.lineno, "shell")
+                    )
+                elif (
+                    isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id in subprocess_aliases
+                    and value.attr in launchers
+                ):
+                    assigned_launchers.setdefault(key, []).append(
+                        (node.lineno, "subprocess")
+                    )
+
+    def scoped_candidates(
+        values: dict[tuple[int, str], list[tuple[int, object]]],
+        name: str,
+        node: ast.AST,
+    ) -> list[tuple[int, object]]:
+        current_scope = scope(node)
+        candidates = list(values.get((id(current_scope), name), ()))
+        if current_scope is not tree:
+            candidates.extend(values.get((id(tree), name), ()))
+        return [(line, value) for line, value in candidates if line < node.lineno]
+
+    def assigned_launcher(
+        name: str, call: ast.Call, seen: frozenset[str] = frozenset()
+    ) -> str | None:
+        if name in seen:
+            return None
+        candidates = scoped_candidates(assigned_launchers, name, call)
+        if candidates:
+            return max(candidates)[1]
+        values = scoped_candidates(assignments, name, call)
+        if values:
+            _line, value = max(values, key=lambda item: item[0])
+            if isinstance(value, ast.Name):
+                return assigned_launcher(value.id, call, seen | {name})
+        return None
 
     def is_launcher(call: ast.Call) -> bool:
         function = call.func
@@ -419,68 +515,210 @@ def _git_boundary_violations(source: str) -> list[str]:
             and isinstance(function.value, ast.Name)
             and function.value.id in subprocess_aliases
             and function.attr in launchers
-        ) or (isinstance(function, ast.Name) and function.id in imported_launchers)
+        ) or (
+            isinstance(function, ast.Name)
+            and (
+                function.id in imported_launchers
+                or assigned_launcher(function.id, call) == "subprocess"
+            )
+        )
 
-    def argv_nodes(call: ast.Call) -> list[ast.expr] | None:
-        if not is_launcher(call) or not call.args:
-            return None
-        argv = call.args[0]
-        if not isinstance(argv, (ast.List, ast.Tuple)):
-            return None
-        return list(argv.elts)
+    def is_shell_launcher(call: ast.Call) -> bool:
+        function = call.func
+        return (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and (
+                (
+                    function.value.id in subprocess_aliases
+                    and function.attr in shell_launchers
+                )
+                or (
+                    function.value.id in os_aliases
+                    and function.attr in {"system", "popen"}
+                )
+            )
+        ) or (
+            isinstance(function, ast.Name)
+            and (
+                function.id in imported_shell_launchers
+                or assigned_launcher(function.id, call) == "shell"
+            )
+        )
+
+    def static_argv(
+        node: ast.expr,
+        lineno: int,
+        seen: frozenset[str] = frozenset(),
+    ) -> list[str | None] | None:
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values: list[str | None] = []
+            for item in node.elts:
+                if isinstance(item, ast.Starred):
+                    values.append(None)
+                elif isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    values.append(item.value)
+                else:
+                    values.append(None)
+            return values
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = static_argv(node.left, lineno, seen)
+            right = static_argv(node.right, lineno, seen)
+            return None if left is None or right is None else left + right
+        if isinstance(node, ast.Name) and node.id not in seen:
+            reference = next(
+                candidate
+                for candidate in ast.walk(tree)
+                if candidate is node
+            )
+            candidates = scoped_candidates(assignments, node.id, reference)
+            if candidates:
+                _line, value = max(candidates, key=lambda item: item[0])
+                return static_argv(value, lineno, seen | {node.id})
+        return None
 
     value_options = {"-C", "-c", "--git-dir", "--work-tree"}
 
-    def command_node(argv: list[ast.expr]) -> ast.expr | None:
-        if not argv or not isinstance(argv[0], ast.Constant):
-            return None
-        if argv[0].value != "git":
+    def git_command(argv: list[str | None]) -> str | None:
+        if not argv or argv[0] != "git":
             return None
         index = 1
         while index < len(argv):
             candidate = argv[index]
-            if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
-                if candidate.value in value_options:
+            if isinstance(candidate, str):
+                if candidate in value_options:
                     index += 2
                     continue
-                if candidate.value.startswith("-"):
+                if candidate.startswith("-"):
                     index += 1
                     continue
             return candidate
         return None
 
     wrappers: dict[str, int] = {}
+    wrapper_definitions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for definition in (
         node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ):
         positional = [*definition.args.posonlyargs, *definition.args.args]
         positional_indexes = {argument.arg: index for index, argument in enumerate(positional)}
         for call in (node for node in ast.walk(definition) if isinstance(node, ast.Call)):
-            argv = argv_nodes(call)
-            command = command_node(argv) if argv is not None else None
+            if not is_launcher(call) or not call.args:
+                continue
+            raw = call.args[0]
+            if not isinstance(raw, (ast.List, ast.Tuple)):
+                continue
+            command = None
+            for item in raw.elts[1:]:
+                if isinstance(item, ast.Starred):
+                    command = item
+                    break
+                if isinstance(item, ast.Name):
+                    command = item
+                    break
             if isinstance(command, ast.Starred) and isinstance(command.value, ast.Name):
                 if definition.args.vararg and command.value.id == definition.args.vararg.arg:
                     wrappers[definition.name] = len(positional)
+                    wrapper_definitions[definition.name] = definition
             elif isinstance(command, ast.Name) and command.id in positional_indexes:
                 wrappers[definition.name] = positional_indexes[command.id]
+                wrapper_definitions[definition.name] = definition
+
+    def wrapper_name(
+        call: ast.Call, name: str | None = None, seen: frozenset[str] = frozenset()
+    ) -> str | None:
+        if not isinstance(call.func, ast.Name):
+            return None
+        current_name = name or call.func.id
+        if current_name in seen:
+            return None
+        if current_name in wrappers:
+            return current_name
+        candidates = scoped_candidates(assignments, current_name, call)
+        if not candidates:
+            return None
+        _line, value = max(candidates, key=lambda item: item[0])
+        if isinstance(value, ast.Name):
+            return wrapper_name(call, value.id, seen | {current_name})
+        return None
 
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        argv = argv_nodes(call)
-        if argv:
+        shell = any(
+            keyword.arg == "shell"
+            and not (
+                isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is False
+            )
+            for keyword in call.keywords
+        )
+        dynamic_keywords = any(keyword.arg is None for keyword in call.keywords)
+        if is_launcher(call) and dynamic_keywords:
+            findings.append((call.lineno, "unproved command execution"))
+            continue
+        if is_shell_launcher(call) or (is_launcher(call) and shell):
+            findings.append((call.lineno, "shell command execution"))
+            continue
+        if is_launcher(call):
+            if not call.args:
+                findings.append((call.lineno, "unproved command execution"))
+                continue
+            raw = call.args[0]
+            if isinstance(raw, ast.Constant) and isinstance(raw.value, str):
+                if raw.value.split(maxsplit=1)[0] == "git":
+                    findings.append((call.lineno, "shell command execution"))
+                continue
+            argv = static_argv(raw, call.lineno)
+            if not argv or argv[0] is None:
+                findings.append((call.lineno, "unproved command execution"))
+                continue
             executable = argv[0]
-            if isinstance(executable, ast.Constant) and executable.value in hosting_clis:
-                findings.append((call.lineno, f"hosting cli {executable.value}"))
-            command = command_node(argv)
-            if isinstance(command, ast.Constant) and isinstance(command.value, str):
-                if command.value not in read_only:
-                    findings.append((call.lineno, f"git {command.value}"))
-        if isinstance(call.func, ast.Name) and call.func.id in wrappers:
-            command_index = wrappers[call.func.id]
-            if command_index < len(call.args):
-                command = call.args[command_index]
+            if executable in hosting_clis:
+                findings.append((call.lineno, f"hosting cli {executable}"))
+            if executable == "git":
+                command = git_command(argv)
+                if command is None:
+                    # A dynamic command is allowed only in an audited wrapper;
+                    # every call site is checked below.
+                    enclosing_wrapper = any(
+                        call in ast.walk(definition) and definition.name in wrappers
+                        for definition in tree.body
+                        if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    )
+                    if not enclosing_wrapper:
+                        findings.append((call.lineno, "unproved git command"))
+                elif command not in read_only:
+                    findings.append((call.lineno, f"git {command}"))
+        audited_wrapper = wrapper_name(call)
+        if audited_wrapper is not None:
+            command_index = wrappers[audited_wrapper]
+            definition = wrapper_definitions[audited_wrapper]
+            positional = [*definition.args.posonlyargs, *definition.args.args]
+            command = (
+                call.args[command_index]
+                if command_index < len(call.args)
+                else next(
+                    (
+                        keyword.value
+                        for keyword in call.keywords
+                        if keyword.arg == positional[command_index].arg
+                    ),
+                    None,
+                )
+            )
+            if command is None:
+                if dynamic_keywords:
+                    findings.append((call.lineno, "unproved git command"))
+                    continue
+                defaults = definition.args.defaults
+                default_offset = len(positional) - len(defaults)
+                if command_index >= default_offset:
+                    command = defaults[command_index - default_offset]
+            if command is not None:
                 if isinstance(command, ast.Constant) and isinstance(command.value, str):
                     if command.value not in read_only:
                         findings.append((call.lineno, f"git {command.value}"))
+                else:
+                    findings.append((call.lineno, "unproved git command"))
 
     return [finding for _line, finding in sorted(findings)]
 
@@ -506,6 +744,91 @@ git(root, 'status')
         "hosting sdk github",
         "git remote",
         "git status",
+    ]
+
+
+def test_git_boundary_scanner_fails_closed_for_composed_and_shell_commands() -> None:
+    source = """
+import os
+import subprocess
+
+subprocess.run(['git'] + ['push'])
+cmd = ['git', 'status']
+subprocess.run(cmd)
+subprocess.run('git log', shell=True)
+os.system('git reset --hard')
+subprocess.run(make_command())
+execute = os.system
+execute('git push')
+
+def git_keyword(root, command):
+    subprocess.run(['git', command])
+
+git_keyword(root, command='push')
+
+laundered = ['git', 'push']
+subprocess.run(laundered)
+laundered = ['git', 'ls-files']
+
+run_alias = subprocess.run
+run_alias(['git', 'push'])
+run_alias(make_command())
+
+def git_default(root, command='push'):
+    subprocess.run(['git', command])
+
+git_default(root)
+
+scoped = ['git', 'push']
+def unrelated():
+    scoped = ['git', 'ls-files']
+def bad_scope():
+    subprocess.run(scoped)
+
+options = {'shell': True}
+subprocess.run(['git', 'ls-files'], **options)
+git_default(root, **{'command': 'push'})
+
+git_alias = git_keyword
+git_alias(root, 'push')
+
+def local_imports():
+    import subprocess as sp
+    from subprocess import run as local_run
+    sp.run(['git', 'push'])
+    local_run(['git', 'push'])
+
+class Innocent:
+    scoped = ['git', 'ls-files']
+
+first_run = subprocess.run
+second_run = first_run
+second_run(['git', 'push'])
+first_git = git_keyword
+second_git = first_git
+second_git(root, 'push')
+"""
+
+    assert _git_boundary_violations(source) == [
+        "git push",
+        "git status",
+        "shell command execution",
+        "shell command execution",
+        "unproved command execution",
+        "shell command execution",
+        "git push",
+        "git push",
+        "git push",
+        "unproved command execution",
+        "git push",
+        "git push",
+        "unproved command execution",
+        "unproved git command",
+        "git push",
+        "git push",
+        "git push",
+        "git push",
+        "git push",
     ]
 
 

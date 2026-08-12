@@ -19,18 +19,27 @@ from obsidian_wiki.portable import PROJECT_AGENT_DIRS, render_portable_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _safe_tree_snapshot(root: Path) -> tuple[tuple[str, str, int, str | None], ...]:
-    entries: list[tuple[str, str, int, str | None]] = []
+def _safe_tree_snapshot(
+    root: Path,
+) -> tuple[tuple[str, str, int, str | None, int, int, int], ...]:
+    entries: list[tuple[str, str, int, str | None, int, int, int]] = []
 
     def visit(directory: Path) -> None:
         for path in sorted(directory.iterdir(), key=lambda item: item.name):
             metadata = path.lstat()
             relative = path.relative_to(root).as_posix()
             mode = stat.S_IMODE(metadata.st_mode)
+            identity = (
+                stat.S_IFMT(metadata.st_mode),
+                metadata.st_rdev,
+                metadata.st_size,
+            )
             if stat.S_ISLNK(metadata.st_mode):
-                entries.append((relative, "symlink", mode, os.readlink(path)))
+                entries.append(
+                    (relative, "symlink", mode, os.readlink(path), *identity)
+                )
             elif stat.S_ISDIR(metadata.st_mode):
-                entries.append((relative, "directory", mode, None))
+                entries.append((relative, "directory", mode, None, *identity))
                 visit(path)
             elif stat.S_ISREG(metadata.st_mode):
                 entries.append(
@@ -39,10 +48,11 @@ def _safe_tree_snapshot(root: Path) -> tuple[tuple[str, str, int, str | None], .
                         "file",
                         mode,
                         hashlib.sha256(path.read_bytes()).hexdigest(),
+                        *identity,
                     )
                 )
             else:
-                entries.append((relative, "special", mode, None))
+                entries.append((relative, "special", mode, None, *identity))
 
     visit(root)
     return tuple(entries)
@@ -57,6 +67,29 @@ def test_safe_home_snapshot_detects_added_agent_skill_tree(tmp_path: Path) -> No
     skill.write_text("# unexpected global skill\n", encoding="utf-8")
 
     assert _safe_tree_snapshot(home) != before
+
+
+def test_safe_home_snapshot_records_special_file_identity(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    fifo = home / "owner-fifo"
+    try:
+        os.mkfifo(fifo)
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        pytest.skip(f"FIFO creation is unavailable: {exc}")
+    metadata = fifo.lstat()
+
+    assert _safe_tree_snapshot(home) == (
+        (
+            "owner-fifo",
+            "special",
+            stat.S_IMODE(metadata.st_mode),
+            None,
+            stat.S_IFMT(metadata.st_mode),
+            metadata.st_rdev,
+            metadata.st_size,
+        ),
+    )
 
 
 def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:

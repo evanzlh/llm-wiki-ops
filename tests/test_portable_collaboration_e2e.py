@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
@@ -16,6 +18,44 @@ from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.skill_trees import discover_skill_collection
 from obsidian_wiki.transaction import TransactionManager
+
+
+def _run_command(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+    text: bool = True,
+    check: bool = False,
+):
+    try:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            text=text,
+            capture_output=True,
+            check=check,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        rendered = " ".join(argv)
+        raise AssertionError(
+            f"command {rendered} timed out after {timeout} seconds"
+        ) from exc
+
+
+def test_command_timeout_reports_the_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def expire(*args, **kwargs):
+        raise subprocess.TimeoutExpired(["git", "status"], 30)
+
+    monkeypatch.setattr(subprocess, "run", expire)
+
+    with pytest.raises(AssertionError, match=r"git status.*30 seconds"):
+        _run_command(["git", "status"], cwd=tmp_path, timeout=30)
 
 
 def _git_environment(root: Path) -> dict[str, str]:
@@ -29,6 +69,8 @@ def _git_environment(root: Path) -> dict[str, str]:
         {
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": os.devnull,
             "HOME": str(test_home),
             "XDG_CONFIG_HOME": str(test_home / "xdg"),
         }
@@ -39,6 +81,8 @@ def _git_environment(root: Path) -> dict[str, str]:
 def _git_command(root: Path, *args: str) -> list[str]:
     return [
         "git",
+        "-c",
+        "core.hooksPath=/dev/null",
         "-c",
         "core.autocrlf=true",
         "-c",
@@ -52,19 +96,22 @@ def _git_command(root: Path, *args: str) -> list[str]:
 def _git(
     root: Path, *args: str, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return _run_command(
         _git_command(root, *args),
+        cwd=root,
+        timeout=30,
         text=True,
-        capture_output=True,
         check=check,
         env=_git_environment(root),
     )
 
 
 def _git_bytes(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    return _run_command(
         _git_command(root, *args),
-        capture_output=True,
+        cwd=root,
+        timeout=30,
+        text=False,
         check=True,
         env=_git_environment(root),
     )
@@ -73,20 +120,22 @@ def _git_bytes(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 def _cli(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     environment = _git_environment(root)
     environment["PYTHONPATH"] = str(Path(__file__).parents[1])
-    return subprocess.run(
+    return _run_command(
         [sys.executable, "-m", "obsidian_wiki.cli", *args],
         cwd=root,
+        timeout=60,
         env=environment,
         text=True,
-        capture_output=True,
         check=False,
     )
 
 
 def _clone(source: Path, target: Path) -> None:
-    subprocess.run(
+    _run_command(
         [
             "git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "-c",
             "core.autocrlf=true",
             "-c",
@@ -96,9 +145,11 @@ def _clone(source: Path, target: Path) -> None:
             str(source),
             str(target),
         ],
-        check=True,
-        capture_output=True,
+        cwd=source,
+        timeout=30,
+        text=False,
         env=_git_environment(source),
+        check=True,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import tarfile
@@ -46,6 +47,93 @@ REMOVED_DISTRIBUTION_PREFIXES = (
 )
 
 
+def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> None:
+    first = tmp_path / "first.whl"
+    second = tmp_path / "second.whl"
+    for path, timestamp in (
+        (first, (2020, 1, 1, 0, 0, 0)),
+        (second, (2026, 8, 13, 12, 0, 0)),
+    ):
+        with zipfile.ZipFile(path, "w") as archive:
+            info = zipfile.ZipInfo("package/module.py", timestamp)
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, b"VALUE = 1\n")
+
+    assert _normalized_wheel_inventory(first) == _normalized_wheel_inventory(second)
+
+
+def _entry(content: bytes, mode: int) -> tuple[int, str, int]:
+    return (len(content), hashlib.sha256(content).hexdigest(), mode & 0o777)
+
+
+def _normalized_wheel_inventory(wheel: Path) -> dict[str, tuple[int, str, int]]:
+    inventory: dict[str, tuple[int, str, int]] = {}
+    with zipfile.ZipFile(wheel) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            assert info.filename not in inventory, info.filename
+            content = archive.read(info)
+            inventory[info.filename] = _entry(
+                content, (info.external_attr >> 16) & 0o777
+            )
+    return inventory
+
+
+def _normalized_sdist_inventory(sdist: Path) -> dict[str, tuple[int, str, int]]:
+    inventory: dict[str, tuple[int, str, int]] = {}
+    with tarfile.open(sdist) as archive:
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            parts = Path(member.name).parts
+            assert len(parts) > 1, member.name
+            relative = "/".join(parts[1:])
+            assert relative not in inventory, relative
+            stream = archive.extractfile(member)
+            assert stream is not None
+            inventory[relative] = _entry(stream.read(), member.mode)
+    return inventory
+
+
+def _source_package_inventory() -> dict[str, tuple[int, str, int]]:
+    completed = subprocess.run(
+        ["git", "ls-files", "-z", "--", "obsidian_wiki"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    inventory: dict[str, tuple[int, str, int]] = {}
+    for encoded_path in completed.stdout.split(b"\0"):
+        if not encoded_path:
+            continue
+        relative = encoded_path.decode("utf-8")
+        path = ROOT / relative
+        assert path.is_file() and not path.is_symlink(), relative
+        inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
+    return inventory
+
+
+def _source_distribution_inventory() -> dict[str, tuple[int, str, int]]:
+    completed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    inventory: dict[str, tuple[int, str, int]] = {}
+    for encoded_path in completed.stdout.split(b"\0"):
+        if not encoded_path:
+            continue
+        relative = encoded_path.decode("utf-8")
+        path = ROOT / relative
+        assert path.is_file() and not path.is_symlink(), relative
+        inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
+    return inventory
+
+
 def _source_inventory() -> dict[str, tuple[bytes, int]]:
     completed = subprocess.run(
         [
@@ -59,6 +147,7 @@ def _source_inventory() -> dict[str, tuple[bytes, int]]:
         cwd=ROOT,
         capture_output=True,
         check=True,
+        timeout=30,
     )
     inventory: dict[str, tuple[bytes, int]] = {}
     for encoded_path in completed.stdout.split(b"\0"):
@@ -127,7 +216,7 @@ def _build(*arguments: str, cwd: Path) -> None:
         text=True,
         capture_output=True,
         check=True,
-        timeout=180,
+        timeout=120,
     )
 
 
@@ -136,9 +225,11 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     tmp_path: Path,
 ) -> None:
     direct_dir = tmp_path / "direct"
+    repeated_dir = tmp_path / "repeated"
     sdist_dir = tmp_path / "sdist"
     rebuilt_dir = tmp_path / "rebuilt"
     _build("--wheel", "--out-dir", str(direct_dir), str(ROOT), cwd=ROOT)
+    _build("--wheel", "--out-dir", str(repeated_dir), str(ROOT), cwd=ROOT)
     _build("--sdist", "--out-dir", str(sdist_dir), str(ROOT), cwd=ROOT)
     sdist_files = tuple(sdist_dir.glob("*.tar.gz"))
     assert len(sdist_files) == 1
@@ -151,9 +242,44 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     )
 
     direct_wheels = tuple(direct_dir.glob("*.whl"))
+    repeated_wheels = tuple(repeated_dir.glob("*.whl"))
     rebuilt_wheels = tuple(rebuilt_dir.glob("*.whl"))
     assert len(direct_wheels) == 1
+    assert len(repeated_wheels) == 1
     assert len(rebuilt_wheels) == 1
+    direct_inventory = _normalized_wheel_inventory(direct_wheels[0])
+    repeated_inventory = _normalized_wheel_inventory(repeated_wheels[0])
+    rebuilt_inventory = _normalized_wheel_inventory(rebuilt_wheels[0])
+    sdist_inventory = _normalized_sdist_inventory(sdist_files[0])
+    assert direct_inventory == repeated_inventory
+    assert rebuilt_inventory == direct_inventory
+    source_package = _source_package_inventory()
+    source_distribution = _source_distribution_inventory()
+    assert source_package
+    assert set(sdist_inventory) - set(source_distribution) == {"PKG-INFO"}
+    assert {
+        path: sdist_inventory[path] for path in source_distribution
+    } == source_distribution
+    assert {
+        path: direct_inventory[path] for path in source_package
+    } == source_package
+    assert {path: sdist_inventory[path] for path in source_package} == source_package
+    expected_python = {
+        path for path in source_package if path.endswith(".py")
+    }
+    expected_python.update(
+        f"obsidian_wiki/_data/scripts/{path.name}"
+        for path in (ROOT / "scripts").glob("*.py")
+    )
+    assert expected_python == {
+        path
+        for path in direct_inventory
+        if path.startswith("obsidian_wiki/") and path.endswith(".py")
+    }
+    for metadata in ("METADATA", "WHEEL", "entry_points.txt", "RECORD"):
+        assert any(
+            path.endswith(f".dist-info/{metadata}") for path in direct_inventory
+        ), metadata
     expected = _source_inventory()
     assert expected
     assert _wheel_inventory(direct_wheels[0]) == expected
