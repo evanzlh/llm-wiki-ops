@@ -12,7 +12,7 @@ Setup writes a TOML document with these required fields (the `requires_cli` rang
 
 ```toml
 schema_version = 1
-implementation = "obsidian-wiki"
+implementation = "evanzlh/obsidian-wiki"
 requires_cli = ">=0.1,<0.2"
 
 [paths]
@@ -40,11 +40,11 @@ Unknown keys fail validation. Values may be strings, numbers, booleans, or lists
 
 ## Tracked and ignored state
 
-Tracked repository authority includes `.obsidian-wiki/config.toml`, `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, tracked source snapshots, `wiki/.manifest/sources/` manifest v2 shards, and immutable operation records.
+Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and immutable operation records.
 
 Ignored local state includes `.obsidian-wiki/local/`, transaction workspaces and recovery copies, and `wiki/hot.md`. The hot page is derived from bounded deterministic inputs and can be regenerated.
 
-A transaction commit owns affected manifest shards; it owns the matching snapshot update too. Agents must never edit manifest shards directly. Stable `wiki/index.md` and `wiki/log.md` are not ordinary write targets.
+A transaction commit owns affected manifest shards but never modifies tracked source snapshots. Agents must never edit manifest shards directly. Stable `wiki/index.md` and `wiki/log.md` are not ordinary write targets.
 
 ## Skill mirrors
 

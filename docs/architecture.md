@@ -18,9 +18,9 @@ team-knowledge/
 ├── .kiro/skills/
 ├── sources/                   # exactly one configured source root
 └── wiki/
+    ├── .manifest.json         # tracked manifest v2 marker
     ├── .manifest/sources/     # tracked manifest v2 shards
-    ├── .ops/                  # immutable operation records
-    ├── _sources/              # tracked source snapshots
+    ├── journal/operations/    # immutable operation records
     ├── index.md               # stable
     ├── log.md                 # stable
     └── hot.md                 # ignored derived view
@@ -30,9 +30,9 @@ Bootstrap instructions at the repository root direct supported agents to the can
 
 ## Authority and data flow
 
-The nearest ancestor configuration selects the repository. Authoritative source bytes enter through `sources/`; the agent reads the canonical protocol and a task skill, then opens a transaction for the exact sources. Candidate pages are composed in ignored local transaction workspaces, not in the live vault.
+The nearest ancestor configuration selects the repository. The repository-root `sources/` directory is the tracked authority: owners review and track source snapshots before beginning a transaction. The agent reads the canonical protocol and a task skill, then opens a transaction for the exact sources. Candidate pages are composed in ignored local transaction workspaces, not in the live vault.
 
-Tracked source snapshots preserve the bytes used for compilation. Stable repository-relative Source IDs identify inputs across clones. Each source has one manifest v2 shard at `wiki/.manifest/sources/<source-id>.json`, which keeps concurrent updates merge-friendly.
+Stable repository-relative Source IDs identify inputs across clones. The Source ID retains the repository-relative configured source-root prefix. When mapping it to a shard, `ShardedManifest.entry_path` first removes that prefix, then appends `.json` below `wiki/.manifest/sources/`. For example, `sources/design/architecture.md` maps to `wiki/.manifest/sources/design/architecture.md.json`. This keeps concurrent updates merge-friendly.
 
 ## Transaction review and recovery
 
@@ -42,7 +42,7 @@ The write lifecycle is:
 2. The agent writes complete candidate pages only inside the returned workspace.
 3. `transaction validate` checks the prospective vault, including candidate-to-candidate and candidate-to-live links.
 4. Human or agent transaction review inspects the candidate diff and validation report.
-5. `transaction commit` revalidates, creates recovery material, promotes the reviewed bytes, owns affected manifest shards, and appends an immutable operation page.
+5. `transaction commit` revalidates, creates recovery material, promotes reviewed candidate pages, upserts affected manifest shards, and writes one immutable page under `journal/operations/`. It never changes tracked source snapshots.
 6. The owner reviews `git diff` and handles Git publication outside the CLI.
 
 Failed promotion retains status-aware recovery state. `transaction retry`, `restore`, `discard`, and `abort` make each next action explicit. Owner changes are never silently overwritten.
@@ -53,7 +53,7 @@ Ordinary knowledge writes keep stable `wiki/index.md` and `wiki/log.md`; consume
 
 ## Manifest v2
 
-Manifest v2 is sharded and has exactly one configured source root. A transaction commit owns every affected shard and its source snapshot; never edit manifest shards directly. `check` compares tracked sources, snapshots, shards, generated pages, skills, mirrors, and bootstrap assets without invoking a model.
+Manifest v2 is sharded and has exactly one configured source root. The tracked `wiki/.manifest.json` marker selects sharded storage at `wiki/.manifest/sources/`. A transaction commit owns every affected shard but never changes the authoritative source snapshot; never edit manifest shards directly. `check` compares tracked sources, shards, generated pages, skills, mirrors, and bootstrap assets without invoking a model.
 
 ## Boundaries
 

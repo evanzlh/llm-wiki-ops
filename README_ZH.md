@@ -34,9 +34,11 @@ obsidian-wiki check
 
 在 Obsidian 中打开 `wiki/`。命令解析最近祖先目录中的 `.obsidian-wiki/config.toml`，因此可以从仓库根目录或其子目录运行。初始化还会安装规范 `.skills/` 技能树及完整的 Agent 镜像。
 
+Setup 不会初始化 Git。协作前，所有者需要初始化知识库仓库，审查、暂存并提交 scaffold；详见[安装说明](docs/installation.md#create-a-repository)。
+
 ## 安全协作
 
-Agent 通过本地事务写入。候选页面提升前必须通过校验；失败时保留恢复状态。成功写入会保持 `wiki/index.md` 与 `wiki/log.md` 稳定，更新受版本管理的来源快照和 manifest v2 分片，并留下不可变操作记录。CLI 不会提交、推送或创建 Pull Request：仓库所有者审查工作树 diff，并在外部完成 Git 发布。
+来源快照先由所有者审查，并在 `transaction begin` 之前纳入版本管理。此后 Agent 通过本地事务写入。候选内容提升前必须通过校验；失败时保留恢复状态。成功提交会提升候选页面、更新 manifest 分片并写入操作记录，同时保持 `wiki/index.md` 与 `wiki/log.md` 稳定。事务绝不会修改受版本管理的来源快照。CLI 不会提交、推送或创建 Pull Request：仓库所有者审查工作树 diff，并在外部完成 Git 发布。
 
 安装兼容的框架版本后，显式升级受管理技能：
 

@@ -34,9 +34,11 @@ obsidian-wiki check
 
 Open `wiki/` in Obsidian. Commands resolve the nearest ancestor `.obsidian-wiki/config.toml`, so they work from the repository root or a nested directory. Setup also installs the canonical `.skills/` tree and complete agent mirrors.
 
+Setup does not initialize Git. Before collaboration, the owner initializes the knowledge repository and reviews, stages, and commits the scaffold; see [Installation](docs/installation.md#create-a-repository).
+
 ## Collaborate safely
 
-Agents write through local transactions. Validation happens before candidate pages are promoted; failures retain recovery state. Successful writes keep stable `wiki/index.md` and `wiki/log.md`, update tracked source snapshots and manifest v2 shards, and leave an immutable operation record. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
+Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and writes an operation record while keeping stable `wiki/index.md` and `wiki/log.md`. A transaction never modifies tracked source snapshots. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
 
 Upgrade managed skills explicitly after installing a compatible framework release:
 

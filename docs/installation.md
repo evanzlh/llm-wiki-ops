@@ -22,16 +22,31 @@ Framework contributors can run commands from the checkout with `uv run python -m
 
 ## Create a repository
 
-Setup accepts an optional directory and uses the current directory when it is omitted:
+Setup accepts an optional directory and uses the current directory when it is omitted. It does not initialize Git; repository creation and publication remain owner actions. One executable workflow is to initialize an otherwise empty target first, then scaffold it:
 
 ```bash
+mkdir ./team-knowledge
+git -C ./team-knowledge init
 obsidian-wiki setup ./team-knowledge
+```
+
+From the same parent directory, the owner can review and record the scaffold explicitly:
+
+```bash
+git -C ./team-knowledge status
+git -C ./team-knowledge add --all
+git -C ./team-knowledge commit -m "Initialize knowledge repository"
+```
+
+Then enter the knowledge repository, validate it, and open `wiki/` in Obsidian:
+
+```bash
 cd ./team-knowledge
 obsidian-wiki doctor
 obsidian-wiki check
 ```
 
-Open `wiki/` in Obsidian. Commit the generated repository scaffold before collaborative work.
+Adding, committing, configuring a remote, and pushing are external Git publication steps, not framework actions.
 
 ## Join an existing repository
 
