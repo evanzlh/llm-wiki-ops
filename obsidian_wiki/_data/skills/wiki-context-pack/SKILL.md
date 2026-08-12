@@ -29,15 +29,11 @@ pages, `index.md`, `log.md`, `hot.md`, `.manifest.json`, or repository-local sta
    cd obsidian-wiki
    uv tool install --link-mode copy .
    ```
-5. Canonicalize the configured vault before invocation:
-
-   ```bash
-   OBSIDIAN_VAULT_PATH="$(cd "$OBSIDIAN_VAULT_PATH" && pwd -P)"
-   ```
-
-   If this fails, stop. Run the CLI from any directory, including a nested directory,
-   inside the owning portable repository;
-   repository discovery remains config-driven.
+5. Run the real CLI from any directory inside the owning portable repository,
+   including a nested working directory. The CLI walks upward to the nearest
+   `.obsidian-wiki/config.toml`, resolves the configured vault itself, and fails
+   closed on an invalid path. Do not export or synthesize a vault environment
+   variable for this command.
 
 ## Command
 

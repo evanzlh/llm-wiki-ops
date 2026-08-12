@@ -23,9 +23,10 @@ def test_context_skill_uses_cli_and_is_read_only() -> None:
     assert "AGENTS.md" in skill
 
 
-def test_context_skill_canonicalizes_vault_and_requires_installed_cli() -> None:
+def test_context_skill_uses_repo_discovery_and_requires_installed_cli() -> None:
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
-    assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' in skill
+    assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' not in skill
+    assert "OBSIDIAN_VAULT_PATH=" not in skill
     assert "command -v obsidian-wiki" in skill
     assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in skill
     assert SOURCE_INSTALL_COMMAND in skill
@@ -47,7 +48,7 @@ def test_cli_lists_context_pack_skill() -> None:
     assert "wiki-context-pack" in list_skills()
 
 
-def test_all_bootstraps_route_context_pack() -> None:
+def test_bootstraps_route_generic_tasks_and_context_pack_is_discoverable() -> None:
     files = [
         "obsidian_wiki/_data/bootstrap/AGENTS.md",
         "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
@@ -58,7 +59,14 @@ def test_all_bootstraps_route_context_pack() -> None:
         "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
     ]
     for relative in files:
-        assert "wiki-context-pack" in read(relative), relative
+        bootstrap = read(relative)
+        assert ".skills/llm-wiki/SKILL.md" in bootstrap, relative
+        assert ".skills/<task>/SKILL.md" in bootstrap, relative
+
+    skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
+    assert "name: wiki-context-pack" in skill
+    assert "description: >" in skill
+    assert "Use when" in skill.split("---", 2)[1]
 
 
 def test_cli_docs_document_agent_context_contract() -> None:

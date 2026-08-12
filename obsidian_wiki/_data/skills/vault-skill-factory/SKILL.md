@@ -68,12 +68,25 @@ available. Create concrete retrieval/application cases in `evals/evals.json`.
 ## Validate and stop
 
 Validate YAML, name/path equality, required files, local reference links, JSON eval
-shape, source provenance, and absence of links or special files. Run any available
-validator from the installed CLI bundled-data root only after reviewing its command.
-Reusable validator scripts, when present, are under
-`$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/`; never infer that variable from a
-source checkout or use it as repository/vault authority. A missing validator does not
-authorize an external install. Report validation failures alongside the artifact path.
+shape, source provenance, and absence of links or special files.
+
+A fresh `obsidian-wiki setup [DIR]` repository contains the package-managed validator
+mirror at `.skills/skill-creator/scripts/quick_validate.py`. Resolve that path from
+the nearest repository root; do not derive it from a package source checkout. Before
+execution, verify every path component is contained and owner-controlled and that the
+script is an ordinary single-link file, not a symbolic link, hard link, or special
+file. Then run from the repository root with separate argv entries:
+
+```bash
+uv run --with pyyaml python ".skills/skill-creator/scripts/quick_validate.py" ".obsidian-wiki/local/generated-skills/<name>"
+```
+
+The validated skill argument must be the already-created local output directory; the
+validator must not install, move, or rewrite it elsewhere. If the repository mirror
+is absent or unsafe, do not search home or package-source paths: fall back to the
+frontmatter, name, JSON, link, provenance, and topology checks above. If any required
+check cannot be completed, fail closed and report the artifact as unvalidated. A
+missing validator never authorizes an external install.
 
 End with the path, source cluster, trigger description, eval count, and validation
 result. State that human review and a separate owner-controlled install are required.

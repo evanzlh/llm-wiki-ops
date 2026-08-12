@@ -8,7 +8,9 @@ description: >
 # Obsidian Layout Adjustment
 
 This workflow explicitly edits files under `.obsidian/`; those are Obsidian
-configuration changes, not knowledge writes and not transaction candidates.
+configuration changes, not a knowledge transaction. Do not run `obsidian-wiki transaction begin`:
+these edits have no knowledge candidates and do
+not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and subjective approval
 
@@ -78,10 +80,23 @@ changed” signals wrong ownership, clipping, coverage, override, or missed relo
 
 ## Review and closeout
 
-Run path-scoped `git diff` for every edited `.obsidian/` file and show it to the user.
-The owner decides whether to commit tracked config; this workflow never commits,
-pushes, or publishes. Reload Obsidian with Cmd/Ctrl+R after edit or restore and
-screenshot-check the result.
+From the resolved config, retain its repository root and configured vault path. For
+each edited file, compute the configured vault path relative to the repository root,
+verify containment and reject `..`, then append that file's `.obsidian/` path. Call
+the resulting single repository-relative path `CONFIG_PATH`; never assume the vault
+directory is named `wiki` and never use an absolute host path as a Git pathspec.
+
+From the repository root, review every edited file separately with argv-safe literal
+pathspec handling:
+
+```bash
+git --literal-pathspecs diff -- "$CONFIG_PATH"
+```
+
+`CONFIG_PATH` is one validated argument, not shell text or a glob. Show each diff to
+the user. The owner decides whether to commit tracked config; this workflow never
+commits, pushes, or publishes. Reload Obsidian with Cmd/Ctrl+R after edit or restore
+and screenshot-check the result.
 
 Report changed files, backup paths, phrase-to-layer mapping, `git diff` status,
 reload/screenshot result, and anything unverified. Do not mutate wiki pages,

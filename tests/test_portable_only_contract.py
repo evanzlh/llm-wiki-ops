@@ -553,9 +553,68 @@ def test_obsidian_config_edits_have_backup_approval_and_git_boundaries() -> None
         assert "atomic" in text.lower(), name
         assert "restore" in text.lower(), name
         assert "reload" in text.lower(), name
-        assert "git diff" in text.lower(), name
+        assert "diff --" in text.lower(), name
         assert "owner" in text.lower() and "commit" in text.lower(), name
-        assert "transaction begin" not in text, name
+
+
+def test_obsidian_config_diff_uses_resolved_repo_relative_literal_pathspecs() -> None:
+    graph = _special_skill("graph-colorize")
+    layout = _special_skill("obsidian-layout-adjustment")
+
+    for name, text in (("graph-colorize", graph), ("obsidian-layout-adjustment", layout)):
+        assert "configured vault path relative to the repository root" in text, name
+        assert 'git --literal-pathspecs diff -- "$CONFIG_PATH"' in text, name
+        assert "git diff -- .obsidian" not in text, name
+    assert "<vault-relative>/.obsidian/graph.json" in graph
+
+
+def test_obsidian_config_edits_are_explicitly_not_knowledge_transactions() -> None:
+    for name in ("graph-colorize", "obsidian-layout-adjustment"):
+        text = _special_skill(name)
+        assert "not a knowledge transaction" in text, name
+        assert "Do not run `obsidian-wiki transaction begin`" in text, name
+        assert "manifest" in text.lower(), name
+
+
+def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
+    factory = _special_skill("vault-skill-factory")
+    assert "$OBSIDIAN_WIKI_REPO" not in factory
+    assert ".skills/skill-creator/scripts/quick_validate.py" in factory
+    assert (
+        'uv run --with pyyaml python ".skills/skill-creator/scripts/quick_validate.py" '
+        '".obsidian-wiki/local/generated-skills/<name>"'
+    ) in factory
+
+    repository = tmp_path / "repository"
+    setup = run_cli(tmp_path / "home", tmp_path, "setup", str(repository))
+    assert setup.returncode == 0, setup.stderr
+    validator = repository / ".skills/skill-creator/scripts/quick_validate.py"
+    assert validator.is_file() and not validator.is_symlink()
+    assert validator.stat().st_nlink == 1
+
+    generated = repository / ".obsidian-wiki/local/generated-skills/example"
+    generated.mkdir(parents=True)
+    (generated / "SKILL.md").write_text(
+        "---\nname: example\ndescription: Use when testing validation.\n---\n",
+        encoding="utf-8",
+    )
+    validated = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--with",
+            "pyyaml",
+            "python",
+            str(validator),
+            str(generated),
+        ],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    assert validated.stdout == "Skill is valid!\n"
 
 
 def test_obsidian_layout_assets_contain_no_person_specific_wording() -> None:

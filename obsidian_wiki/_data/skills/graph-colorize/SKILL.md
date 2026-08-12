@@ -8,7 +8,9 @@ description: >
 # Graph Colorize
 
 This workflow explicitly edits `.obsidian/graph.json`; it is an Obsidian
-configuration change, not a knowledge write and not a transaction candidate.
+configuration change, not a knowledge transaction. Do not run `obsidian-wiki transaction begin`:
+this edit has no knowledge candidates and does
+not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and approval
 
@@ -61,9 +63,23 @@ report the backup.
 
 ## Review, restore, and reload
 
-Run a path-scoped `git diff -- .obsidian/graph.json` and show it to the user. The
-owner, not this workflow, decides whether to commit any tracked config change; never
-commit, push, or publish it.
+From the resolved config, retain both its repository root and its configured vault
+path. Compute the configured vault path relative to the repository root, verify that
+it is contained and has no `..` component, then append `.obsidian/graph.json`; call
+the result `CONFIG_PATH`, for example
+`<vault-relative>/.obsidian/graph.json`. Do not assume the vault directory is named
+`wiki` and do not pass an absolute host path to Git.
+
+From the repository root, run this argv-safe, path-scoped review and show it to the
+user:
+
+```bash
+git --literal-pathspecs diff -- "$CONFIG_PATH"
+```
+
+`CONFIG_PATH` is one validated repository-relative path argument, not shell text or
+a glob. The owner, not this workflow, decides whether to commit any tracked config
+change; never commit, push, or publish it.
 
 To undo, select an explicit backup, validate it with the same topology checks, back
 up the current target again, and atomically restore the selected preimage. After edit
