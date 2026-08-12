@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,39 @@ HISTORY_FORMAT_REFERENCES = tuple(
     / f"obsidian_wiki/_data/skills/{name}-history-ingest/references/{name}-data-format.md"
     for name in ("claude", "codex", "copilot", "hermes", "openclaw")
 )
+
+
+def _history_file_topology_ok(root: Path, selected: Path) -> bool:
+    try:
+        root_info = os.lstat(root)
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            return False
+        relative = selected.relative_to(root)
+        current = root
+        for part in relative.parts[:-1]:
+            current /= part
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                return False
+        terminal = os.lstat(selected)
+        return stat.S_ISREG(terminal.st_mode) and terminal.st_nlink == 1
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+
+
+def _history_snapshot_action(
+    *,
+    exists: bool,
+    ordinary_single_link: bool,
+    tracked: bool,
+    expected_identity: tuple[str, str, str],
+    stored_identity: tuple[str, str, str] | None,
+) -> str:
+    if not exists:
+        return "create"
+    if ordinary_single_link and tracked and stored_identity == expected_identity:
+        return "owner-reviewed-atomic-replacement"
+    return "collision-fail-closed"
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -1020,19 +1054,54 @@ def test_history_filesystem_bounds_and_safe_reads_are_explicit() -> None:
             "explicit authorization",
             "explicit omission marker",
             "root-contained",
-            "lstat every ancestor",
-            "terminal or intermediate symlink",
-            "hard link",
-            "FIFO",
-            "special file",
+            "lstat",
+            "symlink/reparse-point",
+            "regular single-link",
+            "special-directory",
             "O_NOFOLLOW",
             "fstat",
             "device/inode identity",
             "TOCTOU",
+            "ancestor directory link count is not constrained",
+            "terminal regular file",
+            "platform-equivalent no-follow handle",
+            "unavailable, fail closed",
         ):
             assert required in flat, f"{path}: missing {required!r}"
     agent = " ".join(HISTORY_SKILLS[-1].read_text(encoding="utf-8").split())
     assert "at most 5 sessions" in agent
+
+
+def test_history_topology_accepts_normal_directories_and_rejects_unsafe_terminal(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    nested = root / "one" / "two"
+    nested.mkdir(parents=True)
+    ordinary = nested / "session.jsonl"
+    ordinary.write_text("{}\n", encoding="utf-8")
+    assert os.lstat(nested).st_nlink >= 2
+    assert _history_file_topology_ok(root, ordinary)
+
+    hardlink = nested / "hardlink.jsonl"
+    os.link(ordinary, hardlink)
+    assert not _history_file_topology_ok(root, ordinary)
+    assert not _history_file_topology_ok(root, hardlink)
+
+    separate = root / "separate.jsonl"
+    separate.write_text("{}\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ancestor_link = root / "linked"
+    ancestor_link.symlink_to(outside, target_is_directory=True)
+    escaped = ancestor_link / "escape.jsonl"
+    escaped.write_text("{}\n", encoding="utf-8")
+    assert not _history_file_topology_ok(root, escaped)
+
+    if hasattr(os, "mkfifo"):
+        fifo = root / "pipe"
+        os.mkfifo(fifo)
+        assert not _history_file_topology_ok(root, fifo)
 
 
 def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
@@ -1088,6 +1157,9 @@ def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
             "exact reviewed body bytes",
             "exactly one LF",
             "obsidian-wiki cache-check <Source ID> --json --pretty",
+            "Changed append/Full reuses the same Source ID",
+            "owner-reviewed atomic replacement",
+            "identity mismatch or hash collision",
         ):
             assert required in flat, f"{path}: missing {required!r}"
 
@@ -1098,6 +1170,31 @@ def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
     parsed = parser.parse_args(_normalize_cache_check_argv(cache_argv))
     assert parsed.sources == ["sources/history/claude/example.md"]
     assert parsed.json is True and parsed.pretty is True
+
+
+def test_history_snapshot_logical_identity_state_table() -> None:
+    expected = ("claude", "session-1", "slice-a")
+    assert _history_snapshot_action(
+        exists=False,
+        ordinary_single_link=False,
+        tracked=False,
+        expected_identity=expected,
+        stored_identity=None,
+    ) == "create"
+    assert _history_snapshot_action(
+        exists=True,
+        ordinary_single_link=True,
+        tracked=True,
+        expected_identity=expected,
+        stored_identity=expected,
+    ) == "owner-reviewed-atomic-replacement"
+    assert _history_snapshot_action(
+        exists=True,
+        ordinary_single_link=True,
+        tracked=True,
+        expected_identity=expected,
+        stored_identity=("claude", "session-2", "slice-a"),
+    ) == "collision-fail-closed"
 
 
 def test_history_workers_revalidate_and_merge_evidence_safely() -> None:
@@ -1152,16 +1249,38 @@ def test_history_tool_root_precedence_and_storage_schemas() -> None:
         for path in HISTORY_SKILLS[:-1]
     }
     for name, override, default in (
-        ("claude-history-ingest", "CLAUDE_HISTORY_PATH", "~/.claude"),
-        ("codex-history-ingest", "CODEX_HISTORY_PATH", "~/.codex"),
-        ("copilot-history-ingest", "COPILOT_HISTORY_PATH", "~/.copilot/session-state"),
+        ("claude-history-ingest", "CLAUDE_CONFIG_DIR", "~/.claude"),
+        ("codex-history-ingest", "CODEX_HOME", "~/.codex"),
+        ("copilot-history-ingest", "COPILOT_HOME", "~/.copilot"),
         ("hermes-history-ingest", "HERMES_HOME", "~/.hermes"),
-        ("pi-history-ingest", "PI_CODING_AGENT_SESSION_DIR", "~/.pi/agent/sessions/"),
     ):
         flat = documents[name]
         assert override in flat and default in flat
         assert flat.index(override) < flat.index(default)
         assert "empty or relative" in flat and "reject" in flat
+
+    for forbidden in (
+        "CLAUDE_HISTORY_PATH",
+        "CODEX_HISTORY_PATH",
+        "COPILOT_HISTORY_PATH",
+    ):
+        assert all(forbidden not in flat for flat in documents.values())
+
+    copilot = documents["copilot-history-ingest"]
+    assert "<COPILOT_HOME>/session-state/" in copilot
+    assert "<COPILOT_HOME>/session-store.db" in copilot
+
+    pi = documents["pi-history-ingest"]
+    pi_precedence = (
+        "`--session-dir`",
+        "`PI_CODING_AGENT_SESSION_DIR`",
+        "`sessionDir` in settings.json",
+        "`<PI_CODING_AGENT_DIR>/sessions/`",
+    )
+    assert [pi.index(item) for item in pi_precedence] == sorted(
+        pi.index(item) for item in pi_precedence
+    )
+    assert "PI_CODING_AGENT_DIR" in pi and "~/.pi/agent" in pi
 
     openclaw = documents["openclaw-history-ingest"]
     for required in (
@@ -1202,5 +1321,24 @@ def test_copilot_sqlite_is_read_only_bounded_and_schema_checked() -> None:
         "LIMIT",
         "10,000 SQLite rows",
         "never query mutation",
+        "owner provides a quiescent consistent copy",
+        "agent must not copy the live database or WAL",
     ):
         assert required in copilot
+
+
+def test_openclaw_current_sqlite_scope_is_fail_closed() -> None:
+    openclaw = " ".join(HISTORY_SKILLS[4].read_text(encoding="utf-8").split())
+    for required in (
+        "agents/<agentId>/agent/openclaw-agent.sqlite",
+        "canonical active history",
+        "schema-versioned",
+        "stable public table/column query contract",
+        "NEEDS_CONTEXT",
+        "legacy/archive",
+        "sessions.json",
+        "JSONL",
+        "`updatedAt`",
+    ):
+        assert required in openclaw
+    assert "complete active history" not in openclaw

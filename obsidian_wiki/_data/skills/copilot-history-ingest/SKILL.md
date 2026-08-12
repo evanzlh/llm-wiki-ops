@@ -11,13 +11,17 @@ Use [Copilot data format](references/copilot-data-format.md) for SQLite/JSONL de
 
 Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in order.
 
-Resolve CLI session state from non-empty absolute `COPILOT_HISTORY_PATH` when set, otherwise absolute `~/.copilot/session-state`; reject an empty or relative override/root. The sibling SQLite database and VS Code stores are separate allowed roots and must be explicitly selected from their documented locations, not inferred from an arbitrary path.
+Resolve the GitHub Copilot CLI root from non-empty absolute `COPILOT_HOME` when set, otherwise absolute `~/.copilot`; reject an empty or relative override/root. CLI sessions are below `<COPILOT_HOME>/session-state/` and the sibling store is `<COPILOT_HOME>/session-store.db`. VS Code stores are separate allowed roots and must be explicitly selected from their documented platform locations, not inferred from an arbitrary path.
 
 ## Bounded safe input
 
-Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows, and 100,000 messages/content blocks. The owner may lower; a raise needs explicit authorization. Oversize input fails or receives an explicit omission marker. Every selected input must be root-contained; lstat every ancestor and reject a terminal or intermediate symlink, hard link (`st_nlink != 1`), FIFO, socket/device, or special file. For TOCTOU safety open ordinary files with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment and size before/after bounded read.
+Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows, and 100,000 messages/content blocks. The owner may lower; a raise needs explicit authorization. Oversize input fails or receives an explicit omission marker. Every selected input must be root-contained; lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. For TOCTOU safety open ordinary files with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment and size before/after bounded read.
 
-For SQLite, perform schema detection (`sqlite_master` plus `PRAGMA table_info`) before named-column queries and apply an explicit `LIMIT` under the 10,000 SQLite rows aggregate cap. Open only through URI `file:<percent-encoded-absolute-path>?mode=ro&immutable=1`. Because immutable mode ignores live WAL changes, use it only for an owner-authorized stable copy; if the live database may have a WAL, stop for that safe copy. Do not create WAL, journal, cache, or temp files and never query mutation (`INSERT`, `UPDATE`, `DELETE`, DDL, writable PRAGMA, attach, or extension loading).
+For SQLite, perform schema detection (`sqlite_master` plus `PRAGMA table_info`) before named-column queries and apply an explicit `LIMIT` under the 10,000 SQLite rows aggregate cap. Open only through URI `file:<percent-encoded-absolute-path>?mode=ro&immutable=1`. Because immutable mode ignores live WAL changes, the owner provides a quiescent consistent copy as an owner-authorized stable copy and already selected ordinary input; the agent must not copy the live database or WAL. If that owner-provided copy is unavailable, stop. Do not create WAL, journal, cache, or temp files and never query mutation (`INSERT`, `UPDATE`, `DELETE`, DDL, writable PRAGMA, attach, or extension loading).
+
+### Precise topology gate
+
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
 ## Evidence, snapshot, and transaction safety
 
@@ -25,7 +29,7 @@ Workers get immutable selected file/row IDs and declared bounds. Worker output i
 
 Maintain an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-Before writes, encode `{tool,native_session_id,slice_descriptor}` using canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate parent, require target must be absent, and do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF at end included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
+Before writes, encode `{tool,native_session_id,slice_descriptor}` using canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate parent; target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF at end included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
 
 Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; none means inspection-only. Require one list record with same ID and status, choose only `allowed_actions`, agree with `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
@@ -33,7 +37,7 @@ Only successful `transaction commit` or `transaction retry` allows `obsidian-wik
 
 ## Discovery and parsing
 
-Inventory `~/.copilot/session-store.db`, `~/.copilot/session-state/<uuid>/`, and VS Code `workspaceStorage/*/GitHub.copilot-chat/` without opening every transcript. Query the SQLite store read-only for `sessions`, `turns`, `checkpoints`, `session_files`, `session_refs`, and FTS `search_index`. Prefer checkpoint summaries, then session summaries, then selected turns. Per-session `workspace.yaml`, `vscode.metadata.json`, `index.md`, and checkpoints provide identity/title; `events.jsonl` and transcript JSONL use `session.start`, `user.message`, `assistant.message`, and tool events. Decode memory directory names only to associate an existing session ID.
+Inventory `<COPILOT_HOME>/session-store.db`, `<COPILOT_HOME>/session-state/<uuid>/`, and VS Code `workspaceStorage/*/GitHub.copilot-chat/` without opening every transcript. Query the owner-provided SQLite copy read-only for `sessions`, `turns`, `checkpoints`, `session_files`, `session_refs`, and FTS `search_index`. Prefer checkpoint summaries, then session summaries, then selected turns. Per-session `workspace.yaml`, `vscode.metadata.json`, `index.md`, and checkpoints provide identity/title; `events.jsonl` and transcript JSONL use `session.start`, `user.message`, `assistant.message`, and tool events. Decode memory directory names only to associate an existing session ID.
 
 Open only explicitly selected session files or database rows. Attribute projects from `session.start.data.context.cwd`, SQLite workspace/cwd fields, and branch; never reverse engineer workspace hashes or persist absolute cache paths. Append compares stable tool/session identity and content hash with snapshots; Full broadens bounded analysis only. State session/row/byte/line/time limits. Redact secrets, private personal material, and irrelevant tool output. Preserve Unicode.
 
@@ -42,6 +46,8 @@ Open only explicitly selected session files or database rows. Attribute projects
 The parent owns selection, snapshots, all repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files/row IDs and bounds. Workers return evidence/proposals only and never discover extra inputs, write, list, or mutate.
 
 ## Repository-native completion
+
+Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
 After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 

@@ -11,11 +11,15 @@ Mine selected Codex sessions while keeping the cache transient. Read [Codex data
 
 Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
 
-Resolve the transient root from non-empty absolute `CODEX_HISTORY_PATH` when set, otherwise absolute `~/.codex`; reject an empty or relative override/root.
+Resolve the transient root from non-empty absolute `CODEX_HOME` when set, otherwise absolute `~/.codex`; reject an empty or relative override/root. Session index, active rollouts, and archived rollouts are relative to that resolved root.
 
 ## Bounded safe input
 
-Default ceilings: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower bounds; raising them requires explicit authorization. Oversize data fails or gets an explicit omission marker, never silent truncation. Require every selected path to be root-contained; lstat every ancestor and reject a terminal or intermediate symlink, hard link (`st_nlink != 1`), FIFO, socket/device, or special file. For TOCTOU safety open with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment, and size before/after the bounded read.
+Default ceilings: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower bounds; raising them requires explicit authorization. Oversize data fails or gets an explicit omission marker, never silent truncation. Require every selected path to be root-contained; lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. For TOCTOU safety open with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment, and size before/after the bounded read.
+
+### Precise topology gate
+
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
 ## Evidence, snapshot, and transaction safety
 
@@ -23,7 +27,7 @@ Workers get immutable selected file/row IDs and declared bounds. Worker output i
 
 Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash the recorded repository root/cwd into a runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-Before any write, encode `{tool,native_session_id,slice_descriptor}` with canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and name the file `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate the parent, require the target must be absent, and do not case-fold or Unicode-normalize identity. Metadata requires `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, and `format`. Hash exact reviewed body bytes: UTF-8 no BOM, LF endings, exactly one LF ending included in the hash. Apply the literal Git tracked/clean gate and cache-check the real Source ID.
+Before any write, encode `{tool,native_session_id,slice_descriptor}` with canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and name the file `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate the parent; the target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold or Unicode-normalize identity. Metadata requires `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, and `format`. Hash exact reviewed body bytes: UTF-8 no BOM, LF endings, exactly one LF ending included in the hash. Apply the literal Git tracked/clean gate and cache-check the real Source ID.
 
 Save the failed command envelope. Use its `error` and `recovery` for a trusted transaction ID/status; without one recovery is inspection-only. Require a list result with exactly one record of the same ID and status. Select only from `allowed_actions`, match `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
@@ -40,6 +44,8 @@ Append selection compares stable tool/session identity and content hash against 
 The parent owns selection, snapshot materialization, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence and proposals only; they do not discover, write, list, or mutate.
 
 ## Repository-native completion
+
+Snapshot identity state table: absent target -> create, so target must be absent only for initial creation. An existing hashed target may be updated only when it is ordinary single-link, Git-tracked, and its `source_tool`, `native_session_id`, and slice descriptor/logical identity exactly match the tuple; use owner-reviewed atomic replacement. Explicit ingest authorizes the parent agent to replace the source, while Git stage/commit stay owner-only. Changed append/Full reuses the same Source ID and changes `content_hash`; identity mismatch or hash collision fails closed.
 
 After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 

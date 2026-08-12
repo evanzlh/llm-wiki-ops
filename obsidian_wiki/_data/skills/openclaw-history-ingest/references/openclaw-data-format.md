@@ -6,6 +6,18 @@ Field-level notes for parsing `~/.openclaw/` artifacts during wiki ingest.
 
 `~/.openclaw/` — all paths below are relative to this root.
 
+## Current canonical session database
+
+Current OpenClaw stores active per-agent history at
+`agents/<agentId>/agent/openclaw-agent.sqlite`. The database schema is versioned.
+The official storage documentation describes its logical entities and migration
+boundary, but does not provide this portable skill with a stable public
+table/column query contract. Consequently the skill detects this database but
+does not infer SQL from internal implementation details. If requested evidence
+exists only in it, ingestion reports `NEEDS_CONTEXT` before creating a source or
+transaction. The JSON/JSONL sections below describe supported legacy/archive
+artifacts, not the current active database.
+
 ## workspace/MEMORY.md
 
 Plain markdown. No required frontmatter — structure varies by user and agent configuration. Typically looks like:
@@ -70,7 +82,7 @@ property is a routing/session key and each value is a session entry:
 
 Use this to:
 - Build a session inventory before opening JSONL files
-- Prioritize by `updated_at` (most recent = highest signal)
+- Prioritize by `updatedAt` (most recent = highest signal)
 - Map keyed entries to native `sessionId` and human-readable labels
 
 `sessionFile` is untrusted path metadata. Accept it only when the resolved file

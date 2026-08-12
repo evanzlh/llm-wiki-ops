@@ -11,11 +11,15 @@ Mine selected Pi JSONL sessions and materialize repository-reviewed evidence. Fo
 
 Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `obsidian-wiki setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
 
-Resolve the session root from non-empty absolute `PI_CODING_AGENT_SESSION_DIR`, otherwise absolute `~/.pi/agent/sessions/`; reject an empty or relative override/root.
+Resolve Pi's session root in this precedence: invocation `--session-dir` (the caller must explicitly pass and record it), then `PI_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json, then `<PI_CODING_AGENT_DIR>/sessions/`. `PI_CODING_AGENT_DIR` relocates the agent directory and defaults to `~/.pi/agent`, making the ordinary default `~/.pi/agent/sessions/`. Pi settings allow relative values, but this skill accepts only the caller/Pi-resolved non-empty absolute root and never guesses a relative base; reject an empty or relative final root.
 
 ## Bounded safe input
 
-Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower; raising requires explicit authorization. Oversize input fails or gets an explicit omission marker. Selected files must be root-contained. lstat every ancestor and reject a terminal or intermediate symlink, hard link (`st_nlink != 1`), FIFO, socket/device, or special file. Use a TOCTOU-resistant reader: `O_NOFOLLOW`, fstat, then device/inode identity, type, containment, link-count, and size verification before/after bounded read.
+Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower; raising requires explicit authorization. Oversize input fails or gets an explicit omission marker. Selected files must be root-contained. lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. Use a TOCTOU-resistant reader: `O_NOFOLLOW`, fstat, then device/inode identity, type, containment, link-count, and size verification before/after bounded read.
+
+### Precise topology gate
+
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
 ## Evidence, snapshot, and transaction safety
 
@@ -23,7 +27,7 @@ Workers receive immutable selected file/row IDs and declared bounds. Worker outp
 
 Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash the recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence. A Pi pattern requires at least two independently cited occurrences unless labeled a single-session observation.
 
-Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent, require target must be absent, and do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
+Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent; target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
 
 Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; no ID is inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when selected, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
 
@@ -31,7 +35,7 @@ Only a successful `transaction commit` or `transaction retry` permits `obsidian-
 
 ## Discovery and parsing
 
-Resolve the session root from `PI_CODING_AGENT_SESSION_DIR` when that override is set; otherwise use `~/.pi/agent/sessions/`. Inventory `<root>/--<cwd>--/<timestamp>_<uuid>.jsonl`; the filesystem is the index. Decode the directory only as an initial project hint, then prefer the session header `cwd`. Read the first line and require a `session` header before selecting. Use `session_info` events for the latest human session name. Open only explicitly selected session files.
+Use only the absolute session root resolved and recorded during preflight. Inventory `<root>/--<cwd>--/<timestamp>_<uuid>.jsonl`; the filesystem is the index. Decode the directory only as an initial project hint, then prefer the session header `cwd`. Read the first line and require a `session` header before selecting. Use `session_info` events for the latest human session name. Open only explicitly selected session files.
 
 ### Tree-JSONL structure
 
@@ -61,6 +65,8 @@ Append compares stable tool/session identity and content hash with existing snap
 The parent owns selection, snapshot materialization, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence/proposals only; they never discover, write, list, or mutate.
 
 ## Repository-native completion
+
+Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
 After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 

@@ -13,11 +13,17 @@ Complete this before cache discovery: walk from invocation CWD to the nearest an
 
 Resolve OpenClaw paths in documented precedence. `OPENCLAW_HOME` overrides the OS home used for defaults; an explicit absolute `OPENCLAW_STATE_DIR` overrides derived state, and explicit absolute `OPENCLAW_CONFIG_PATH` overrides `<state>/openclaw.json`. `OPENCLAW_PROFILE` isolates default state/config/workspace names. Workspace precedence is per-agent workspace, then `agents.defaults.workspace`, then `OPENCLAW_WORKSPACE_DIR`, then the profile-aware default. Non-default agents without an explicit workspace use their per-agent workspace below state. Reject an empty or relative resolved root (tilde expansion must finish absolute). Sessions live per agent below state; treat legacy/archive `sessions.json` as a keyed object whose values include `sessionId` and optional `sessionFile`, not as an array.
 
+Current OpenClaw canonical active history is the schema-versioned SQLite database `agents/<agentId>/agent/openclaw-agent.sqlite`. Official documentation identifies that location and a versioned logical model, but does not publish a stable public table/column query contract suitable for this portable skill. Do not infer tables or query that database. If requested evidence exists only there, report canonical database ingestion as unsupported, return `NEEDS_CONTEXT`, and stop before snapshot creation or transaction begin. Direct parsing here is intentionally limited to selected legacy/archive `sessions.json` and JSONL artifacts plus bounded curated workspace memory; do not claim completeness for current active sessions. Legacy index freshness uses the case-sensitive `updatedAt` field.
+
 ## Bounded safe input
 
 Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower; raising requires explicit authorization. Oversize input fails or gets an explicit omission marker. MEMORY.md and daily memory are bounded by these limits; never perform an unbounded full read.
 
-Every selected input is root-contained. lstat every ancestor and reject a terminal or intermediate symlink, hard link (`st_nlink != 1`), FIFO, socket/device, or special file. Use a TOCTOU-resistant bounded reader with `O_NOFOLLOW`, fstat, and device/inode identity, type, containment, link count, and size verification before/after reading.
+Every selected input is root-contained. lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. Use a TOCTOU-resistant bounded reader with `O_NOFOLLOW`, fstat, and device/inode identity, type, containment, link count, and size verification before/after reading.
+
+### Precise topology gate
+
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
 ## Evidence, snapshot, and transaction safety
 
@@ -25,7 +31,7 @@ Workers receive immutable selected file/row IDs and declared bounds. Worker outp
 
 Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent, require target must be absent, and do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
+Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent; target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
 
 Save the failed command envelope. Its `error` and `recovery` supply a trusted transaction ID/status; absent ID means inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when chosen, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
 
@@ -33,7 +39,7 @@ Only a successful `transaction commit` or `transaction retry` permits `obsidian-
 
 ## Discovery and parsing
 
-Inventory bounded workspace `MEMORY.md`, bounded daily `memory/YYYY-MM-DD.md`, optional `DREAMS.md`, per-agent `sessions/sessions.json`, and selected session JSONL. Prefer curated memory for triage. Enumerate the keyed `sessions.json` object: its property key is the routing/session key and its value supplies native `sessionId`, optional `sessionFile`, label/channel metadata and freshness. Validate any `sessionFile` against the selected sessions root instead of trusting the stored path. Parse base and `-topic-<threadId>` JSONL identically. Attribute projects from explicit memory headings/session metadata, not directory guesses. Treat config as configuration only and never extract tokens/provider credentials.
+First detect `agents/<agentId>/agent/openclaw-agent.sqlite`; it is canonical active history and triggers the unsupported/`NEEDS_CONTEXT` boundary above rather than ad-hoc SQL. For supported legacy/archive input, inventory bounded workspace `MEMORY.md`, bounded daily `memory/YYYY-MM-DD.md`, optional `DREAMS.md`, per-agent `sessions/sessions.json`, and selected session JSONL. Prefer curated memory for triage. Enumerate the keyed `sessions.json` object: its property key is the routing/session key and its value supplies native `sessionId`, optional `sessionFile`, label/channel metadata, and freshness from `updatedAt`. Validate any `sessionFile` against the selected sessions root instead of trusting the stored path. Parse base and `-topic-<threadId>` JSONL identically. Attribute projects from explicit memory headings/session metadata, not directory guesses. Treat config as configuration only and never extract tokens/provider credentials.
 
 Append compares stable tool/session identity/content hash against snapshots; Full changes bounded selection only. Declare session/day/byte/line/time limits and omissions. Redact secrets, private material, irrelevant content, channel identifiers, and credentials; preserve Unicode.
 
@@ -42,6 +48,8 @@ Append compares stable tool/session identity/content hash against snapshots; Ful
 The parent owns selection, snapshots, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence/proposals only and never discover, write, list, or mutate.
 
 ## Repository-native completion
+
+Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
 After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
