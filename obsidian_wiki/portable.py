@@ -11,12 +11,13 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import shutil
 import stat
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Literal
@@ -28,7 +29,7 @@ except ImportError:  # pragma: no cover - repository upgrades are Unix-first
 
 from packaging.version import InvalidVersion, Version
 
-from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
@@ -84,7 +85,8 @@ PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
 _UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
 _UPGRADE_JOURNAL = "journal.json"
-_UPGRADE_JOURNAL_SCHEMA = 3
+_LEGACY_UPGRADE_JOURNAL_SCHEMA = 3
+_REPLACEMENT_JOURNAL_SCHEMA = 4
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SUPPORTS_BOUND_INVENTORY_DIRECTORIES = (
@@ -105,6 +107,23 @@ PROJECT_AGENT_DIRS = [
     (".pi/skills", "Pi"),
     (".kiro/skills", "Kiro"),
 ]
+
+
+@dataclass(frozen=True)
+class ReplacementOperation:
+    """Authorization boundary for one recoverable replacement transaction."""
+
+    name: Literal["upgrade", "sync"]
+    transactions_relative: str
+    inventory_must_be_last: bool
+
+
+UPGRADE_OPERATION = ReplacementOperation(
+    "upgrade", _UPGRADE_TRANSACTIONS, True
+)
+SYNC_OPERATION = ReplacementOperation(
+    "sync", ".obsidian-wiki/local/skill-syncs", False
+)
 
 
 _INDEX = '''---
@@ -1865,11 +1884,11 @@ def _repair_existing_portable_repo(root: Path) -> None:
     ensure_portable_gitignore(root, "wiki")
 
 
-def _ensure_portable_lock_file(root: Path) -> Path:
+def _open_portable_lock(root: Path) -> tuple[int, list[_BoundDirectory]]:
     path = root / _PORTABLE_SKILLS_LOCK
-    _assert_safe_managed_path(root, path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _assert_safe_managed_path(root, path)
+    directories = _open_sync_directory_chain(
+        root, path.parent, create=True, label="skills lock parent"
+    )
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -1877,32 +1896,44 @@ def _ensure_portable_lock_file(root: Path) -> Path:
         flags |= os.O_NOFOLLOW
     descriptor = -1
     try:
-        descriptor = os.open(path, flags, 0o600)
+        parent_fd = directories[-1][2]
+        _validate_sync_directory_chain(directories, label="skills lock parent")
+        descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError(
                 f"portable skills lock must be a single-link ordinary file: {path}"
             )
         os.fchmod(descriptor, 0o600)
-    except OSError as exc:
-        raise ValueError(f"cannot open portable skills lock {path}: {exc}") from exc
-    finally:
+        os.fsync(descriptor)
+        attached = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (metadata.st_dev, metadata.st_ino) != (attached.st_dev, attached.st_ino):
+            raise ValueError(f"portable skills lock changed during open: {path}")
+        _validate_sync_directory_chain(directories, label="skills lock parent")
+    except BaseException as exc:
         if descriptor >= 0:
             os.close(descriptor)
-    return path
+        _close_sync_directory_chain(directories)
+        if isinstance(exc, OSError):
+            raise ValueError(  # noqa: TRY004 - normalize unsafe lock failures
+                f"cannot open portable skills lock {path}: {exc}"
+            ) from exc
+        raise
+    return descriptor, directories
+
+
+def _ensure_portable_lock_file(root: Path) -> Path:
+    descriptor, directories = _open_portable_lock(root)
+    os.close(descriptor)
+    _close_sync_directory_chain(directories)
+    return root / _PORTABLE_SKILLS_LOCK
 
 
 @contextmanager
 def _portable_skills_lock(root: Path) -> Iterator[None]:
     if fcntl is None:  # pragma: no cover - Linux/macOS are the supported hosts
         raise RuntimeError("portable skill upgrades require fcntl.flock")
-    path = _ensure_portable_lock_file(root)
-    flags = os.O_RDWR
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
+    descriptor, directories = _open_portable_lock(root)
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1910,12 +1941,14 @@ def _portable_skills_lock(root: Path) -> Iterator[None]:
             raise ValueError(
                 f"portable repository skills are locked by another upgrade: {root}"
             ) from exc
+        _validate_sync_directory_chain(directories, label="skills lock parent")
         yield
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+            _close_sync_directory_chain(directories)
 
 
 def _repo_relative_path(root: Path, path: Path) -> str:
@@ -2015,32 +2048,58 @@ def _stage_text_for_replacement(
     os.chmod(staged, mode)
 
 
-def _write_upgrade_journal(root: Path, transaction: Path, payload: dict[str, object]) -> None:
+def _write_replacement_journal(
+    root: Path, transaction: Path, payload: dict[str, object]
+) -> None:
     journal = transaction / _UPGRADE_JOURNAL
-    _atomic_replace_text(
-        journal,
-        json.dumps(payload, sort_keys=True, indent=2) + "\n",
-        root=root,
-    )
-    os.chmod(journal, 0o600)
+    text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    if payload.get("operation") == SYNC_OPERATION.name:
+        _write_sync_text(root, journal, text, mode=0o600)
+    else:
+        _atomic_replace_text(journal, text, root=root)
+        os.chmod(journal, 0o600)
 
 
 def _journal_records(
-    root: Path, transaction: Path, payload: object
+    root: Path,
+    transaction: Path,
+    operation: ReplacementOperation,
+    payload: object,
 ) -> tuple[str, list[tuple[Path, Path, Path | None, bool]], tuple[Path, ...]]:
-    if not isinstance(payload, dict) or set(payload) != {
+    if not isinstance(payload, dict):
+        raise ValueError(  # noqa: TRY004 - invalid persisted data
+            f"invalid portable replacement journal: {transaction / _UPGRADE_JOURNAL}"
+        )
+    schema = payload.get("schema_version")
+    legacy_upgrade = schema == _LEGACY_UPGRADE_JOURNAL_SCHEMA
+    expected_keys = {
         "created_parents",
         "implementation",
         "replacements",
         "schema_version",
         "status",
-    }:
-        raise ValueError(f"invalid portable upgrade journal: {transaction / _UPGRADE_JOURNAL}")
-    if (
-        payload["schema_version"] != _UPGRADE_JOURNAL_SCHEMA
-        or payload["implementation"] != IMPLEMENTATION_ID
+    }
+    if not legacy_upgrade:
+        expected_keys.add("operation")
+    if set(payload) != expected_keys:
+        raise ValueError(
+            f"invalid portable replacement journal: {transaction / _UPGRADE_JOURNAL}"
+        )
+    if legacy_upgrade:
+        if operation != UPGRADE_OPERATION:
+            raise ValueError("legacy schema-3 journals are authorized only for upgrades")
+    elif (
+        schema != _REPLACEMENT_JOURNAL_SCHEMA
+        or payload.get("operation") != operation.name
     ):
-        raise ValueError(f"invalid portable upgrade journal identity: {transaction}")
+        raise ValueError(
+            f"invalid portable {operation.name} journal operation identity: {transaction}"
+        )
+    if payload["implementation"] != IMPLEMENTATION_ID:
+        raise ValueError(
+            f"invalid portable {operation.name} journal implementation identity: "
+            f"{transaction}"
+        )
     status_value = payload["status"]
     if status_value not in ("prepared", "committed"):
         raise ValueError(f"invalid portable upgrade journal status: {transaction}")
@@ -2068,8 +2127,18 @@ def _journal_records(
         install_raw = raw_record["install"]
         staged_raw = raw_record["staged"]
         had_target = raw_record["had_target"]
-        if not isinstance(target_raw, str) or not _journal_target_is_managed(target_raw):
-            raise ValueError(f"unsafe portable upgrade journal target: {target_raw!r}")
+        if operation == SYNC_OPERATION:
+            target_authorized = isinstance(target_raw, str) and target_raw in {
+                relative for relative, _label in PROJECT_AGENT_DIRS
+            }
+        else:
+            target_authorized = isinstance(target_raw, str) and _journal_target_is_managed(
+                target_raw
+            )
+        if not isinstance(target_raw, str) or not target_authorized:
+            raise ValueError(
+                f"unsafe portable {operation.name} journal target: {target_raw!r}"
+            )
         expected_backup = f"{transaction_relative}/backups/{index}"
         if backup_raw != expected_backup:
             raise ValueError(f"unsafe portable upgrade journal backup: {backup_raw!r}")
@@ -2109,12 +2178,75 @@ def _journal_records(
         if install_raw is not None:
             install_names.add(str(install_raw))
         records.append((target, backup, staged, had_target))
-    if _repo_relative_path(root, records[-1][0]) != MANAGED_SKILLS_INVENTORY:
+    if operation.inventory_must_be_last and (
+        _repo_relative_path(root, records[-1][0]) != MANAGED_SKILLS_INVENTORY
+    ):
         raise ValueError(f"portable upgrade journal inventory mapping must be last: {transaction}")
     created_parents = _validate_journal_created_parents(
         root, records, payload["created_parents"]
     )
     return str(status_value), records, created_parents
+
+
+def _load_replacement_journal(
+    root: Path,
+    transaction: Path,
+    operation: ReplacementOperation,
+    *,
+    transaction_identity: tuple[int, int] | None = None,
+) -> tuple[
+    dict[str, object],
+    list[tuple[Path, Path, Path | None, bool]],
+    tuple[Path, ...],
+]:
+    transactions = root / operation.transactions_relative
+    _assert_safe_managed_path(root, transaction)
+    if transaction.parent != transactions or not transaction.name.startswith("txn-"):
+        raise ValueError(
+            f"unsafe portable {operation.name} transaction path: {transaction}"
+        )
+    _assert_directory(root, transaction, f"{operation.name} transaction")
+    _assert_managed_tree(root, transaction)
+    journal = transaction / _UPGRADE_JOURNAL
+    if operation == SYNC_OPERATION:
+        if transaction_identity is None:
+            transaction_identity = _sync_directory_identity(
+                root, transaction, label="transaction"
+            )
+        raw_journal = _read_bound_sync_journal(
+            root, transaction, transaction_identity
+        )
+    else:
+        try:
+            metadata = journal.lstat()
+        except OSError as exc:
+            raise ValueError(
+                f"portable upgrade journal is missing or invalid: {journal}"
+            ) from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise ValueError(
+                f"portable upgrade journal must be an ordinary file: {journal}"
+            )
+        try:
+            raw_journal = journal.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"portable upgrade journal is invalid: {journal}: {exc}"
+            ) from exc
+    try:
+        payload = json.loads(raw_journal.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"portable upgrade journal is invalid: {journal}: {exc}") from exc
+    status, records, created_parents = _journal_records(
+        root, transaction, operation, payload
+    )
+    assert isinstance(payload, dict)
+    payload["status"] = status
+    return payload, records, created_parents
 
 
 def _load_upgrade_journal(
@@ -2124,31 +2256,8 @@ def _load_upgrade_journal(
     list[tuple[Path, Path, Path | None, bool]],
     tuple[Path, ...],
 ]:
-    transactions = root / _UPGRADE_TRANSACTIONS
-    _assert_safe_managed_path(root, transaction)
-    if transaction.parent != transactions or not transaction.name.startswith("txn-"):
-        raise ValueError(f"unsafe portable upgrade transaction path: {transaction}")
-    _assert_directory(root, transaction, "upgrade transaction")
-    _assert_managed_tree(root, transaction)
-    journal = transaction / _UPGRADE_JOURNAL
-    try:
-        metadata = journal.lstat()
-    except OSError as exc:
-        raise ValueError(f"portable upgrade journal is missing or invalid: {journal}") from exc
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_nlink != 1
-    ):
-        raise ValueError(f"portable upgrade journal must be an ordinary file: {journal}")
-    try:
-        payload = json.loads(journal.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"portable upgrade journal is invalid: {journal}: {exc}") from exc
-    status, records, created_parents = _journal_records(root, transaction, payload)
-    assert isinstance(payload, dict)
-    payload["status"] = status
-    return payload, records, created_parents
+    """Compatibility wrapper retained for schema-3 upgrade characterization."""
+    return _load_replacement_journal(root, transaction, UPGRADE_OPERATION)
 
 
 def _journal_skill_name(root: Path, target: Path) -> str | None:
@@ -2217,6 +2326,738 @@ def _replacement_snapshot(
     return tuple(snapshot)
 
 
+def _bound_replacement_snapshot(
+    root: Path, path: Path, *, label: str
+) -> tuple[SkillEntry, ...]:
+    """Snapshot an ordinary tree while binding every scan to the repository."""
+    entries, unsafe = snapshot_ordinary_tree_with_unsafe(path, anchor=root)
+    if unsafe:
+        findings = ", ".join(
+            f"{finding.path} ({finding.reason})" for finding in unsafe
+        )
+        raise ValueError(
+            f"portable sync {label} changed or is unsafe: {path}: {findings}"
+        )
+    return entries
+
+
+def _bound_directory_mode(root: Path, path: Path) -> int:
+    """Read one directory mode through an anchor-bound, no-follow descriptor walk."""
+    if (
+        not _SUPPORTS_BOUND_INVENTORY_DIRECTORIES
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+    ):
+        return 0o755
+    root = _absolute_no_resolve(root)
+    path = _absolute_no_resolve(path)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"portable sync mode path escapes repository: {path}") from exc
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptors: list[int] = []
+    bindings: list[tuple[int, str, int, os.stat_result]] = []
+
+    def same_directory(left: os.stat_result, right: os.stat_result) -> bool:
+        return (
+            stat.S_ISDIR(left.st_mode)
+            and stat.S_ISDIR(right.st_mode)
+            and left.st_dev == right.st_dev
+            and left.st_ino == right.st_ino
+        )
+
+    try:
+        root_observed = root.lstat()
+        current = os.open(root, flags)
+        descriptors.append(current)
+        root_opened = os.fstat(current)
+        if not same_directory(root_observed, root_opened):
+            raise ValueError("portable sync repository root changed while opening")
+        for part in relative.parts:
+            observed = os.stat(part, dir_fd=current, follow_symlinks=False)
+            child = os.open(part, flags, dir_fd=current)
+            descriptors.append(child)
+            opened = os.fstat(child)
+            if not same_directory(observed, opened):
+                raise ValueError(
+                    f"portable sync directory changed while opening: {path}"
+                )
+            bindings.append((current, part, child, opened))
+            current = child
+
+        final = os.fstat(current)
+        root_attached = root.lstat()
+        if not same_directory(root_opened, root_attached):
+            raise ValueError("portable sync repository root changed during mode scan")
+        for parent, name, child, opened in bindings:
+            attached = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            child_final = os.fstat(child)
+            if not same_directory(opened, attached) or not same_directory(
+                opened, child_final
+            ):
+                raise ValueError(
+                    f"portable sync directory changed during mode scan: {path}"
+                )
+        return stat.S_IMODE(final.st_mode)
+    except OSError as exc:
+        raise ValueError(
+            f"portable sync directory mode could not be read safely: {path}: {exc}"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _bound_replacement_state(
+    root: Path, path: Path, *, label: str
+) -> tuple[int, tuple[SkillEntry, ...]]:
+    return (
+        _bound_directory_mode(root, path),
+        _bound_replacement_snapshot(root, path, label=label),
+    )
+
+
+_SYNC_DIRFD_SUPPORTED = (
+    os.name != "nt"
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+    and os.mkdir in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+    and os.rename in os.supports_dir_fd
+    and os.rmdir in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+)
+
+
+def _sync_dirfd_supported() -> bool:
+    return _SYNC_DIRFD_SUPPORTED
+
+
+def _validate_sync_directory_chain(
+    directories: list[_BoundDirectory], *, label: str
+) -> None:
+    for index, (path, name, descriptor, opened) in enumerate(directories):
+        current = os.fstat(descriptor)
+        if index == 0:
+            attached = path.lstat()
+        else:
+            attached = os.stat(
+                name,
+                dir_fd=directories[index - 1][2],
+                follow_symlinks=False,
+            )
+        if not _directory_is_bound(opened, current) or not _directory_is_bound(
+            current, attached
+        ):
+            raise ValueError(
+                f"portable sync {label} directory changed or detached: {path}"
+            )
+
+
+def _close_sync_directory_chain(directories: list[_BoundDirectory]) -> None:
+    failure = _close_inventory_directories(directories, None)
+    if failure is not None:
+        raise failure
+
+
+def _open_sync_directory_chain(
+    root: Path, directory: Path, *, create: bool, label: str
+) -> list[_BoundDirectory]:
+    if not _sync_dirfd_supported():
+        raise RuntimeError(
+            "portable sync apply requires descriptor-relative filesystem operations"
+        )
+    root = _absolute_no_resolve(root)
+    directory = _absolute_no_resolve(directory)
+    try:
+        relative = directory.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"portable sync {label} escapes repository: {directory}") from exc
+    flags = _inventory_directory_flags()
+    directories: list[_BoundDirectory] = []
+    try:
+        descriptor = os.open(root, flags)
+        metadata = os.fstat(descriptor)
+        directories.append((root, "", descriptor, metadata))
+        current = root
+        for part in relative.parts:
+            parent_fd = directories[-1][2]
+            if create:
+                try:
+                    os.mkdir(part, mode=0o755, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd=parent_fd)
+            metadata = os.fstat(child)
+            current /= part
+            directories.append((current, part, child, metadata))
+        _validate_sync_directory_chain(directories, label=label)
+        return directories
+    except BaseException as exc:
+        _close_inventory_directories(directories, None)
+        if isinstance(exc, OSError):
+            raise ValueError(  # noqa: TRY004 - normalize unsafe path failures
+                f"portable sync {label} directory is unsafe or changed: {directory}: "
+                f"{exc}"
+            ) from exc
+        raise
+
+
+def _ensure_sync_directory(root: Path, directory: Path, *, label: str) -> None:
+    directories = _open_sync_directory_chain(
+        root, directory, create=True, label=label
+    )
+    _close_sync_directory_chain(directories)
+
+
+def _sync_chain_identity(
+    directories: list[_BoundDirectory], path: Path, *, label: str
+) -> tuple[int, int]:
+    for opened_path, _name, descriptor, _opened in directories:
+        if opened_path == path:
+            metadata = os.fstat(descriptor)
+            return metadata.st_dev, metadata.st_ino
+    raise ValueError(f"portable sync {label} is outside the bound directory chain: {path}")
+
+
+def _validate_sync_chain_binding(
+    directories: list[_BoundDirectory],
+    binding: tuple[Path, tuple[int, int]] | None,
+    *,
+    label: str,
+) -> None:
+    if binding is None:
+        return
+    path, expected = binding
+    if _sync_chain_identity(directories, path, label=label) != expected:
+        raise ValueError(f"portable sync {label} transaction identity changed: {path}")
+
+
+def _sync_directory_identity(root: Path, path: Path, *, label: str) -> tuple[int, int]:
+    directories = _open_sync_directory_chain(
+        root, path, create=False, label=label
+    )
+    try:
+        _validate_sync_directory_chain(directories, label=label)
+        return _sync_chain_identity(directories, path, label=label)
+    finally:
+        _close_sync_directory_chain(directories)
+
+
+def _assert_sync_directory_identity(
+    root: Path, path: Path, expected: tuple[int, int], *, label: str
+) -> None:
+    if _sync_directory_identity(root, path, label=label) != expected:
+        raise ValueError(f"portable sync {label} transaction identity changed: {path}")
+
+
+def _assert_sync_transaction_binding(
+    root: Path,
+    binding: tuple[Path, tuple[int, int]] | None,
+    *,
+    label: str,
+) -> None:
+    if binding is None:
+        return
+    transaction, identity = binding
+    _assert_sync_directory_identity(
+        root, transaction, identity, label=label
+    )
+
+
+def _read_bound_sync_journal(
+    root: Path, transaction: Path, transaction_identity: tuple[int, int]
+) -> bytes:
+    directories = _open_sync_directory_chain(
+        root, transaction, create=False, label="journal transaction"
+    )
+    descriptor = -1
+    try:
+        binding = (transaction, transaction_identity)
+        _validate_sync_chain_binding(
+            directories, binding, label="journal transaction"
+        )
+        transaction_fd = directories[-1][2]
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(_UPGRADE_JOURNAL, flags, dir_fd=transaction_fd)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError(
+                "portable sync journal must be a single-link ordinary file"
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        attached = os.stat(
+            _UPGRADE_JOURNAL,
+            dir_fd=transaction_fd,
+            follow_symlinks=False,
+        )
+        if (metadata.st_dev, metadata.st_ino) != (attached.st_dev, attached.st_ino):
+            raise ValueError("portable sync journal changed during read")
+        _validate_sync_directory_chain(directories, label="journal transaction")
+        _validate_sync_chain_binding(
+            directories, binding, label="journal transaction"
+        )
+        return b"".join(chunks)
+    except OSError as exc:
+        raise ValueError(f"portable sync journal is missing, unsafe, or changed: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        _close_sync_directory_chain(directories)
+
+
+def _bound_sync_transaction_candidates(
+    root: Path, transactions: Path
+) -> tuple[tuple[Path, tuple[int, int]], ...]:
+    directories = _open_sync_directory_chain(
+        root, transactions, create=False, label="transactions"
+    )
+    try:
+        parent_fd = directories[-1][2]
+        names = sorted(os.listdir(parent_fd))
+        candidates: list[tuple[Path, tuple[int, int]]] = []
+        for name in names:
+            if not name.startswith("txn-") or "/" in name or name in (".", ".."):
+                raise ValueError(f"unsafe portable sync transaction name: {name!r}")
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise ValueError(f"unsafe portable sync transaction path: {transactions / name}")
+            candidates.append(
+                (transactions / name, (metadata.st_dev, metadata.st_ino))
+            )
+        _validate_sync_directory_chain(directories, label="transactions")
+        return tuple(candidates)
+    finally:
+        _close_sync_directory_chain(directories)
+
+
+def _bound_sync_transaction_has_journal(
+    root: Path, transaction: Path, transaction_identity: tuple[int, int]
+) -> bool:
+    directories = _open_sync_directory_chain(
+        root, transaction, create=False, label="transaction journal check"
+    )
+    try:
+        binding = (transaction, transaction_identity)
+        _validate_sync_chain_binding(
+            directories, binding, label="transaction journal check"
+        )
+        try:
+            os.stat(
+                _UPGRADE_JOURNAL,
+                dir_fd=directories[-1][2],
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            result = False
+        else:
+            result = True
+        _validate_sync_directory_chain(
+            directories, label="transaction journal check"
+        )
+        _validate_sync_chain_binding(
+            directories, binding, label="transaction journal check"
+        )
+        return result
+    finally:
+        _close_sync_directory_chain(directories)
+
+
+def _materialize_sync_snapshot(
+    root: Path,
+    target: Path,
+    *,
+    mode: int,
+    entries: tuple[SkillEntry, ...],
+) -> None:
+    directories = _open_sync_directory_chain(
+        root, target.parent, create=True, label="materialization parent"
+    )
+    opened_directories: dict[tuple[str, ...], int] = {}
+    root_fd = -1
+    try:
+        parent_fd = directories[-1][2]
+        _validate_sync_directory_chain(directories, label="materialization parent")
+        os.mkdir(target.name, mode=mode, dir_fd=parent_fd)
+        root_fd = os.open(target.name, _inventory_directory_flags(), dir_fd=parent_fd)
+        os.fchmod(root_fd, mode)
+        opened_directories[()] = root_fd
+        for entry in entries:
+            relative = PurePosixPath(entry.path)
+            if relative.is_absolute() or any(
+                part in ("", ".", "..") for part in relative.parts
+            ):
+                raise ValueError(
+                    f"portable sync snapshot contains an unsafe path: {entry.path}"
+                )
+            parent_parts = relative.parts[:-1]
+            entry_parent = opened_directories.get(parent_parts)
+            if entry_parent is None:
+                raise ValueError(
+                    f"portable sync snapshot parent is missing: {entry.path}"
+                )
+            name = relative.parts[-1]
+            if entry.kind == "directory":
+                os.mkdir(name, mode=0o755, dir_fd=entry_parent)
+                child = os.open(name, _inventory_directory_flags(), dir_fd=entry_parent)
+                os.fchmod(child, 0o755)
+                opened_directories[relative.parts] = child
+            else:
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                flags |= getattr(os, "O_CLOEXEC", 0)
+                descriptor = os.open(name, flags, 0o600, dir_fd=entry_parent)
+                try:
+                    view = memoryview(entry.content)
+                    while view:
+                        written = os.write(descriptor, view)
+                        if written <= 0:
+                            raise OSError("short portable sync snapshot write")
+                        view = view[written:]
+                    os.fchmod(descriptor, 0o755 if entry.executable else 0o644)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        for descriptor in opened_directories.values():
+            os.fsync(descriptor)
+        attached = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+        opened = os.fstat(root_fd)
+        if not _directory_is_bound(opened, attached):
+            raise ValueError("portable sync materialized root changed during write")
+        _validate_sync_directory_chain(directories, label="materialization parent")
+    finally:
+        for descriptor in reversed(tuple(opened_directories.values())):
+            os.close(descriptor)
+        _close_sync_directory_chain(directories)
+
+
+def _rename_sync_path(
+    root: Path,
+    source: Path,
+    target: Path,
+    *,
+    transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+    expected_source_identity: tuple[int, int] | None = None,
+) -> None:
+    source_chain = _open_sync_directory_chain(
+        root, source.parent, create=False, label="rename source"
+    )
+    target_chain: list[_BoundDirectory] = []
+    try:
+        target_chain = _open_sync_directory_chain(
+            root, target.parent, create=True, label="rename target"
+        )
+        _validate_sync_directory_chain(source_chain, label="rename source")
+        _validate_sync_directory_chain(target_chain, label="rename target")
+        if transaction_binding is not None:
+            transaction, _identity = transaction_binding
+            if source.parent == transaction or source.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    source_chain, transaction_binding, label="rename source"
+                )
+            if target.parent == transaction or target.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    target_chain, transaction_binding, label="rename target"
+                )
+        source_parent = source_chain[-1][2]
+        target_parent = target_chain[-1][2]
+        observed = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+        if not stat.S_ISDIR(observed.st_mode):
+            raise ValueError(f"portable sync rename source is not a directory: {source}")
+        if expected_source_identity is not None and (
+            observed.st_dev,
+            observed.st_ino,
+        ) != expected_source_identity:
+            raise ValueError(f"portable sync rename source identity changed: {source}")
+        try:
+            os.stat(target.name, dir_fd=target_parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"portable sync rename target exists: {target}")
+        os.mkdir(target.name, mode=0o700, dir_fd=target_parent)
+        reservation = os.stat(
+            target.name, dir_fd=target_parent, follow_symlinks=False
+        )
+        try:
+            os.rename(
+                source.name,
+                target.name,
+                src_dir_fd=source_parent,
+                dst_dir_fd=target_parent,
+            )
+        except BaseException:
+            try:
+                attached = os.stat(
+                    target.name, dir_fd=target_parent, follow_symlinks=False
+                )
+                if _directory_is_bound(reservation, attached):
+                    os.rmdir(target.name, dir_fd=target_parent)
+            except (FileNotFoundError, OSError):
+                pass
+            raise
+        moved = os.stat(target.name, dir_fd=target_parent, follow_symlinks=False)
+        if (observed.st_dev, observed.st_ino) != (moved.st_dev, moved.st_ino):
+            raise ValueError("portable sync renamed entry changed identity")
+        _validate_sync_directory_chain(source_chain, label="rename source")
+        _validate_sync_directory_chain(target_chain, label="rename target")
+        if transaction_binding is not None:
+            transaction, _identity = transaction_binding
+            if source.parent == transaction or source.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    source_chain, transaction_binding, label="rename source"
+                )
+            if target.parent == transaction or target.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    target_chain, transaction_binding, label="rename target"
+                )
+        os.fsync(source_parent)
+        os.fsync(target_parent)
+    finally:
+        if target_chain:
+            _close_sync_directory_chain(target_chain)
+        _close_sync_directory_chain(source_chain)
+
+
+def _purge_bound_sync_directory(descriptor: int) -> None:
+    for name in os.listdir(descriptor):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = os.open(name, _inventory_directory_flags(), dir_fd=descriptor)
+            try:
+                _purge_bound_sync_directory(child)
+                current = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    current.st_dev,
+                    current.st_ino,
+                ):
+                    raise ValueError(
+                        "portable sync cleanup child identity changed"
+                    )
+            finally:
+                os.close(child)
+            attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if (metadata.st_dev, metadata.st_ino) != (
+                attached.st_dev,
+                attached.st_ino,
+            ):
+                raise ValueError("portable sync cleanup child was replaced")
+            os.rmdir(name, dir_fd=descriptor)
+        elif stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            os.unlink(name, dir_fd=descriptor)
+        else:
+            raise ValueError("portable sync cleanup contains an unsafe entry")
+    os.fsync(descriptor)
+
+
+def _remove_sync_path(
+    root: Path,
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+    transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+) -> None:
+    directories = _open_sync_directory_chain(
+        root, path.parent, create=False, label="removal parent"
+    )
+    authority_directories: list[_BoundDirectory] = []
+    try:
+        parent_fd = directories[-1][2]
+        _validate_sync_directory_chain(directories, label="removal parent")
+        if transaction_binding is not None:
+            transaction, _identity = transaction_binding
+            if path.parent == transaction or path.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    directories, transaction_binding, label="removal parent"
+                )
+            else:
+                authority_directories = _open_sync_directory_chain(
+                    root,
+                    transaction,
+                    create=False,
+                    label="removal authority",
+                )
+                _validate_sync_chain_binding(
+                    authority_directories,
+                    transaction_binding,
+                    label="removal authority",
+                )
+        try:
+            metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if expected_identity is not None and (
+            metadata.st_dev,
+            metadata.st_ino,
+        ) != expected_identity:
+            raise ValueError(
+                f"portable sync removal transaction identity changed: {path}"
+            )
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"portable sync removal target is a symlink: {path}")
+        if stat.S_ISDIR(metadata.st_mode):
+            if expected_identity is not None:
+                target_fd = os.open(
+                    path.name, _inventory_directory_flags(), dir_fd=parent_fd
+                )
+                try:
+                    opened = os.fstat(target_fd)
+                    if (opened.st_dev, opened.st_ino) != expected_identity:
+                        raise ValueError(
+                            f"portable sync removal transaction identity changed: {path}"
+                        )
+                    _purge_bound_sync_directory(target_fd)
+                finally:
+                    os.close(target_fd)
+                attached = os.stat(
+                    path.name, dir_fd=parent_fd, follow_symlinks=False
+                )
+                if (attached.st_dev, attached.st_ino) != expected_identity:
+                    raise ValueError(
+                        f"portable sync removal transaction detached: {path}"
+                    )
+                os.rmdir(path.name, dir_fd=parent_fd)
+            else:
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise RuntimeError("safe descriptor-relative rmtree is unavailable")
+                shutil.rmtree(path.name, dir_fd=parent_fd)
+        elif stat.S_ISREG(metadata.st_mode):
+            os.unlink(path.name, dir_fd=parent_fd)
+        else:
+            raise ValueError(f"portable sync removal target is unsafe: {path}")
+        if authority_directories:
+            _validate_sync_directory_chain(
+                authority_directories, label="removal authority"
+            )
+            _validate_sync_chain_binding(
+                authority_directories,
+                transaction_binding,
+                label="removal authority",
+            )
+        _validate_sync_directory_chain(directories, label="removal parent")
+        if transaction_binding is not None:
+            transaction, _identity = transaction_binding
+            if path.parent == transaction or path.parent.is_relative_to(transaction):
+                _validate_sync_chain_binding(
+                    directories, transaction_binding, label="removal parent"
+                )
+        os.fsync(parent_fd)
+    finally:
+        if authority_directories:
+            _close_sync_directory_chain(authority_directories)
+        _close_sync_directory_chain(directories)
+
+
+def _rmdir_sync_path(
+    root: Path,
+    path: Path,
+    *,
+    transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+) -> None:
+    directories = _open_sync_directory_chain(
+        root, path.parent, create=False, label="directory removal parent"
+    )
+    authority_directories: list[_BoundDirectory] = []
+    try:
+        parent_fd = directories[-1][2]
+        if transaction_binding is not None:
+            transaction, _identity = transaction_binding
+            authority_directories = _open_sync_directory_chain(
+                root,
+                transaction,
+                create=False,
+                label="directory removal authority",
+            )
+            _validate_sync_chain_binding(
+                authority_directories,
+                transaction_binding,
+                label="directory removal authority",
+            )
+        _validate_sync_directory_chain(
+            directories, label="directory removal parent"
+        )
+        try:
+            os.rmdir(path.name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        _validate_sync_directory_chain(
+            directories, label="directory removal parent"
+        )
+        if authority_directories:
+            _validate_sync_directory_chain(
+                authority_directories, label="directory removal authority"
+            )
+            _validate_sync_chain_binding(
+                authority_directories,
+                transaction_binding,
+                label="directory removal authority",
+            )
+        os.fsync(parent_fd)
+    finally:
+        if authority_directories:
+            _close_sync_directory_chain(authority_directories)
+        _close_sync_directory_chain(directories)
+
+
+def _write_sync_text(root: Path, path: Path, text: str, *, mode: int) -> None:
+    directories = _open_sync_directory_chain(
+        root, path.parent, create=True, label="journal parent"
+    )
+    temporary = f".{path.name}.sync-{secrets.token_hex(16)}"
+    descriptor = -1
+    try:
+        parent_fd = directories[-1][2]
+        _validate_sync_directory_chain(directories, label="journal parent")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        installed = os.fstat(descriptor)
+        data = text.encode("utf-8")
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short portable sync journal write")
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.rename(
+            temporary,
+            path.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        attached = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (installed.st_dev, installed.st_ino) != (
+            attached.st_dev,
+            attached.st_ino,
+        ):
+            raise ValueError("portable sync journal changed during replacement")
+        _validate_sync_directory_chain(directories, label="journal parent")
+        os.fsync(parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directories[-1][2])
+        except FileNotFoundError:
+            pass
+        _close_sync_directory_chain(directories)
+
+
 def _source_replacement_snapshot(
     path: Path, *, root_mode: int | None = None
 ) -> tuple[tuple[str, str, int, bytes], ...]:
@@ -2260,16 +3101,34 @@ def _source_replacement_snapshot(
     return tuple(snapshot)
 
 
-def _copy_staged_replacement(root: Path, staged: Path, target: Path) -> None:
+def _copy_staged_replacement(
+    root: Path, staged: Path, target: Path, *, bound: bool = False
+) -> None:
     """Install a new target while retaining staged content as crash proof."""
-    expected = _replacement_snapshot(root, staged)
-    if staged.is_dir():
-        shutil.copytree(staged, target, symlinks=False, copy_function=shutil.copy2)
+    if bound:
+        root_mode, expected = _bound_replacement_state(
+            root, staged, label="staged copy source"
+        )
+    else:
+        root_mode = 0o755
+        expected = _replacement_snapshot(root, staged)
+    if bound:
+        _materialize_sync_snapshot(
+            root, target, mode=root_mode, entries=expected
+        )
+    elif staged.is_dir():
+        shutil.copytree(staged, target, symlinks=True, copy_function=shutil.copy2)
     elif staged.is_file() and not staged.is_symlink():
         shutil.copy2(staged, target, follow_symlinks=False)
     else:  # pragma: no cover - snapshot classification rejects this first
         raise ValueError(f"portable upgrade staged replacement is invalid: {staged}")
-    if _replacement_snapshot(root, target) != expected:
+    actual = (
+        _bound_replacement_state(root, target, label="install copy postimage")
+        if bound
+        else _replacement_snapshot(root, target)
+    )
+    expected_state = (root_mode, expected) if bound else expected
+    if actual != expected_state:
         raise OSError(
             f"portable upgrade could not verify copied replacement: {target}"
         )
@@ -2559,7 +3418,107 @@ def _authorize_upgrade_recovery(
     return removable_new_targets
 
 
-def _remove_transaction_target(root: Path, path: Path) -> None:
+def _authorize_sync_recovery(
+    root: Path,
+    transaction: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    rollback: bool,
+) -> set[Path]:
+    """Authorize a sync journal only against the live anchored canonical tree."""
+    canonical = discover_anchored_skill_collection(root / ".skills", anchor=root)
+    canonical_entries = _canonical_skill_entries(canonical)
+    expected_targets = tuple(
+        root / relative for relative, _label in PROJECT_AGENT_DIRS
+    )
+    if tuple(record[0] for record in records) != expected_targets:
+        raise ValueError(
+            "portable sync recovery record plan must contain exactly the six "
+            "agent skills roots in canonical order"
+        )
+
+    removable_new_targets: set[Path] = set()
+    for index, (target, backup, staged, had_target) in enumerate(records):
+        expected_staged = transaction / "staged" / "mirrors" / str(index)
+        if staged != expected_staged:
+            raise ValueError(
+                f"portable sync recovery staged layout is invalid: {target}"
+            )
+        staged_collection = discover_anchored_skill_collection(staged, anchor=root)
+        if staged_collection != canonical:
+            raise ValueError(
+                f"portable sync recovery staged proof differs from canonical: {target}"
+            )
+        staged_mode, staged_snapshot = _bound_replacement_state(
+            root, staged, label="staged proof"
+        )
+        if staged_snapshot != canonical_entries:
+            raise ValueError(
+                f"portable sync recovery staged proof differs from canonical: {target}"
+            )
+        install = transaction / "install" / str(index)
+        if (install.exists() or install.is_symlink()) and _bound_replacement_state(
+            root, install, label="install proof"
+        ) != (staged_mode, staged_snapshot):
+            raise ValueError(
+                f"portable sync recovery install candidate diverged from proof: {target}"
+            )
+
+        original = backup if backup.exists() else target
+        if had_target:
+            if not original.exists() or original.is_symlink():
+                raise ValueError(
+                    f"portable sync recovery original mirror is missing or unsafe: {target}"
+                )
+            _bound_replacement_snapshot(
+                root, original, label="original mirror authority"
+            )
+        elif backup.exists() or backup.is_symlink():
+            raise ValueError(
+                "portable sync journal has a backup for an originally absent target: "
+                f"{target}"
+            )
+
+        target_present = target.exists() or target.is_symlink()
+        if rollback and not had_target and target_present:
+            if _bound_replacement_state(
+                root, target, label="rollback postimage"
+            ) != (staged_mode, staged_snapshot):
+                raise ValueError(
+                    "portable sync recovery target diverged from staged proof; "
+                    f"preserved without mutation: {target}"
+                )
+            removable_new_targets.add(target)
+        if not rollback and (
+            not target_present
+            or _bound_replacement_state(
+                root, target, label="committed postimage"
+            )
+            != (staged_mode, staged_snapshot)
+        ):
+            raise ValueError(
+                f"portable committed sync target diverged from proof: {target}"
+            )
+    return removable_new_targets
+
+
+def _remove_transaction_target(
+    root: Path,
+    path: Path,
+    *,
+    operation: ReplacementOperation = UPGRADE_OPERATION,
+    sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+) -> None:
+    if operation == SYNC_OPERATION:
+        _assert_sync_transaction_binding(
+            root,
+            sync_transaction_binding,
+            label="rollback removal authority",
+        )
+        _remove_sync_path(
+            root, path, transaction_binding=sync_transaction_binding
+        )
+        return
     _assert_safe_managed_path(root, path)
     if not path.exists() and not path.is_symlink():
         return
@@ -2576,28 +3535,62 @@ def _rollback_upgrade_records(
     root: Path,
     records: list[tuple[Path, Path, Path | None, bool]],
     *,
+    operation: ReplacementOperation = UPGRADE_OPERATION,
     removable_new_targets: set[Path] | None = None,
+    sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
 ) -> list[str]:
     removable = removable_new_targets or set()
     errors: list[str] = []
+
+    def snapshot(path: Path, label: str):
+        if operation == SYNC_OPERATION:
+            return _bound_replacement_state(root, path, label=label)
+        return _replacement_snapshot(root, path)
+
     for target, backup, staged, had_target in reversed(records):
         try:
             if backup.exists():
-                backup_snapshot = _replacement_snapshot(root, backup)
+                backup_snapshot = snapshot(backup, "rollback backup")
                 if not target.exists() and not target.is_symlink():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    backup.replace(target)
+                    if operation == SYNC_OPERATION:
+                        _rename_sync_path(
+                            root,
+                            backup,
+                            target,
+                            transaction_binding=sync_transaction_binding,
+                        )
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        backup.replace(target)
                     continue
-                target_snapshot = _replacement_snapshot(root, target)
+                target_snapshot = snapshot(target, "rollback target")
                 if target_snapshot == backup_snapshot:
-                    _remove_transaction_target(root, backup)
+                    _remove_transaction_target(
+                        root,
+                        backup,
+                        operation=operation,
+                        sync_transaction_binding=sync_transaction_binding,
+                    )
                     continue
-                if staged is not None and target_snapshot == _replacement_snapshot(
-                    root, staged
+                if staged is not None and target_snapshot == snapshot(
+                    staged, "rollback staged proof"
                 ):
-                    _remove_transaction_target(root, target)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    backup.replace(target)
+                    _remove_transaction_target(
+                        root,
+                        target,
+                        operation=operation,
+                        sync_transaction_binding=sync_transaction_binding,
+                    )
+                    if operation == SYNC_OPERATION:
+                        _rename_sync_path(
+                            root,
+                            backup,
+                            target,
+                            transaction_binding=sync_transaction_binding,
+                        )
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        backup.replace(target)
                     continue
                 raise OSError(
                     "owner-diverged target cannot be overwritten during rollback"
@@ -2608,7 +3601,12 @@ def _rollback_upgrade_records(
                         "refusing to remove an originally absent target without "
                         f"runtime transaction proof: {target}"
                     )
-                _remove_transaction_target(root, target)
+                _remove_transaction_target(
+                    root,
+                    target,
+                    operation=operation,
+                    sync_transaction_binding=sync_transaction_binding,
+                )
             elif not target.exists():
                 raise OSError(f"original target and backup are both missing: {target}")
         except BaseException as exc:
@@ -2616,10 +3614,28 @@ def _rollback_upgrade_records(
     return errors
 
 
-def _rollback_created_parents(root: Path, created_parents: tuple[Path, ...]) -> list[str]:
+def _rollback_created_parents(
+    root: Path,
+    created_parents: tuple[Path, ...],
+    *,
+    operation: ReplacementOperation = UPGRADE_OPERATION,
+    sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+) -> list[str]:
     errors: list[str] = []
     for parent in reversed(created_parents):
         try:
+            if operation == SYNC_OPERATION:
+                _assert_sync_transaction_binding(
+                    root,
+                    sync_transaction_binding,
+                    label="created-parent rollback authority",
+                )
+                _rmdir_sync_path(
+                    root,
+                    parent,
+                    transaction_binding=sync_transaction_binding,
+                )
+                continue
             _assert_safe_managed_path(root, parent)
             if not parent.exists() and not parent.is_symlink():
                 continue
@@ -2632,7 +3648,22 @@ def _rollback_created_parents(root: Path, created_parents: tuple[Path, ...]) -> 
     return errors
 
 
-def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
+def _cleanup_replacement_transaction(
+    root: Path,
+    transaction: Path,
+    operation: ReplacementOperation = UPGRADE_OPERATION,
+    *,
+    transaction_identity: tuple[int, int] | None = None,
+) -> None:
+    if operation == SYNC_OPERATION:
+        _remove_sync_path(
+            root, transaction, expected_identity=transaction_identity
+        )
+        try:
+            _rmdir_sync_path(root, transaction.parent)
+        except OSError:
+            pass
+        return
     _assert_safe_managed_path(root, transaction)
     _assert_managed_tree(root, transaction)
     shutil.rmtree(transaction)
@@ -2642,21 +3673,46 @@ def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
         pass
 
 
-def _recover_upgrade_transactions(
+def _cleanup_upgrade_transaction(root: Path, transaction: Path) -> None:
+    """Compatibility wrapper for existing upgrade recovery tests."""
+    _cleanup_replacement_transaction(root, transaction)
+
+
+def _recover_replacement_transactions(
     root: Path,
+    operation: ReplacementOperation,
     *,
-    version: str,
-    source: Path,
-    current_names: tuple[str, ...],
+    version: str | None = None,
+    source: Path | None = None,
+    current_names: tuple[str, ...] | None = None,
 ) -> None:
-    transactions = root / _UPGRADE_TRANSACTIONS
+    transactions = root / operation.transactions_relative
     _assert_safe_managed_path(root, transactions)
     if not transactions.exists():
         return
     _assert_directory(root, transactions, "upgrade transactions")
-    for transaction in sorted(transactions.iterdir(), key=lambda path: path.name):
+    if operation == SYNC_OPERATION:
+        candidates: tuple[tuple[Path, tuple[int, int] | None], ...] = tuple(
+            (transaction, identity)
+            for transaction, identity in _bound_sync_transaction_candidates(
+                root, transactions
+            )
+        )
+    else:
+        candidates = tuple(
+            (transaction, None)
+            for transaction in sorted(transactions.iterdir(), key=lambda path: path.name)
+        )
+    for transaction, transaction_identity in candidates:
         journal = transaction / _UPGRADE_JOURNAL
-        if not journal.exists() and not journal.is_symlink():
+        if operation == SYNC_OPERATION:
+            assert transaction_identity is not None
+            has_journal = _bound_sync_transaction_has_journal(
+                root, transaction, transaction_identity
+            )
+        else:
+            has_journal = journal.exists() or journal.is_symlink()
+        if not has_journal:
             _assert_safe_managed_path(root, transaction)
             try:
                 metadata = transaction.lstat()
@@ -2674,31 +3730,150 @@ def _recover_upgrade_transactions(
             # A journal is the mutation boundary.  Without one, every entry is
             # disposable preparation state; rmtree unlinks internal symlinks
             # without following them.
-            shutil.rmtree(transaction)
+            if operation == SYNC_OPERATION:
+                _remove_sync_path(
+                    root,
+                    transaction,
+                    expected_identity=transaction_identity,
+                )
+            else:
+                shutil.rmtree(transaction)
             continue
-        payload, records, created_parents = _load_upgrade_journal(root, transaction)
-        removable_new_targets = _authorize_upgrade_recovery(
+        payload, records, created_parents = _load_replacement_journal(
             root,
             transaction,
+            operation,
+            transaction_identity=transaction_identity,
+        )
+        rollback = payload["status"] == "prepared"
+        if operation == UPGRADE_OPERATION:
+            if version is None or source is None or current_names is None:
+                raise ValueError(
+                    "portable upgrade recovery requires a trusted installed skill source"
+                )
+            removable_new_targets = _authorize_upgrade_recovery(
+                root,
+                transaction,
+                records,
+                rollback=rollback,
+                version=version,
+                source=source,
+                current_names=current_names,
+            )
+        else:
+            assert transaction_identity is not None
+            removable_new_targets = _authorize_sync_recovery(
+                root, transaction, records, rollback=rollback
+            )
+            _assert_sync_directory_identity(
+                root,
+                transaction,
+                transaction_identity,
+                label="authorized recovery transaction",
+            )
+        if payload["status"] == "committed":
+            _cleanup_replacement_transaction(
+                root,
+                transaction,
+                operation,
+                transaction_identity=transaction_identity,
+            )
+            continue
+        errors = _rollback_upgrade_records(
+            root,
             records,
-            rollback=payload["status"] == "prepared",
+            operation=operation,
+            removable_new_targets=removable_new_targets,
+            sync_transaction_binding=(transaction, transaction_identity)
+            if transaction_identity is not None
+            else None,
+        )
+        errors.extend(
+            _rollback_created_parents(
+                root,
+                created_parents,
+                operation=operation,
+                sync_transaction_binding=(transaction, transaction_identity)
+                if transaction_identity is not None
+                else None,
+            )
+        )
+        if errors:
+            raise OSError(
+                f"portable skill {operation.name} recovery is incomplete; preserved "
+                "journal and "
+                f"backups at {transaction}: {'; '.join(errors)}"
+            )
+        if operation == SYNC_OPERATION:
+            assert transaction_identity is not None
+            _assert_sync_directory_identity(
+                root,
+                transaction,
+                transaction_identity,
+                label="recovered transaction",
+            )
+        _cleanup_replacement_transaction(
+            root,
+            transaction,
+            operation,
+            transaction_identity=transaction_identity,
+        )
+
+
+def _recover_upgrade_transactions(
+    root: Path,
+    *,
+    version: str,
+    source: Path,
+    current_names: tuple[str, ...],
+) -> None:
+    """Compatibility wrapper for the former upgrade-only recovery helper."""
+    _recover_replacement_transactions(
+        root,
+        UPGRADE_OPERATION,
+        version=version,
+        source=source,
+        current_names=current_names,
+    )
+
+
+def _recover_skill_operations(
+    root: Path,
+    *,
+    version: str | None = None,
+    source: Path | None = None,
+    current_names: tuple[str, ...] | None = None,
+) -> None:
+    """Recover every pending skill replacement operation while the lock is held."""
+    upgrade_transactions = root / UPGRADE_OPERATION.transactions_relative
+    if upgrade_transactions.exists() or upgrade_transactions.is_symlink():
+        if version is None or source is None or current_names is None:
+            installed_source = Path(__file__).parent / "_data" / "skills"
+            source, current_names = _discover_source_skills(installed_source)
+            version = __version__
+        _recover_replacement_transactions(
+            root,
+            UPGRADE_OPERATION,
             version=version,
             source=source,
             current_names=current_names,
         )
-        if payload["status"] == "committed":
-            _cleanup_upgrade_transaction(root, transaction)
-            continue
-        errors = _rollback_upgrade_records(
-            root, records, removable_new_targets=removable_new_targets
+    _recover_replacement_transactions(root, SYNC_OPERATION)
+
+
+def recover_portable_skill_operations(
+    root: Path, *, version: str, source_skills: Path
+) -> None:
+    """Recover pending replacements before a read-oriented CLI operation."""
+    root = _safe_root(Path(root))
+    source, current_names = _discover_source_skills(source_skills)
+    with _portable_skills_lock(root):
+        _recover_skill_operations(
+            root,
+            version=version,
+            source=source,
+            current_names=current_names,
         )
-        errors.extend(_rollback_created_parents(root, created_parents))
-        if errors:
-            raise OSError(
-                "portable skill upgrade recovery is incomplete; preserved journal and "
-                f"backups at {transaction}: {'; '.join(errors)}"
-            )
-        _cleanup_upgrade_transaction(root, transaction)
 
 
 def _preflight_upgrade_paths(
@@ -2737,20 +3912,34 @@ def _preflight_upgrade_paths(
     return _portable_bootstrap_plans(root)
 
 
-def _prepare_upgrade_journal(
+def _prepare_replacement_journal(
     root: Path,
     transaction: Path,
+    operation: ReplacementOperation,
     replacements: list[tuple[Path, Path | None]],
 ) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
-    (transaction / "backups").mkdir()
-    (transaction / "install").mkdir()
+    if operation == SYNC_OPERATION:
+        _ensure_sync_directory(
+            root, transaction / "backups", label="backup directory"
+        )
+        _ensure_sync_directory(
+            root, transaction / "install", label="install directory"
+        )
+    else:
+        (transaction / "backups").mkdir()
+        (transaction / "install").mkdir()
     transaction_relative = _repo_relative_path(root, transaction)
     raw_records: list[dict[str, object]] = []
     for index, (target, staged) in enumerate(replacements):
         install: Path | None = None
         if staged is not None:
             install = transaction / "install" / str(index)
-            _copy_staged_replacement(root, staged, install)
+            _copy_staged_replacement(
+                root,
+                staged,
+                install,
+                bound=operation == SYNC_OPERATION,
+            )
         raw_records.append(
             {
                 "backup": f"{transaction_relative}/backups/{index}",
@@ -2777,24 +3966,48 @@ def _prepare_upgrade_journal(
             )
         ],
         "implementation": IMPLEMENTATION_ID,
+        "operation": operation.name,
         "replacements": raw_records,
-        "schema_version": _UPGRADE_JOURNAL_SCHEMA,
+        "schema_version": _REPLACEMENT_JOURNAL_SCHEMA,
         "status": "prepared",
     }
-    _status, records, _created_parents = _journal_records(root, transaction, payload)
-    _write_upgrade_journal(root, transaction, payload)
+    _status, records, _created_parents = _journal_records(
+        root, transaction, operation, payload
+    )
+    _write_replacement_journal(root, transaction, payload)
     return payload, records
 
 
-def _apply_journaled_upgrade(
+def _prepare_upgrade_journal(
     root: Path,
     transaction: Path,
+    replacements: list[tuple[Path, Path | None]],
+) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
+    return _prepare_replacement_journal(
+        root, transaction, UPGRADE_OPERATION, replacements
+    )
+
+
+def _apply_journaled_replacements(
+    root: Path,
+    transaction: Path,
+    operation: ReplacementOperation,
     payload: dict[str, object],
     records: list[tuple[Path, Path, Path | None, bool]],
 ) -> None:
     created_targets: set[Path] = set()
+    transaction_identity = (
+        _sync_directory_identity(root, transaction, label="apply transaction")
+        if operation == SYNC_OPERATION
+        else None
+    )
+    sync_transaction_binding = (
+        (transaction, transaction_identity)
+        if transaction_identity is not None
+        else None
+    )
     _status, _validated_records, created_parents = _journal_records(
-        root, transaction, payload
+        root, transaction, operation, payload
     )
     try:
         for index, (target, backup, staged, had_target) in enumerate(records):
@@ -2804,46 +4017,205 @@ def _apply_journaled_upgrade(
                     raise OSError(
                         f"portable upgrade install candidate disappeared: {install}"
                     )
-                if _replacement_snapshot(root, install) != _replacement_snapshot(
-                    root, staged
-                ):
+                if operation == SYNC_OPERATION:
+                    install_snapshot = _bound_replacement_state(
+                        root, install, label="forward install proof"
+                    )
+                    staged_snapshot = _bound_replacement_state(
+                        root, staged, label="forward staged proof"
+                    )
+                else:
+                    install_snapshot = _replacement_snapshot(root, install)
+                    staged_snapshot = _replacement_snapshot(root, staged)
+                if install_snapshot != staged_snapshot:
                     raise OSError(
                         f"portable upgrade install candidate diverged from proof: {install}"
                     )
             if had_target:
-                if not target.exists():
-                    raise OSError(f"managed upgrade target disappeared: {target}")
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                target.replace(backup)
+                if operation == SYNC_OPERATION:
+                    _rename_sync_path(
+                        root,
+                        target,
+                        backup,
+                        transaction_binding=sync_transaction_binding,
+                    )
+                else:
+                    if not target.exists():
+                        raise OSError(f"managed upgrade target disappeared: {target}")
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    target.replace(backup)
             elif target.exists() or target.is_symlink():
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
-                target.parent.mkdir(parents=True, exist_ok=True)
                 if not had_target:
                     created_targets.add(target)
-                install.replace(target)
+                if operation == SYNC_OPERATION:
+                    _rename_sync_path(
+                        root,
+                        install,
+                        target,
+                        transaction_binding=sync_transaction_binding,
+                    )
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    install.replace(target)
+        if operation == SYNC_OPERATION and plan_portable_skill_sync(root).status != "clean":
+            raise RuntimeError("portable skill synchronization verification failed")
         payload["status"] = "committed"
-        _write_upgrade_journal(root, transaction, payload)
+        _write_replacement_journal(root, transaction, payload)
     except BaseException as forward_error:
         rollback_errors = _rollback_upgrade_records(
-            root, records, removable_new_targets=created_targets
+            root,
+            records,
+            operation=operation,
+            removable_new_targets=created_targets,
+            sync_transaction_binding=sync_transaction_binding,
         )
-        rollback_errors.extend(_rollback_created_parents(root, created_parents))
+        rollback_errors.extend(
+            _rollback_created_parents(
+                root,
+                created_parents,
+                operation=operation,
+                sync_transaction_binding=sync_transaction_binding,
+            )
+        )
         if rollback_errors:
             raise OSError(
-                f"portable skill upgrade failed ({forward_error}); rollback is incomplete; "
+                f"portable skill {operation.name} failed ({forward_error}); rollback is "
+                "incomplete; "
                 f"journal and backups preserved at {transaction}: "
                 f"{'; '.join(rollback_errors)}"
             ) from forward_error
         try:
-            _cleanup_upgrade_transaction(root, transaction)
+            _cleanup_replacement_transaction(
+                root,
+                transaction,
+                operation,
+                transaction_identity=transaction_identity,
+            )
         except BaseException as cleanup_error:
             raise OSError(
-                f"portable skill upgrade failed ({forward_error}); rollback completed but "
+                f"portable skill {operation.name} failed ({forward_error}); rollback "
+                "completed but "
                 f"transaction cleanup failed at {transaction}: {cleanup_error}"
             ) from forward_error
         raise
-    _cleanup_upgrade_transaction(root, transaction)
+    _cleanup_replacement_transaction(
+        root,
+        transaction,
+        operation,
+        transaction_identity=transaction_identity,
+    )
+
+
+def _apply_journaled_upgrade(
+    root: Path,
+    transaction: Path,
+    payload: dict[str, object],
+    records: list[tuple[Path, Path, Path | None, bool]],
+) -> None:
+    """Compatibility wrapper retaining the upgrade test seam."""
+    _apply_journaled_replacements(
+        root, transaction, UPGRADE_OPERATION, payload, records
+    )
+
+
+def _create_replacement_transaction(
+    root: Path, operation: ReplacementOperation
+) -> Path:
+    transactions = root / operation.transactions_relative
+    if operation == SYNC_OPERATION:
+        directories = _open_sync_directory_chain(
+            root, transactions, create=True, label="transactions"
+        )
+        try:
+            parent_fd = directories[-1][2]
+            for _attempt in range(16):
+                name = f"txn-{secrets.token_hex(16)}"
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                except FileExistsError:
+                    continue
+                transaction = transactions / name
+                _validate_sync_directory_chain(directories, label="transactions")
+                os.fsync(parent_fd)
+                return transaction
+            raise RuntimeError("could not reserve portable sync transaction name")
+        finally:
+            _close_sync_directory_chain(directories)
+    _assert_safe_managed_path(root, transactions)
+    transactions.mkdir(parents=True, exist_ok=True)
+    _assert_directory(root, transactions, f"{operation.name} transactions")
+    return Path(tempfile.mkdtemp(prefix="txn-", dir=transactions))
+
+
+def _stage_complete_agent_mirrors(
+    root: Path,
+    transaction: Path,
+    canonical: SkillCollection,
+) -> list[tuple[Path, Path | None]]:
+    replacements: list[tuple[Path, Path | None]] = []
+    canonical_entries = _canonical_skill_entries(canonical)
+    for index, (relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+        target = root / relative
+        _assert_safe_managed_path(root, target)
+        target_mode = 0o755
+        if target.exists() or target.is_symlink():
+            _assert_directory(root, target, "agent skills mirror")
+            _bound_replacement_snapshot(
+                root, target, label="agent mirror preflight"
+            )
+            target_mode = _bound_directory_mode(root, target)
+        staged = transaction / "staged" / "mirrors" / str(index)
+        _materialize_sync_snapshot(
+            root, staged, mode=target_mode, entries=canonical_entries
+        )
+        staged_collection = discover_anchored_skill_collection(staged, anchor=root)
+        if staged_collection != canonical:
+            raise RuntimeError(
+                f"portable staged skill mirror verification failed: {relative}"
+            )
+        replacements.append((target, staged))
+    return replacements
+
+
+def sync_portable_skill_mirrors(
+    root: Path, *, apply: bool
+) -> SkillSyncReport:
+    """Check or transactionally rebuild all derived agent skill mirrors."""
+    root = _safe_root(Path(root))
+    if not root.is_dir():
+        raise ValueError(f"portable repository root is not a directory: {root}")
+    with _portable_skills_lock(root):
+        _recover_skill_operations(root)
+        report = plan_portable_skill_sync(root)
+        if not apply or report.status == "clean":
+            return report
+
+        canonical = discover_anchored_skill_collection(root / ".skills", anchor=root)
+        transaction = _create_replacement_transaction(root, SYNC_OPERATION)
+        journal_written = False
+        try:
+            replacements = _stage_complete_agent_mirrors(
+                root, transaction, canonical
+            )
+            payload, records = _prepare_replacement_journal(
+                root, transaction, SYNC_OPERATION, replacements
+            )
+            journal_written = True
+        except BaseException:
+            if not journal_written:
+                _cleanup_replacement_transaction(
+                    root, transaction, SYNC_OPERATION
+                )
+            raise
+        _apply_journaled_replacements(
+            root, transaction, SYNC_OPERATION, payload, records
+        )
+        verified = plan_portable_skill_sync(root)
+        if verified.status != "clean":
+            raise RuntimeError("portable skill synchronization verification failed")
+        return replace(verified, status="applied")
 
 
 def upgrade_portable_skills(
@@ -2867,7 +4239,7 @@ def upgrade_portable_skills(
         _assert_single_link_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
         source, current_names = _discover_source_skills(source_skills)
-        _recover_upgrade_transactions(
+        _recover_skill_operations(
             root,
             version=version,
             source=source,
@@ -3092,7 +4464,7 @@ def setup_portable_repo(
         _assert_single_link_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
         with _portable_skills_lock(root):
-            _recover_upgrade_transactions(
+            _recover_skill_operations(
                 root,
                 version=version,
                 source=source,

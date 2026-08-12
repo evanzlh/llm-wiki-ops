@@ -48,7 +48,9 @@ from obsidian_wiki.portable import (
     _assert_directory,
     _assert_safe_managed_path,
     _assert_single_link_ordinary_file,
+    recover_portable_skill_operations,
     setup_portable_repo,
+    sync_portable_skill_mirrors,
     upgrade_portable_skills,
 )
 from obsidian_wiki.runtime_context import (
@@ -1819,6 +1821,15 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
     from obsidian_wiki.portable_check import check_portable_repo
 
+    try:
+        recover_portable_skill_operations(
+            runtime.portable.root,
+            version=__version__,
+            source_skills=skills_dir(),
+        )
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     report = check_portable_repo(runtime.portable)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None, ensure_ascii=False))
@@ -2970,6 +2981,56 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
+    root: Path | None = None
+    try:
+        resolved = resolve_config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+        if resolved.mode != "portable" or resolved.portable is None:
+            raise ConfigError(
+                "repo sync-skills must run inside a portable repository"
+            )
+        root = resolved.portable.root
+        report = sync_portable_skill_mirrors(root, apply=args.apply)
+    except (ConfigError, ValueError, OSError, RuntimeError) as exc:
+        error = str(exc)
+        if root is not None:
+            error = error.replace(str(root), ".")
+        if args.json:
+            _json_print(
+                {"status": "error", "error": error, "warnings": []},
+                pretty=args.pretty,
+            )
+        else:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        _json_print(report.as_dict(), pretty=args.pretty)
+    elif report.status == "applied":
+        print(
+            "Rebuilt six derived agent skill roots from .skills/; canonical "
+            ".skills/ and the managed-skills inventory are unchanged."
+        )
+    elif report.status == "clean":
+        print("All six derived agent skill roots match canonical .skills/.")
+    else:
+        print("Portable agent skill mirror drift detected:")
+        for target in report.targets:
+            changes = len(target.added + target.changed + target.removed + target.unsafe)
+            if changes:
+                print(f"  - {target.path}: {changes} change(s)")
+        print("Run `obsidian-wiki repo sync-skills --apply` to rebuild all mirrors.")
+    if not args.json:
+        for warning in report.warnings:
+            print(f"warning: {warning['path']}: {warning['message']}", file=sys.stderr)
+    return 1 if report.status == "drift" else 0
+
+
 def _migration_path(root: Path, raw: str) -> Path:
     path = Path(raw).expanduser()
     if not path.is_absolute():
@@ -3272,6 +3333,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="upgrade repository-managed skills and adapters from this CLI",
     )
     rus.set_defaults(func=cmd_repo_upgrade_skills)
+
+    rss = repo_sub.add_parser(
+        "sync-skills",
+        help="check or rebuild agent skill mirrors from repository-canonical .skills",
+    )
+    rss.add_argument(
+        "--apply",
+        action="store_true",
+        help="replace all derived mirrors from .skills",
+    )
+    _add_json_args(rss)
+    rss.set_defaults(func=cmd_repo_sync_skills)
 
     migrate = repo_sub.add_parser(
         "migrate",
