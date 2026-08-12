@@ -763,8 +763,9 @@ def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(
         assert not (root / ".skills" / name).exists()
     assert (root / ".skills/wiki-transaction-review/SKILL.md").is_file()
     assert {path: snapshot_tree(path) for path in owner_paths} == owner_before
-    assert not list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    upgrade_transactions = root / ".obsidian-wiki/local/skill-upgrades"
+    assert not upgrade_transactions.exists() or not any(
+        upgrade_transactions.iterdir()
     )
 
 

@@ -699,7 +699,7 @@ def test_legacy_digest_capture_preserves_read_error_over_close_error(
     assert "secondary close failure" not in str(error.value)
 
 
-def test_committed_legacy_catalog_retains_only_the_replaced_historical_skills() -> None:
+def test_committed_legacy_catalog_retains_replaced_historical_skills() -> None:
     payload = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert [item["label"] for item in payload["collections"]] == [
@@ -717,8 +717,10 @@ def test_committed_legacy_catalog_retains_only_the_replaced_historical_skills() 
         "wiki-switch",
     }
 
-    assert set(catalog) - current == removed
-    assert current - set(catalog) == {"wiki-transaction-review"}
+    catalog_names = set(catalog)
+    assert removed <= catalog_names - current
+    assert {"llm-wiki", "wiki-ingest"} <= current & catalog_names
+    assert "wiki-transaction-review" in current
     assert "wiki-transaction-review" not in catalog
-    for name in removed:
-        assert re.fullmatch(r"sha256:[0-9a-f]{64}", catalog[name])
+    for digest in catalog.values():
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest)

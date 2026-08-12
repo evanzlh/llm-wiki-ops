@@ -98,3 +98,14 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
         "Do not infer",
     ):
         assert required in flat
+
+    authority = [
+        "root `AGENTS.md`",
+        "canonical `llm-wiki`",
+        "vault `AGENTS.md`",
+        "task skill",
+    ]
+    assert [flat.index(item) for item in authority] == sorted(
+        flat.index(item) for item in authority
+    )
+    assert "canonical protocol wins" in flat

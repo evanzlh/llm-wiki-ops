@@ -6,6 +6,7 @@ from pathlib import Path
 from obsidian_wiki.cli import _list_record_payload, _render_transaction_failure
 from obsidian_wiki.transaction import TransactionError, TransactionRecord
 from obsidian_wiki.transaction_guidance import guidance_for_record
+from obsidian_wiki.transaction_validation import TransactionValidationReport
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,28 +164,75 @@ def test_recovery_protocol_cross_checks_identity_requirements_and_outcomes() -> 
         assert required in flat
 
 
-def test_transaction_review_uses_the_cli_owned_review_and_recovery_protocol() -> None:
+def test_transaction_review_fields_follow_cli_payload_ownership() -> None:
+    record = TransactionRecord(
+        transaction_id="tx-review",
+        status="active",
+        started_at="2026-08-12T00:00:00+00:00",
+        source_ids=("sources/a.md",),
+        workspace=Path("/tmp/tx-review"),
+        candidate_vault=Path("/tmp/tx-review/wiki"),
+        preimages={},
+        deletions=("concepts/obsolete.md",),
+    )
+    listed = _list_record_payload(record, guidance_for_record(record))
+    validated = TransactionValidationReport(
+        transaction_id="tx-review",
+        status="pass",
+        candidate_pages=("concepts/a.md",),
+        deletions=("concepts/obsolete.md",),
+        issues=(),
+    ).as_dict()
+
+    assert "source_ids" in listed
+    assert "candidate_pages" not in listed
+    assert "candidate_pages" in validated
+    assert "source_ids" not in validated
+
+    text = TRANSACTION_REVIEW.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "list record's `source_ids`" in flat
+    assert "validation report's `candidate_pages`" in flat
+
+
+def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> None:
     text = TRANSACTION_REVIEW.read_text(encoding="utf-8")
     flat = " ".join(text.split())
 
     for required in (
         "obsidian-wiki transaction list --json --pretty",
         "candidate_vault",
-        "sources",
-        "pages",
+        "source_ids",
+        "candidate_pages",
         "deletions",
         "status",
         "recommended_action",
         "allowed_actions",
         "prospective diff",
+        "configured vault",
+        "vault-relative",
+        "sparse",
+        "absolute",
+        "`..`",
+        "symbolic link",
+        "hard link",
+        "special file",
+        "Do not recursively diff",
         "obsidian-wiki transaction validate <id> --json --pretty",
         "obsidian-wiki transaction commit <id> --json --pretty",
         "explicit user approval",
+        "refresh the list immediately",
+        "commit action",
+        "re-review",
         "abort",
         "discard",
+        "explicitly selects",
         "`requires`",
         "transaction ID",
         "refreshed record's status",
+        "retained record",
+        "complete",
+        "restored",
         "ambiguous",
         "Do not commit, push, or open a pull request",
     ):

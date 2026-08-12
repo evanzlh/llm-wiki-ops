@@ -5,67 +5,77 @@ description: Use when users ask to inspect, approve, reject, or recover a reposi
 
 # Wiki transaction review
 
-Use this skill when the user asks to inspect, approve, reject, or recover a
-pending repository-local wiki transaction. It reviews CLI-owned transaction
-state; it does not create candidate knowledge or invent recovery commands.
+Use this skill to inspect or resolve CLI-owned retained transaction state. It
+does not create candidate knowledge or invent filesystem paths or commands.
 
-## Resolve authority first
+## Resolve authority
 
-1. Find the nearest ancestor `.obsidian-wiki/config.toml` from the current
-   working directory. Fail closed if none exists.
-2. Use the configured repository root as the command working directory.
-3. Read the root `AGENTS.md`, then the vault `AGENTS.md` when present, and then
-   the repository-canonical `llm-wiki` skill before reviewing transaction
-   state. These repository-local authorities override any bundled copy.
+Find the nearest ancestor `.obsidian-wiki/config.toml`; fail closed if absent,
+and use its repository root as the command working directory. Apply authority
+in this order: root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when
+present, then this task skill. The canonical protocol wins any conflict.
 
-## Inspect active work
+## Inspect the returned record
 
-Run `obsidian-wiki transaction list --json --pretty` from the repository root.
-Do not infer a transaction from a directory name, filesystem scan, prior
-message, or remembered identifier. Use only records returned by the command.
+Run `obsidian-wiki transaction list --json --pretty`. Do not infer a
+transaction or directory from a filesystem scan, prior message, or remembered
+identifier. Select only a returned retained record, including when its status
+is `active`, `promoting`, `failed`, `complete`, or `restored`.
 
-For each active record, show the user its transaction ID, status, sources,
-absolute `candidate_vault`, candidate pages, declared deletions,
-`recommended_action`, and `allowed_actions`. Treat every action as structured
-data containing `command`, `reason`, and `requires`; do not reduce it to a
-status-based command table.
+Show its transaction ID, status, the list record's `source_ids`, absolute
+`candidate_vault`, `deletions`, `recommended_action`, and `allowed_actions`.
+The list record has no candidate-page inventory. Display each action's
+`command`, `reason`, and `requires` without converting status into a command.
 
-Review all candidate page content below `candidate_vault` without changing the
-process working directory. Compare it with the current repository and present
-a prospective diff, including additions, replacements, and deletions. Keep the
-absolute candidate path in memory rather than writing it into knowledge pages.
+## Validate and build the sparse diff
 
-## Validate and decide
+For an active record under candidate review, run `obsidian-wiki transaction
+validate <id> --json --pretty`. Require the report to match the trusted ID and
+record deletions, and report every issue and warning. Only the validation
+report's `candidate_pages` is authoritative for candidate review. The candidate
+vault is a sparse tree, not a replacement vault.
 
-Run `obsidian-wiki transaction validate <id> --json --pretty` after content
-review. Report every validation error and warning. Fixing candidate content is
-outside this review-only skill unless the user separately invokes an owning
-write workflow.
+Before reading content, require every candidate and deletion to be a canonical
+vault-relative path: reject an absolute path, `..`, or an empty component.
+Reject a symbolic link, hard link, directory, or special file at a candidate
+or existing target; never follow it. For each returned candidate page, compare
+exactly `candidate_vault/<relative>` with the configured vault's
+`<relative>` and show its prospective addition or update. Review record
+deletions separately against their configured-vault targets. Do not recursively
+diff either tree or treat a live page absent from `candidate_pages` as deleted.
+Candidate editing belongs to a separately invoked owning write workflow.
 
-Run `obsidian-wiki transaction commit <id> --json --pretty` only when validation
-passes and there is explicit user approval of the reviewed prospective diff.
-User approval without successful validation is not commit authorization.
+## Approve or reject
 
-If the user rejects the candidate, refresh the list and use `abort` or
-`discard` only when the reported status exposes that exact command in
-`allowed_actions` and every string in its `requires` list is satisfied. Never
-assume either rejection command is valid from the status name alone.
+Immediately before requesting explicit user approval, validate again, reread
+the latest `candidate_pages`, and display the final prospective diff and
+deletions. Approval applies only to that review.
 
-## Failure recovery
+After approval, refresh the list immediately. Match exactly one retained record
+with the same ID; require its status, `source_ids`, `candidate_vault`,
+`deletions`, `recommended_action`, and `allowed_actions` to be unchanged. Find
+the commit action in `allowed_actions`, show its reason, and satisfy every
+string in its `requires`. If anything changed or is ambiguous, stop and
+re-review. With no intervening work, immediately run
+`obsidian-wiki transaction commit <id> --json --pretty`. The CLI revalidates,
+but user approval is not digest-bound; do not claim a stronger guarantee.
 
-On any command failure, save its response envelope, then refresh with
-`obsidian-wiki transaction list --json --pretty`. Match exactly one refreshed
-record to the trusted transaction ID. Cross-check the envelope's preferred
-action with the refreshed record's status, `recommended_action`, and
-`allowed_actions`.
+For rejection, first show all reported actions and requirements. A generic
+"reject" is not authorization: the user explicitly selects and confirms one
+specific destructive action. Explain and confirm `abort` even when it is the
+only active action. Never infer `discard` for a failed record. Refresh first,
+then execute only the still-reported selection after all `requires` hold.
 
-Execute only the reported recommended action, or an applicable reported
-allowed action selected by the user, after satisfying every string in that
-action's `requires` list. Never construct `retry`, `restore`, `abort`, or
-`discard` from memory. If the transaction ID is missing or mismatched, more
-than one record could match, the action reports conflict, or the outcome is
-ambiguous, stop and report the uncertainty without further mutation.
+## Recover failures
 
-The transaction CLI owns knowledge promotion and recovery. Do not edit managed
-manifests or stable generated pages directly. Do not commit, push, or open a
-pull request with Git.
+Save any failed command envelope, refresh the list, and match exactly one
+retained record to its trusted transaction ID. Cross-check the envelope with
+the refreshed record's status, `recommended_action`, and `allowed_actions`.
+Execute only the reported recommendation or an applicable reported action the
+user explicitly selects, after all `requires` hold. This applies to active,
+promoting, failed, complete, and restored recovery. On missing or mismatched
+identity, conflict, multiple matches, or any ambiguous outcome, stop without
+mutation.
+
+The CLI owns promotion and recovery. Do not edit managed manifests or stable
+generated pages directly. Do not commit, push, or open a pull request with Git.
