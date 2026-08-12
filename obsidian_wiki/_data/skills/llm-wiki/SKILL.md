@@ -62,10 +62,11 @@ repository root as the command working directory throughout.
    the returned identifier:
 
    ```bash
-   obsidian-wiki transaction begin --source <repository-relative-source-id> --json --pretty
+   obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty
    ```
 
-   Repeat `--source` for additional inputs. Never substitute absolute paths.
+   Supply the complete source closure after that single option. Never substitute
+   absolute paths.
 
 3. **Write final candidates.** Read `candidate_vault` from the begin result.
    Write only final vault-relative Markdown paths beneath that directory, with

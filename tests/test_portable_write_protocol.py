@@ -53,6 +53,17 @@ def test_canonical_protocol_is_one_eight_step_transaction() -> None:
         assert required in protocol
 
 
+def test_begin_passes_the_complete_source_closure_to_one_option() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    command = (
+        "obsidian-wiki transaction begin --source <source1> [source2 ...] "
+        "--json --pretty"
+    )
+    assert command in text
+    assert text.count("--source") == 1
+    assert "Repeat `--source`" not in text
+
+
 def test_cli_ownership_and_git_boundary_are_explicit() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     for required in (
