@@ -3170,6 +3170,126 @@ def test_setup_v2_rerun_rejects_canonical_and_custom_skill_drift_without_writes(
     assert not (root / ".skills/wiki-new").exists()
 
 
+def test_setup_v2_rerun_rejects_inventory_ownership_not_in_canonical(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    inventory = root / ".obsidian-wiki/managed-skills.json"
+    payload = json.loads(inventory.read_text(encoding="utf-8"))
+    payload["managed_skills"].append("zzghost")
+    payload["managed_skill_digests"]["zzghost"] = "sha256:" + "0" * 64
+    inventory.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="missing.*zzghost|zzghost.*missing"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_upgrade_parent_swap_never_mutates_external_agent_tree(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text(
+        skill_markdown("wiki-ingest", "Upgraded workflow."), encoding="utf-8"
+    )
+    external = tmp_path / "external-claude"
+    shutil.copytree(root / ".claude", external)
+    external_before = snapshot_tree(external)
+    original_apply = portable._apply_journaled_upgrade
+    original_replace = Path.replace
+    swapped = False
+    external_mutation_attempted = False
+
+    def observe_replace(source: Path, target: Path) -> Path:
+        nonlocal external_mutation_attempted
+        if source == root / ".claude/skills" and source.parent.is_symlink():
+            external_mutation_attempted = True
+        return original_replace(source, target)
+
+    def swap_parent_then_apply(
+        repository: Path,
+        transaction: Path,
+        payload: dict[str, object],
+        records: list[tuple[Path, Path, Path | None, bool]],
+        **kwargs: object,
+    ) -> None:
+        nonlocal swapped
+        parent = root / ".claude"
+        held = root / ".claude-held"
+        parent.rename(held)
+        try:
+            parent.symlink_to(external, target_is_directory=True)
+        except OSError:
+            held.rename(parent)
+            pytest.skip("symlinks are unavailable")
+        swapped = True
+        try:
+            original_apply(repository, transaction, payload, records, **kwargs)
+        finally:
+            if parent.is_symlink():
+                parent.unlink()
+            if held.exists():
+                held.rename(parent)
+
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", swap_parent_then_apply)
+    monkeypatch.setattr(Path, "replace", observe_replace)
+
+    with pytest.raises((OSError, ValueError), match="unsafe|changed|symlink|parent"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert swapped
+    assert not external_mutation_attempted
+    assert snapshot_tree(external) == external_before
+
+
+def test_upgrade_refuses_managed_canonical_edit_after_staging(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text(
+        skill_markdown("wiki-ingest", "Upgraded workflow."), encoding="utf-8"
+    )
+    target = root / ".skills/wiki-ingest/SKILL.md"
+    owner_edit = skill_markdown("wiki-ingest", "Concurrent owner edit.")
+    original_apply = portable._apply_journaled_upgrade
+    edited = False
+
+    def edit_then_apply(
+        repository: Path,
+        transaction: Path,
+        payload: dict[str, object],
+        records: list[tuple[Path, Path, Path | None, bool]],
+        **kwargs: object,
+    ) -> None:
+        nonlocal edited
+        target.write_text(owner_edit, encoding="utf-8")
+        edited = True
+        original_apply(repository, transaction, payload, records, **kwargs)
+
+    monkeypatch.setattr(portable, "_apply_journaled_upgrade", edit_then_apply)
+
+    with pytest.raises((OSError, ValueError), match="changed|diverged|preimage"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert edited
+    assert target.read_text(encoding="utf-8") == owner_edit
+
+
 def test_setup_without_inventory_requires_explicit_skill_upgrade_without_writes(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
@@ -3668,17 +3788,19 @@ def test_upgrade_rolls_back_when_staged_directory_swap_fails(
         encoding="utf-8",
     )
     before = snapshot_tree(root)
-    original_replace = Path.replace
+    original_rename = portable._rename_sync_path
 
-    def fail_staged_canonical(source: Path, target: Path) -> Path:
+    def fail_staged_canonical(
+        repository: Path, source: Path, target: Path, **kwargs: object
+    ) -> None:
         if (
             source.parent.name == "install"
             and Path(target) == root / ".skills/wiki-ingest"
         ):
             raise OSError("simulated staged swap failure")
-        return original_replace(source, target)
+        original_rename(repository, source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", fail_staged_canonical)
+    monkeypatch.setattr(portable, "_rename_sync_path", fail_staged_canonical)
 
     with pytest.raises(OSError, match="simulated staged swap"):
         upgrade_portable_skills(
@@ -3709,17 +3831,19 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
         (root / ".github").mkdir()
     before = snapshot_tree(root)
 
-    original_replace = Path.replace
+    original_rename = portable._rename_sync_path
 
-    def fail_inventory(source: Path, target: Path) -> Path:
+    def fail_inventory(
+        repository: Path, source: Path, target: Path, **kwargs: object
+    ) -> None:
         if (
             source.parent.name == "install"
             and Path(target) == root / ".obsidian-wiki/managed-skills.json"
         ):
             raise OSError("simulated inventory commit failure")
-        return original_replace(source, target)
+        original_rename(repository, source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", fail_inventory)
+    monkeypatch.setattr(portable, "_rename_sync_path", fail_inventory)
 
     with pytest.raises(OSError, match="simulated inventory commit"):
         upgrade_portable_skills(
@@ -3735,9 +3859,11 @@ def test_upgrade_rollback_preserves_concurrently_populated_created_parent(
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     shutil.rmtree(root / ".github")
-    original_replace = Path.replace
+    original_rename = portable._rename_sync_path
 
-    def populate_parent_then_fail(source: Path, target: Path) -> Path:
+    def populate_parent_then_fail(
+        repository: Path, source: Path, target: Path, **kwargs: object
+    ) -> None:
         if (
             source.parent.name == "install"
             and Path(target) == root / ".obsidian-wiki/managed-skills.json"
@@ -3746,9 +3872,9 @@ def test_upgrade_rollback_preserves_concurrently_populated_created_parent(
                 "concurrent owner data\n", encoding="utf-8"
             )
             raise OSError("simulated inventory commit failure")
-        return original_replace(source, target)
+        original_rename(repository, source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", populate_parent_then_fail)
+    monkeypatch.setattr(portable, "_rename_sync_path", populate_parent_then_fail)
 
     with pytest.raises(OSError, match="rollback|parent|incomplete"):
         upgrade_portable_skills(
@@ -3776,10 +3902,12 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
         skill_markdown("wiki-query", "Use query v2."), encoding="utf-8"
     )
     old_inventory = (root / ".obsidian-wiki/managed-skills.json").read_bytes()
-    original_replace = Path.replace
+    original_rename = portable._rename_sync_path
     failures = {"forward": False, "restore": False, "restore_attempts": 0}
 
-    def fail_forward_and_one_restore(source: Path, target: Path) -> Path:
+    def fail_forward_and_one_restore(
+        repository: Path, source: Path, target: Path, **kwargs: object
+    ) -> None:
         source_text = str(source)
         if (
             not failures["forward"]
@@ -3798,9 +3926,11 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
             ):
                 failures["restore"] = True
                 raise OSError("simulated rollback restore failure")
-        return original_replace(source, target)
+        original_rename(repository, source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", fail_forward_and_one_restore)
+    monkeypatch.setattr(
+        portable, "_rename_sync_path", fail_forward_and_one_restore
+    )
 
     with pytest.raises(OSError, match="rollback|restore"):
         upgrade_portable_skills(
@@ -3815,7 +3945,7 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
     assert failures["restore_attempts"] > 1
     assert (root / ".obsidian-wiki/managed-skills.json").read_bytes() == old_inventory
 
-    monkeypatch.setattr(Path, "replace", original_replace)
+    monkeypatch.setattr(portable, "_rename_sync_path", original_rename)
     original_reader = portable._read_managed_skills_inventory
 
     def assert_recovered_before_inventory(
@@ -4264,6 +4394,7 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
         _transaction: Path,
         _payload: dict[str, object],
         records: list[tuple[Path, Path, Path | None, bool]],
+        **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
             if target == repository / ".obsidian-wiki/managed-skills.json":
@@ -4320,6 +4451,7 @@ def test_next_invocation_recovery_removes_created_bootstrap_parents_before_upgra
         _transaction: Path,
         _payload: dict[str, object],
         records: list[tuple[Path, Path, Path | None, bool]],
+        **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
             if target == repository / ".obsidian-wiki/managed-skills.json":
@@ -4381,6 +4513,7 @@ def test_bootstrap_recovery_rejects_untrusted_or_owner_diverged_state(
         _transaction: Path,
         _payload: dict[str, object],
         records: list[tuple[Path, Path, Path | None, bool]],
+        **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
             if target == repository / ".obsidian-wiki/managed-skills.json":

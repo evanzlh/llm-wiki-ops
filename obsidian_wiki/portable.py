@@ -1445,11 +1445,10 @@ def _validate_v2_upgrade_repository(
     inventory: ManagedSkillsInventory,
     canonical: SkillCollection,
 ) -> None:
+    _validate_v2_inventory_ownership(inventory, canonical)
     canonical_by_name = canonical.by_name()
     for name in inventory.managed_skills:
-        tree = canonical_by_name.get(name)
-        if tree is None:
-            raise ValueError(f"portable managed canonical skill is missing: {name}")
+        tree = canonical_by_name[name]
         if tree.digest != inventory.managed_skill_digests[name]:
             raise ValueError(
                 "portable managed canonical skill digest is modified; preserve or "
@@ -1461,6 +1460,15 @@ def _validate_v2_upgrade_repository(
             "portable skill mirrors have drift; run `obsidian-wiki repo "
             "sync-skills --apply` and review the result before upgrading"
         )
+
+
+def _validate_v2_inventory_ownership(
+    inventory: ManagedSkillsInventory, canonical: SkillCollection
+) -> None:
+    canonical_names = set(canonical.names)
+    for name in inventory.managed_skills:
+        if name not in canonical_names:
+            raise ValueError(f"portable managed canonical skill is missing: {name}")
 
 
 def write_agent_skill_mirrors(
@@ -2272,11 +2280,7 @@ def _write_replacement_journal(
 ) -> None:
     journal = transaction / _UPGRADE_JOURNAL
     text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
-    if payload.get("operation") == SYNC_OPERATION.name:
-        _write_sync_text(root, journal, text, mode=0o600)
-    else:
-        _atomic_replace_text(journal, text, root=root)
-        os.chmod(journal, 0o600)
+    _write_sync_text(root, journal, text, mode=0o600)
 
 
 def _journal_records(
@@ -2427,35 +2431,13 @@ def _load_replacement_journal(
     _assert_directory(root, transaction, f"{operation.name} transaction")
     _assert_managed_tree(root, transaction)
     journal = transaction / _UPGRADE_JOURNAL
-    if operation == SYNC_OPERATION:
-        if transaction_identity is None:
-            transaction_identity = _sync_directory_identity(
-                root, transaction, label="transaction"
-            )
-        raw_journal = _read_bound_sync_journal(
-            root, transaction, transaction_identity
+    if transaction_identity is None:
+        transaction_identity = _sync_directory_identity(
+            root, transaction, label="transaction"
         )
-    else:
-        try:
-            metadata = journal.lstat()
-        except OSError as exc:
-            raise ValueError(
-                f"portable upgrade journal is missing or invalid: {journal}"
-            ) from exc
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_nlink != 1
-        ):
-            raise ValueError(
-                f"portable upgrade journal must be an ordinary file: {journal}"
-            )
-        try:
-            raw_journal = journal.read_bytes()
-        except OSError as exc:
-            raise ValueError(
-                f"portable upgrade journal is invalid: {journal}: {exc}"
-            ) from exc
+    raw_journal = _read_bound_sync_journal(
+        root, transaction, transaction_identity
+    )
     try:
         payload = json.loads(raw_journal.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -2631,13 +2613,137 @@ def _bound_directory_mode(root: Path, path: Path) -> int:
             os.close(descriptor)
 
 
+ReplacementState = tuple[int, tuple[SkillEntry, ...]]
+ReplacementProof = tuple[tuple[int, int], ReplacementState]
+
+
+def _bound_replacement_proof(
+    root: Path, path: Path, *, label: str
+) -> ReplacementProof:
+    """Read one file/tree while binding its parent and final inode to *root*."""
+    directories = _open_sync_directory_chain(
+        root, path.parent, create=False, label=f"{label} parent"
+    )
+    descriptor = -1
+    try:
+        parent_fd = directories[-1][2]
+        observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        identity = (observed.st_dev, observed.st_ino)
+        mode = stat.S_IMODE(observed.st_mode)
+        if stat.S_ISDIR(observed.st_mode) and not stat.S_ISLNK(observed.st_mode):
+            entries = _bound_replacement_snapshot(root, path, label=label)
+        elif stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != identity
+            ):
+                raise ValueError(
+                    f"portable sync {label} file changed while opening: {path}"
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            final = os.fstat(descriptor)
+            stable_fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if any(
+                getattr(opened, field) != getattr(final, field)
+                for field in stable_fields
+            ):
+                raise ValueError(
+                    f"portable sync {label} file changed during read: {path}"
+                )
+            entries = (
+                SkillEntry("", "file", bool(mode & 0o111), b"".join(chunks)),
+            )
+        else:
+            raise ValueError(
+                f"portable sync {label} is not an ordinary single-link file or "
+                f"directory: {path}"
+            )
+        attached = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (attached.st_dev, attached.st_ino) != identity or (
+            stat.S_ISREG(observed.st_mode)
+            and any(
+                getattr(opened, field) != getattr(attached, field)
+                for field in stable_fields
+            )
+        ):
+            raise ValueError(f"portable sync {label} changed during read: {path}")
+        _validate_sync_directory_chain(directories, label=f"{label} parent")
+        return identity, (mode, entries)
+    except OSError as exc:
+        raise ValueError(
+            f"portable sync {label} is missing, unsafe, or changed: {path}: {exc}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        _close_sync_directory_chain(directories)
+
+
 def _bound_replacement_state(
     root: Path, path: Path, *, label: str
-) -> tuple[int, tuple[SkillEntry, ...]]:
-    return (
-        _bound_directory_mode(root, path),
-        _bound_replacement_snapshot(root, path, label=label),
-    )
+) -> ReplacementState:
+    return _bound_replacement_proof(root, path, label=label)[1]
+
+
+def _bound_optional_replacement_proof(
+    root: Path, path: Path, *, label: str
+) -> ReplacementProof | None:
+    """Return a bound proof, or ``None`` only for an absent final entry."""
+    root = _absolute_no_resolve(root)
+    path = _absolute_no_resolve(path)
+    try:
+        relative_parent = path.parent.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"portable sync {label} escapes repository: {path}") from exc
+    directories: list[_BoundDirectory] = []
+    try:
+        flags = _inventory_directory_flags()
+        root_fd = os.open(root, flags)
+        root_metadata = os.fstat(root_fd)
+        directories.append((root, "", root_fd, root_metadata))
+        current = root
+        for part in relative_parent.parts:
+            parent_fd = directories[-1][2]
+            try:
+                child = os.open(part, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                _validate_sync_directory_chain(
+                    directories, label=f"{label} existing parent"
+                )
+                return None
+            child_metadata = os.fstat(child)
+            current /= part
+            directories.append((current, part, child, child_metadata))
+        _validate_sync_directory_chain(directories, label=f"{label} parent")
+        try:
+            os.stat(path.name, dir_fd=directories[-1][2], follow_symlinks=False)
+        except FileNotFoundError:
+            _validate_sync_directory_chain(directories, label=f"{label} parent")
+            return None
+    except OSError as exc:
+        raise ValueError(
+            f"portable sync {label} parent is unsafe or changed: {path.parent}: {exc}"
+        ) from exc
+    finally:
+        _close_sync_directory_chain(directories)
+    return _bound_replacement_proof(root, path, label=label)
 
 
 _SYNC_DIRFD_SUPPORTED = (
@@ -2974,6 +3080,67 @@ def _materialize_sync_snapshot(
             _close_sync_directory_chain(directories)
 
 
+def _materialize_bound_replacement_state(
+    root: Path,
+    target: Path,
+    state: ReplacementState,
+    *,
+    parent_directories: list[_BoundDirectory] | None = None,
+) -> None:
+    mode, entries = state
+    if len(entries) != 1 or entries[0].path != "" or entries[0].kind != "file":
+        _materialize_sync_snapshot(
+            root,
+            target,
+            mode=mode,
+            entries=entries,
+            parent_directories=parent_directories,
+        )
+        return
+
+    owns_directories = parent_directories is None
+    directories = (
+        _open_sync_directory_chain(
+            root, target.parent, create=True, label="file materialization parent"
+        )
+        if parent_directories is None
+        else parent_directories
+    )
+    descriptor = -1
+    try:
+        parent_fd = directories[-1][2]
+        _validate_sync_directory_chain(
+            directories, label="file materialization parent"
+        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(target.name, flags, 0o600, dir_fd=parent_fd)
+        installed = os.fstat(descriptor)
+        view = memoryview(entries[0].content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short portable replacement file write")
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        attached = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (installed.st_dev, installed.st_ino) != (
+            attached.st_dev,
+            attached.st_ino,
+        ):
+            raise ValueError("portable replacement file changed during write")
+        _validate_sync_directory_chain(
+            directories, label="file materialization parent"
+        )
+        os.fsync(parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if owns_directories:
+            _close_sync_directory_chain(directories)
+
+
 def _rename_sync_path(
     root: Path,
     source: Path,
@@ -3027,8 +3194,14 @@ def _rename_sync_path(
         source_parent = source_chain[-1][2]
         target_parent = target_chain[-1][2]
         observed = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
-        if not stat.S_ISDIR(observed.st_mode):
-            raise ValueError(f"portable sync rename source is not a directory: {source}")
+        source_is_directory = stat.S_ISDIR(observed.st_mode) and not stat.S_ISLNK(
+            observed.st_mode
+        )
+        source_is_file = stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1
+        if not source_is_directory and not source_is_file:
+            raise ValueError(
+                f"portable sync rename source is not an ordinary entry: {source}"
+            )
         if expected_source_identity is not None and (
             observed.st_dev,
             observed.st_ino,
@@ -3040,7 +3213,16 @@ def _rename_sync_path(
             pass
         else:
             raise FileExistsError(f"portable sync rename target exists: {target}")
-        os.mkdir(target.name, mode=0o700, dir_fd=target_parent)
+        if source_is_directory:
+            os.mkdir(target.name, mode=0o700, dir_fd=target_parent)
+        else:
+            reservation_fd = os.open(
+                target.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=target_parent,
+            )
+            os.close(reservation_fd)
         reservation = os.stat(
             target.name, dir_fd=target_parent, follow_symlinks=False
         )
@@ -3056,8 +3238,14 @@ def _rename_sync_path(
                 attached = os.stat(
                     target.name, dir_fd=target_parent, follow_symlinks=False
                 )
-                if _directory_is_bound(reservation, attached):
-                    os.rmdir(target.name, dir_fd=target_parent)
+                if (reservation.st_dev, reservation.st_ino) == (
+                    attached.st_dev,
+                    attached.st_ino,
+                ):
+                    if source_is_directory:
+                        os.rmdir(target.name, dir_fd=target_parent)
+                    else:
+                        os.unlink(target.name, dir_fd=target_parent)
             except (FileNotFoundError, OSError):
                 pass
             raise
@@ -3391,19 +3579,19 @@ def _copy_staged_replacement(
                 create=True,
                 label="install materialization parent",
             )
-            root_mode, expected = _bound_replacement_state(
+            expected_state = _bound_replacement_state(
                 root, staged, label="staged copy source"
             )
+            root_mode, expected = expected_state
         else:
             root_mode = 0o755
             expected = _replacement_snapshot(root, staged)
         if bound:
             assert target_parent_directories is not None
-            _materialize_sync_snapshot(
+            _materialize_bound_replacement_state(
                 root,
                 target,
-                mode=root_mode,
-                entries=expected,
+                expected_state,
                 parent_directories=target_parent_directories,
             )
         elif staged.is_dir():
@@ -4198,29 +4386,17 @@ def _remove_transaction_target(
     sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
     sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> None:
-    if operation == SYNC_OPERATION:
-        _assert_sync_transaction_binding(
-            root,
-            sync_transaction_binding,
-            label="rollback removal authority",
-        )
-        _remove_sync_path(
-            root,
-            path,
-            expected_parent_identity=(sync_parent_identities or {}).get(path.parent),
-            transaction_binding=sync_transaction_binding,
-        )
-        return
-    _assert_safe_managed_path(root, path)
-    if not path.exists() and not path.is_symlink():
-        return
-    if path.is_symlink():
-        raise ValueError(f"managed path contains symlink: {path}")
-    if path.is_dir():
-        _assert_managed_tree(root, path)
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+    _assert_sync_transaction_binding(
+        root,
+        sync_transaction_binding,
+        label="rollback removal authority",
+    )
+    _remove_sync_path(
+        root,
+        path,
+        expected_parent_identity=(sync_parent_identities or {}).get(path.parent),
+        transaction_binding=sync_transaction_binding,
+    )
 
 
 def _rollback_upgrade_records(
@@ -4236,31 +4412,25 @@ def _rollback_upgrade_records(
     errors: list[str] = []
 
     def snapshot(path: Path, label: str):
-        if operation == SYNC_OPERATION:
-            return _bound_replacement_state(root, path, label=label)
-        return _replacement_snapshot(root, path)
+        return _bound_replacement_state(root, path, label=label)
 
     for target, backup, staged, had_target in reversed(records):
         try:
             if backup.exists():
                 backup_snapshot = snapshot(backup, "rollback backup")
                 if not target.exists() and not target.is_symlink():
-                    if operation == SYNC_OPERATION:
-                        _rename_sync_path(
-                            root,
-                            backup,
-                            target,
-                            transaction_binding=sync_transaction_binding,
-                            expected_source_parent_identity=(
-                                sync_parent_identities or {}
-                            ).get(backup.parent),
-                            expected_target_parent_identity=(
-                                sync_parent_identities or {}
-                            ).get(target.parent),
-                        )
-                    else:
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        backup.replace(target)
+                    _rename_sync_path(
+                        root,
+                        backup,
+                        target,
+                        transaction_binding=sync_transaction_binding,
+                        expected_source_parent_identity=(
+                            sync_parent_identities or {}
+                        ).get(backup.parent),
+                        expected_target_parent_identity=(
+                            sync_parent_identities or {}
+                        ).get(target.parent),
+                    )
                     continue
                 target_snapshot = snapshot(target, "rollback target")
                 if target_snapshot == backup_snapshot:
@@ -4282,22 +4452,18 @@ def _rollback_upgrade_records(
                         sync_transaction_binding=sync_transaction_binding,
                         sync_parent_identities=sync_parent_identities,
                     )
-                    if operation == SYNC_OPERATION:
-                        _rename_sync_path(
-                            root,
-                            backup,
-                            target,
-                            transaction_binding=sync_transaction_binding,
-                            expected_source_parent_identity=(
-                                sync_parent_identities or {}
-                            ).get(backup.parent),
-                            expected_target_parent_identity=(
-                                sync_parent_identities or {}
-                            ).get(target.parent),
-                        )
-                    else:
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        backup.replace(target)
+                    _rename_sync_path(
+                        root,
+                        backup,
+                        target,
+                        transaction_binding=sync_transaction_binding,
+                        expected_source_parent_identity=(
+                            sync_parent_identities or {}
+                        ).get(backup.parent),
+                        expected_target_parent_identity=(
+                            sync_parent_identities or {}
+                        ).get(target.parent),
+                    )
                     continue
                 raise OSError(
                     "owner-diverged target cannot be overwritten during rollback"
@@ -4333,28 +4499,19 @@ def _rollback_created_parents(
     errors: list[str] = []
     for parent in reversed(created_parents):
         try:
-            if operation == SYNC_OPERATION:
-                _assert_sync_transaction_binding(
-                    root,
-                    sync_transaction_binding,
-                    label="created-parent rollback authority",
-                )
-                _rmdir_sync_path(
-                    root,
-                    parent,
-                    expected_parent_identity=(sync_parent_identities or {}).get(
-                        parent.parent
-                    ),
-                    transaction_binding=sync_transaction_binding,
-                )
-                continue
-            _assert_safe_managed_path(root, parent)
-            if not parent.exists() and not parent.is_symlink():
-                continue
-            metadata = parent.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise OSError(f"created parent is no longer an ordinary directory: {parent}")
-            parent.rmdir()
+            _assert_sync_transaction_binding(
+                root,
+                sync_transaction_binding,
+                label="created-parent rollback authority",
+            )
+            _rmdir_sync_path(
+                root,
+                parent,
+                expected_parent_identity=(sync_parent_identities or {}).get(
+                    parent.parent
+                ),
+                transaction_binding=sync_transaction_binding,
+            )
         except BaseException as exc:
             errors.append(f"created parent {parent}: {exc}")
     return errors
@@ -4367,20 +4524,11 @@ def _cleanup_replacement_transaction(
     *,
     transaction_identity: tuple[int, int] | None = None,
 ) -> None:
-    if operation == SYNC_OPERATION:
-        _remove_sync_path(
-            root, transaction, expected_identity=transaction_identity
-        )
-        try:
-            _rmdir_sync_path(root, transaction.parent)
-        except OSError:
-            pass
-        return
-    _assert_safe_managed_path(root, transaction)
-    _assert_managed_tree(root, transaction)
-    shutil.rmtree(transaction)
+    _remove_sync_path(
+        root, transaction, expected_identity=transaction_identity
+    )
     try:
-        transaction.parent.rmdir()
+        _rmdir_sync_path(root, transaction.parent)
     except OSError:
         pass
 
@@ -4403,27 +4551,17 @@ def _recover_replacement_transactions(
     if not transactions.exists():
         return
     _assert_directory(root, transactions, "upgrade transactions")
-    if operation == SYNC_OPERATION:
-        candidates: tuple[tuple[Path, tuple[int, int] | None], ...] = tuple(
-            (transaction, identity)
-            for transaction, identity in _bound_sync_transaction_candidates(
-                root, transactions
-            )
+    candidates: tuple[tuple[Path, tuple[int, int] | None], ...] = tuple(
+        (transaction, identity)
+        for transaction, identity in _bound_sync_transaction_candidates(
+            root, transactions
         )
-    else:
-        candidates = tuple(
-            (transaction, None)
-            for transaction in sorted(transactions.iterdir(), key=lambda path: path.name)
-        )
+    )
     for transaction, transaction_identity in candidates:
-        journal = transaction / _UPGRADE_JOURNAL
-        if operation == SYNC_OPERATION:
-            assert transaction_identity is not None
-            has_journal = _bound_sync_transaction_has_journal(
-                root, transaction, transaction_identity
-            )
-        else:
-            has_journal = journal.exists() or journal.is_symlink()
+        assert transaction_identity is not None
+        has_journal = _bound_sync_transaction_has_journal(
+            root, transaction, transaction_identity
+        )
         if not has_journal:
             _assert_safe_managed_path(root, transaction)
             try:
@@ -4442,14 +4580,11 @@ def _recover_replacement_transactions(
             # A journal is the mutation boundary.  Without one, every entry is
             # disposable preparation state; rmtree unlinks internal symlinks
             # without following them.
-            if operation == SYNC_OPERATION:
-                _remove_sync_path(
-                    root,
-                    transaction,
-                    expected_identity=transaction_identity,
-                )
-            else:
-                shutil.rmtree(transaction)
+            _remove_sync_path(
+                root,
+                transaction,
+                expected_identity=transaction_identity,
+            )
             continue
         payload, records, created_parents = _load_replacement_journal(
             root,
@@ -4490,7 +4625,7 @@ def _recover_replacement_transactions(
                 records,
                 created_parents=created_parents,
             )
-            if operation == SYNC_OPERATION and payload["status"] == "prepared"
+            if payload["status"] == "prepared"
             else {}
         )
         if payload["status"] == "committed":
@@ -4528,14 +4663,13 @@ def _recover_replacement_transactions(
                 "journal and "
                 f"backups at {transaction}: {'; '.join(errors)}"
             )
-        if operation == SYNC_OPERATION:
-            assert transaction_identity is not None
-            _assert_sync_directory_identity(
-                root,
-                transaction,
-                transaction_identity,
-                label="recovered transaction",
-            )
+        assert transaction_identity is not None
+        _assert_sync_directory_identity(
+            root,
+            transaction,
+            transaction_identity,
+            label="recovered transaction",
+        )
         _cleanup_replacement_transaction(
             root,
             transaction,
@@ -4644,16 +4778,12 @@ def _prepare_replacement_journal(
     *,
     precreated_parents: tuple[Path, ...] = (),
 ) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
-    if operation == SYNC_OPERATION:
-        _ensure_sync_directory(
-            root, transaction / "backups", label="backup directory"
-        )
-        _ensure_sync_directory(
-            root, transaction / "install", label="install directory"
-        )
-    else:
-        (transaction / "backups").mkdir()
-        (transaction / "install").mkdir()
+    _ensure_sync_directory(
+        root, transaction / "backups", label="backup directory"
+    )
+    _ensure_sync_directory(
+        root, transaction / "install", label="install directory"
+    )
     transaction_relative = _repo_relative_path(root, transaction)
     raw_records: list[dict[str, object]] = []
     for index, (target, staged) in enumerate(replacements):
@@ -4664,7 +4794,7 @@ def _prepare_replacement_journal(
                 root,
                 staged,
                 install,
-                bound=operation == SYNC_OPERATION,
+                bound=True,
             )
         raw_records.append(
             {
@@ -4723,10 +4853,14 @@ def _capture_sync_parent_identities(
     initial: Mapping[Path, tuple[int, int]] | None = None,
 ) -> dict[Path, tuple[int, int]]:
     """Bind every parent that a sync apply or rollback may mutate."""
-    parents = {root, transaction / "backups", transaction / "install"}
+    parents = {root, transaction / "install"}
+    backup_root = transaction / "backups"
+    if backup_root.exists() or backup_root.is_symlink():
+        parents.add(backup_root)
     for target, backup, _staged, _had_target in records:
         parents.add(target.parent)
-        parents.add(backup.parent)
+        if backup.parent.exists() or backup.parent.is_symlink():
+            parents.add(backup.parent)
     allowed_creations = set(created_parents)
     identities = dict(initial or {})
     for parent, identity in identities.items():
@@ -4790,12 +4924,11 @@ def _apply_journaled_replacements(
     records: list[tuple[Path, Path, Path | None, bool]],
     *,
     initial_sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
+    expected_preimages: Mapping[Path, ReplacementProof | None] | None = None,
 ) -> None:
     created_targets: set[Path] = set()
-    transaction_identity = (
-        _sync_directory_identity(root, transaction, label="apply transaction")
-        if operation == SYNC_OPERATION
-        else None
+    transaction_identity = _sync_directory_identity(
+        root, transaction, label="apply transaction"
     )
     sync_transaction_binding = (
         (transaction, transaction_identity)
@@ -4807,75 +4940,71 @@ def _apply_journaled_replacements(
     )
     sync_parent_identities: dict[Path, tuple[int, int]] = {}
     try:
-        if operation == SYNC_OPERATION:
-            sync_parent_identities = _capture_sync_parent_identities(
-                root,
-                transaction,
-                records,
-                created_parents=created_parents,
-                initial=initial_sync_parent_identities,
-            )
+        sync_parent_identities = _capture_sync_parent_identities(
+            root,
+            transaction,
+            records,
+            created_parents=created_parents,
+            initial=initial_sync_parent_identities,
+        )
         for index, (target, backup, staged, had_target) in enumerate(records):
             install = transaction / "install" / str(index)
+            install_identity: tuple[int, int] | None = None
             if staged is not None:
-                if not install.exists() or install.is_symlink():
-                    raise OSError(
-                        f"portable upgrade install candidate disappeared: {install}"
-                    )
-                if operation == SYNC_OPERATION:
-                    install_snapshot = _bound_replacement_state(
-                        root, install, label="forward install proof"
-                    )
-                    staged_snapshot = _bound_replacement_state(
-                        root, staged, label="forward staged proof"
-                    )
-                else:
-                    install_snapshot = _replacement_snapshot(root, install)
-                    staged_snapshot = _replacement_snapshot(root, staged)
+                install_identity, install_snapshot = _bound_replacement_proof(
+                    root, install, label="forward install proof"
+                )
+                staged_snapshot = _bound_replacement_state(
+                    root, staged, label="forward staged proof"
+                )
                 if install_snapshot != staged_snapshot:
                     raise OSError(
                         f"portable upgrade install candidate diverged from proof: {install}"
                     )
-            if had_target:
-                if operation == SYNC_OPERATION:
-                    _rename_sync_path(
-                        root,
-                        target,
-                        backup,
-                        transaction_binding=sync_transaction_binding,
-                        expected_source_parent_identity=sync_parent_identities[
-                            target.parent
-                        ],
-                        expected_target_parent_identity=sync_parent_identities[
-                            backup.parent
-                        ],
+            observed_target = _bound_optional_replacement_proof(
+                root, target, label="forward target preimage"
+            )
+            if expected_preimages is not None:
+                expected_target = expected_preimages.get(target)
+                if observed_target != expected_target:
+                    raise OSError(
+                        f"managed upgrade target preimage changed: {target}"
                     )
-                else:
-                    if not target.exists():
-                        raise OSError(f"managed upgrade target disappeared: {target}")
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    target.replace(backup)
-            elif target.exists() or target.is_symlink():
+            if had_target:
+                if observed_target is None:
+                    raise OSError(f"managed upgrade target disappeared: {target}")
+                _rename_sync_path(
+                    root,
+                    target,
+                    backup,
+                    transaction_binding=sync_transaction_binding,
+                    expected_source_identity=observed_target[0],
+                    expected_source_parent_identity=sync_parent_identities[
+                        target.parent
+                    ],
+                    expected_target_parent_identity=sync_parent_identities[
+                        backup.parent
+                    ],
+                )
+            elif observed_target is not None:
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:
                 if not had_target:
                     created_targets.add(target)
-                if operation == SYNC_OPERATION:
-                    _rename_sync_path(
-                        root,
-                        install,
-                        target,
-                        transaction_binding=sync_transaction_binding,
-                        expected_source_parent_identity=sync_parent_identities[
-                            install.parent
-                        ],
-                        expected_target_parent_identity=sync_parent_identities[
-                            target.parent
-                        ],
-                    )
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    install.replace(target)
+                assert install_identity is not None
+                _rename_sync_path(
+                    root,
+                    install,
+                    target,
+                    transaction_binding=sync_transaction_binding,
+                    expected_source_identity=install_identity,
+                    expected_source_parent_identity=sync_parent_identities[
+                        install.parent
+                    ],
+                    expected_target_parent_identity=sync_parent_identities[
+                        target.parent
+                    ],
+                )
         if operation == SYNC_OPERATION and plan_portable_skill_sync(root).status != "clean":
             raise RuntimeError("portable skill synchronization verification failed")
         payload["status"] = "committed"
@@ -4932,10 +5061,17 @@ def _apply_journaled_upgrade(
     transaction: Path,
     payload: dict[str, object],
     records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    expected_preimages: Mapping[Path, ReplacementProof | None] | None = None,
 ) -> None:
     """Compatibility wrapper retaining the upgrade test seam."""
     _apply_journaled_replacements(
-        root, transaction, UPGRADE_OPERATION, payload, records
+        root,
+        transaction,
+        UPGRADE_OPERATION,
+        payload,
+        records,
+        expected_preimages=expected_preimages,
     )
 
 
@@ -4943,29 +5079,24 @@ def _create_replacement_transaction(
     root: Path, operation: ReplacementOperation
 ) -> Path:
     transactions = root / operation.transactions_relative
-    if operation == SYNC_OPERATION:
-        directories = _open_sync_directory_chain(
-            root, transactions, create=True, label="transactions"
-        )
-        try:
-            parent_fd = directories[-1][2]
-            for _attempt in range(16):
-                name = f"txn-{secrets.token_hex(16)}"
-                try:
-                    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-                except FileExistsError:
-                    continue
-                transaction = transactions / name
-                _validate_sync_directory_chain(directories, label="transactions")
-                os.fsync(parent_fd)
-                return transaction
-            raise RuntimeError("could not reserve portable sync transaction name")
-        finally:
-            _close_sync_directory_chain(directories)
-    _assert_safe_managed_path(root, transactions)
-    transactions.mkdir(parents=True, exist_ok=True)
-    _assert_directory(root, transactions, f"{operation.name} transactions")
-    return Path(tempfile.mkdtemp(prefix="txn-", dir=transactions))
+    directories = _open_sync_directory_chain(
+        root, transactions, create=True, label="transactions"
+    )
+    try:
+        parent_fd = directories[-1][2]
+        for _attempt in range(16):
+            name = f"txn-{secrets.token_hex(16)}"
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                continue
+            transaction = transactions / name
+            _validate_sync_directory_chain(directories, label="transactions")
+            os.fsync(parent_fd)
+            return transaction
+        raise RuntimeError("could not reserve portable replacement transaction name")
+    finally:
+        _close_sync_directory_chain(directories)
 
 
 def _stage_complete_agent_mirrors(
@@ -5123,6 +5254,18 @@ def upgrade_portable_skills(
             previous_names=previous_names,
             current_names=current_names,
         )
+        preimage_targets = [
+            *(root / ".skills" / name for name in sorted(set(previous_names) | set(current_names))),
+            *(root / agent_relative for agent_relative, _label in PROJECT_AGENT_DIRS),
+            *(target for target, _text in bootstrap_plans),
+            root / MANAGED_SKILLS_INVENTORY,
+        ]
+        expected_preimages = {
+            target: _bound_optional_replacement_proof(
+                root, target, label="upgrade target preimage"
+            )
+            for target in preimage_targets
+        }
         source_collection = _snapshot_bundled_skills(source)
         previous = set(previous_names)
         current = set(current_names)
@@ -5139,26 +5282,28 @@ def upgrade_portable_skills(
             tuple(sorted((*source_collection.skills, *custom), key=lambda tree: tree.name))
         )
 
-        transactions = root / _UPGRADE_TRANSACTIONS
-        _assert_safe_managed_path(root, transactions)
-        transactions.mkdir(parents=True, exist_ok=True)
-        transaction = Path(tempfile.mkdtemp(prefix="txn-", dir=transactions))
+        transaction = _create_replacement_transaction(root, UPGRADE_OPERATION)
         journal_written = False
         try:
             staged_root = transaction / "staged"
             staged_canonical = staged_root / "canonical"
             staged_mirrors = staged_root / "mirrors"
             staged_bootstrap = staged_root / "bootstrap"
-            materialize_skill_collection(source_collection, staged_canonical)
-            for name in current_names:
-                canonical_target = root / ".skills" / name
-                os.chmod(
-                    staged_canonical / name,
-                    (
-                        stat.S_IMODE(canonical_target.lstat().st_mode)
-                        if canonical_target.exists()
-                        else 0o755
-                    ),
+            _materialize_sync_snapshot(
+                root, staged_canonical, mode=0o755, entries=()
+            )
+            for tree in source_collection.skills:
+                canonical_target = root / ".skills" / tree.name
+                canonical_preimage = expected_preimages[canonical_target]
+                canonical_mode = (
+                    canonical_preimage[1][0]
+                    if canonical_preimage is not None
+                    else 0o755
+                )
+                _materialize_bound_replacement_state(
+                    root,
+                    staged_canonical / tree.name,
+                    (canonical_mode, tree.entries),
                 )
 
             staged_agent_roots: dict[Path, Path] = {}
@@ -5167,9 +5312,16 @@ def upgrade_portable_skills(
             ):
                 target = root / agent_relative
                 staged = staged_mirrors / str(agent_index)
-                materialize_skill_collection(prospective, staged)
-                os.chmod(staged, stat.S_IMODE(target.lstat().st_mode))
-                if discover_skill_collection(staged) != prospective:
+                target_preimage = expected_preimages[target]
+                if target_preimage is None:
+                    raise OSError(f"managed upgrade target disappeared: {target}")
+                _materialize_sync_snapshot(
+                    root,
+                    staged,
+                    mode=target_preimage[1][0],
+                    entries=_canonical_skill_entries(prospective),
+                )
+                if discover_anchored_skill_collection(staged, anchor=root) != prospective:
                     raise RuntimeError(
                         f"portable staged full mirror verification failed: {agent_relative}"
                     )
@@ -5178,8 +5330,26 @@ def upgrade_portable_skills(
             bootstrap_staged: dict[Path, Path] = {}
             for index, (target, text) in enumerate(bootstrap_plans):
                 staged = staged_bootstrap / str(index)
-                _stage_text_for_replacement(
-                    root, transaction, staged, target, text
+                target_preimage = expected_preimages[target]
+                target_mode = (
+                    target_preimage[1][0]
+                    if target_preimage is not None
+                    else 0o644
+                )
+                _materialize_bound_replacement_state(
+                    root,
+                    staged,
+                    (
+                        target_mode,
+                        (
+                            SkillEntry(
+                                "",
+                                "file",
+                                bool(target_mode & 0o111),
+                                text.encode("utf-8"),
+                            ),
+                        ),
+                    ),
                 )
                 bootstrap_staged[target] = staged
 
@@ -5208,12 +5378,26 @@ def upgrade_portable_skills(
                     skill.name: skill.digest for skill in source_collection.skills
                 },
             )
-            _stage_text_for_replacement(
+            inventory_preimage = expected_preimages[inventory]
+            inventory_mode = (
+                inventory_preimage[1][0]
+                if inventory_preimage is not None
+                else 0o644
+            )
+            _materialize_bound_replacement_state(
                 root,
-                transaction,
                 staged_inventory,
-                inventory,
-                render_inventory(next_inventory),
+                (
+                    inventory_mode,
+                    (
+                        SkillEntry(
+                            "",
+                            "file",
+                            bool(inventory_mode & 0o111),
+                            render_inventory(next_inventory).encode("utf-8"),
+                        ),
+                    ),
+                ),
             )
             replacements.append((inventory, staged_inventory))
             payload, records = _prepare_upgrade_journal(
@@ -5224,7 +5408,13 @@ def upgrade_portable_skills(
             if not journal_written:
                 _cleanup_upgrade_transaction(root, transaction)
             raise
-        _apply_journaled_upgrade(root, transaction, payload, records)
+        _apply_journaled_upgrade(
+            root,
+            transaction,
+            payload,
+            records,
+            expected_preimages=expected_preimages,
+        )
         if legacy_migration and warning_sink is not None:
             warning_sink.append(
                 {
@@ -5356,6 +5546,7 @@ def setup_portable_repo(
                 canonical = discover_anchored_skill_collection(
                     root / ".skills", anchor=root
                 )
+                _validate_v2_inventory_ownership(inventory, canonical)
                 _preflight_existing_portable(
                     root, version=version, skill_names=canonical.names
                 )
