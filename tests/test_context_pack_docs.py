@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from obsidian_wiki import SOURCE_INSTALL_COMMAND
+from obsidian_wiki.cli import list_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,10 @@ def read(relative: str) -> str:
 
 def test_context_skill_uses_cli_and_is_read_only() -> None:
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
-    assert 'obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH"' in skill
+    assert 'obsidian-wiki context-pack "<topic>" --budget 8000' in skill
+    assert "obsidian-wiki context-pack --vault" not in skill
+    assert "owning portable repository" in skill.lower()
+    assert "nested" in skill.lower()
     assert "read-only" in skill.lower()
     assert "must not modify" in skill
     assert "Append to" not in skill
@@ -39,9 +43,8 @@ def test_context_skill_preserves_cli_output_and_recent_default_budget() -> None:
     assert '--recent --budget 4000' not in skill
 
 
-def test_cli_lists_context_pack_as_portable() -> None:
-    cli = read("obsidian_wiki/cli.py")
-    assert 'PORTABLE_SKILLS = ("wiki-update", "wiki-query", "wiki-context-pack")' in cli
+def test_cli_lists_context_pack_skill() -> None:
+    assert "wiki-context-pack" in list_skills()
 
 
 def test_all_bootstraps_route_context_pack() -> None:

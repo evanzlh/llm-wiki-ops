@@ -169,3 +169,10 @@ def test_graph_query_command_is_removed(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
+
+
+def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:
+    for relative in ("tests/test_lint.py", "tests/test_trust.py"):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "_legacy_settings" not in source, relative
+        assert "cli_args.pop(" not in source, relative

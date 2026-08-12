@@ -24,6 +24,8 @@ def _portable_cli_context(
     (root / ".obsidian-wiki").mkdir(exist_ok=True)
     (root / "sources").mkdir(exist_ok=True)
     (root / ".skills").mkdir(exist_ok=True)
+    nested = root / "work/nested"
+    nested.mkdir(parents=True, exist_ok=True)
     setting_lines = "".join(
         f'{key} = "{value}"\n' for key, value in (settings or {}).items()
     )
@@ -40,20 +42,7 @@ local_state = ".obsidian-wiki/local"
 {setting_lines}''',
         encoding="utf-8",
     )
-    return vault
-
-
-def _legacy_settings(path: Path) -> tuple[Path | None, dict[str, str]]:
-    if not path.is_file():
-        return None, {}
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        if "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        values[key] = value.strip().strip('"')
-    raw_vault = values.pop("OBSIDIAN_VAULT_PATH", "")
-    return (Path(raw_vault) if raw_vault else None), values
+    return nested
 
 
 def _page(
@@ -97,21 +86,13 @@ def _page(
     return path
 
 
-def _run(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    home: Path, *args: str, cwd: Path
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    cli_args = list(args)
-    cwd = None
-    if cli_args and cli_args[0] == "lint":
-        if len(cli_args) > 1 and not cli_args[1].startswith("-"):
-            vault = Path(cli_args.pop(1))
-            cwd = _portable_cli_context(vault)
-        else:
-            vault, settings = _legacy_settings(home / ".obsidian-wiki/config")
-            if vault is not None:
-                cwd = _portable_cli_context(vault, settings)
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
         capture_output=True,
         check=False,
         text=True,
@@ -124,32 +105,13 @@ def _run_at(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[st
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PYTHONPATH"] = str(Path(__file__).parents[1])
-    cli_args = list(args)
-    execution_cwd = cwd
-    if cli_args and cli_args[0] in {"lint", "trust-record", "trust-check"}:
-        legacy_env = cwd / ".env"
-        has_portable_config = any(
-            (parent / ".obsidian-wiki/config.toml").is_file()
-            for parent in (cwd, *cwd.parents)
-        )
-        if (
-            len(cli_args) > 1
-            and not cli_args[1].startswith("-")
-            and not has_portable_config
-        ):
-            vault = Path(cli_args.pop(1))
-            execution_cwd = _portable_cli_context(vault)
-        elif legacy_env.is_file() or not has_portable_config:
-            vault, settings = _legacy_settings(legacy_env)
-            if vault is not None:
-                execution_cwd = _portable_cli_context(vault, settings)
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
         capture_output=True,
         check=False,
         text=True,
         env=env,
-        cwd=execution_cwd,
+        cwd=cwd,
     )
 
 
@@ -243,13 +205,11 @@ def test_lint_cli_uses_configured_vault_and_strict_mode(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", summary=None)
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config").write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
     ledger = build_trust_ledger(vault, reviewed_at="2026-07-12T17:38:39+07:00")
     write_trust_ledger(vault / "_meta" / "trust-ledger.json", ledger)
+    nested = _portable_cli_context(vault)
 
-    proc = _run(home, "lint", "--json", "--strict")
+    proc = _run(home, "lint", "--json", "--strict", cwd=nested)
 
     assert proc.returncode == 1
     data = json.loads(proc.stdout)
@@ -388,20 +348,18 @@ def test_lint_vault_strict_trust_still_passes_clean_reviewed_vault(tmp_path: Pat
     assert report["status"] == "pass"
 
 
-def test_lint_cli_strict_trust_flag_fails_legacy_vault(tmp_path: Path) -> None:
+def test_lint_cli_strict_trust_flag_fails_portable_vault(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", include_trust_fields=False)
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config").write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
+    nested = _portable_cli_context(vault)
 
-    default_proc = _run(home, "lint", "--json")
+    default_proc = _run(home, "lint", "--json", cwd=nested)
     assert default_proc.returncode == 0
     assert json.loads(default_proc.stdout)["status"] == "warn"
 
-    strict_proc = _run(home, "lint", "--json", "--strict-trust")
+    strict_proc = _run(home, "lint", "--json", "--strict-trust", cwd=nested)
     assert strict_proc.returncode == 1
     assert json.loads(strict_proc.stdout)["status"] == "fail"
 
@@ -502,14 +460,11 @@ def test_invalid_configured_required_trust_field_fails_closed_for_all_cli_paths(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
-    project = tmp_path / "project"
     vault = tmp_path / "vault"
-    project.mkdir()
     _page(vault, "concepts/alpha.md")
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{vault}"\n'
-        "OBSIDIAN_REQUIRED_TRUST_FIELDS=updated,base_confidnce\n",
-        encoding="utf-8",
+    nested = _portable_cli_context(
+        vault,
+        {"OBSIDIAN_REQUIRED_TRUST_FIELDS": "updated,base_confidnce"},
     )
     expected = (
         "error: invalid OBSIDIAN_REQUIRED_TRUST_FIELDS value(s): base_confidnce; "
@@ -529,7 +484,7 @@ def test_invalid_configured_required_trust_field_fails_closed_for_all_cli_paths(
     )
 
     for command in commands:
-        proc = _run_at(home, project, *command)
+        proc = _run_at(home, nested, *command)
         assert proc.returncode == 1, (command, proc.stdout, proc.stderr)
         assert proc.stdout == ""
         assert expected in proc.stderr
@@ -551,8 +506,9 @@ def test_empty_relationship_cli_extension_cannot_hide_missing_relation_type(
             'summary: Short summary.\nrelationships:\n  - type:\n    target: "[[concepts/beta]]"',
         )
     )
+    nested = _portable_cli_context(vault)
 
-    baseline = _run(home, "lint", str(vault), "--json")
+    baseline = _run(home, "lint", "--json", cwd=nested)
     assert baseline.returncode == 0
     assert json.loads(baseline.stdout)["findings"]["typed_relationship_issues"] == [
         {"page": "concepts/alpha.md", "index": 0, "issue": "malformed_relationship_entry"}
@@ -562,10 +518,10 @@ def test_empty_relationship_cli_extension_cannot_hide_missing_relation_type(
         invalid = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--allow-relationship-type",
             value,
+            cwd=nested,
         )
         assert invalid.returncode == 1
         assert invalid.stdout == ""
@@ -577,15 +533,16 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     for value in ("", "   "):
         lifecycle = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--allow-lifecycle",
             value,
+            cwd=nested,
         )
         assert lifecycle.returncode == 1
         assert lifecycle.stdout == ""
@@ -595,10 +552,10 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
     required = _run(
         home,
         "lint",
-        str(vault),
         "--json",
         "--required-trust-field",
         "",
+        cwd=nested,
     )
     assert required.returncode == 2
     assert required.stdout == ""
@@ -609,10 +566,10 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
         source = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--schema-source",
             value,
+            cwd=nested,
         )
         assert source.returncode == 1
         assert source.stdout == ""
@@ -643,14 +600,9 @@ def test_empty_configured_schema_values_fail_closed_for_all_cli_paths(tmp_path: 
         "OBSIDIAN_REQUIRED_TRUST_FIELDS",
         "OBSIDIAN_SCHEMA_SOURCE",
     ):
-        project = tmp_path / key.lower()
-        project.mkdir()
-        (project / ".env").write_text(
-            f'OBSIDIAN_VAULT_PATH="{vault}"\n{key}=   \n',
-            encoding="utf-8",
-        )
+        nested = _portable_cli_context(vault, {key: "   "})
         for command in commands:
-            invalid = _run_at(home, project, *command)
+            invalid = _run_at(home, nested, *command)
             assert invalid.returncode == 1, (key, command, invalid.stdout, invalid.stderr)
             assert invalid.stdout == ""
             if key == "OBSIDIAN_SCHEMA_SOURCE":
@@ -666,11 +618,8 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{vault}"\nOBSIDIAN_SCHEMA_SOURCE=   \n',
-        encoding="utf-8",
+    nested = _portable_cli_context(
+        vault, {"OBSIDIAN_SCHEMA_SOURCE": "   "}
     )
     ledger = vault / "_meta" / "trust-ledger.json"
     before = {
@@ -694,7 +643,7 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
     )
 
     for command in commands:
-        invalid = _run_at(home, project, *command)
+        invalid = _run_at(home, nested, *command)
         assert invalid.returncode == 1, (command, invalid.stdout, invalid.stderr)
         assert invalid.stdout == ""
         assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in invalid.stderr
@@ -800,44 +749,27 @@ def test_present_invalid_confidence_fails_without_ledger_when_not_required(tmp_p
 
 def test_schema_source_is_portable_config_and_positional_vaults_are_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    global_vault = tmp_path / "global-vault"
     local_vault = tmp_path / "local-vault"
     explicit_vault = tmp_path / "explicit-vault"
-    for vault in (global_vault, local_vault, explicit_vault):
+    for vault in (local_vault, explicit_vault):
         page = _page(vault, "concepts/alpha.md")
         page.write_text(page.read_text().replace("lifecycle: reviewed", "lifecycle: active"))
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True)
-    (config_dir / "config").write_text(
-        f'OBSIDIAN_VAULT_PATH="{global_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
-    )
-    (config_dir / "config.owner").write_text(
-        f'OBSIDIAN_VAULT_PATH="{local_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
-    )
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{local_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
-    )
     portable_config = tmp_path / ".obsidian-wiki/config.toml"
-    _portable_cli_context(
+    nested = _portable_cli_context(
         local_vault, {"OBSIDIAN_ALLOWED_LIFECYCLES": "active"}
     )
 
-    explicit = _run_at(home, project, "lint", str(explicit_vault), "--json")
+    explicit = _run_at(home, nested, "lint", str(explicit_vault), "--json")
     assert explicit.returncode == 2
     assert "unrecognized arguments" in explicit.stderr
 
-    local = _run_at(home, project, "lint", "--json")
+    local = _run_at(home, nested, "lint", "--json")
     assert local.returncode == 0, local.stderr
     local_source = json.loads(local.stdout)["schema"]["source"]
     assert Path(local_source.removeprefix("config:")).resolve() == portable_config.resolve()
 
-    named = _run_at(home, tmp_path, "lint", "@owner", "--json")
+    named = _run_at(home, nested, "lint", "@owner", "--json")
     assert named.returncode == 2
     assert "unrecognized arguments" in named.stderr
 

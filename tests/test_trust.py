@@ -58,27 +58,21 @@ def _write_ledger(vault: Path) -> Path:
     return path
 
 
-def _run_cli(
-    home: Path, *args: str, cwd: Path | None = None
-) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    cli_args = list(args)
-    if (
-        cwd is None
-        and cli_args
-        and cli_args[0] in {"trust-record", "trust-check"}
-        and len(cli_args) > 1
-        and not cli_args[1].startswith("-")
-    ):
-        vault = Path(cli_args.pop(1))
-        root = vault.parent
-        vault.mkdir(parents=True, exist_ok=True)
-        (root / ".obsidian-wiki").mkdir(exist_ok=True)
-        (root / "sources").mkdir(exist_ok=True)
-        (root / ".skills").mkdir(exist_ok=True)
-        (root / ".obsidian-wiki/config.toml").write_text(
-            f'''schema_version = 1
+def _portable_cli_context(
+    vault: Path, settings: dict[str, str] | None = None
+) -> Path:
+    root = vault.parent
+    vault.mkdir(parents=True, exist_ok=True)
+    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / "sources").mkdir(exist_ok=True)
+    (root / ".skills").mkdir(exist_ok=True)
+    nested = root / "work/nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    setting_lines = "".join(
+        f'{key} = "{value}"\n' for key, value in (settings or {}).items()
+    )
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
 [paths]
@@ -86,12 +80,20 @@ vault = "{vault.name}"
 sources = ["sources"]
 skills = ".skills"
 local_state = ".obsidian-wiki/local"
-''',
-            encoding="utf-8",
-        )
-        cwd = vault
+[settings]
+{setting_lines}''',
+        encoding="utf-8",
+    )
+    return nested
+
+
+def _run_cli(
+    home: Path, *args: str, cwd: Path
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *args],
         capture_output=True,
         text=True,
         env=env,
@@ -356,6 +358,7 @@ def test_owner_lifecycle_cli_record_then_check(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("lifecycle: reviewed", "lifecycle: active"))
+    nested = _portable_cli_context(vault)
     schema_args = (
         "--allow-lifecycle",
         "active",
@@ -366,18 +369,18 @@ def test_owner_lifecycle_cli_record_then_check(tmp_path: Path) -> None:
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T12:00:00+09:00",
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["schema"]["source"] == "wiki/AGENTS.md"
 
-    check = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    check = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert check.returncode == 0, check.stderr
     assert json.loads(check.stdout)["status"] == "pass"
 
@@ -564,16 +567,17 @@ def test_invalid_review_timestamp_is_rejected_by_record_cli(tmp_path: Path) -> N
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "not-an-iso-timestamp",
         "--approved",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 1
@@ -929,15 +933,16 @@ def test_trust_record_cli_requires_explicit_approval(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     proc = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-07-12T17:38:39+07:00",
         "--json",
+        cwd=nested,
     )
 
     assert proc.returncode == 2
@@ -949,18 +954,19 @@ def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", confidence=0.53)
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-07-12T17:38:39+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
-    check = _run_cli(home, "trust-check", str(vault), "--json")
+    check = _run_cli(home, "trust-check", "--json", cwd=nested)
 
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["recorded_pages"] == 1
@@ -1045,8 +1051,9 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
     schema_args = ("--required-trust-field", "updated")
+    nested = _portable_cli_context(vault)
 
-    stale = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    stale = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert stale.returncode == 0, stale.stderr
     stale_payload = json.loads(stale.stdout)
     assert stale_payload["status"] == "warn"
@@ -1060,7 +1067,6 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1068,6 +1074,7 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert record.returncode == 0, record.stderr
     record_payload = json.loads(record.stdout)
@@ -1075,7 +1082,7 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     assert record_payload["not_applicable_pages"] == ["concepts/alpha.md"]
     assert record_payload["removed_not_applicable"] == ["concepts/alpha.md"]
 
-    clean = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    clean = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert clean.returncode == 0, clean.stderr
     clean_payload = json.loads(clean.stdout)
     assert clean_payload["status"] == "pass"
@@ -1085,13 +1092,13 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     rebuilt = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert rebuilt.returncode == 0, rebuilt.stderr
     rebuilt_payload = json.loads(rebuilt.stdout)
@@ -1104,17 +1111,18 @@ def test_trust_record_all_human_output_lists_no_confidence_without_removal(tmp_p
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1135,17 +1143,18 @@ def test_trust_record_all_human_output_warns_when_rebuild_removes_stale_entry(
     page = _page(vault, "concepts/alpha.md")
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1167,11 +1176,11 @@ def test_trust_record_page_human_output_warns_when_stale_entry_is_removed(tmp_pa
     page = _page(vault, "concepts/alpha.md")
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1179,6 +1188,7 @@ def test_trust_record_page_human_output_warns_when_stale_entry_is_removed(tmp_pa
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1195,11 +1205,11 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1207,6 +1217,7 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1220,11 +1231,11 @@ def test_portable_config_path_is_used_as_cli_schema_source(tmp_path: Path) -> No
     vault = tmp_path / "explicit-vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
@@ -1232,6 +1243,7 @@ def test_portable_config_path_is_used_as_cli_schema_source(tmp_path: Path) -> No
         "--required-trust-field",
         "updated",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 0, record.stderr
@@ -1249,19 +1261,20 @@ def test_partial_trust_record_does_not_approve_other_stale_pages(tmp_path: Path)
     _write_ledger(vault)
     alpha.write_text(alpha.read_text().replace("Reviewed material claim.", "Reviewed alpha change."))
     beta.write_text(beta.read_text().replace("Reviewed material claim.", "Unreviewed beta change."))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
         "2026-07-13T09:00:00+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
-    check = _run_cli(home, "trust-check", str(vault), "--json")
+    check = _run_cli(home, "trust-check", "--json", cwd=nested)
 
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["recorded_pages"] == 1
@@ -1279,17 +1292,18 @@ def test_partial_trust_record_reports_malformed_ledger_without_traceback(tmp_pat
     ledger_path = vault / "_meta" / "trust-ledger.json"
     ledger_path.parent.mkdir(parents=True)
     ledger_path.write_text("[]\n")
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
         "2026-07-13T09:00:00+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 1

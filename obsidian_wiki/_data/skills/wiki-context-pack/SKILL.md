@@ -55,16 +55,18 @@ uv tool install --link-mode copy .
 ```
 
 Do not execute package source from an arbitrary checkout or from
-`OBSIDIAN_WIKI_REPO`. After the installed executable is available, run:
+`OBSIDIAN_WIKI_REPO`. After the installed executable is available, run from
+any directory inside the owning portable repository, including a nested CWD;
+the CLI resolves the repository config automatically:
 
 ```bash
-obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH" "<topic>" --budget 8000
+obsidian-wiki context-pack "<topic>" --budget 8000
 ```
 
 For recent activity:
 
 ```bash
-obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH" --recent --budget 8000
+obsidian-wiki context-pack --recent --budget 8000
 ```
 
 Append the requested flags exactly. For `--recent`, substitute `--recent` for
