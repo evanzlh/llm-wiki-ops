@@ -23,6 +23,7 @@ USER_FACING_SKILL_DOCS = (
     "docs/cli.md",
     "docs/configuration.md",
     "docs/architecture.md",
+    "docs/fork.md",
     "docs/contributing.md",
 )
 
