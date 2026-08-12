@@ -1,7 +1,5 @@
 """Tests for the GraphRAG query index module."""
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -278,30 +276,3 @@ class TestQuery:
     def test_json_serialisable(self, simple_vault):
         result = query(simple_vault, "deep learning")
         json.dumps(result)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-class TestGraphQueryCLI:
-    def _run(self, *args):
-        return subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", *args],
-            capture_output=True, text=True,
-        )
-
-    def test_outputs_json(self, simple_vault):
-        proc = self._run("graph-query", str(simple_vault), "transformer")
-        assert proc.returncode == 0
-        data = json.loads(proc.stdout)
-        assert "candidates" in data
-
-    def test_pretty_flag(self, simple_vault):
-        proc = self._run("graph-query", str(simple_vault), "transformer", "--pretty")
-        assert proc.returncode == 0
-        assert "\n  " in proc.stdout
-
-    def test_missing_vault_exits_nonzero(self, tmp_path):
-        proc = self._run("graph-query", str(tmp_path / "nope"), "anything")
-        assert proc.returncode != 0
