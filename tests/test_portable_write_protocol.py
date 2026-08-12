@@ -410,15 +410,15 @@ def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
             "new snapshot requires owner Git review",
             "becomes tracked authority",
             "framework and agent must not run `git add`, `git commit`, or `git push`",
-            "git ls-files --error-unmatch -- <Source ID>",
+            '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
             "manifest-tracked",
             "Git-tracked",
             "owner review, stage, and commit externally, then rerun",
         ):
             assert required in flat, f"{path}: missing {required!r}"
-        assert flat.index("git ls-files --error-unmatch -- <Source ID>") < flat.index(
-            "cache-check"
-        ) < flat.index("transaction begin --source")
+        assert flat.index(
+            '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
+        ) < flat.index("cache-check") < flat.index("transaction begin --source")
 
 
 def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
@@ -600,3 +600,103 @@ def test_external_input_boundaries_are_bounded_and_fail_closed() -> None:
             "omission markers",
         ):
             assert required in document
+
+
+def test_pageindex_preflight_precedes_invocation_and_postflight() -> None:
+    pageindex = SOURCE_WORKFLOW_REFERENCES[2].read_text(encoding="utf-8")
+    sequence = pageindex.split("## Safe execution sequence", 1)[1].split("\n## ", 1)[0]
+    matches = list(re.finditer(r"(?m)^(\d+)\. \*\*(.+?)\*\*", sequence))
+    assert [int(match.group(1)) for match in matches] == list(range(1, 7))
+    steps = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(sequence)
+        steps.append(" ".join(sequence[match.start() : end].split()))
+
+    assert "<PAGEINDEX_REPO>/results/<basename>_structure.json" in steps[0]
+    for required in ("owner-controlled ordinary directories", "contained", "symlink", "special"):
+        assert required in steps[1]
+    assert "must not exist" in steps[2]
+    assert "hard link" in steps[2] and "stop before the command" in steps[2]
+    assert "exclusive run" in steps[3] and "untrusted concurrent writer" in steps[3]
+    assert "run_pageindex.py" in steps[4] and "argument vector" in steps[4]
+    for required in ("postflight", "lstat", "contained", "ordinary single-link", "10 MiB", "schema"):
+        assert required in steps[5]
+
+    flat = " ".join(sequence.split())
+    assert flat.index("preflight") < flat.index("run_pageindex.py") < flat.index("postflight")
+
+
+def test_git_authority_commands_are_argv_safe_and_require_clean_head(tmp_path: Path) -> None:
+    ls_template = '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
+    status_template = (
+        '["git", "status", "--porcelain=v1", "--untracked-files=all", "--", '
+        '"<Source ID>"]'
+    )
+    for path in SOURCE_WORKFLOW_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            ls_template,
+            status_template,
+            "non-empty POSIX repository-relative Source ID",
+            "NUL",
+            "backslash",
+            "configured sources",
+            "source_id semantics",
+            "output must be empty",
+            "no HEAD",
+            "tracked is not committed-reviewed",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    source_id = "sources/reviewed name;still-data.md"
+    source = repo / source_id
+    source.parent.mkdir()
+    source.write_text("reviewed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", source_id], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=repo, check=True)
+
+    listed = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", source_id],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    clean = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", source_id],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert listed.returncode == 0 and listed.stdout.strip() == source_id
+    assert clean.returncode == 0 and clean.stdout == ""
+    assert not (repo / "still-data.md").exists()
+
+
+def test_research_uses_url_policy_and_import_full_is_orthogonal() -> None:
+    research_path = SOURCE_WORKFLOW_SKILLS[3]
+    research = research_path.read_text(encoding="utf-8")
+    match = re.search(r"\[[^]]*URL[^]]*policy[^]]*\]\(([^)]+url-sources\.md)\)", research, re.I)
+    assert match
+    assert (research_path.parent / match.group(1)).resolve().is_file()
+    assert "Every URL" in research and "must use" in research
+
+    import_skill = " ".join(SOURCE_WORKFLOW_SKILLS[2].read_text(encoding="utf-8").split())
+    assert "Full is orthogonal to merge, skip, and replace" in import_skill
+    assert "analyze unchanged snapshots" in import_skill
+    assert "same single transaction lifecycle" in import_skill
+
+
+def test_pageindex_node_id_is_optional_but_validated_when_present() -> None:
+    pageindex = " ".join(
+        SOURCE_WORKFLOW_REFERENCES[2].read_text(encoding="utf-8").split()
+    )
+    assert "`node_id` is optional" in pageindex
+    assert "when present" in pageindex
+    assert "non-empty string" in pageindex
+    assert "unique" in pageindex
+    assert "Missing `node_id` is allowed" in pageindex

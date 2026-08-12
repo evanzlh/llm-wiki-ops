@@ -13,6 +13,11 @@ rounds. Track claims, locators, uncertainty, and limitations; plan reference,
 concept, entity, and synthesis candidates in memory. Full research is an
 analysis choice only.
 
+Every URL retrieval must use the
+[URL source policy](../wiki-ingest/references/url-sources.md). This policy is
+mandatory for each initial URL and redirect; research must not substitute an
+unbounded browser or fetch path.
+
 Bound imported research packages and archives before parsing: default maximum
 10 MiB total expanded text, 100 files, 10,000 records, and nesting depth 20.
 Reject path traversal, absolute paths, symbolic links, hard links, special
@@ -36,13 +41,19 @@ requires explicit owner authorization.
    Markdown snapshot per accepted source below the configured sources directory
    using the [source snapshot reference](../wiki-capture/references/source-snapshot.md).
    A new snapshot requires owner review and new snapshot requires owner Git
-   review; it becomes tracked authority only after the owner tracks it. Reject
-   absolute IDs and IDs containing `..`; from repository-root CWD run the
-   read-only `git ls-files --error-unmatch -- <Source ID>`. The manifest-tracked
-   and Git-tracked states are distinct. On failure stop and require the owner to complete
-   owner review, stage, and commit externally, then rerun. The framework and
-   agent must not run `git add`, `git commit`, or `git push`. Use only the
-   repository-relative Source ID.
+   review; it becomes tracked authority only after the owner tracks it. First
+   validate a non-empty POSIX repository-relative Source ID: it is not absolute,
+   contains no `.` or `..` segment, NUL, or backslash, stays below configured
+   sources, and is accepted by cache/manifest source_id semantics. From
+   repository-root CWD execute
+   `["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and
+   `["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
+   as exact read-only argument vectors. Require an existing HEAD, zero exits,
+   and status output must be empty. The manifest-tracked and Git-tracked states
+   differ, and tracked is not committed-reviewed. On any nonzero result, output,
+   or no HEAD, stop and require the owner to complete owner review, stage, and
+   commit externally, then rerun. The framework and agent must not run
+   `git add`, `git commit`, or `git push`. Use only the verified Source ID.
 4. **Check source cache.** Run
    `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
    A `missing` result means stop. Continue with `new` and `modified`; skip

@@ -53,13 +53,19 @@ Use these eight steps for Full and Correction.
    Markdown snapshot below the configured sources directory using the
    [source snapshot reference](references/source-snapshot.md). A new snapshot
    requires owner review and new snapshot requires owner Git review; it becomes
-   tracked authority only after the owner tracks it. Reject absolute IDs and
-   IDs containing `..`; from repository-root CWD verify each with the read-only
-   `git ls-files --error-unmatch -- <Source ID>`. The manifest-tracked state is
-   not the Git-tracked state. If verification fails, stop and ask the owner
-   to complete owner review, stage, and commit externally, then rerun. The
-   framework and agent must not run `git add`, `git commit`, or `git push`. Use
-   only the repository-relative Source ID.
+   tracked authority only after the owner tracks it. First validate a non-empty
+   POSIX repository-relative Source ID: it is not absolute, contains no `.` or
+   `..` segment, NUL, or backslash, stays below configured sources, and is
+   accepted by cache/manifest source_id semantics. From repository-root CWD,
+   execute the exact read-only argument vectors
+   `["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and
+   `["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
+   Also require an existing HEAD. Both commands must return zero and status
+   output must be empty. The manifest-tracked and Git-tracked states differ,
+   and tracked is not committed-reviewed. On any nonzero result, status output,
+   or no HEAD, stop and ask the owner to complete owner review, stage, and
+   commit externally, then rerun. The framework and agent must not run
+   `git add`, `git commit`, or `git push`. Use only the verified Source ID.
 4. **Check source cache.** Run
    `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
    A `missing` result means stop. Continue with `new` and `modified`; skip
