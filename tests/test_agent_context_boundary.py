@@ -85,14 +85,17 @@ def test_runtime_asset_lookup_has_no_checkout_fallback(
         cli.bootstrap_dir()
 
 
-def test_missing_packaged_bootstrap_file_fails_instead_of_skipping(
-    tmp_path: Path,
+def test_packaged_bootstrap_resource_must_be_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bootstrap = tmp_path / "bootstrap"
-    bootstrap.mkdir()
+    package = tmp_path / "obsidian_wiki"
+    data = package / "_data"
+    data.mkdir(parents=True)
+    (data / "bootstrap").write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "_pkg_dir", lambda: package)
 
-    with pytest.raises(FileNotFoundError, match="bootstrap file.*Reinstall"):
-        cli._resolve_bootstrap_src(bootstrap, "AGENTS.md")
+    with pytest.raises(FileNotFoundError, match="bundled bootstrap.*Reinstall"):
+        cli.bootstrap_dir()
 
 
 def test_framework_bootstraps_are_ordinary_development_pointers() -> None:
