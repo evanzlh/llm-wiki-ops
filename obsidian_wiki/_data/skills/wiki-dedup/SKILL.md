@@ -34,8 +34,18 @@ sources, links, and lifecycle from the safe snapshots. For YAML block scalar tit
 (`>-`, `>`, `|`, or `|-`), parse the indented value; never score the scalar marker.
 Do not compare a page with itself or treat generic names as identity evidence.
 
-For every pair, tokenize lowercase titles on spaces, hyphens, underscores, and
-punctuation. Compute these deterministic features:
+Generate bounded candidate blocks before similarity scoring; never enumerate every
+page pair. Build deterministic inverted indexes over normalized titles and aliases,
+shared title tokens, shared tags, and explicit entity references in links. A pair is
+a candidate when it shares at least one non-generic blocking key. Sort block keys and
+page paths before pair generation and de-duplicate pairs in deterministic order.
+The configurable limits default to 500 pairs per block and 10,000 candidate pairs
+total. When either bound is reached, stop adding pairs from that block or the run,
+and report the deferred block keys, pair count, and next lexicographic resume key
+rather than silently omitting work.
+
+For every candidate pair, tokenize lowercase titles on spaces, hyphens, underscores,
+and punctuation. Compute these deterministic features:
 
 | Feature | Value |
 |---|---:|

@@ -34,9 +34,9 @@ Inspect knowledge pages and report:
 - pages with zero incoming links and unresolved wikilinks;
 - missing or invalid required frontmatter, summaries, category/path agreement,
   timestamps, non-empty authoritative sources, and any summary exceeds 200 characters;
-- stale high-impact pages, contradictory claims, provenance drift, and synthesis
-  gaps;
-- fragmented tag clusters, visibility inconsistencies, and promotion candidates;
+- pages stale relative to their authoritative sources, contradictory claims, and
+  provenance drift;
+- fragmented tag clusters;
 - invalid confidence, lifecycle, and typed-relationship values;
 - candidate files whose link syntax disagrees with `OBSIDIAN_LINK_FORMAT`.
 
@@ -46,15 +46,27 @@ Preserve these material thresholds from the deterministic lint contract:
   top 10 by incoming links with `INFERRED > 20%`; or a recorded provenance field
   more than 0.20 away from the recomputed claim-marker fraction;
 - fragmented tags: at least 5 pages and graph cohesion < 0.15;
-- stale content: updated more than 90 days ago, with verified lifecycle pages
-  highest priority;
 - lifecycle and confidence range, supersession existence/cycles/state, and typed
   relationships including type, target, and self-reference validation.
 
+Determine source-relative staleness independently of page age. For every page, parse
+each `sources` item as a repository-relative Source ID, validate its manifest-v2
+shard and current content hash, and resolve it below the configured source root.
+Parse the page's `updated` as either an ISO date (00:00 UTC, matching the canonical
+validator) or a timezone-aware ISO timestamp; compare it to the safe source file's
+modification time converted to UTC. The page is stale only when at least one source
+modification time is later than the page's parsed `updated`. A very old page backed
+by unchanged older sources is not stale; a recently updated page with a newer source
+is stale. A missing source or shard, hash mismatch, unsafe file, or invalid or
+ambiguous timestamp fails closed as an authority/schema issue rather than being
+silently classified. Age such as 90 days may prioritize a status report, but it is
+not a lint staleness error.
+
 Run `obsidian-wiki lint --json --pretty` and use the real CLI lint/check output for
-schema and trust-ledger findings, then augment
-it only from the same safe Markdown snapshots for semantic contradictions and
-synthesis gaps. Do not replace concrete findings with a generic health judgement.
+schema and trust-ledger findings, then augment it only from the same safe Markdown
+snapshots for the explicitly defined source-relative, provenance, tag-cohesion, and
+semantic-contradiction checks. Do not replace concrete findings with a generic
+health judgement.
 
 Resolve schema precedence as: CLI flags > resolved environment/config values >
 framework defaults. Empty or whitespace-only values fail closed. Honor

@@ -1,9 +1,14 @@
+import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import parse_frontmatter
+from obsidian_wiki.graph_analysis import analyse_vault
+from obsidian_wiki.portable_manifest import ShardedManifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -355,10 +360,10 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         "local derived-state housekeeping",
         "may invalidate and remove a stale ignored `hot.md` artifact",
         "`transaction list` and `cache-check` are read-only",
-        "operation pages or journals only when returned by those CLI surfaces",
-        "count pages from the safe Markdown snapshots",
-        "count sources from validated manifest-v2 shards",
-        "Label the origin of every count",
+        "page count only from `stats.pages`",
+        "<vault>/journal/operations/**/*.md",
+        "<vault>/.manifest/sources/**/*.json",
+        "Label the origin of every reported count",
     ):
         assert required in flat
     for forbidden in (
@@ -537,8 +542,127 @@ def test_lint_preserves_material_rules_and_thresholds() -> None:
         "more than 0.20",
         "cohesion < 0.15",
         "at least 5 pages",
-        "updated more than 90 days ago",
+        "source modification time is later than the page's parsed `updated`",
+        "repository-relative Source ID",
+        "timezone-aware",
+        "invalid or ambiguous timestamp",
         "supersession",
         "typed relationships",
     ):
         assert required in flat
+    assert "updated more than 90 days ago" not in flat
+    assert "synthesis gaps" not in flat
+    assert "visibility inconsistencies" not in flat
+
+
+def test_lint_source_relative_staleness_has_stable_old_and_newer_source_cases() -> None:
+    def is_stale(page_updated: str, source_mtime: float) -> bool:
+        parsed = datetime.fromisoformat(page_updated.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("invalid or ambiguous timestamp")
+        return datetime.fromtimestamp(source_mtime, tz=timezone.utc) > parsed
+
+    old_page = "2020-01-01T00:00:00Z"
+    unchanged_old_source = datetime(2019, 12, 31, tzinfo=timezone.utc).timestamp()
+    assert is_stale(old_page, unchanged_old_source) is False
+
+    new_page = "2026-08-13T08:00:00+08:00"
+    newer_source = datetime(2026, 8, 13, 1, 0, tzinfo=timezone.utc).timestamp()
+    assert is_stale(new_page, newer_source) is True
+
+
+def test_status_contract_matches_real_graph_and_portable_manifest_layout(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path
+    vault = root / "wiki"
+    source_root = root / "sources"
+    vault.mkdir()
+    source_root.mkdir()
+    (vault / "alpha.md").write_text("# Alpha\n\n[[beta]]\n", encoding="utf-8")
+    (vault / "beta.md").write_text("# Beta\n", encoding="utf-8")
+    graph = analyse_vault(vault)
+    assert set(graph) == {
+        "god_nodes",
+        "communities",
+        "surprising_connections",
+        "dead_ends",
+        "isolated",
+        "stats",
+    }
+    assert set(graph["stats"]) == {"pages", "edges", "communities"}
+    assert graph["stats"]["pages"] == 2
+
+    (vault / ".manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "storage": "sharded",
+                "entries": ".manifest/sources",
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = source_root / "evidence.md"
+    source.write_text("evidence\n", encoding="utf-8")
+    config = PortableConfig(
+        root=root,
+        path=root / ".obsidian-wiki/config.toml",
+        schema_version=1,
+        implementation="obsidian-wiki",
+        requires_cli=">=0",
+        vault=vault,
+        sources=(source_root,),
+        skills=root / ".skills",
+        local_state=root / ".obsidian-wiki/local",
+        settings={},
+    )
+    manifest = ShardedManifest(config)
+    manifest.upsert(source, pages=["alpha.md"])
+    entries = manifest.iter_entries()
+    assert [entry.source_id for entry in entries] == ["sources/evidence.md"]
+    assert manifest.entries_root == vault / ".manifest" / "sources"
+
+    flat = " ".join(skill_text("wiki-status").split())
+    for required in (
+        "parse its stdout as JSON",
+        "`stats.pages`",
+        "`god_nodes`",
+        "`communities`",
+        "`surprising_connections`",
+        "`dead_ends`",
+        "`isolated`",
+        "<vault>/journal/operations/**/*.md",
+        "<vault>/.manifest/sources/**/*.json",
+        "validate each shard schema",
+        "duplicate Source IDs",
+        "does not return operation records or manifest shard payloads",
+    ):
+        assert required in flat
+    for unsupported in (
+        "bridge pages",
+        "tag-cluster cohesion",
+        "cross-category connections",
+        "graph delta",
+        "tier changes",
+    ):
+        assert unsupported not in flat
+
+
+def test_dedup_bounds_candidate_generation_before_similarity_scoring() -> None:
+    flat = " ".join(skill_text("wiki-dedup").split())
+    for required in (
+        "candidate blocks",
+        "normalized titles and aliases",
+        "shared title tokens",
+        "shared tags",
+        "explicit entity references",
+        "before similarity scoring",
+        "500 pairs per block",
+        "10,000 candidate pairs total",
+        "deferred",
+        "deterministic order",
+    ):
+        assert required in flat
+    assert "For every pair," not in flat
+    assert flat.index("candidate blocks") < flat.index("For every candidate pair")

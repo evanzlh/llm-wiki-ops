@@ -32,7 +32,7 @@ and lint commands use this safe walker internally.
 
 After authority preflight, inspect the manifest-v2 marker and sharded manifest,
 immutable operation records, retained transactions, knowledge graph, and source and
-hot freshness. Prefer CLI-owned parsing over manual reconstruction:
+hot freshness. Use each surface only for the data it actually returns:
 
 ```bash
 obsidian-wiki check --json --pretty
@@ -51,26 +51,40 @@ Pass explicitly selected Source IDs to the positional cache command. Do not infe
 freshness from modification time alone.
 
 Report page/source counts, invalid shards, operations, transaction IDs and statuses,
-missing/new/modified sources, hot freshness, broken or isolated graph nodes, and
+missing/new/modified sources, hot freshness, dead-end and isolated graph nodes, and
 ranked next actions. An invalid manifest or ambiguous retained transaction is a
 reported blocker; never repair CLI-owned state manually.
 
-Take graph facts from `obsidian-wiki graph-analyse --pretty`. Take retained
-transaction state from `transaction list`, repository validation and operation
-records from `check`, and hot state from the local-state command. Inspect operation
-pages or journals only when returned by those CLI surfaces or as files in the
-configured repository read through the same safe bounded ordinary-file scanner; never
-guess a hidden path. When a CLI report does not provide page/source counts, count
-pages from the safe Markdown snapshots and count sources from validated manifest-v2
-shards returned by repository checks. Label the origin of every count.
+`obsidian-wiki graph-analyse --pretty` always emits JSON; it has no `--json` flag;
+always parse its stdout as JSON and take the page count only from `stats.pages`.
+Report only its real top-level fields: `god_nodes`, `communities`,
+`surprising_connections`, `dead_ends`, `isolated`, and `stats` (`pages`, `edges`,
+and `communities`). Take retained transaction state only from `transaction list`,
+and hot state only from the local-state command.
+
+Resolve `<vault>` from the nearest portable config. Select operation snapshots only
+at `<vault>/journal/operations/**/*.md` from the safe Markdown walker, then validate
+their canonical immutable operation frontmatter, path, filename timestamp, and body
+schema before counting or reporting them. Do not guess another journal path.
+
+The manifest-v2 marker fixes the shard root at
+`<vault>/.manifest/sources/**/*.json`; it is not configurable independently of the
+configured vault. Count sources with a descriptor-bound, safe bounded no-follow JSON
+walker: every ancestor must be a real directory, and every terminal must be a
+single-link ordinary `.json` file whose device/inode identity, attachment, and size
+remain stable around the bounded byte snapshot; validate each shard schema, its
+repository-relative `source_id`, content hash, page list, filename mapping, and
+uniqueness; duplicate Source IDs fail closed. `obsidian-wiki check --json --pretty`
+is an issues preflight only: it does not return operation records or manifest shard
+payloads. Label the origin of every reported count.
 
 ## Graph insights
 
-For an insight request, analyze hubs, incoming and outgoing degree, dead ends,
-isolates, bridge pages, tag-cluster cohesion, cross-category connections, graph delta,
-and possible tier changes. Separate extracted graph facts from inferred explanations.
-Do not write tier changes. Vaults too small to support a useful structural conclusion
-receive a read-only explanation.
+For an insight request, report the reproducible graph output: ranked hubs with
+incoming/outgoing degree from `god_nodes`, detected communities, ranked
+`surprising_connections`, dead ends, isolates, and the three graph stats. Separate
+these extracted graph facts from inferred explanations. Vaults too small to support
+a useful structural conclusion receive a read-only explanation.
 
 If the owner selects a durable insight, trace every claim to authoritative Source IDs
 through the analyzed pages. A graph inventory or compiled page is not authority.
