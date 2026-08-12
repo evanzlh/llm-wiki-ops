@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .config import ConfigError, PortableConfig, resolve_config
+from .config import (
+    ConfigError,
+    PortableConfig,
+    _is_portable_config_candidate,
+    resolve_config,
+)
 
 
 RuntimeStatus = Literal["resolved", "unconfigured", "error"]
@@ -33,7 +38,7 @@ def nearest_portable_config(cwd: Path) -> Path | None:
     current = _absolute(cwd)
     while True:
         candidate = current / ".obsidian-wiki" / "config.toml"
-        if candidate.exists() or candidate.is_symlink():
+        if _is_portable_config_candidate(candidate):
             return candidate
         parent = current.parent
         if parent == current:
@@ -48,8 +53,9 @@ def inspect_runtime(
     implementation: str,
 ) -> RuntimeInspection:
     current = _absolute(cwd)
-    portable_config = nearest_portable_config(current)
+    portable_config = None
     try:
+        portable_config = nearest_portable_config(current)
         config = resolve_config(
             cwd=current,
             installed_version=installed_version,

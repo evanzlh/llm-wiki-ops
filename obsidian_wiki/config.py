@@ -208,6 +208,15 @@ def _ancestors(path: Path) -> Iterator[Path]:
         current = parent
 
 
+def _is_portable_config_candidate(path: Path) -> bool:
+    try:
+        return path.exists() or path.is_symlink()
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(
+            f"{path}: unable to inspect portable configuration: {exc}"
+        ) from exc
+
+
 def resolve_config(
     *,
     cwd: Path | None = None,
@@ -218,7 +227,7 @@ def resolve_config(
 
     for ancestor in _ancestors(current_dir):
         portable_path = ancestor / ".obsidian-wiki" / "config.toml"
-        if portable_path.exists() or portable_path.is_symlink():
+        if _is_portable_config_candidate(portable_path):
             return load_portable_config(
                 portable_path,
                 installed_version=installed_version,

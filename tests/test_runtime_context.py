@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
-from obsidian_wiki.config import PortableConfig
+from obsidian_wiki.config import ConfigError, PortableConfig
 from obsidian_wiki.runtime_context import (
     SETUP_GUIDANCE,
     inspect_runtime,
@@ -121,3 +121,27 @@ def test_nearest_portable_config_discovers_files_and_symlinks(
         expected = None
 
     assert nearest_portable_config(cwd) == expected
+
+
+def test_runtime_inspection_classifies_discovery_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    candidate = cwd / ".obsidian-wiki" / "config.toml"
+    original_exists = Path.exists
+
+    def denied_exists(path: Path) -> bool:
+        if path == candidate:
+            raise PermissionError("inspection denied")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", denied_exists)
+
+    result = inspect(cwd)
+
+    assert result.status == "error"
+    assert result.portable_config is None
+    assert result.config is None
+    assert isinstance(result.error, ConfigError)
+    assert str(candidate) in str(result.error)

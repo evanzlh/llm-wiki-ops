@@ -294,3 +294,29 @@ def test_invalid_nearest_config_fails_closed(tmp_path: Path) -> None:
 
     assert str(invalid.resolve()) in str(exc_info.value)
     assert str(outer / ".obsidian-wiki" / "config.toml") not in str(exc_info.value)
+
+
+def test_repository_discovery_error_is_a_path_qualified_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    candidate = cwd / ".obsidian-wiki" / "config.toml"
+    original_exists = Path.exists
+
+    def denied_exists(path: Path) -> bool:
+        if path == candidate:
+            raise PermissionError("inspection denied")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", denied_exists)
+
+    with pytest.raises(ConfigError) as exc_info:
+        resolve_config(
+            cwd=cwd,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(candidate) in str(exc_info.value)
+    assert "inspection denied" in str(exc_info.value)
