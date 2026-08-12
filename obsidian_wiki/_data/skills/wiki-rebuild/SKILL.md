@@ -1,274 +1,85 @@
 ---
 name: wiki-rebuild
-description: >
-  Archive existing wiki knowledge and rebuild from scratch, or restore from a previous archive.
-  Use this skill when the user wants to start fresh, rebuild the wiki from all sources, archive current
-  knowledge before a major change, or restore an older version. Triggers on "rebuild the wiki",
-  "start over", "archive and rebuild", "restore from archive", "nuke and repave", "clean rebuild".
-  Also use when the wiki has drifted too far from sources and incremental fixes won't cut it.
+description: Use when rebuilding an explicit set of knowledge pages from declared repository sources or replacing drifted derived pages.
 ---
 
-# Wiki Rebuild — Archive, Rebuild, Restore
+# Wiki Rebuild
 
-You are performing a destructive operation on the wiki. Always archive first, always confirm with the user before proceeding.
+A rebuild is a transaction-backed page rebuild, not a repository reset. It may
+create, replace, or delete only an explicit page set derived from declared sources.
+Inventory and intent confirmation are mandatory because rebuilds can replace
+substantial reviewed content.
 
-## Before You Start
+## Scope and planning
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and optional QMD settings such as `QMD_WIKI_COLLECTION`
+List every requested final vault-relative page, its authoritative Source IDs, its
+disposition (`create`, `replace`, or `delete`), and affected inbound links. Read the
+current page before replacing or deleting it. Preserve valid content, `created`,
+Unicode filenames, and source-backed distinctions. A deletion must be individually
+reviewed and accompanied by candidate backlink repairs when necessary.
 
-   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
-   keeps inventory, intent confirmation, and planning read-only. Select one
-   terminal workflow after the shared read-only analysis; workers never choose
-   mode or mutate the vault.
-   This routes every Portable write through the canonical Portable Write Protocol.
-2. Read `.manifest.json` to understand current state
-3. **Confirm the user's intent.** This skill supports three modes:
-   - **Archive only** — snapshot current wiki, no rebuild
-   - **Archive + Rebuild** — snapshot, then reprocess all sources from scratch
-   - **Restore** — bring back a previous archive
+Split large work into bounded transactions, each with a complete, independently
+reviewable page set and source closure. Finish one transaction before planning the
+next; never open overlapping workspaces. The phrase bounded transactions means each
+batch is small enough for full candidate and deletion review, not an excuse for an
+unbounded bulk mutation.
 
-## Portable Repository completion
+Repository history restoration belongs to the owner through external Git history.
+This skill does not restore historical states or clear repository content. Ask the
+owner to select the historical revision and complete that operation outside this
+runtime, then inventory the resulting current state before any derived-page rebuild.
 
-The current archive, restore, or bulk clear modes require `_archives/`, manifest,
-or other central-file mutations that transactions cannot represent. They are
-unsupported in Portable Repository mode: explain the limitation and stop before
-any mutation. Do not approximate them with direct copies, deletes, Git, or a
-partially committed transaction.
+Report scope, sources, preserved material, proposed replacements, and reviewed
+deletions. Complete this read-only inventory and intent confirmation before the
+first batch. If the explicit page set is empty, stop.
 
-Only if a requested rebuild has first been reduced to a supported set of
-candidate replacements or new knowledge pages and reviewed removals, with no
-archive or central-file operation, use the guarded flow below. Keep the
-repository root as the command CWD, retain `candidate_vault` only in memory, and
-do not `cd` into it.
+## Mandatory authority preflight
 
-If that supported candidate-only rebuild contains no replacement, creation, or
-deletion, report no changes and stop. In this no-op case, do not create an empty
-transaction or operation journal, and do not refresh `hot.md`.
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. If resolution
+fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
+inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
+vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
+if instructions conflict.
 
-1. Compute complete source closure: the set union of the existing `sources`
-   Source IDs from each updated or deleted live page and every Source ID any
-   candidate `sources` field will cite. All are repository-relative Source IDs; these
-   IDs are never compiled vault page paths. Preserve valid Unicode and CJK
-   spellings exactly.
-2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
-   once and retain `id`, `started_at`, and `candidate_vault`.
-3. Write candidate replacements or new knowledge pages at final vault-relative
-   paths. New pages use `created = updated = started_at`; updates preserve the
-   existing `created` and set `updated = started_at`.
-4. Declare reviewed removals with
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
-5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
-   warning and Fix every issue before continuing.
-6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
-   report passes.
-7. Use status-aware recovery on an unclear failure. Follow only
-   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
-   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
-   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
-   ID, or while the outcome is ambiguous, stop and report.
-8. Only after commit succeeds or recovery is fully resolved, run
+## Maintenance transaction protocol
+
+1. Finish the read-only inventory and intent confirmation. If there is no selected
+   page change, stop without an empty transaction or operation record. Keep the
+   live vault read-only while computing the complete source closure: every existing
+   repository-relative Source ID cited by an affected page plus every authoritative
+   Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
+   filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
+2. Begin exactly one bounded transaction with the entire closure:
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Retain its `id` as the trusted transaction ID plus `candidate_vault` and
+   `started_at`; do not change CWD.
+3. Write final candidates only at final vault-relative knowledge paths below
+   `candidate_vault`. Every candidate has valid required frontmatter and `sources`
+   as a non-empty subset of the closure. New pages use `created = updated =
+   started_at`; updates preserve `created` and set `updated = started_at`. Generate
+   internal links with the resolved `OBSIDIAN_LINK_FORMAT`.
+4. Register all reviewed deletions with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md> --json --pretty`.
+   Never delete a live page directly.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`, fix every issue,
+   review every warning and the complete candidate/deletion diff, then run
+   `obsidian-wiki transaction commit <id> --json --pretty` only after validation
+   passes.
+6. Save the failed command envelope, including top-level `error` and `recovery`, on
+   any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
+   when present, then run `obsidian-wiki transaction list --json --pretty` and
+   require exactly one retained record with the same ID and status. Follow only a
+   reported `recommended_action` or entry in `allowed_actions`, after satisfying
+   every string in its `requires` list. If the ID or list is empty, missing,
+   mismatched, duplicated, or ambiguous, stop and report. Only a successful
+   `transaction commit` or `transaction retry` is a knowledge commit.
+7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
-   write the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
-   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
-   create a Git snapshot, commit, or push.
+   `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
+   candidate as a local derived artifact, then run
+   `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
+   discard, and must not mark stale inputs current directly.
 
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Continue
-with the complete archive/rebuild/restore procedures below. Personal central
-files, QMD refresh, and Git snapshot rules remain active.
-
-## The Archive System
-
-Archives live at `$OBSIDIAN_VAULT_PATH/_archives/`. Each archive is a timestamped directory containing a full copy of the wiki state at that point.
-
-```
-$OBSIDIAN_VAULT_PATH/
-├── _archives/
-│   ├── 2026-04-01T10-30-00Z/
-│   │   ├── archive-meta.json
-│   │   ├── concepts/
-│   │   ├── entities/
-│   │   ├── skills/
-│   │   ├── references/
-│   │   ├── synthesis/
-│   │   ├── journal/
-│   │   ├── projects/
-│   │   ├── index.md
-│   │   ├── log.md
-│   │   └── .manifest.json
-│   └── 2026-03-15T08-00-00Z/
-│       └── ...
-├── concepts/          ← live wiki
-├── entities/
-└── ...
-```
-
-### archive-meta.json
-
-```json
-{
-  "archived_at": "2026-04-06T10:30:00Z",
-  "reason": "rebuild",
-  "total_pages": 87,
-  "total_sources": 42,
-  "total_projects": 6,
-  "vault_path": "/Users/name/Knowledge",
-  "manifest_snapshot": ".manifest.json"
-}
-```
-
-## Mode 1: Archive Only
-
-When the user wants to snapshot the current state without rebuilding.
-
-### Steps:
-
-1. Create archive directory: `_archives/YYYY-MM-DDTHH-MM-SSZ/`
-2. Copy all category directories, `index.md`, `log.md`, `.manifest.json`, and `projects/` into the archive
-3. Write `archive-meta.json` with reason `"snapshot"`
-4. Append to `log.md`:
-   ```
-   - [TIMESTAMP] ARCHIVE reason="snapshot" pages=87 destination="_archives/2026-04-06T10-30-00Z"
-   ```
-5. Optionally refresh QMD if `log.md` is indexed and `QMD_WIKI_COLLECTION` is configured (see "QMD Refresh After Live Wiki Changes").
-6. Report: "Archived 87 pages. Current wiki is untouched."
-
-## Mode 2: Archive + Rebuild
-
-When the user wants to start fresh. This is the full sequence:
-
-### Step 1: Archive current state
-
-Same as Mode 1 above, but with reason `"rebuild"`.
-
-### Step 2: Clear live wiki
-
-Remove all content from the category directories (`concepts/`, `entities/`, `skills/`, etc.) and the `projects/` directory. Keep:
-- `_archives/` (obviously)
-- `.obsidian/` (Obsidian config)
-- `.env` (if present in vault)
-
-Reset `index.md` to the empty template. Reset `log.md` with just the rebuild entry. Delete `.manifest.json` (it'll be recreated during ingest).
-
-### Step 3: Rebuild
-
-Tell the user the vault is cleared and ready for a full re-ingest. They can now run:
-
-1. `wiki-status` — to see all sources as "new"
-2. `claude-history-ingest` — to reprocess Claude history
-3. `codex-history-ingest` — to reprocess Codex session history
-4. `wiki-ingest` — to reprocess documents and any other raw data
-
-Each of these will rebuild the manifest as they go.
-
-**Important:** Don't run the ingest yourself automatically. The user should choose what to re-ingest and in what order. Some sources may no longer be relevant.
-
-### Step 4: Log the rebuild
-
-Append to `log.md`:
-```
-- [TIMESTAMP] REBUILD archived_to="_archives/2026-04-06T10-30-00Z" previous_pages=87
-```
-
-Refresh QMD after clearing and logging the live wiki (see "QMD Refresh After Live Wiki Changes"), then report that the vault is ready for selected re-ingest skills.
-
-## Mode 3: Restore from Archive
-
-When the user wants to go back to a previous state.
-
-### Step 1: List available archives
-
-Read `_archives/` directory. For each archive, read `archive-meta.json` and present:
-
-```markdown
-## Available Archives
-
-| Date | Reason | Pages | Sources |
-|---|---|---|---|
-| 2026-04-06 10:30 | rebuild | 87 | 42 |
-| 2026-03-15 08:00 | snapshot | 65 | 31 |
-```
-
-### Step 2: Confirm which archive to restore
-
-Ask the user which archive they want. Warn them that restoring will overwrite the current live wiki.
-
-### Step 3: Archive current state first
-
-Before restoring, archive the current state (reason: `"pre-restore"`) so nothing is lost.
-
-### Step 4: Restore
-
-1. Clear the live wiki (same as Mode 2, Step 2)
-2. Copy all content from the chosen archive back into the live wiki directories
-3. Restore `index.md`, `log.md`, and `.manifest.json` from the archive
-4. Append to `log.md`:
-   ```
-   - [TIMESTAMP] RESTORE from="_archives/2026-03-15T08-00-00Z" pages_restored=65
-   ```
-
-### Step 5: Report
-
-Refresh QMD after restore (see "QMD Refresh After Live Wiki Changes"), then tell the user what was restored and suggest running `wiki-lint` to check for any issues with the restored state.
-
-## QMD Refresh After Live Wiki Changes
-
-QMD is a search index, not the source of truth. If QMD refresh fails, do not roll back archive, rebuild, or restore work; report the failure and leave the markdown vault intact.
-
-**GUARD: If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step.**
-
-When to run:
-
-| Mode | Refresh QMD? | Reason |
-|---|---|---|
-| Archive only | Optional | Live wiki content is unchanged except `log.md`; refresh if `log.md` is indexed and QMD is configured. |
-| Archive + Rebuild | Required after clearing live wiki | QMD must forget deleted pages or it will return stale search results. Later ingest skills will refresh again as sources are reprocessed. |
-| Restore | Required after restore | The live wiki was replaced with archive content, so QMD must match the restored state. |
-
-This refresh currently requires the local QMD CLI. Use `$QMD_CLI` if set; otherwise use `qmd`. If the CLI is unavailable, report `QMD skipped: qmd CLI unavailable`.
-
-For CLI refresh:
-
-```bash
-${QMD_CLI:-qmd} update
-```
-
-If the output says new hashes need vectors, or if restore replaced live pages and embeddings may be stale, run:
-
-```bash
-${QMD_CLI:-qmd} embed
-```
-
-Verify the wiki collection reflects the operation:
-
-```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
-```
-
-For restore, also verify one restored page if the archive has a known page path:
-
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<restored-page>.md" -l 5
-```
-
-Record QMD refresh in the final report as one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: archive-only live content unchanged`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
-
-## Safety Rules
-
-1. **Always archive before destructive operations.** No exceptions.
-2. **Always confirm with the user** before clearing the live wiki.
-3. **Never delete archives** unless the user explicitly asks. Archives are cheap insurance.
-4. **The `.obsidian/` directory is sacred.** Never touch it during archive/rebuild/restore — it contains the user's Obsidian settings, plugins, and themes.
-5. If something goes wrong mid-rebuild, the archive is there. Tell the user they can restore.
+Do not edit manifest shards, operation records, stable `index.md`, or stable
+`log.md`; do not run Git publication commands or write unsupported control paths.

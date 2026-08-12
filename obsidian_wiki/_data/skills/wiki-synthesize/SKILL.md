@@ -1,272 +1,85 @@
 ---
 name: wiki-synthesize
-description: >
-  Systematically discover synthesis opportunities across the Obsidian wiki — pairs or clusters of
-  concepts that co-occur frequently across pages but have no synthesis page connecting them. Creates
-  new synthesis/ pages that draw explicit cross-cutting conclusions. Use when the user says "synthesize
-  my wiki", "find connections", "what concepts keep coming up together", "/wiki-synthesize", or after
-  a large ingest when the vault has grown significantly.
+description: Use when discovering cross-page synthesis opportunities or drafting an owner-selected synthesis page from repository knowledge.
 ---
 
-# Wiki Synthesize — First-Class Synthesis Discovery
+# Wiki Synthesize
 
-You are scanning the wiki for concepts that co-occur across many pages but have no dedicated synthesis page connecting them. Your job is to surface these gaps and fill the most valuable ones with cross-cutting synthesis pages.
+Discover connections that are not already explained by a single source page. The
+scan and opportunity report are read-only; selected synthesis and backlinks are
+transactional.
 
-## Before You Start
+## Analysis
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT` (default: `wikilink`).
+Build a co-occurrence map from internal links, tags, project contexts, typed
+relationships, and explicit concept mentions. Exclude control and derived artifacts.
+Filter pairs already explained by a synthesis page or a substantive existing
+relationship. Rank remaining pairs by repeated co-occurrence, cross-category reach,
+bridge value, source diversity, and unresolved tensions rather than word overlap
+alone.
 
-   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
-   keeps discovery, scoring, and page preparation read-only. Select one terminal
-   workflow after the shared read-only analysis; workers never choose the mode
-   or write pages.
-   This routes every Portable write through the canonical Portable Write Protocol.
-2. Read `index.md` to get the full page inventory.
-3. Read `hot.md` if it exists — it surfaces recent activity and active threads that may already point to synthesis opportunities.
-4. Read `_meta/taxonomy.md` to understand the tag vocabulary.
+For each strong opportunity, report both concepts, supporting pages and sources,
+the proposed connection, confidence, strongest objection, and unanswered questions.
+Mark statements as extracted, inferred, or ambiguous. Never present an inference as
+a source-backed fact, and do not synthesize from shared tags alone.
 
-When writing internal links in synthesis pages, apply the link format from `llm-wiki/SKILL.md` (Link Format section) using the `OBSIDIAN_LINK_FORMAT` value.
+An accepted draft should explain the connection, where it appears, the cross-cutting
+insight, tensions and trade-offs, strongest objection, open questions, and related
+pages. Cite all supporting repository-relative Source IDs. Candidate backlink edits
+must be substantive and individually listed; do not touch unrelated pages merely to
+increase link counts.
 
-## Step 1: Build the Co-occurrence Map
+Complete this read-only inventory and intent confirmation before selecting synthesis
+or backlink changes. If the user requests opportunities only or accepts none, stop
+after the report.
 
-Scan every non-special page in the vault (skip `index.md`, `log.md`, `hot.md`, `_insights.md`, `_meta/*`, `_archives/*`, `_raw/*`).
+## Mandatory authority preflight
 
-For each page, collect:
-- All `[[wikilinks]]` it contains (outgoing links)
-- Its `tags` frontmatter
-- Its `category` frontmatter
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. If resolution
+fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
+inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
+vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
+if instructions conflict.
 
-Build a co-occurrence matrix: for every pair of concept/entity pages (A, B), count how many other pages link to **both** A and B. This is their co-occurrence score.
+## Maintenance transaction protocol
 
-You don't need to be exhaustive — aim for the top 20-30 pairs by co-occurrence score. Use Grep to find backlinks efficiently:
-
-```bash
-rg -l --glob '*.md' "\[\[ConceptA\]\]" "$OBSIDIAN_VAULT_PATH"
-```
-
-Run this for your top candidate concepts and intersect the result sets.
-
-## Step 2: Filter Out Already-Synthesized Pairs
-
-Check the `synthesis/` directory for existing pages. For each existing synthesis page:
-- Read its `sources` frontmatter or its body for `[[wikilinks]]`
-- Mark those concept pairs as already covered
-
-Remove covered pairs from your candidate list.
-
-## Step 3: Score and Rank Candidates
-
-For each remaining candidate pair (or cluster of 3+), assign a synthesis value score:
-
-| Signal | Points |
-|---|---|
-| Co-occurrence count ≥ 5 | +3 |
-| Co-occurrence count 3-4 | +2 |
-| Co-occurrence count 1-2 | +1 |
-| Concepts are in different categories (cross-domain) | +2 |
-| Concepts share tags but live in different folders | +1 |
-| One or both concepts are tagged as hubs in `_insights.md` | +1 |
-| A synthesis would resolve a flagged contradiction | +2 |
-
-Pick the top 5 candidates. If the user asked for a specific topic ("synthesize everything about observability"), filter candidates to that domain first.
-
-## Step 4: Draft Synthesis Pages
-
-For each top candidate, create a page in `synthesis/` using this template:
-
-In Portable Repository mode, `sources` must contain only the transaction's repository-relative Source IDs produced from the traced authoritative files used by `transaction begin`. Compiled vault page paths belong in body links and provenance discussion, never in portable candidate `sources`. In Personal mode, retain the existing convention of listing the compiled pages that support the synthesis.
-
-```markdown
----
-title: <Concept A> × <Concept B>
-category: synthesis
-tags: [<shared tags>, <domain tags>]
-sources: [<Portable: transaction Source IDs; Personal: all pages that link to both>]
-created: TIMESTAMP
-updated: TIMESTAMP
-summary: "Cross-cutting synthesis of how <A> and <B> interact, with implications for <domain>."
-provenance:
-  extracted: 0.2
-  inferred: 0.7
-  ambiguous: 0.1
-base_confidence: <min(base_confidence of all input pages)>
-lifecycle: draft
-lifecycle_changed: TIMESTAMP_DATE
----
-
-# <Concept A> × <Concept B>
-
-## The Connection
-
-*What makes these two concepts worth synthesizing together — the non-obvious relationship that pages about each individually don't capture.*
-
-## Where They Co-occur
-
-*The pages and contexts where both appear. What situations bring them together.*
-
-## Cross-cutting Insight
-
-*The conclusion that only becomes visible when you look at both together. This is the point of the page — the thing you couldn't see from either concept page alone.*
-
-## Tensions and Trade-offs
-
-*Where the two concepts pull in opposite directions. Unresolved contradictions. Cases where applying one undermines the other.*
-
-## Strongest Objection
-
-*The best skeptical reading of THIS page's cross-cutting insight — the case a sharp critic would make that the connection is spurious, overstated, or an artifact of how the sources were written. Follow it with a testable search query (e.g. `> test: does X actually hold when Y is controlled for?`), never an invented citation. A synthesis that can't name its own strongest objection hasn't earned its conclusion.*
-
-## Open Questions
-
-*What this synthesis surfaces that the wiki doesn't yet have an answer for. Good candidates for future research.*
-
-## Related
-
-- [[<Concept A>]]
-- [[<Concept B>]]
-- [[<other related pages>]]
-```
-
-**Synthesis pages are mostly `^[inferred]`.** You are drawing connections across sources — that's synthesis by definition. Apply `^[inferred]` to cross-cutting conclusions and `^[ambiguous]` where sources disagree.
-
-**The title format is `A × B`** — this signals to readers that it's a synthesis page, not a page about either concept alone.
-
-## Portable Repository completion
-
-Use this branch only after Portable Repository mode was resolved. Keep the
-repository root as the command CWD; retain the absolute `candidate_vault` only
-in memory and do not `cd` into it.
-
-If no synthesis page, backlink update, or deletion remains, report no changes
-and stop. In this no-op case, do not create an empty transaction or operation
-journal, and do not refresh `hot.md`.
-
-1. Resolve actual authoritative source files traced from every selected input
-   page, then use their Source IDs.
-   Compute complete source closure as the set union of the existing `sources`
-   Source IDs from every updated or deleted live page, the
-   union of the input pages' actual authoritative Source IDs, and every Source
-   ID any candidate `sources` field will cite. All are repository-relative
-   Source IDs and never compiled vault page paths; never use compiled vault pages as transaction sources.
-   If this closure cannot be established, report
-   the synthesis opportunity without writing.
-   Preserve valid Unicode and CJK spellings exactly.
-2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
-   once and retain `id`, `started_at`, and `candidate_vault`.
-3. Write candidate replacements or new knowledge pages at final vault-relative
-   paths below `candidate_vault`: synthesis pages plus all backlink updates.
-   New pages use `created = updated = started_at`; updates preserve the existing
-   `created` and set `updated = started_at`. Each candidate cites only the
-   authoritative transaction Source IDs supporting it.
-4. Declare any reviewed removal with
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`.
-5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
-   warning and Fix every issue before continuing.
-6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
-   report passes.
-7. Use status-aware recovery on an unclear failure. Follow only
-   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
-   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
-   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
-   ID, or while the outcome is ambiguous, stop and report.
-8. Only after commit succeeds or recovery is fully resolved, run
+1. Finish the read-only inventory and intent confirmation. If there is no selected
+   page change, stop without an empty transaction or operation record. Keep the
+   live vault read-only while computing the complete source closure: every existing
+   repository-relative Source ID cited by an affected page plus every authoritative
+   Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
+   filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
+2. Begin exactly one bounded transaction with the entire closure:
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Retain its `id` as the trusted transaction ID plus `candidate_vault` and
+   `started_at`; do not change CWD.
+3. Write final candidates only at final vault-relative knowledge paths below
+   `candidate_vault`. Every candidate has valid required frontmatter and `sources`
+   as a non-empty subset of the closure. New pages use `created = updated =
+   started_at`; updates preserve `created` and set `updated = started_at`. Generate
+   internal links with the resolved `OBSIDIAN_LINK_FORMAT`.
+4. Register all reviewed deletions with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md> --json --pretty`.
+   Never delete a live page directly.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`, fix every issue,
+   review every warning and the complete candidate/deletion diff, then run
+   `obsidian-wiki transaction commit <id> --json --pretty` only after validation
+   passes.
+6. Save the failed command envelope, including top-level `error` and `recovery`, on
+   any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
+   when present, then run `obsidian-wiki transaction list --json --pretty` and
+   require exactly one retained record with the same ID and status. Follow only a
+   reported `recommended_action` or entry in `allowed_actions`, after satisfying
+   every string in its `requires` list. If the ID or list is empty, missing,
+   mismatched, duplicated, or ambiguous, stop and report. Only a successful
+   `transaction commit` or `transaction retry` is a knowledge commit.
+7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
-   write the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
-   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
-   create a Git snapshot, commit, or push.
+   `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
+   candidate as a local derived artifact, then run
+   `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
+   discard, and must not mark stale inputs current directly.
 
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Write the
-prepared pages directly and continue with backlinks and tracking below. Personal
-central files, QMD refresh, and Git snapshot rules remain active.
-
-## Step 5: Back-link from Source Pages
-
-For each synthesis page you created, add a link to it from the two (or more) concept pages it synthesizes. In the concept page, add to its `## Related` section:
-
-```markdown
-- [[Concept A × Concept B]] — synthesis
-```
-
-If the concept page has no `## Related` section, add one at the bottom.
-
-## Step 6: Report Synthesis Opportunities Not Taken
-
-After creating pages for the top 5, list the next 10 candidates in your output — pairs that scored well but you didn't write pages for. This gives the user visibility into what the wiki thinks is worth exploring without forcing every synthesis in one run.
-
-Format:
-```
-Skipped (consider next time):
-- [[Caching]] × [[Consistency]] — co-occurs in 4 pages, cross-domain
-- [[Testing]] × [[Observability]] — co-occurs in 3 pages, shares tags
-...
-```
-
-## Step 7: Update Special Files
-
-**`index.md`** — Add entries for all new synthesis pages.
-
-**`log.md`** — Append:
-```
-- [TIMESTAMP] WIKI_SYNTHESIZE pages_scanned=N synthesis_created=M candidates_skipped=K
-```
-
-**`hot.md`** — Read `$OBSIDIAN_VAULT_PATH/hot.md` (create from the template in `wiki-ingest` if missing). Update **Recent Activity** with what was synthesized — e.g. "Synthesized 5 cross-cutting pages: Caching × Consistency, Testing × Observability, …". Update **Active Threads** with any open questions the synthesis surfaced. Update `updated` timestamp.
-
-## Quality Checklist
-
-- [ ] Every synthesis page has a `summary:` field (≤200 chars)
-- [ ] Every synthesis page links back to its source concepts
-- [ ] Source concept pages link forward to the synthesis page
-- [ ] No synthesis page just restates what's already on the source pages — it must add a cross-cutting insight
-- [ ] Every synthesis page names its Strongest Objection with a testable search query (not an invented source)
-- [ ] `index.md` and `log.md` updated
-- [ ] `hot.md` updated
-
-## Tips
-
-- **A synthesis page that only summarizes its sources is useless.** The value is the connection — the thing neither source page says explicitly.
-- **Don't synthesize for synthesis's sake.** If two concepts just happen to appear together a lot without a real conceptual link, skip them.
-- **Three-way syntheses are powerful but rare.** Only create them when three concepts form a genuine triangle of mutual influence — not just because all three appear in the same project page.
-- **Check `_insights.md` first.** The wiki-status skill may have already flagged synthesis candidates there — start with those before running the co-occurrence scan from scratch.
-
-## QMD Refresh After Vault Writes
-
-QMD is a search index, not the source of truth. If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step. Run it only after this skill has written or rewritten vault markdown. If QMD refresh fails, do not roll back the vault changes; report the QMD status separately.
-
-Use `$QMD_CLI` if set; otherwise use `qmd`.
-
-```bash
-${QMD_CLI:-qmd} update
-```
-
-If the output says vectors are needed or embeddings may be stale, run:
-
-```bash
-${QMD_CLI:-qmd} embed
-```
-
-Verify the collection with either:
-
-```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
-```
-
-or, when a specific page path is known:
-
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<page>.md" -l 5
-```
-
-Record one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
+Do not edit manifest shards, operation records, stable `index.md`, or stable
+`log.md`; do not run Git publication commands or write unsupported control paths.

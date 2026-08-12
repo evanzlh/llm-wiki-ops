@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki.frontmatter import parse_frontmatter
 
 
@@ -46,6 +48,21 @@ FORBIDDEN_RUNTIME_TERMS = (
     "cache-update",
     "QMD_",
 )
+MAINTENANCE_SKILLS = (
+    "cross-linker",
+    "daily-update",
+    "tag-taxonomy",
+    "wiki-dedup",
+    "wiki-lint",
+    "wiki-rebuild",
+    "wiki-status",
+    "wiki-synthesize",
+    "wiki-update",
+)
+
+
+def skill_text(name: str) -> str:
+    return text(f"obsidian_wiki/_data/skills/{name}/SKILL.md")
 
 
 def text(relative: str) -> str:
@@ -219,3 +236,119 @@ def test_history_router_only_selects_retained_tool_skill() -> None:
         assert required in flat
     for forbidden in ("memory-bridge", "generic mutation", "manifest", "index/log"):
         assert forbidden not in router
+
+
+@pytest.mark.parametrize("name", MAINTENANCE_SKILLS)
+def test_maintenance_skills_are_repository_native(name: str) -> None:
+    contents = skill_text(name)
+    flat = " ".join(contents.split())
+    frontmatter = parse_frontmatter(contents)
+
+    assert frontmatter.scalars["name"] == name
+    assert frontmatter.scalars["description"].startswith("Use when ")
+    for required in (
+        "nearest ancestor `.obsidian-wiki/config.toml`",
+        "repository root",
+        "root `AGENTS.md`",
+        "canonical `llm-wiki`",
+        "vault `AGENTS.md` when present",
+        "task skill",
+        "read-only inventory",
+        "intent confirmation",
+        "complete source closure",
+        "final candidates",
+        "reviewed deletions",
+        "obsidian-wiki transaction validate <id> --json --pretty",
+        "obsidian-wiki transaction commit <id> --json --pretty",
+        "recommended_action",
+        "allowed_actions",
+    ):
+        assert required in flat, f"{name}: missing {required!r}"
+
+    authority = (
+        "root `AGENTS.md`",
+        "canonical `llm-wiki`",
+        "vault `AGENTS.md` when present",
+        "task skill",
+    )
+    assert [flat.index(item) for item in authority] == sorted(
+        flat.index(item) for item in authority
+    )
+
+    for forbidden in (
+        "Personal mode",
+        "Portable Repository mode",
+        "@name",
+        "@work",
+        "~/.obsidian-wiki/config",
+        "WIKI_STAGED_WRITES",
+        "cache-update",
+        "QMD_",
+        "git push",
+        "_raw/",
+        "_staging/",
+        "_readouts/",
+    ):
+        assert forbidden not in contents, f"{name}: contains {forbidden!r}"
+
+
+def test_rebuild_is_page_scoped_and_has_no_archive_or_whole_vault_modes() -> None:
+    contents = skill_text("wiki-rebuild")
+    flat = " ".join(contents.split())
+    for required in (
+        "transaction-backed page rebuild",
+        "explicit page set",
+        "bounded transactions",
+        "declared sources",
+        "external Git history",
+    ):
+        assert required in flat
+    for forbidden in (
+        "Archive only",
+        "Archive + Rebuild",
+        "Restore",
+        "nuke and repave",
+        "_archives/",
+        "whole vault",
+    ):
+        assert forbidden not in contents
+
+
+def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
+    contents = skill_text("daily-update")
+    flat = " ".join(contents.split())
+    for required in (
+        "manual",
+        "obsidian-wiki transaction list --json --pretty",
+        "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
+        "obsidian-wiki hot status --json",
+        "read-only report",
+        "selected page repair",
+    ):
+        assert required in flat
+    for forbidden in (
+        "launchctl",
+        "LaunchAgents",
+        "cron",
+        "terminal-notifier",
+        "notifier",
+        "QMD",
+    ):
+        assert forbidden not in contents
+
+
+def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> None:
+    contents = skill_text("wiki-status")
+    flat = " ".join(contents.split())
+    for required in (
+        "sharded manifest",
+        "operation records",
+        "retained transactions",
+        "graph",
+        "freshness",
+        "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
+        "synthesis/wiki-insights.md",
+    ):
+        assert required in flat
+    for forbidden in ("_insights.md", "direct-write", "staged writes"):
+        assert forbidden not in contents

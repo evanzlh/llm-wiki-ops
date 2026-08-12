@@ -56,6 +56,20 @@ HISTORY_FORMAT_REFERENCES = tuple(
     / f"obsidian_wiki/_data/skills/{name}-history-ingest/references/{name}-data-format.md"
     for name in ("claude", "codex", "copilot", "hermes", "openclaw")
 )
+MAINTENANCE_SKILLS = tuple(
+    ROOT / f"obsidian_wiki/_data/skills/{name}/SKILL.md"
+    for name in (
+        "cross-linker",
+        "daily-update",
+        "tag-taxonomy",
+        "wiki-dedup",
+        "wiki-lint",
+        "wiki-rebuild",
+        "wiki-status",
+        "wiki-synthesize",
+        "wiki-update",
+    )
+)
 
 
 def _history_file_topology_ok(root: Path, selected: Path) -> bool:
@@ -1542,3 +1556,74 @@ def test_openclaw_current_sqlite_scope_is_fail_closed() -> None:
     ):
         assert required in openclaw
     assert "complete active history" not in openclaw
+
+
+def test_maintenance_writes_have_one_canonical_transaction_completion() -> None:
+    for path in MAINTENANCE_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        flat = " ".join(contents.split())
+        assert contents.count("transaction begin --source") == 1, path
+        assert contents.count("transaction validate <id>") == 1, path
+        assert contents.count("transaction commit <id>") == 1, path
+        for required in (
+            "obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty",
+            "candidate_vault",
+            "started_at",
+            "non-empty subset",
+            "Preserve valid Unicode and CJK",
+            "OBSIDIAN_LINK_FORMAT",
+            "obsidian-wiki transaction delete <id> <vault-relative-page.md> --json --pretty",
+            "Save the failed command envelope",
+            "top-level `error` and `recovery`",
+            "preferred_action",
+            "trusted transaction ID",
+            "same ID and status",
+            "transaction list --json --pretty",
+            "recommended_action",
+            "allowed_actions",
+            "`requires`",
+            "empty, missing, mismatched, duplicated, or ambiguous",
+            "Only a successful `transaction commit` or `transaction retry` is a knowledge commit",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
+def test_maintenance_noop_and_hot_gates_match_canonical_protocol() -> None:
+    hot_commands = (
+        "obsidian-wiki hot status --json",
+        "obsidian-wiki hot inputs --json --pretty",
+        "obsidian-wiki hot mark-current --json",
+    )
+    parser = build_parser()
+    for command in hot_commands:
+        parser.parse_args(shlex.split(command)[1:])
+
+    for path in MAINTENANCE_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        flat = " ".join(contents.split())
+        for required in (
+            "no selected page change",
+            "empty transaction",
+            "operation record",
+            "successful `transaction commit` or `transaction retry`",
+            "requested bounded hot candidate",
+            "must not mark stale inputs current directly",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        positions = [flat.index(command) for command in hot_commands]
+        assert positions == sorted(positions), path
+
+
+def test_daily_cache_check_command_is_real_and_has_no_removed_option() -> None:
+    daily = (ROOT / "obsidian_wiki/_data/skills/daily-update/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    command = "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty"
+    assert command in daily
+    assert "--configured" not in daily
+
+    concrete = command.replace("<source1> [source2 ...]", "sources/a.md sources/b.md")
+    argv = shlex.split(concrete)[1:]
+    parsed = build_parser().parse_args(_normalize_cache_check_argv(argv))
+    assert parsed.sources == ["sources/a.md", "sources/b.md"]
+    assert parsed.json is True and parsed.pretty is True

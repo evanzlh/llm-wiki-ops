@@ -1,378 +1,87 @@
 ---
 name: wiki-dedup
-description: >
-  Scan the Obsidian wiki for page-level identity collisions — different pages covering the same
-  concept under different names (e.g. "RSC" vs "React Server Components") — and merge them.
-  Use this skill when the user says "dedup my wiki", "find duplicate pages", "merge duplicates",
-  "identity resolution", "consolidate my wiki", "I have duplicate pages", or "my wiki has two pages
-  for the same thing". Distinct from wiki-lint (which checks structure) and cross-linker (which adds
-  links) — this skill makes destructive page-level merges and requires careful confirmation.
+description: Use when detecting duplicate knowledge pages, resolving identity collisions, or merging an owner-approved duplicate pair.
 ---
 
-# Wiki Dedup — Identity Resolution and Page-Level Deduplication
+# Wiki Dedup
 
-You are finding and merging wiki pages that cover the same concept under different names. This is a write-heavy, potentially destructive skill — page merges cannot be automatically undone. Work carefully and confirm before acting in merge mode.
+Detect page-level identity collisions conservatively. A similarity score produces a
+review candidate, never automatic proof that two pages describe the same thing.
 
-**Follow the Retrieval Primitives table in `llm-wiki/SKILL.md`.** The candidate-detection pass uses only frontmatter and titles (cheap). Only open full page bodies for confirmed candidate pairs.
+## Analysis
 
-## Before You Start
+Build a registry of each knowledge page's path, title, aliases, tags, summary,
+sources, links, and lifecycle. Generate candidate pairs with normalized title or
+alias overlap, token similarity, shared distinctive tags, overlapping sources, and
+body-summary similarity. Do not compare a page with itself or treat generic names
+as identity evidence.
 
-1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (inline `@name` override → walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH` and `OBSIDIAN_LINK_FORMAT`.
+Classify candidates as high confidence (0.90+), medium confidence (0.75–0.89), or
+needs review. Then read both complete pages and distinguish:
 
-   The parent agent resolves config and mode, reads the owner `AGENTS.md`, and
-   keeps detection, semantic review, and confirmation read-only. Select one
-   terminal workflow after the shared read-only analysis; workers never choose
-   the mode or mutate pages.
-   This routes every Portable write through the canonical Portable Write Protocol.
-2. Read `index.md` to get the full page inventory with one-line descriptions and tags.
-3. Read `log.md` briefly — if a dedup run just happened, note what was already merged.
+- true duplicates describing the same entity or concept;
+- complementary pages that should cross-link instead;
+- homonyms that must remain separate;
+- versioned or scoped pages whose distinctions must be preserved.
 
-## Modes
+For a proposed merge, identify the canonical final path, combined non-conflicting
+content, union of authoritative sources, preserved aliases, required backlink
+replacements, and the exact secondary page removal. Surface contradictions and do
+not choose between conflicting claims without authority. Do not leave redirect
+stubs: update inbound links in candidate replacements and declare the obsolete page
+as a reviewed deletion.
 
-| Mode | Flag | Behavior |
-|---|---|---|
-| **Audit** | *(default)* | Report candidates only — no writes |
-| **Merge** | `--merge` | Show each confirmed pair, ask for confirmation before merging |
-| **Auto-merge** | `--auto` | Merge all high-confidence pairs (`score ≥ 0.90`) non-interactively |
+Report pair scores, evidence, verdicts, unresolved conflicts, final-page selection,
+backlink impact, and proposed removals. Complete this read-only inventory and intent
+confirmation before any merge. Audit-only mode stops after the report.
 
-If the user doesn't specify, run in **Audit** mode and present findings before asking whether to proceed.
+## Mandatory authority preflight
 
-## Step 1: Build the Page Registry
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. If resolution
+fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
+inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
+vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
+if instructions conflict.
 
-Glob all `.md` files in the vault (excluding `_archives/`, `_raw/`, `.obsidian/`, `index.md`, `log.md`, `hot.md`, `_insights.md`, and any file that contains `redirects_to:` in its frontmatter — those are already merged redirect stubs).
+## Maintenance transaction protocol
 
-For each remaining page, extract from frontmatter:
-- `node_id` — relative path from vault root, without `.md`
-- `title` — frontmatter `title` field
-- `aliases` — frontmatter `aliases` list (may be absent)
-- `tags` — frontmatter `tags` list
-- `category` — directory prefix
-
-Build a lookup table: `node_id → {title, aliases, tags, category, summary}`.
-
-## Step 2: Detect Candidate Pairs
-
-For every pair of pages in the registry, compute a **similarity score** using these signals:
-
-### 2a. Title similarity signals
-
-| Signal | How to assess | Max contribution |
-|---|---|---|
-| **Token overlap** | Jaccard similarity of lowercased title word-tokens (split on spaces, hyphens, underscores, punctuation) | 0.65 |
-| **Edit distance** | Normalized edit distance on lowercased titles: `1 - (edits / max(len_a, len_b))` | 0.40 |
-| **Substring containment** | One title is a substring of the other (e.g. "RSC" ⊂ "React Server Components") | 0.50 |
-| **Alias cross-match** | Page A's title appears in page B's `aliases`, or vice versa | 0.65 |
-
-Composite title score = `min(max(token_overlap, edit_distance, substring), 0.65) + alias_cross_bonus`.
-
-You don't need exact arithmetic — make a confident judgement about degree of similarity.
-
-**Title extraction note:** Some pages use YAML block scalars (`title: >-` or `title: |`). When the `title:` value is `>-`, `>`, `|`, or `|-`, the actual title is on the next indented line — read it from there. Never compare the literal string `>-` as a title.
-
-### 2b. Semantic signals (cheap pass)
-
-| Signal | Points |
-|---|---|
-| Same `category` directory | +0.10 |
-| Tag overlap ≥ 3 shared tags | +0.15 |
-| Tag overlap ≥ 2 shared tags | +0.05 |
-| Same first tag (dominant tag) | +0.05 |
-
-### 2c. Threshold
-
-Flag pairs with composite score ≥ **0.75** as **candidates**. Pairs scoring 0.90+ are **high-confidence**.
-
-Score ranges → confidence labels:
-
-| Score | Label |
-|---|---|
-| ≥ 0.90 | HIGH — almost certainly the same concept |
-| 0.75–0.89 | MEDIUM — likely the same, verify |
-| 0.60–0.74 | LOW — possible abbreviation or specialisation; skip unless user asks |
-
-Only carry HIGH and MEDIUM candidates into Step 3.
-
-### 2d. Quick exit rule
-
-If the vault has fewer than 10 pages, skip the pair loop and report "vault too small to have meaningful duplicates". If the vault has more than 500 pages, process candidates in batches of 50 pairs — pause and report progress between batches.
-
-## Step 3: Semantic Verdict
-
-For each candidate pair (sorted by score descending):
-
-1. Read both pages in full (full page read — justified because candidate pool is small).
-2. Ask: are these pages covering the **same concept**, or are they distinct?
-
-Assign one of three verdicts:
-
-| Verdict | Meaning |
-|---|---|
-| `merge` | Same concept — different name, abbreviation, alias, or accidental duplicate. Safe to merge. |
-| `keep-separate` | Related but distinct — e.g. "Server Actions" vs "Server Components" are related React features, not duplicates. |
-| `needs-review` | Ambiguous — substantial overlap but also meaningful differences. Flag for the user to decide. |
-
-Attach a short reason to each verdict (one sentence). This appears in the report and the log.
-
-## Step 4: Audit Report
-
-Always produce this report, even in merge/auto-merge mode (so the user sees what will happen):
-
-```markdown
-## Wiki Dedup Report
-
-### High-Confidence Candidates (score ≥ 0.90): N pairs
-
-| Score | Page A | Page B | Verdict | Reason |
-|---|---|---|---|---|
-| 0.95 | `concepts/rsc.md` | `concepts/react-server-components.md` | merge | "RSC" is the abbreviation; both pages cover identical material |
-| 0.91 | `entities/vaswani-2017.md` | `references/attention-is-all-you-need.md` | keep-separate | One is a person stub, one is a paper reference |
-
-### Medium-Confidence Candidates (score 0.75–0.89): N pairs
-
-| Score | Page A | Page B | Verdict | Reason |
-|---|---|---|---|---|
-| 0.82 | `concepts/fine-tuning.md` | `concepts/finetuning.md` | merge | Same concept, hyphenation variant |
-
-### Needs Human Review: N pairs
-
-| Score | Page A | Page B | Reason |
-|---|---|---|---|
-| 0.78 | `concepts/agents.md` | `concepts/autonomous-agents.md` | Substantial overlap but "agents" may intentionally be broader |
-
-### Summary
-- Pages scanned: N
-- Candidate pairs found: M
-- Recommended merges: X
-- Keep separate: Y
-- Needs review: Z
-```
-
-In **Audit mode**, stop here and ask: "Run `--merge` to interactively merge the recommended pairs, or `--auto` to merge all high-confidence ones automatically?"
-
-## Portable Repository completion
-
-Audit mode is read-only and needs no transaction. For an approved merge in
-Portable Repository mode, keep the repository root as the command CWD, retain
-the absolute `candidate_vault` only in memory, and do not `cd` into it.
-
-If no approved merge produces a page creation, update, or deletion, report no
-changes and stop. In this no-op case, do not create an empty transaction or
-operation journal, and do not refresh `hot.md`.
-
-1. Compute complete source closure before beginning: the set union of every
-   existing `sources` Source IDs from each updated or deleted live page and all
-   repository-relative Source IDs any candidate `sources` field will cite. This
-   existing source closure covers canonical pages, backlinks, redirect stubs,
-   and removed duplicates. These IDs are never compiled vault page paths.
-   Preserve valid Unicode and CJK spellings exactly.
-2. Run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`
-   once with the closure and retain `id`, `started_at`, and `candidate_vault`.
-3. Write candidate replacements or new knowledge pages at final vault-relative
-   paths below `candidate_vault`. New pages use
-   `created = updated = started_at`; updates preserve the existing `created`
-   and set `updated = started_at`.
-4. Choose exactly one disposition for each secondary path. Normally write a
-   redirect stub candidate and do not declare that path for deletion; the stub
-   must carry all required frontmatter, including non-empty `sources` drawn from
-   the transaction Source IDs. If the user explicitly approved removal instead,
-   declare it with `transaction delete` and do not write a candidate at that path:
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. A path can
-   never be both a candidate and a deletion.
-5. Run `obsidian-wiki transaction validate <id> --json --pretty`. Review every
-   warning and Fix every issue, including backlinks broken by deletions.
-6. Run `obsidian-wiki transaction commit <id> --json --pretty` only after the
-   report passes.
-7. Use status-aware recovery on an unclear failure. Follow only
-   `recovery.preferred_action`, `recommended_action`, and `allowed_actions` for
-   `obsidian-wiki transaction abort <id> --json`, `retry <id> --json`,
-   `restore <id> --json`, or `discard <id> --json`. With no trusted transaction
-   ID, or while the outcome is ambiguous, stop and report.
-8. Only after commit succeeds or recovery is fully resolved, run
+1. Finish the read-only inventory and intent confirmation. If there is no selected
+   page change, stop without an empty transaction or operation record. Keep the
+   live vault read-only while computing the complete source closure: every existing
+   repository-relative Source ID cited by an affected page plus every authoritative
+   Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
+   filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
+2. Begin exactly one bounded transaction with the entire closure:
+   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   Retain its `id` as the trusted transaction ID plus `candidate_vault` and
+   `started_at`; do not change CWD.
+3. Write final candidates only at final vault-relative knowledge paths below
+   `candidate_vault`. Every candidate has valid required frontmatter and `sources`
+   as a non-empty subset of the closure. New pages use `created = updated =
+   started_at`; updates preserve `created` and set `updated = started_at`. Generate
+   internal links with the resolved `OBSIDIAN_LINK_FORMAT`.
+4. Register all reviewed deletions with
+   `obsidian-wiki transaction delete <id> <vault-relative-page.md> --json --pretty`.
+   Never delete a live page directly.
+5. Run `obsidian-wiki transaction validate <id> --json --pretty`, fix every issue,
+   review every warning and the complete candidate/deletion diff, then run
+   `obsidian-wiki transaction commit <id> --json --pretty` only after validation
+   passes.
+6. Save the failed command envelope, including top-level `error` and `recovery`, on
+   any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
+   when present, then run `obsidian-wiki transaction list --json --pretty` and
+   require exactly one retained record with the same ID and status. Follow only a
+   reported `recommended_action` or entry in `allowed_actions`, after satisfying
+   every string in its `requires` list. If the ID or list is empty, missing,
+   mismatched, duplicated, or ambiguous, stop and report. Only a successful
+   `transaction commit` or `transaction retry` is a knowledge commit.
+7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to
-   write the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-9. Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`,
-   write `hot.md` as part of the transaction, refresh Personal QMD tracking,
-   create a Git snapshot, commit, or push.
+   `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
+   candidate as a local derived artifact, then run
+   `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
+   discard, and must not mark stale inputs current directly.
 
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Continue
-with Step 5 and all merge/tracking instructions below. Personal central files,
-QMD refresh, and Git snapshot rules remain active.
-
-## Step 5: Merge
-
-**Pre-write snapshot** — before the first file write, check whether the vault itself is the root of a Git repository. Merely being a subdirectory of a larger repository does not qualify: running `git add -A` there could capture unrelated files. If the vault is not a standalone Git repository, skip this step silently — no nagging, no suggesting `git init`.
-
-```bash
-VAULT_REAL_PATH=$(cd "$OBSIDIAN_VAULT_PATH" && pwd -P)
-VAULT_GIT_ROOT=$(git -C "$OBSIDIAN_VAULT_PATH" rev-parse --show-toplevel 2>/dev/null || true)
-SNAPSHOT_SHA=""
-
-if [ -n "$VAULT_GIT_ROOT" ] && [ "$VAULT_GIT_ROOT" = "$VAULT_REAL_PATH" ]; then
-  if git -C "$OBSIDIAN_VAULT_PATH" diff --quiet \
-    && git -C "$OBSIDIAN_VAULT_PATH" diff --cached --quiet \
-    && [ -z "$(git -C "$OBSIDIAN_VAULT_PATH" ls-files --others --exclude-standard)" ]; then
-    SNAPSHOT_SHA=$(git -C "$OBSIDIAN_VAULT_PATH" rev-parse HEAD)
-  else
-    if ! git -C "$OBSIDIAN_VAULT_PATH" add -A; then
-      echo "Pre-write snapshot failed; abort the skill without writing any vault files." >&2
-      exit 1
-    fi
-    if ! git -C "$OBSIDIAN_VAULT_PATH" commit -m "pre-wiki-dedup snapshot" --quiet; then
-      echo "Pre-write snapshot failed; abort the skill without writing any vault files." >&2
-      exit 1
-    fi
-    SNAPSHOT_SHA=$(git -C "$OBSIDIAN_VAULT_PATH" rev-parse HEAD)
-  fi
-fi
-```
-
-The clean-repository branch deliberately avoids calling `git commit`, so "nothing to commit" is not treated as an error. If `git add` or `git commit` fails, stop before editing the vault; never continue without the promised snapshot.
-
-If `SNAPSHOT_SHA` is non-empty and the skill writes files, include the SHA in the final report. To discard the entire run, after confirming there are no later changes worth keeping, the user can run:
-
-```bash
-git -C "$OBSIDIAN_VAULT_PATH" reset --hard "$SNAPSHOT_SHA"
-git -C "$OBSIDIAN_VAULT_PATH" clean -fd
-```
-
-For each `merge` verdict pair (in merge or auto-merge mode):
-
-In **merge mode**: show the pair and verdict, then ask: "Merge `[Page A]` into `[Page B]`? (yes/skip/review)". Skip on anything other than yes.
-
-In **auto-merge mode**: only process HIGH-confidence (`score ≥ 0.90`) merges without prompting.
-
-### 5a: Pick the canonical page
-
-Apply these tiebreakers in order until one wins:
-
-1. **More incoming wikilinks** — grep the vault for `[[node_id]]` references; higher count wins
-2. **Richer content** — longer page body (more lines) wins
-3. **More sources** — larger `sources:` list wins
-4. **Title length** — longer, more descriptive title wins (e.g. "React Server Components" beats "RSC")
-5. **Alphabetical** — earlier title wins
-
-The canonical page is the **survivor**. The other page becomes the **secondary** (to be merged in, then replaced with a redirect stub).
-
-### 5b: Merge content into the canonical page
-
-Read both pages. Update the canonical page:
-
-- **`aliases:`** — add secondary page's title and all its aliases (no duplicates)
-- **`tags:`** — merge both tag lists (deduplicate, cap at 5 domain tags + system tags)
-- **`sources:`** — merge both source lists (deduplicate)
-- **`relationships:`** — merge both relationship lists (deduplicate by target, prefer typed entries over untyped)
-- **`base_confidence`** — recompute using the union of sources and the formula from `llm-wiki/SKILL.md`
-- **`updated`** — set to now
-- **`summary:`** — rewrite to cover the merged scope if the secondary page added new ground
-- **Body content** — merge unique sections and bullets from the secondary page. Do not blindly append — integrate the content. Avoid duplicating claims already present in the canonical page. Use `^[inferred]` markers where synthesis is needed.
-- **`provenance:`** — recompute after merging
-
-### 5c: Write a redirect stub at the secondary page path
-
-```markdown
----
-title: <secondary page title>
-redirects_to: "[[<canonical node_id>]]"
-aliases: [<secondary aliases>]
-category: <secondary category>
-tags: []
-created: <secondary original created>
-updated: <ISO timestamp now>
----
-
-This page has been merged into [[<canonical page title>]].
-```
-
-The `redirects_to:` field tells any skill reading this page to follow the redirect rather than treat it as content.
-
-### 5d: Rewrite wikilinks vault-wide
-
-Grep the entire vault for any link pointing at the secondary slug:
-
-- `[[secondary-slug]]` → `[[canonical-slug]]`
-- `[[secondary-slug|display text]]` → `[[canonical-slug|display text]]`
-- If `OBSIDIAN_LINK_FORMAT=markdown`: `[text](../path/to/secondary.md)` → `[text](../path/to/canonical.md)`
-
-**Safety rules:**
-- Never rewrite inside code blocks (``` fences or `inline code`)
-- Never rewrite inside the redirect stub itself (that's the one place the old slug should remain legible)
-- Never use `rm` or destructive shell ops — only Edit/Write tools
-- Rewrite one file at a time, verifying each before moving on
-- If a file has zero occurrences, skip it
-
-### 5e: Update tracking files
-
-**`index.md`** — Remove the secondary page's entry. Update the canonical page's entry with the merged summary.
-
-**`.manifest.json`** — For the secondary page's source entries: add `"merged_into": "<canonical node_id>"` to each. For the canonical page: merge in the secondary's `pages_created` and `pages_updated` lists.
-
-**`hot.md`** — Update Recent Activity: "Merged N duplicate pairs; canonical pages updated."
-
-### 5f: Final check
-
-After all merges, grep the vault for any remaining `[[secondary-slug]]` references (in non-stub files). If any survive, report them — the rewrite step may have missed a non-standard link format.
-
-## Step 6: Log
-
-Append to `log.md`:
-```
-- [TIMESTAMP] DEDUP mode=audit|merge|auto-merge pages_scanned=N pairs_found=M merged=X kept_separate=Y needs_review=Z wikilinks_rewritten=W
-```
-
-## Redirect Stub Handling
-
-Other skills should handle redirect stubs as follows:
-
-- **`wiki-export`** — skip pages with `redirects_to:` in frontmatter; they are not content nodes
-- **`wiki-query`** — if a search hits a redirect stub, follow `redirects_to:` and read the canonical page instead
-- **`wiki-lint`** — validate that every `redirects_to:` wikilink resolves to an existing, non-stub page (a redirect chain — stub pointing to stub — is an error)
-- **`cross-linker`** — treat redirect stubs as non-targets; never add a new `[[wikilink]]` pointing at a stub page
-
-## Tips
-
-- **Audit first, always.** Even in auto-merge mode, the audit report is shown. Read it before trusting the results.
-- **Check `needs-review` last.** These are the hard cases — don't batch them with obvious merges.
-- **Abbreviations are the most common case.** "GPT" / "GPT-4" / "GPT4", "RSC" / "React Server Components", "LLM" / "Large Language Models" — these score high on substring containment and are almost always safe to merge.
-- **Different versions are not duplicates.** "GPT-3" and "GPT-4" are related but distinct. "fine-tuning" and "fine-tuning-llms" may be distinct (technique vs. specific application).
-- **Run `cross-linker` after dedup.** The redirect stubs leave the graph in a slightly inconsistent state. Cross-linker will tighten it up.
-
-## QMD Refresh After Vault Writes
-
-QMD is a search index, not the source of truth. If `$QMD_WIKI_COLLECTION` is empty or unset, skip this step. Run it only after this skill has written or rewritten vault markdown. If QMD refresh fails, do not roll back the vault changes; report the QMD status separately.
-
-Use `$QMD_CLI` if set; otherwise use `qmd`.
-
-```bash
-${QMD_CLI:-qmd} update
-```
-
-If the output says vectors are needed or embeddings may be stale, run:
-
-```bash
-${QMD_CLI:-qmd} embed
-```
-
-Verify the collection with either:
-
-```bash
-${QMD_CLI:-qmd} ls "$QMD_WIKI_COLLECTION"
-```
-
-or, when a specific page path is known:
-
-```bash
-${QMD_CLI:-qmd} get "qmd://$QMD_WIKI_COLLECTION/<page>.md" -l 5
-```
-
-Record one of:
-- `QMD refreshed: update + embed + verified`
-- `QMD refreshed: update only + verified`
-- `QMD skipped: QMD_WIKI_COLLECTION unset`
-- `QMD skipped: qmd CLI unavailable`
-- `QMD failed: <short error summary>`
+Do not edit manifest shards, operation records, stable `index.md`, or stable
+`log.md`; do not run Git publication commands or write unsupported control paths.
