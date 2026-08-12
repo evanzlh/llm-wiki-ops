@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Union
 
 from . import IMPLEMENTATION_ID
+from .skill_names import is_safe_skill_name
 
 SCHEMA_VERSION = 2
 MIRROR_FORMAT = "full-copy-v1"
@@ -27,7 +28,6 @@ _V2_FIELDS = frozenset(
         "skills_version",
     }
 )
-_SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _SKILL_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -44,7 +44,7 @@ def _validate_managed_skills(value: object) -> tuple[str, ...]:
     if value != tuple(sorted(value)) or len(value) != len(set(value)):
         raise ValueError("managed_skills must be sorted and unique")
     for name in value:
-        if _SAFE_SKILL_NAME.fullmatch(name) is None or name in (".", ".."):
+        if not is_safe_skill_name(name):
             raise ValueError(f"unsafe skill name: {name!r}")
     return value
 

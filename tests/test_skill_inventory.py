@@ -228,7 +228,6 @@ def test_parser_rejects_duplicate_digest_key_in_otherwise_valid_v2() -> None:
         lambda payload: payload.__setitem__("skills", ["wiki-query", "wiki-ingest"]),
         lambda payload: payload.__setitem__("skills", ["wiki-ingest", "wiki-ingest"]),
         lambda payload: payload.__setitem__("skills", ["../wiki-ingest"]),
-        lambda payload: payload.__setitem__("skills", ["技能"]),
         lambda payload: payload.__setitem__("skills", [True]),
     ],
 )
@@ -242,6 +241,21 @@ def test_legacy_rejects_every_noncanonical_shape(mutation) -> None:
 
     with pytest.raises(ValueError):
         parse_inventory_text(json.dumps(payload, ensure_ascii=False), allow_legacy=True)
+
+
+def test_inventory_preserves_safe_cjk_skill_names() -> None:
+    payload = {
+        "implementation": IMPLEMENTATION_ID,
+        "skills": ["团队知识"],
+        "skills_version": "2026.8.3",
+    }
+
+    inventory = parse_inventory_text(
+        json.dumps(payload, ensure_ascii=False), allow_legacy=True
+    )
+
+    assert isinstance(inventory, LegacyManagedSkillsInventory)
+    assert inventory.managed_skills == ("团队知识",)
 
 
 def test_constructor_and_renderer_do_not_coerce_invalid_types() -> None:

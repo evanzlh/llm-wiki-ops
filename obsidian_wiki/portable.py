@@ -39,6 +39,7 @@ from obsidian_wiki.skill_inventory import (
     read_inventory,
     render_inventory,
 )
+from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
@@ -94,7 +95,6 @@ _LEGACY_SKILL_DIGEST_CATALOG = (
     Path(__file__).parent / "_data/legacy-skill-digests-v1.json"
 )
 _SKILL_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SUPPORTS_BOUND_INVENTORY_DIRECTORIES = (
     os.open in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
@@ -776,7 +776,7 @@ def _discover_source_skills(source_skills: Path) -> tuple[Path, tuple[str, ...]]
             continue
         if kind != "directory":
             continue
-        if _SAFE_SKILL_NAME.fullmatch(entry.name) is None or entry.name in (".", ".."):
+        if not is_safe_skill_name(entry.name):
             raise ValueError(f"canonical skill name is not a safe path component: {entry.name!r}")
         skill_file = entry / "SKILL.md"
         skill_kind = _source_entry_kind(skill_file, missing_ok=True)
@@ -870,7 +870,7 @@ def _read_managed_skills_inventory_file(
         if (
             not name
             or name in (".", "..")
-            or _SAFE_SKILL_NAME.fullmatch(name) is None
+            or not is_safe_skill_name(name)
             or "/" in name
             or "\\" in name
         ):
@@ -1360,7 +1360,7 @@ def _load_legacy_skill_digest_catalog() -> tuple[Mapping[str, str], ...]:
         for name, digest in skills.items():
             if (
                 type(name) is not str
-                or _SAFE_SKILL_NAME.fullmatch(name) is None
+                or not is_safe_skill_name(name)
                 or type(digest) is not str
                 or _SKILL_DIGEST.fullmatch(digest) is None
             ):
@@ -2199,7 +2199,7 @@ def _journal_target_is_managed(relative: str) -> bool:
     if (
         len(parts) == 2
         and parts[0] == ".skills"
-        and _SAFE_SKILL_NAME.fullmatch(parts[1]) is not None
+        and is_safe_skill_name(parts[1])
     ):
         return True
     for agent_relative, _label in PROJECT_AGENT_DIRS:
@@ -2209,7 +2209,7 @@ def _journal_target_is_managed(relative: str) -> bool:
         if (
             len(parts) == len(agent_parts) + 1
             and parts[: len(agent_parts)] == agent_parts
-            and _SAFE_SKILL_NAME.fullmatch(parts[-1]) is not None
+            and is_safe_skill_name(parts[-1])
         ):
             return True
     return False

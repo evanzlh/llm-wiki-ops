@@ -1278,6 +1278,21 @@ def test_rejects_unsafe_top_level_skill_name(tmp_path: Path) -> None:
         discover_skill_collection(tmp_path)
 
 
+def test_preserves_cjk_skill_name_without_normalization(tmp_path: Path) -> None:
+    skill = write_skill(tmp_path, "团队知识")
+    reference = skill / "references/协作约定.md"
+    reference.parent.mkdir()
+    reference.write_text("# 协作约定\n", encoding="utf-8")
+
+    from obsidian_wiki.skill_trees import discover_skill_collection
+
+    collection = discover_skill_collection(tmp_path)
+
+    assert collection.names == ("团队知识",)
+    assert collection.skills[0].name == "团队知识"
+    assert any(entry.path == "references/协作约定.md" for entry in collection.skills[0].entries)
+
+
 def test_ignore_mode_excludes_only_declared_source_artifacts(tmp_path: Path) -> None:
     skill = write_skill(tmp_path, "example")
     (skill / ".git").mkdir()

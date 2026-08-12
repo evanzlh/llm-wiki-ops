@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 import os
 from pathlib import Path
-import re
 import stat
 import unicodedata
 from typing import Literal
@@ -17,9 +16,9 @@ from .frontmatter import (
     _top_level_mapping,
     parse_frontmatter,
 )
+from .skill_names import is_safe_skill_name
 
 
-_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _SOURCE_IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -542,7 +541,7 @@ def _collection_from_root_entries(
     for directory in top_level:
         if directory.kind != "directory":
             raise _error(root / directory.path, "each skill must be an ordinary directory")
-        if not _SKILL_NAME.fullmatch(directory.path):
+        if not is_safe_skill_name(directory.path):
             raise _error(root / directory.path, "unsafe skill directory name")
         prefix = directory.path + "/"
         skill_entries = tuple(
@@ -590,7 +589,7 @@ def discover_skill_collection(
             raise _error(directory, "each skill must be an ordinary directory")
         else:
             raise _error(directory, "special files are not allowed")
-        if not _SKILL_NAME.fullmatch(directory.name):
+        if not is_safe_skill_name(directory.name):
             raise _error(directory, "unsafe skill directory name")
         root_entries.append(SkillEntry(directory.name, "directory", False, b""))
         entries: list[SkillEntry] = []
