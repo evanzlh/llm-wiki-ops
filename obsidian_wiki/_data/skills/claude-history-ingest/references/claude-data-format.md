@@ -2,7 +2,7 @@
 
 ## Projects Directory
 
-`~/.claude/projects/` contains one directory per project the user has opened with Claude Code. Directory names encode the absolute path:
+`<resolved CLAUDE_CONFIG_DIR>/projects/` contains one directory per project the user has opened with Claude Code. The default resolved root is `~/.claude`; operational paths follow preflight resolution. Directory names encode the absolute path:
 
 ```
 /Users/name/Documents/projects/my-app → -Users/name/Documents/projects/my-app
@@ -12,7 +12,7 @@ To recover the original path: replace leading `-` with `/`, then replace remaini
 
 ### Conversation JSONL Files
 
-Located at `~/.claude/projects/<project-dir>/<session-uuid>.jsonl`.
+Located at `<resolved CLAUDE_CONFIG_DIR>/projects/<project-dir>/<session-uuid>.jsonl`.
 
 Each line is one event. Relevant event types:
 
@@ -61,7 +61,7 @@ Each line is one event. Relevant event types:
 
 ### Memory Files
 
-Located at `~/.claude/projects/<project-dir>/memory/`.
+Located at `<resolved CLAUDE_CONFIG_DIR>/projects/<project-dir>/memory/`.
 
 Each memory file has YAML frontmatter:
 
@@ -89,7 +89,7 @@ rule/fact, then **Why:** and **How to apply:** lines.
 
 ### Session Metadata
 
-Located at `~/.claude/sessions/<pid>.json`. Light metadata:
+Located at `<resolved CLAUDE_CONFIG_DIR>/sessions/<pid>.json`. Light metadata:
 
 ```json
 {
@@ -106,12 +106,12 @@ Useful for building a timeline of when the user worked on what.
 
 ### Global History
 
-`~/.claude/history.jsonl` — append-only log of all sessions. Use for timeline reconstruction.
+`<resolved CLAUDE_CONFIG_DIR>/history.jsonl` — append-only log of all sessions. Use for timeline reconstruction.
 
 ### Pre-extracted conversation JSON
 
 An optional analysis helper may write compact signal-only files at
-`~/.claude/extracted/<project-dir>/<session-id>.json`. They are transient,
+`<resolved CLAUDE_CONFIG_DIR>/extracted/<project-dir>/<session-id>.json`. They are transient,
 untrusted derivatives; prefer them for bounded triage, then retain enough source
 identity to verify selected evidence against the session. The schema is:
 

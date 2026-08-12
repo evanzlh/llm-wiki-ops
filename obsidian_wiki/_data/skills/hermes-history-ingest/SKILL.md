@@ -35,7 +35,7 @@ Only a successful `transaction commit` or `transaction retry` allows `obsidian-w
 
 ## Discovery and parsing
 
-Inventory `~/.hermes/memories/**/*.md`, memory JSON, and `~/.hermes/sessions/**/*.jsonl` when session logging exists. Ignore `.hub/`, installed-skill manifests, telemetry, and config credentials. Prefer human-reviewed memory for triage, then verify against only explicitly selected session files. Parse JSONL by `session_meta`, user/assistant messages, and relevant tool pairs. Use native session ID, internal timestamps, and recorded cwd/project metadata for identity and project attribution. Never infer a project from an absolute cache path.
+Inventory `<resolved HERMES_HOME>/memories/**/*.md`, memory JSON, and `<resolved HERMES_HOME>/sessions/**/*.jsonl` when session logging exists. Ignore `.hub/`, installed-skill manifests, telemetry, and config credentials. Prefer human-reviewed memory for triage, then verify against only explicitly selected session files. Parse JSONL by `session_meta`, user/assistant messages, and relevant tool pairs. Use native session ID, internal timestamps, and recorded cwd/project metadata for identity and project attribution. Never infer a project from an absolute cache path.
 
 Append compares stable tool/session identity and content hash with existing snapshots; Full only broadens bounded selection. State session/byte/line/time bounds and omissions. Redact secrets, private material, and irrelevant content; preserve Unicode.
 

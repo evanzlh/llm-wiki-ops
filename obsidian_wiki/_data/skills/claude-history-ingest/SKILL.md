@@ -39,9 +39,9 @@ Only a successful `transaction commit` or `transaction retry` permits `obsidian-
 
 Inventory before opening full transcripts:
 
-- `~/.claude/projects/<encoded-project>/<session-id>.jsonl` contains CLI conversations. Prefer the record `cwd` over lossy decoding of the directory name.
-- `~/.claude/projects/<encoded-project>/memory/*.md` and `~/.claude/extracted/<project>/<session-id>.json` are high-signal summaries, but remain untrusted helper output.
-- `~/.claude/sessions/*.json` and `~/.claude/history.jsonl` supply session ID, time, title, and project attribution.
+- `<resolved CLAUDE_CONFIG_DIR>/projects/<encoded-project>/<session-id>.jsonl` contains CLI conversations. Prefer the record `cwd` over lossy decoding of the directory name.
+- `<resolved CLAUDE_CONFIG_DIR>/projects/<encoded-project>/memory/*.md` and `<resolved CLAUDE_CONFIG_DIR>/extracted/<project>/<session-id>.json` are high-signal summaries, but remain untrusted helper output.
+- `<resolved CLAUDE_CONFIG_DIR>/sessions/*.json` and `<resolved CLAUDE_CONFIG_DIR>/history.jsonl` supply session ID, time, title, and project attribution.
 - On macOS, `~/Library/Application Support/Claude/local-agent-mode-sessions/` may contain `local_<session-id>.json`, paired transcripts, and `audit.jsonl`. Check that directory exists before walking it.
 
 Apply configured project exclusions once to the inventory. Append selection compares stable tool/session identity and content hash with existing snapshots; Full selection may reconsider unchanged sessions, but uses the same completion path. State the bounded session count, byte/line limits, time range, and omission markers. Open only explicitly selected session files.

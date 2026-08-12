@@ -1033,7 +1033,7 @@ def test_claude_reference_preserves_extracted_and_desktop_schemas() -> None:
     claude = path.read_text(encoding="utf-8")
     flat = " ".join(claude.split())
     for required in (
-        "~/.claude/extracted/<project-dir>/<session-id>.json",
+        "<resolved CLAUDE_CONFIG_DIR>/extracted/<project-dir>/<session-id>.json",
         '"session_id"',
         '"project"',
         '"cwd"',
@@ -1475,6 +1475,39 @@ def test_history_tool_root_precedence_and_storage_schemas() -> None:
     assert isinstance(store, dict) and store
     entry = next(iter(store.values()))
     assert set(entry) >= {"sessionId", "sessionFile", "updatedAt"}
+
+
+def test_history_discovery_uses_resolved_roots_after_precedence_definition() -> None:
+    cases = (
+        (
+            "claude-history-ingest",
+            "~/.claude",
+            ("<resolved CLAUDE_CONFIG_DIR>/projects/", "<resolved CLAUDE_CONFIG_DIR>/history.jsonl"),
+        ),
+        (
+            "codex-history-ingest",
+            "~/.codex",
+            ("<resolved CODEX_HOME>/session_index.jsonl", "<resolved CODEX_HOME>/sessions/"),
+        ),
+        (
+            "hermes-history-ingest",
+            "~/.hermes",
+            ("<resolved HERMES_HOME>/memories/", "<resolved HERMES_HOME>/sessions/"),
+        ),
+    )
+    for name, default, placeholders in cases:
+        skill_path = ROOT / f"obsidian_wiki/_data/skills/{name}/SKILL.md"
+        skill = skill_path.read_text(encoding="utf-8")
+        after_precedence = skill.split("## Bounded safe input", 1)[1]
+        assert default not in after_precedence, skill_path
+        for placeholder in placeholders:
+            assert placeholder in after_precedence, f"{skill_path}: missing {placeholder}"
+
+        reference = skill_path.parent / "references" / f"{name.removesuffix('-history-ingest')}-data-format.md"
+        ref_text = reference.read_text(encoding="utf-8")
+        for line in ref_text.splitlines():
+            if default in line and "default" not in line.lower() and "example" not in line.lower():
+                pytest.fail(f"{reference}: operational bare default path: {line}")
 
 
 def test_copilot_sqlite_is_read_only_bounded_and_schema_checked() -> None:
