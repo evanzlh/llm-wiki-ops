@@ -2191,29 +2191,39 @@ def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> Non
 def test_cmd_check_uses_shared_portable_config_discovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    discovered: list[Path] = []
-    candidate = tmp_path / ".obsidian-wiki" / "config.toml"
     before = tuple(tmp_path.iterdir())
     monkeypatch.chdir(tmp_path)
-
-    def discover(cwd: Path) -> Path:
-        discovered.append(cwd)
-        return candidate
+    sinks: list[list[ConfigError]] = []
 
     def resolution_failure(*, error_sink: list[ConfigError]) -> None:
+        sinks.append(error_sink)
         error_sink.append(ConfigError("portable config is invalid"))
         return None
 
-    monkeypatch.setattr(cli, "nearest_portable_config", discover)
     monkeypatch.setattr(cli, "_resolve_runtime", resolution_failure)
 
     assert cli.cmd_check(SimpleNamespace()) == 1
 
     captured = capsys.readouterr()
-    assert discovered == [tmp_path]
+    assert len(sinks) == 1
     assert captured.out == ""
     assert captured.err == "error: portable config is invalid\n"
     assert tuple(tmp_path.iterdir()) == before
+
+
+def test_cmd_check_handles_unavailable_current_directory(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def cwd_failure() -> Path:
+        raise PermissionError("cwd denied")
+
+    monkeypatch.setattr(Path, "cwd", cwd_failure)
+
+    assert cli.cmd_check(SimpleNamespace()) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: current working directory is unavailable: cwd denied\n"
 
 
 def test_checker_rejects_noncanonical_configured_skills_path(tmp_path: Path) -> None:

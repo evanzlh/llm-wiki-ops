@@ -7,13 +7,15 @@ import os
 import shutil
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
+import obsidian_wiki.cli as cli
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import list_skills, skills_dir
-from obsidian_wiki.config import load_portable_config
+from obsidian_wiki.config import ConfigError, load_portable_config
 from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 
@@ -118,6 +120,57 @@ def test_doctor_rejects_non_repository_selectors(
 
     assert proc.returncode == 2
     assert "unrecognized arguments" in proc.stderr
+
+
+def test_doctor_json_structures_unavailable_current_directory(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def cwd_failure() -> Path:
+        raise FileNotFoundError("cwd deleted")
+
+    monkeypatch.setattr(Path, "cwd", cwd_failure)
+
+    returncode = cli.cmd_doctor(Namespace(json=True, pretty=False, strict=False))
+
+    captured = capsys.readouterr()
+    assert returncode == 1
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert report["status"] == "fail"
+    assert report["checks"] == [
+        {
+            "name": "portable-config",
+            "status": "fail",
+            "detail": "current working directory is unavailable: cwd deleted",
+            "hint": "run: obsidian-wiki setup [DIR]",
+        }
+    ]
+
+
+def test_doctor_json_structures_portable_candidate_metadata_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def resolution_failure(**_kwargs: object) -> None:
+        raise ConfigError("portable config is invalid")
+
+    def metadata_failure(_path: Path) -> bool:
+        raise PermissionError("config metadata denied")
+
+    monkeypatch.setattr(cli, "resolve_config", resolution_failure)
+    monkeypatch.setattr(Path, "exists", metadata_failure)
+
+    returncode = cli.cmd_doctor(Namespace(json=True, pretty=False, strict=False))
+
+    captured = capsys.readouterr()
+    assert returncode == 1
+    assert captured.err == ""
+    report = json.loads(captured.out)
+    assert report["status"] == "fail"
+    assert report["checks"][0]["detail"] == (
+        "portable configuration inspection failed: config metadata denied"
+    )
 
 
 def test_doctor_portable_mode_ignores_global_config_and_agent_installs(

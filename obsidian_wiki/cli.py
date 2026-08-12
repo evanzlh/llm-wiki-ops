@@ -95,33 +95,6 @@ def list_skills() -> list[str]:
     return sorted(p.name for p in skills_dir().iterdir() if p.is_dir())
 
 
-# (bootstrap-relative source path, destination relative to project dir).
-# Source paths are always resolved against the packaged bootstrap directory.
-BOOTSTRAP_FILES = [
-    ("AGENTS.md", "AGENTS.md"),
-    ("cursor/rules/obsidian-wiki.mdc", ".cursor/rules/obsidian-wiki.mdc"),
-    ("windsurf/rules/obsidian-wiki.md", ".windsurf/rules/obsidian-wiki.md"),
-    ("kiro/steering/obsidian-wiki.md", ".kiro/steering/obsidian-wiki.md"),
-    ("agent/rules/obsidian-wiki.md", ".agent/rules/obsidian-wiki.md"),
-    ("agent/workflows/obsidian-wiki.md", ".agent/workflows/obsidian-wiki.md"),
-    ("github/copilot-instructions.md", ".github/copilot-instructions.md"),
-]
-
-# AGENTS.md aliases created as symlinks within the project (single source).
-AGENTS_ALIASES = ("CLAUDE.md", "GEMINI.md", ".hermes.md")
-
-
-def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path:
-    """Resolve one required bootstrap file under the package-only layout."""
-    source = boot_root / rel
-    if source.is_file():
-        return source
-    raise FileNotFoundError(
-        f"Could not locate bundled bootstrap file {rel}. "
-        f"Reinstall with `{SOURCE_REINSTALL_COMMAND}`."
-    )
-
-
 # ── Config ───────────────────────────────────────────────────────────────────
 def _runtime_error_detail(error: ConfigError) -> str:
     detail = str(error)
@@ -136,17 +109,29 @@ def _resolve_runtime(
 ) -> PortableConfig | None:
     """Resolve one CLI runtime through the shared precedence protocol."""
     try:
-        return resolve_config(
-            cwd=Path.cwd(),
-            installed_version=__version__,
-            implementation=IMPLEMENTATION_ID,
-        )
-    except ConfigError as exc:
-        if error_sink is not None:
-            error_sink.append(exc)
-        else:
-            print(f"error: {exc}", file=sys.stderr)
-        return None
+        cwd = Path.cwd()
+    except OSError as exc:
+        error = ConfigError(f"current working directory is unavailable: {exc}")
+        error.__cause__ = exc
+    else:
+        try:
+            return resolve_config(
+                cwd=cwd,
+                installed_version=__version__,
+                implementation=IMPLEMENTATION_ID,
+            )
+        except ConfigError as exc:
+            error = exc
+        except OSError as exc:
+            error = ConfigError(f"repository resolution failed: {exc}")
+            error.__cause__ = exc
+        error._obsidian_wiki_cwd = cwd  # type: ignore[attr-defined]
+
+    if error_sink is not None:
+        error_sink.append(error)
+    else:
+        print(f"error: {error}", file=sys.stderr)
+    return None
 
 
 def _config_values(config: PortableConfig) -> dict[str, str]:
@@ -479,17 +464,32 @@ def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
     if runtime is not None:
         return _run_portable_doctor(runtime)
 
-    current = Path.cwd().resolve(strict=False)
-    candidate = next(
-        (
-            ancestor / ".obsidian-wiki/config.toml"
-            for ancestor in (current, *current.parents)
-            if (ancestor / ".obsidian-wiki/config.toml").exists()
-            or (ancestor / ".obsidian-wiki/config.toml").is_symlink()
-        ),
-        None,
-    )
     error = errors[0] if errors else ConfigError("repository not configured")
+    current = getattr(error, "_obsidian_wiki_cwd", None)
+    if current is None:
+        checks: list[dict[str, str]] = []
+        _doctor_add(
+            checks,
+            name="portable-config",
+            status="fail",
+            detail=_runtime_error_detail(error),
+            hint="run: obsidian-wiki setup [DIR]",
+        )
+        return {"status": "fail", "checks": checks}
+
+    current = Path(current)
+    candidate = None
+    try:
+        for ancestor in (current, *current.parents):
+            path = ancestor / ".obsidian-wiki/config.toml"
+            if path.exists() or path.is_symlink():
+                candidate = path
+                break
+    except OSError as exc:
+        return _portable_doctor_error(
+            current / ".obsidian-wiki/config.toml",
+            f"portable configuration inspection failed: {exc}",
+        )
     if candidate is not None:
         try:
             _assert_single_link_ordinary_file(

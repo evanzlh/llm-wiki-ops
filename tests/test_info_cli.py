@@ -4,8 +4,12 @@ import json
 import os
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
+import obsidian_wiki.cli as cli
 from obsidian_wiki import IMPLEMENTATION_ID
 
 
@@ -141,3 +145,23 @@ def test_info_json_has_no_human_rendering_glyphs_or_headings(tmp_path: Path) -> 
     assert "CLI installation" not in result.stdout
     assert "✓" not in result.stdout
     assert "⚠" not in result.stdout
+
+
+def test_info_json_structures_unavailable_current_directory(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def cwd_failure() -> Path:
+        raise PermissionError("cwd denied")
+
+    monkeypatch.setattr(Path, "cwd", cwd_failure)
+
+    returncode = cli.cmd_info(Namespace(json=True, pretty=False, vault=None))
+
+    captured = capsys.readouterr()
+    assert returncode == 1
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["runtime"] == {
+        "status": "error",
+        "error": "current working directory is unavailable: cwd denied",
+    }
