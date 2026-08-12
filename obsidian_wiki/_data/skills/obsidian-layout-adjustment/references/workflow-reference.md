@@ -1,20 +1,22 @@
 # Obsidian Layout Workflow Reference
 
-Use this reference when working with Dan on changing how Obsidian looks using CSS snippets.
+Use this reference when changing how Obsidian looks using CSS snippets.
 
 This file is intentionally Obsidian-specific. The design direction can change, but the canvas stays Obsidian: app frame, tab headers, side docks, view headers, pane shells, note surface, metadata, rendered markdown, file explorer, utility panes, graph, and status bar.
 
-## Dan Language To Obsidian Backend
+## User Language To Obsidian Backend
 
-Dan names the visible object. Translate it into the Obsidian object before editing.
+The user names the visible object. Translate it into the Obsidian object before editing.
 
 For live styling work, this translation should usually be brief and operational:
 
 > "I’m treating 'right sidebar' as the right workspace split/backlinks pane, and 'side icons' as side-dock tab/header icon states."
 
-Then inspect, checkpoint, patch, format, reload, and screenshot. Long translation tables belong in evals, audits, or planning notes, not in every small visual pass.
+Then inspect, obtain approval, back up to `.obsidian-wiki/local/obsidian-config-backups/`,
+patch atomically, reload, and screenshot. Long translation tables belong in evals,
+audits, or planning notes, not in every small visual pass.
 
-| Dan might say | Usually means | Backend / selector family to inspect |
+| The user might say | Usually means | Backend / selector family to inspect |
 | --- | --- | --- |
 | tabs above the note | open workspace tab headers | `.workspace-tab-header-container`, `.workspace-tab-header`, `.workspace-tab-header-inner` |
 | plus next to the tab | new tab button in tab strip | `.workspace-tab-header-new-tab`, tab header `.clickable-icon` |
@@ -65,7 +67,7 @@ If the phrase could mean more than one layer, say the mapping back before editin
 
 ## Change-Type Map
 
-The same visible object can require different backend work depending on what Dan asks for.
+The same visible object can require different backend work depending on what the user asks for.
 
 ### Color or accent
 
@@ -143,7 +145,7 @@ Because Obsidian's layer map is stable, the mistakes can be specific:
 
 ## Failure Signals
 
-Dan's corrections are diagnostic:
+The user's corrections are diagnostic:
 
 - **"Nothing changed"**: wrong selector, wrong layer, clipping, coverage, override, or not reloaded.
 - **"Still wrapped"**: wrapper and child both styled; pick one.
@@ -153,12 +155,13 @@ Dan's corrections are diagnostic:
 - **"Overdone"**: remove treatment before adding another.
 - **"Wrong side"**: mapping was not restated; stop and remap.
 
-If the same failure repeats twice, restore the last good checkpoint and change the ownership model.
+If the same failure repeats twice, atomically restore the last good local backup and
+change the ownership model.
 
 ## Breakthrough Concepts
 
 - The screenshot is product truth.
-- Dan's corrections are selector evidence.
+- The user's corrections are selector evidence.
 - Obsidian is layered furniture, not a flat page.
 - The owning wrapper matters more than the prettiest selector.
 - Lift is a relationship, not a shadow.
@@ -197,7 +200,19 @@ Avoid these as first moves:
 - Rare markdown components used as the main identity system.
 - App internals/minified code before active snippets and theme CSS are ruled out.
 - Broad snippet rewrites before a stable visual state exists.
-- Deleting old experiments before the accepted look is checkpointed.
+- Deleting old experiments before the accepted look is backed up and approved.
+
+## Portable Configuration Boundary
+
+All snippet and appearance changes remain explicit `.obsidian/` configuration edits.
+Before a subjective edit, show the proposed scope and obtain explicit user approval.
+Backups belong under the ignored
+`.obsidian-wiki/local/obsidian-config-backups/<timestamp>/`, never in the active
+snippet picker. Reject symbolic links, hard links, special files, non-owner paths,
+and escaping resolutions; use owner-only temporary files and atomic replacement.
+Afterward, reload and screenshot Obsidian, review a path-scoped `git diff`, and leave
+any Git commit to the owner. A failed result should be restored from the validated
+backup rather than accumulated as another CSS override.
 
 ## Explicit Confirmation Zone
 

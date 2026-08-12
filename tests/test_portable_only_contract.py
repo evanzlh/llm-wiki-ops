@@ -15,6 +15,16 @@ from obsidian_wiki import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SPECIAL_WORKFLOW_SKILLS = {
+    "graph-colorize",
+    "obsidian-layout-adjustment",
+    "vault-skill-factory",
+    "wiki-context-pack",
+    "wiki-digest",
+    "wiki-export",
+    "wiki-narrate",
+    "wiki-query",
+}
 REMOVED_SKILL_PATHS = {
     "obsidian_wiki/_data/skills/memory-bridge",
     "obsidian_wiki/_data/skills/wiki-dashboard",
@@ -468,4 +478,90 @@ def test_personal_vault_artifact_literals_are_centralized() -> None:
             )
         )
 
+    assert violations == []
+
+
+def _special_skill(name: str) -> str:
+    return (ROOT / f"obsidian_wiki/_data/skills/{name}/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_retained_special_workflows_are_the_exact_review_set() -> None:
+    assert SPECIAL_WORKFLOW_SKILLS == {
+        "graph-colorize",
+        "obsidian-layout-adjustment",
+        "vault-skill-factory",
+        "wiki-context-pack",
+        "wiki-digest",
+        "wiki-export",
+        "wiki-narrate",
+        "wiki-query",
+    }
+    for name in SPECIAL_WORKFLOW_SKILLS:
+        assert (ROOT / f"obsidian_wiki/_data/skills/{name}/SKILL.md").is_file()
+
+
+def test_read_only_knowledge_workflows_have_no_write_protocol_or_mutations() -> None:
+    for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
+        text = _special_skill(name)
+        flat = " ".join(text.split())
+        assert "strictly read-only knowledge workflow" in flat, name
+        assert "transaction begin" not in text, name
+        assert "transaction commit" not in text, name
+        for forbidden in ("append to `log.md`", "update `index.md`", "--save", "_readouts"):
+            assert forbidden not in text, (name, forbidden)
+
+
+def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> None:
+    query = _special_skill("wiki-query")
+    context = _special_skill("wiki-context-pack")
+    digest = _special_skill("wiki-digest")
+
+    assert "nearest ancestor `.obsidian-wiki/config.toml`" in query
+    assert 'obsidian-wiki query "<question>" --json --pretty' in query
+    assert 'obsidian-wiki context-pack "<topic>" --budget 8000' in context
+    assert "obsidian-wiki hot status --json" in digest
+    assert "read `hot.md` only when the status is `current`" in digest
+    for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
+        text = _special_skill(name)
+        assert "@name" not in text, name
+        assert "QMD" not in text and "qmd" not in text, name
+        assert "global config" not in text.lower(), name
+        assert "--vault" not in text, name
+
+
+def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
+    export = _special_skill("wiki-export")
+    factory = _special_skill("vault-skill-factory")
+
+    assert ".obsidian-wiki/local/exports/<timestamp>/" in export
+    assert ".obsidian-wiki/local/generated-skills/<name>/" in factory
+    for name, text in (("wiki-export", export), ("vault-skill-factory", factory)):
+        assert ".obsidian-wiki/local/" in text
+        assert "ignored" in text.lower()
+        assert "transaction begin" not in text, name
+        assert "transaction commit" not in text, name
+        assert "symbolic link" in text and "hard link" in text and "special file" in text
+
+
+def test_obsidian_config_edits_have_backup_approval_and_git_boundaries() -> None:
+    for name in ("graph-colorize", "obsidian-layout-adjustment"):
+        text = _special_skill(name)
+        assert ".obsidian-wiki/local/obsidian-config-backups/" in text, name
+        assert "explicit user approval" in text, name
+        assert "atomic" in text.lower(), name
+        assert "restore" in text.lower(), name
+        assert "reload" in text.lower(), name
+        assert "git diff" in text.lower(), name
+        assert "owner" in text.lower() and "commit" in text.lower(), name
+        assert "transaction begin" not in text, name
+
+
+def test_obsidian_layout_assets_contain_no_person_specific_wording() -> None:
+    root = ROOT / "obsidian_wiki/_data/skills/obsidian-layout-adjustment"
+    violations = []
+    for path in sorted(path for path in root.rglob("*") if path.is_file()):
+        if "Dan" in path.read_text(encoding="utf-8"):
+            violations.append(path.relative_to(ROOT).as_posix())
     assert violations == []
