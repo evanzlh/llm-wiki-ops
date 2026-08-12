@@ -62,6 +62,16 @@ def test_source_outside_configured_root_is_rejected(tmp_path: Path) -> None:
         ShardedManifest(config).source_id(external)
 
 
+def test_validated_source_id_is_public_and_returns_source_id(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "design" / "architecture.md"
+    source.write_text("body", encoding="utf-8")
+    store = ShardedManifest(config)
+
+    assert hasattr(store, "validated_source_id")
+    assert store.validated_source_id(source) == "sources/design/architecture.md"
+
+
 def test_source_id_rejects_absolute_and_traversal_strings(tmp_path: Path) -> None:
     _, config = make_repo(tmp_path)
     store = ShardedManifest(config)
@@ -252,6 +262,52 @@ def test_status_for_rejects_dangling_terminal_symlink(tmp_path: Path) -> None:
 
     with pytest.raises(ManifestError, match="single-link ordinary file"):
         ShardedManifest(config).status_for([source])
+
+
+def _replace_source_parent_with_external_symlink(
+    root: Path, tmp_path: Path
+) -> Path:
+    source = root / "sources" / "nested" / "a.md"
+    external = tmp_path / "external-sources"
+    external.mkdir()
+    (external / "a.md").write_text("tracked", encoding="utf-8")
+    source.unlink()
+    source.parent.rmdir()
+    try:
+        source.parent.symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+    return source
+
+
+def test_status_for_unselected_rejects_external_symlinked_source_parent(
+    tmp_path: Path,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "nested" / "a.md"
+    source.parent.mkdir()
+    source.write_text("tracked", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source, pages=[])
+    _replace_source_parent_with_external_symlink(root, tmp_path)
+
+    with pytest.raises(ManifestError, match="configured source root"):
+        store.status_for([])
+
+
+def test_status_for_selected_rejects_external_symlinked_source_parent(
+    tmp_path: Path,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "nested" / "a.md"
+    source.parent.mkdir()
+    source.write_text("tracked", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source, pages=[])
+    source = _replace_source_parent_with_external_symlink(root, tmp_path)
+
+    with pytest.raises(ManifestError, match="configured source root"):
+        store.status_for([source])
 
 
 def _write_shard(root: Path, payload: object, name: str = "a.md.json") -> Path:

@@ -184,7 +184,9 @@ def _filter_unchanged(
     unchanged_set = set(check_sources(config, paths)["unchanged"])
     store = ShardedManifest(config)
     to_ingest = [
-        f for f in files if store.source_id(Path(f["path"])) not in unchanged_set
+        f
+        for f in files
+        if store.validated_source_id(Path(f["path"])) not in unchanged_set
     ]
     return to_ingest, len(unchanged_set)
 
@@ -259,8 +261,7 @@ def plan_batches(
     )
     for file in all_files:
         source_path = Path(file["path"])
-        portable_store._validate_source_file(source_path)
-        portable_store.source_id(source_path)
+        portable_store.validated_source_id(source_path)
 
     skipped_binary = 0  # files already excluded by _classify
     skipped_unchanged = 0

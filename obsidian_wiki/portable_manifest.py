@@ -92,6 +92,13 @@ class ShardedManifest:
             )
         return f"{self._repo_relative(self.source_root, 'source root')}/{relative.as_posix()}"
 
+    def validated_source_id(self, source: Path) -> str:
+        """Return the Source ID after physical containment and file validation."""
+        source_path = Path(source)
+        source_id = self.source_id(source_path)
+        self._validate_source_file(source_path)
+        return source_id
+
     def source_path(self, source_id: str) -> Path:
         self._validate_source_id(source_id)
         return self.config.root / PurePosixPath(source_id)
@@ -276,8 +283,7 @@ class ShardedManifest:
         expected_preimage: str | None | object = _UNSET_PREIMAGE,
     ) -> ManifestEntry:
         source_path = Path(source)
-        self._validate_source_file(source_path)
-        source_id = self.source_id(source_path)
+        source_id = self.validated_source_id(source_path)
         entry = ManifestEntry(
             source_id=source_id,
             content_hash=f"sha256:{compute_hash(source_path)}",
@@ -425,8 +431,7 @@ class ShardedManifest:
                     metadata.st_mode
                 ):
                     continue
-                self._validate_source_file(path)
-                current[self.source_id(path)] = path
+                current[self.validated_source_id(path)] = path
         result = {"new": [], "modified": [], "unchanged": [], "missing": []}
         for source_id, path in sorted(current.items()):
             entry = tracked.get(source_id)
@@ -455,7 +460,7 @@ class ShardedManifest:
                 continue
             except OSError as exc:
                 raise ManifestError("source cannot be inspected") from exc
-            self._validate_source_file(path)
+            source_id = self.validated_source_id(path)
             entry = tracked.get(source_id)
             if entry is None:
                 result["new"].append(source_id)
@@ -465,6 +470,7 @@ class ShardedManifest:
                 result["unchanged"].append(source_id)
         for source_id in sorted(set(tracked) - selected):
             source = self.source_path(source_id)
+            self.source_id(source)
             try:
                 source.lstat()
             except FileNotFoundError:
@@ -472,5 +478,5 @@ class ShardedManifest:
             except OSError as exc:
                 raise ManifestError("source cannot be inspected") from exc
             else:
-                self._validate_source_file(source)
+                self.validated_source_id(source)
         return result

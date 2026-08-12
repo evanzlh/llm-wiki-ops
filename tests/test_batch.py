@@ -201,7 +201,7 @@ def test_plan_batches_validates_files_even_without_cache(portable_repo):
     except OSError:
         pytest.skip("symlinks are unavailable")
 
-    with pytest.raises(ManifestError, match="single-link ordinary file"):
+    with pytest.raises(ManifestError, match="outside the configured source root"):
         plan_batches(config.sources[0], config, skip_unchanged=False)
 
 
