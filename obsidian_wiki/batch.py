@@ -289,8 +289,8 @@ def plan_batches(
         })
 
     merge_hint = (
-        "Dispatch each batch as a parallel subagent with /wiki-ingest on its file list. "
-        "Once all batches complete, run /cross-linker to wire up cross-references."
+        "Dispatch each batch for analysis and let the parent wiki-ingest workflow "
+        "own reviewed transaction completion."
     )
 
     return {

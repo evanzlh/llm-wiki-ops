@@ -794,9 +794,23 @@ def cmd_sessions_name(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cache_source_path(raw: str) -> Path:
+def _cache_source_path(raw: str, *, root: Path | None = None) -> Path:
     """Return an absolute lexical source path without following symlinks."""
-    return Path(os.path.abspath(os.fspath(Path(raw).expanduser())))
+    raw_path = Path(raw).expanduser()
+    if root is None:
+        return Path(os.path.abspath(os.fspath(raw_path)))
+
+    from obsidian_wiki.portable_manifest import ManifestError
+
+    root_path = Path(os.path.abspath(os.fspath(root)))
+    if raw_path.is_absolute():
+        raise ManifestError("source is outside the repository root")
+    source_path = Path(os.path.abspath(os.fspath(root_path / raw_path)))
+    try:
+        source_path.relative_to(root_path)
+    except ValueError as exc:
+        raise ManifestError("source is outside the repository root") from exc
+    return source_path
 
 
 def cmd_cache_check(args: argparse.Namespace) -> int:
@@ -806,7 +820,7 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
     if config is None:
         return 1
     sources = [
-        _cache_source_path(str(config.root / raw))
+        _cache_source_path(raw, root=config.root)
         for raw in args.sources
     ]
     result = check_sources(config, sources)

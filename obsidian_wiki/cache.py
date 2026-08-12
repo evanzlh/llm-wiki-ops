@@ -56,5 +56,5 @@ def check_sources(
 
 
 def hash_file(path: Path) -> str:
-    """Compute and return the hash without manifest I/O."""
+    """Just compute and return the hash — no manifest I/O."""
     return compute_hash(path)

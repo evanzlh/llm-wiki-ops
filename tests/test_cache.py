@@ -141,6 +141,22 @@ def test_cache_check_does_not_follow_terminal_source_symlink(portable_repo, tmp_
     assert "source must be a single-link ordinary file" in proc.stderr
 
 
+@pytest.mark.parametrize("source", ["../outside-missing.md", "{absolute}"])
+def test_cache_check_rejects_missing_paths_outside_repository(
+    portable_repo, tmp_path, source
+):
+    root, _config = portable_repo
+    if source == "{absolute}":
+        source = str(tmp_path / "absolute-outside-missing.md")
+
+    proc = _run(root, tmp_path / "home", "cache-check", source, "--json")
+
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert "outside the repository root" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
 @pytest.mark.parametrize(
     "args",
     [

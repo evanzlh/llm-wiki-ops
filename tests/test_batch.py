@@ -94,6 +94,17 @@ def test_plan_batches_uses_config_and_reports_source_dir(portable_repo):
     assert result["batches"][0]["files"] == [str(source)]
 
 
+def test_plan_batches_assigns_reviewed_completion_to_parent(portable_repo):
+    _root, config = portable_repo
+
+    result = plan_batches(config.sources[0], config, skip_unchanged=False)
+
+    assert result["merge_hint"] == (
+        "Dispatch each batch for analysis and let the parent wiki-ingest workflow "
+        "own reviewed transaction completion."
+    )
+
+
 def test_plan_batches_skips_unchanged_shard(portable_repo):
     root, config = portable_repo
     source = _write(root / "sources" / "note.md", "note")
