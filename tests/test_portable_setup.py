@@ -719,6 +719,42 @@ def test_skill_sync_plan_reports_a_missing_target_as_folded_additions(
     assert snapshot_tree(root) == before
 
 
+def test_skill_sync_apply_recreates_a_missing_agent_parent(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".cursor")
+
+    report = portable.sync_portable_skill_mirrors(root, apply=True)
+
+    assert report.status == "applied"
+    assert_all_agent_mirrors_match(root)
+
+
+def test_skill_sync_staging_failure_rolls_back_a_created_agent_parent(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    shutil.rmtree(root / ".cursor")
+    original_stage = portable._stage_complete_agent_mirrors
+
+    def fail_after_staging(*args: object, **kwargs: object):
+        original_stage(*args, **kwargs)
+        raise OSError("simulated staging failure")
+
+    monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", fail_after_staging)
+
+    with pytest.raises(OSError, match="staging failure"):
+        portable.sync_portable_skill_mirrors(root, apply=True)
+
+    assert not (root / ".cursor").exists()
+    assert not (root / portable.SYNC_OPERATION.transactions_relative).exists()
+
+
 def test_skill_sync_plan_classifies_changed_removed_and_ordinary_invalid_extra(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
@@ -1260,6 +1296,20 @@ def test_sync_skills_fails_fast_while_repository_lock_is_held_without_writes(
     assert snapshot_tree(root) == before
 
 
+def test_portable_setup_lock_creation_does_not_require_posix_dirfd_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(portable, "_sync_dirfd_supported", lambda: False)
+
+    lock = portable._ensure_portable_lock_file(root)
+
+    assert lock == root / ".obsidian-wiki/local/portable-skills.lock"
+    assert lock.is_file()
+
+
 @pytest.mark.parametrize("swapped_targets", range(1, len(portable.PROJECT_AGENT_DIRS) + 1))
 def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
     swapped_targets: int,
@@ -1278,6 +1328,7 @@ def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
         operation: portable.ReplacementOperation,
         payload: dict[str, object],
         records: list[tuple[Path, Path, Path | None, bool]],
+        **_kwargs: object,
     ) -> None:
         assert operation == portable.SYNC_OPERATION
         for index, (target, backup, staged, had_target) in enumerate(
@@ -1469,6 +1520,61 @@ def test_bound_sync_install_parent_swap_never_writes_external_tree(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX parent-swap race")
+def test_bound_sync_install_ordinary_parent_swap_never_writes_external_tree(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    transaction = portable._create_replacement_transaction(
+        root, portable.SYNC_OPERATION
+    )
+    staged = transaction / "staged/mirror"
+    skill_trees.materialize_skill_collection(
+        discover_skill_collection(root / ".skills"), staged
+    )
+    install_parent = transaction / "install"
+    install_parent.mkdir()
+    original_parent = transaction / "install-original"
+    outside = tmp_path / "outside-install"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("outside owner bytes\n", encoding="utf-8")
+    before = snapshot_tree(outside)
+    original_state = portable._bound_replacement_state
+    swapped = False
+
+    def swap_parent_after_source_snapshot(
+        repository: Path, path: Path, *, label: str
+    ):
+        nonlocal swapped
+        state = original_state(repository, path, label=label)
+        if path == staged and label == "staged copy source" and not swapped:
+            swapped = True
+            install_parent.rename(original_parent)
+            outside.rename(install_parent)
+        return state
+
+    monkeypatch.setattr(
+        portable, "_bound_replacement_state", swap_parent_after_source_snapshot
+    )
+    try:
+        with pytest.raises(ValueError, match="changed|identity|bound|directory"):
+            portable._copy_staged_replacement(
+                root, staged, install_parent / "0", bound=True
+            )
+    finally:
+        if install_parent.exists():
+            install_parent.rename(outside)
+        if original_parent.exists():
+            original_parent.rename(install_parent)
+
+    assert swapped
+    assert snapshot_tree(outside) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent-swap race")
 def test_bound_sync_live_rename_parent_swap_never_mutates_external_tree(
     tmp_path: Path,
     tiny_skills: Path,
@@ -1531,6 +1637,143 @@ def test_bound_sync_live_rename_parent_swap_never_mutates_external_tree(
             original_rename(backup, detached / "skills")
         if detached.exists():
             original_rename(detached, root / ".claude")
+
+    assert swapped
+    assert snapshot_tree(outside) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent-swap race")
+def test_bound_sync_live_ordinary_parent_swap_never_mutates_external_tree(
+    tmp_path: Path,
+    tiny_skills: Path,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    transaction = portable._create_replacement_transaction(
+        root, portable.SYNC_OPERATION
+    )
+    backup_parent = transaction / "backups"
+    portable._ensure_sync_directory(root, backup_parent, label="test backup")
+    source = root / ".claude/skills"
+    backup = backup_parent / "0"
+    source_parent_identity = portable._sync_directory_identity(
+        root, source.parent, label="test source parent"
+    )
+    detached = root / ".claude-detached"
+    outside = tmp_path / "outside-claude"
+    outside_skills = outside / "skills"
+    outside_skills.mkdir(parents=True)
+    (outside_skills / "sentinel").write_text(
+        "outside owner bytes\n", encoding="utf-8"
+    )
+    before = snapshot_tree(outside)
+
+    (root / ".claude").rename(detached)
+    outside.rename(root / ".claude")
+    try:
+        with pytest.raises(ValueError, match="changed|identity|bound|directory"):
+            portable._rename_sync_path(
+                root,
+                source,
+                backup,
+                expected_source_parent_identity=source_parent_identity,
+            )
+    finally:
+        if (root / ".claude").exists():
+            (root / ".claude").rename(outside)
+        if detached.exists():
+            detached.rename(root / ".claude")
+
+    assert snapshot_tree(outside) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent-swap race")
+def test_sync_apply_binds_live_parent_before_ordinary_swap(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    _add_custom_canonical_skill(root)
+    detached = root / ".claude-detached"
+    outside = tmp_path / "outside-claude"
+    outside_skills = outside / "skills"
+    outside_skills.mkdir(parents=True)
+    (outside_skills / "sentinel").write_text(
+        "outside owner bytes\n", encoding="utf-8"
+    )
+    before = snapshot_tree(outside)
+    original_rename = portable._rename_sync_path
+    swapped = False
+
+    def swap_before_first_live_rename(
+        repository: Path, source: Path, target: Path, **kwargs: object
+    ) -> None:
+        nonlocal swapped
+        if source == root / ".claude/skills" and not swapped:
+            swapped = True
+            (root / ".claude").rename(detached)
+            outside.rename(root / ".claude")
+            try:
+                original_rename(repository, source, target, **kwargs)
+            finally:
+                (root / ".claude").rename(outside)
+                detached.rename(root / ".claude")
+            return
+        original_rename(repository, source, target, **kwargs)
+
+    monkeypatch.setattr(portable, "_rename_sync_path", swap_before_first_live_rename)
+
+    with pytest.raises(ValueError, match="changed|identity|bound|directory"):
+        portable.sync_portable_skill_mirrors(root, apply=True)
+
+    assert swapped
+    assert snapshot_tree(outside) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent-swap race")
+def test_sync_apply_binds_live_parent_before_staging(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    _add_custom_canonical_skill(root)
+    detached = root / ".claude-detached"
+    outside = tmp_path / "outside-claude"
+    outside_skills = outside / "skills"
+    outside_skills.mkdir(parents=True)
+    (outside_skills / "sentinel").write_text(
+        "outside owner bytes\n", encoding="utf-8"
+    )
+    before = snapshot_tree(outside)
+    original_stage = portable._stage_complete_agent_mirrors
+    swapped = False
+
+    def swap_before_staging(
+        repository: Path,
+        transaction: Path,
+        canonical: skill_trees.SkillCollection,
+        **kwargs: object,
+    ):
+        nonlocal swapped
+        swapped = True
+        (root / ".claude").rename(detached)
+        outside.rename(root / ".claude")
+        try:
+            return original_stage(
+                repository, transaction, canonical, **kwargs
+            )
+        finally:
+            (root / ".claude").rename(outside)
+            detached.rename(root / ".claude")
+
+    monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", swap_before_staging)
+
+    with pytest.raises(ValueError, match="changed|identity|bound|directory"):
+        portable.sync_portable_skill_mirrors(root, apply=True)
 
     assert swapped
     assert snapshot_tree(outside) == before

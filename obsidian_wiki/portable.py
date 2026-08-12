@@ -1923,6 +1923,50 @@ def _open_portable_lock(root: Path) -> tuple[int, list[_BoundDirectory]]:
 
 
 def _ensure_portable_lock_file(root: Path) -> Path:
+    if not _sync_dirfd_supported():
+        path = root / _PORTABLE_SKILLS_LOCK
+        _assert_safe_managed_path(root, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _assert_safe_managed_path(root, path)
+        handles: list[int] = []
+        descriptor = -1
+        try:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                from obsidian_wiki.local_state import _windows_directory_guard
+
+                handles = _windows_directory_guard(root, (path.parent,))
+            flags = os.O_CREAT | os.O_RDWR
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(path, flags, 0o600)
+            metadata = os.fstat(descriptor)
+            attached = path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (metadata.st_dev, metadata.st_ino)
+                != (attached.st_dev, attached.st_ino)
+            ):
+                raise ValueError(
+                    f"portable skills lock must be a single-link ordinary file: {path}"
+                )
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:  # pragma: no cover - Windows has path-based chmod only
+                os.chmod(path, 0o600)
+            os.fsync(descriptor)
+        except OSError as exc:
+            raise ValueError(f"cannot open portable skills lock {path}: {exc}") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if handles:
+                from obsidian_wiki.local_state import _close_windows_handles
+
+                _close_windows_handles(handles)
+        return path
     descriptor, directories = _open_portable_lock(root)
     os.close(descriptor)
     _close_sync_directory_chain(directories)
@@ -2510,11 +2554,17 @@ def _open_sync_directory_chain(
         raise
 
 
-def _ensure_sync_directory(root: Path, directory: Path, *, label: str) -> None:
+def _ensure_sync_directory(
+    root: Path, directory: Path, *, label: str
+) -> tuple[int, int]:
     directories = _open_sync_directory_chain(
         root, directory, create=True, label=label
     )
-    _close_sync_directory_chain(directories)
+    try:
+        _validate_sync_directory_chain(directories, label=label)
+        return _sync_chain_identity(directories, directory, label=label)
+    finally:
+        _close_sync_directory_chain(directories)
 
 
 def _sync_chain_identity(
@@ -2681,9 +2731,15 @@ def _materialize_sync_snapshot(
     *,
     mode: int,
     entries: tuple[SkillEntry, ...],
+    parent_directories: list[_BoundDirectory] | None = None,
 ) -> None:
-    directories = _open_sync_directory_chain(
-        root, target.parent, create=True, label="materialization parent"
+    owns_directories = parent_directories is None
+    directories = (
+        _open_sync_directory_chain(
+            root, target.parent, create=True, label="materialization parent"
+        )
+        if parent_directories is None
+        else parent_directories
     )
     opened_directories: dict[tuple[str, ...], int] = {}
     root_fd = -1
@@ -2739,7 +2795,8 @@ def _materialize_sync_snapshot(
     finally:
         for descriptor in reversed(tuple(opened_directories.values())):
             os.close(descriptor)
-        _close_sync_directory_chain(directories)
+        if owns_directories:
+            _close_sync_directory_chain(directories)
 
 
 def _rename_sync_path(
@@ -2749,6 +2806,8 @@ def _rename_sync_path(
     *,
     transaction_binding: tuple[Path, tuple[int, int]] | None = None,
     expected_source_identity: tuple[int, int] | None = None,
+    expected_source_parent_identity: tuple[int, int] | None = None,
+    expected_target_parent_identity: tuple[int, int] | None = None,
 ) -> None:
     source_chain = _open_sync_directory_chain(
         root, source.parent, create=False, label="rename source"
@@ -2760,6 +2819,26 @@ def _rename_sync_path(
         )
         _validate_sync_directory_chain(source_chain, label="rename source")
         _validate_sync_directory_chain(target_chain, label="rename target")
+        if (
+            expected_source_parent_identity is not None
+            and _sync_chain_identity(
+                source_chain, source.parent, label="rename source parent"
+            )
+            != expected_source_parent_identity
+        ):
+            raise ValueError(
+                f"portable sync rename source parent identity changed: {source.parent}"
+            )
+        if (
+            expected_target_parent_identity is not None
+            and _sync_chain_identity(
+                target_chain, target.parent, label="rename target parent"
+            )
+            != expected_target_parent_identity
+        ):
+            raise ValueError(
+                f"portable sync rename target parent identity changed: {target.parent}"
+            )
         if transaction_binding is not None:
             transaction, _identity = transaction_binding
             if source.parent == transaction or source.parent.is_relative_to(transaction):
@@ -2866,6 +2945,7 @@ def _remove_sync_path(
     path: Path,
     *,
     expected_identity: tuple[int, int] | None = None,
+    expected_parent_identity: tuple[int, int] | None = None,
     transaction_binding: tuple[Path, tuple[int, int]] | None = None,
 ) -> None:
     directories = _open_sync_directory_chain(
@@ -2875,6 +2955,16 @@ def _remove_sync_path(
     try:
         parent_fd = directories[-1][2]
         _validate_sync_directory_chain(directories, label="removal parent")
+        if (
+            expected_parent_identity is not None
+            and _sync_chain_identity(
+                directories, path.parent, label="removal parent"
+            )
+            != expected_parent_identity
+        ):
+            raise ValueError(
+                f"portable sync removal parent identity changed: {path.parent}"
+            )
         if transaction_binding is not None:
             transaction, _identity = transaction_binding
             if path.parent == transaction or path.parent.is_relative_to(transaction):
@@ -2963,6 +3053,7 @@ def _rmdir_sync_path(
     root: Path,
     path: Path,
     *,
+    expected_parent_identity: tuple[int, int] | None = None,
     transaction_binding: tuple[Path, tuple[int, int]] | None = None,
 ) -> None:
     directories = _open_sync_directory_chain(
@@ -2971,6 +3062,17 @@ def _rmdir_sync_path(
     authority_directories: list[_BoundDirectory] = []
     try:
         parent_fd = directories[-1][2]
+        if (
+            expected_parent_identity is not None
+            and _sync_chain_identity(
+                directories, path.parent, label="directory removal parent"
+            )
+            != expected_parent_identity
+        ):
+            raise ValueError(
+                "portable sync directory removal parent identity changed: "
+                f"{path.parent}"
+            )
         if transaction_binding is not None:
             transaction, _identity = transaction_binding
             authority_directories = _open_sync_directory_chain(
@@ -3105,23 +3207,39 @@ def _copy_staged_replacement(
     root: Path, staged: Path, target: Path, *, bound: bool = False
 ) -> None:
     """Install a new target while retaining staged content as crash proof."""
-    if bound:
-        root_mode, expected = _bound_replacement_state(
-            root, staged, label="staged copy source"
-        )
-    else:
-        root_mode = 0o755
-        expected = _replacement_snapshot(root, staged)
-    if bound:
-        _materialize_sync_snapshot(
-            root, target, mode=root_mode, entries=expected
-        )
-    elif staged.is_dir():
-        shutil.copytree(staged, target, symlinks=True, copy_function=shutil.copy2)
-    elif staged.is_file() and not staged.is_symlink():
-        shutil.copy2(staged, target, follow_symlinks=False)
-    else:  # pragma: no cover - snapshot classification rejects this first
-        raise ValueError(f"portable upgrade staged replacement is invalid: {staged}")
+    target_parent_directories: list[_BoundDirectory] | None = None
+    try:
+        if bound:
+            target_parent_directories = _open_sync_directory_chain(
+                root,
+                target.parent,
+                create=True,
+                label="install materialization parent",
+            )
+            root_mode, expected = _bound_replacement_state(
+                root, staged, label="staged copy source"
+            )
+        else:
+            root_mode = 0o755
+            expected = _replacement_snapshot(root, staged)
+        if bound:
+            assert target_parent_directories is not None
+            _materialize_sync_snapshot(
+                root,
+                target,
+                mode=root_mode,
+                entries=expected,
+                parent_directories=target_parent_directories,
+            )
+        elif staged.is_dir():
+            shutil.copytree(staged, target, symlinks=True, copy_function=shutil.copy2)
+        elif staged.is_file() and not staged.is_symlink():
+            shutil.copy2(staged, target, follow_symlinks=False)
+        else:  # pragma: no cover - snapshot classification rejects this first
+            raise ValueError(f"portable upgrade staged replacement is invalid: {staged}")
+    finally:
+        if target_parent_directories is not None:
+            _close_sync_directory_chain(target_parent_directories)
     actual = (
         _bound_replacement_state(root, target, label="install copy postimage")
         if bound
@@ -3508,6 +3626,7 @@ def _remove_transaction_target(
     *,
     operation: ReplacementOperation = UPGRADE_OPERATION,
     sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+    sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> None:
     if operation == SYNC_OPERATION:
         _assert_sync_transaction_binding(
@@ -3516,7 +3635,10 @@ def _remove_transaction_target(
             label="rollback removal authority",
         )
         _remove_sync_path(
-            root, path, transaction_binding=sync_transaction_binding
+            root,
+            path,
+            expected_parent_identity=(sync_parent_identities or {}).get(path.parent),
+            transaction_binding=sync_transaction_binding,
         )
         return
     _assert_safe_managed_path(root, path)
@@ -3538,6 +3660,7 @@ def _rollback_upgrade_records(
     operation: ReplacementOperation = UPGRADE_OPERATION,
     removable_new_targets: set[Path] | None = None,
     sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+    sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> list[str]:
     removable = removable_new_targets or set()
     errors: list[str] = []
@@ -3558,6 +3681,12 @@ def _rollback_upgrade_records(
                             backup,
                             target,
                             transaction_binding=sync_transaction_binding,
+                            expected_source_parent_identity=(
+                                sync_parent_identities or {}
+                            ).get(backup.parent),
+                            expected_target_parent_identity=(
+                                sync_parent_identities or {}
+                            ).get(target.parent),
                         )
                     else:
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -3570,6 +3699,7 @@ def _rollback_upgrade_records(
                         backup,
                         operation=operation,
                         sync_transaction_binding=sync_transaction_binding,
+                        sync_parent_identities=sync_parent_identities,
                     )
                     continue
                 if staged is not None and target_snapshot == snapshot(
@@ -3580,6 +3710,7 @@ def _rollback_upgrade_records(
                         target,
                         operation=operation,
                         sync_transaction_binding=sync_transaction_binding,
+                        sync_parent_identities=sync_parent_identities,
                     )
                     if operation == SYNC_OPERATION:
                         _rename_sync_path(
@@ -3587,6 +3718,12 @@ def _rollback_upgrade_records(
                             backup,
                             target,
                             transaction_binding=sync_transaction_binding,
+                            expected_source_parent_identity=(
+                                sync_parent_identities or {}
+                            ).get(backup.parent),
+                            expected_target_parent_identity=(
+                                sync_parent_identities or {}
+                            ).get(target.parent),
                         )
                     else:
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -3606,6 +3743,7 @@ def _rollback_upgrade_records(
                     target,
                     operation=operation,
                     sync_transaction_binding=sync_transaction_binding,
+                    sync_parent_identities=sync_parent_identities,
                 )
             elif not target.exists():
                 raise OSError(f"original target and backup are both missing: {target}")
@@ -3620,6 +3758,7 @@ def _rollback_created_parents(
     *,
     operation: ReplacementOperation = UPGRADE_OPERATION,
     sync_transaction_binding: tuple[Path, tuple[int, int]] | None = None,
+    sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     for parent in reversed(created_parents):
@@ -3633,6 +3772,9 @@ def _rollback_created_parents(
                 _rmdir_sync_path(
                     root,
                     parent,
+                    expected_parent_identity=(sync_parent_identities or {}).get(
+                        parent.parent
+                    ),
                     transaction_binding=sync_transaction_binding,
                 )
                 continue
@@ -3771,6 +3913,16 @@ def _recover_replacement_transactions(
                 transaction_identity,
                 label="authorized recovery transaction",
             )
+        sync_parent_identities = (
+            _capture_sync_parent_identities(
+                root,
+                transaction,
+                records,
+                created_parents=created_parents,
+            )
+            if operation == SYNC_OPERATION and payload["status"] == "prepared"
+            else {}
+        )
         if payload["status"] == "committed":
             _cleanup_replacement_transaction(
                 root,
@@ -3787,6 +3939,7 @@ def _recover_replacement_transactions(
             sync_transaction_binding=(transaction, transaction_identity)
             if transaction_identity is not None
             else None,
+            sync_parent_identities=sync_parent_identities,
         )
         errors.extend(
             _rollback_created_parents(
@@ -3796,6 +3949,7 @@ def _recover_replacement_transactions(
                 sync_transaction_binding=(transaction, transaction_identity)
                 if transaction_identity is not None
                 else None,
+                sync_parent_identities=sync_parent_identities,
             )
         )
         if errors:
@@ -3917,6 +4071,8 @@ def _prepare_replacement_journal(
     transaction: Path,
     operation: ReplacementOperation,
     replacements: list[tuple[Path, Path | None]],
+    *,
+    precreated_parents: tuple[Path, ...] = (),
 ) -> tuple[dict[str, object], list[tuple[Path, Path, Path | None, bool]]]:
     if operation == SYNC_OPERATION:
         _ensure_sync_directory(
@@ -3951,7 +4107,7 @@ def _prepare_replacement_journal(
                 "target": _repo_relative_path(root, target),
             }
         )
-    created_parents: set[Path] = set()
+    created_parents: set[Path] = set(precreated_parents)
     for target, _staged in replacements:
         parent = target.parent
         while parent != root and not parent.exists():
@@ -3988,12 +4144,82 @@ def _prepare_upgrade_journal(
     )
 
 
+def _capture_sync_parent_identities(
+    root: Path,
+    transaction: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    created_parents: tuple[Path, ...],
+    initial: Mapping[Path, tuple[int, int]] | None = None,
+) -> dict[Path, tuple[int, int]]:
+    """Bind every parent that a sync apply or rollback may mutate."""
+    parents = {root, transaction / "backups", transaction / "install"}
+    for target, backup, _staged, _had_target in records:
+        parents.add(target.parent)
+        parents.add(backup.parent)
+    allowed_creations = set(created_parents)
+    identities = dict(initial or {})
+    for parent, identity in identities.items():
+        _assert_sync_directory_identity(
+            root, parent, identity, label="initial mutation parent"
+        )
+    for parent in sorted(parents, key=lambda path: (len(path.parts), path.as_posix())):
+        if parent in identities:
+            continue
+        if parent in allowed_creations:
+            identities[parent] = _ensure_sync_directory(
+                root, parent, label="mutation parent"
+            )
+        else:
+            identities[parent] = _sync_directory_identity(
+                root, parent, label="mutation parent"
+            )
+    return identities
+
+
+def _capture_sync_agent_parent_identities(
+    root: Path,
+) -> tuple[dict[Path, tuple[int, int]], tuple[Path, ...]]:
+    identities: dict[Path, tuple[int, int]] = {
+        root: _sync_directory_identity(root, root, label="repository mutation root")
+    }
+    created: list[Path] = []
+    try:
+        for relative, _label in PROJECT_AGENT_DIRS:
+            parent = (root / relative).parent
+            existed = parent.exists() or parent.is_symlink()
+            if not existed:
+                created.append(parent)
+            identities[parent] = _ensure_sync_directory(
+                root, parent, label="agent mutation parent"
+            )
+    except BaseException as original_error:
+        rollback_errors = _rollback_created_parents(
+            root,
+            tuple(sorted(created, key=lambda path: _parent_path_order(root, path))),
+            operation=SYNC_OPERATION,
+            sync_parent_identities=identities,
+        )
+        if rollback_errors:
+            raise OSError(
+                "portable skill sync parent preparation failed "
+                f"({original_error}); rollback is incomplete: "
+                + "; ".join(rollback_errors)
+            ) from original_error
+        raise
+    return identities, tuple(
+        sorted(created, key=lambda path: _parent_path_order(root, path))
+    )
+
+
 def _apply_journaled_replacements(
     root: Path,
     transaction: Path,
     operation: ReplacementOperation,
     payload: dict[str, object],
     records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    initial_sync_parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> None:
     created_targets: set[Path] = set()
     transaction_identity = (
@@ -4009,7 +4235,16 @@ def _apply_journaled_replacements(
     _status, _validated_records, created_parents = _journal_records(
         root, transaction, operation, payload
     )
+    sync_parent_identities: dict[Path, tuple[int, int]] = {}
     try:
+        if operation == SYNC_OPERATION:
+            sync_parent_identities = _capture_sync_parent_identities(
+                root,
+                transaction,
+                records,
+                created_parents=created_parents,
+                initial=initial_sync_parent_identities,
+            )
         for index, (target, backup, staged, had_target) in enumerate(records):
             install = transaction / "install" / str(index)
             if staged is not None:
@@ -4038,6 +4273,12 @@ def _apply_journaled_replacements(
                         target,
                         backup,
                         transaction_binding=sync_transaction_binding,
+                        expected_source_parent_identity=sync_parent_identities[
+                            target.parent
+                        ],
+                        expected_target_parent_identity=sync_parent_identities[
+                            backup.parent
+                        ],
                     )
                 else:
                     if not target.exists():
@@ -4055,6 +4296,12 @@ def _apply_journaled_replacements(
                         install,
                         target,
                         transaction_binding=sync_transaction_binding,
+                        expected_source_parent_identity=sync_parent_identities[
+                            install.parent
+                        ],
+                        expected_target_parent_identity=sync_parent_identities[
+                            target.parent
+                        ],
                     )
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -4070,6 +4317,7 @@ def _apply_journaled_replacements(
             operation=operation,
             removable_new_targets=created_targets,
             sync_transaction_binding=sync_transaction_binding,
+            sync_parent_identities=sync_parent_identities,
         )
         rollback_errors.extend(
             _rollback_created_parents(
@@ -4077,6 +4325,7 @@ def _apply_journaled_replacements(
                 created_parents,
                 operation=operation,
                 sync_transaction_binding=sync_transaction_binding,
+                sync_parent_identities=sync_parent_identities,
             )
         )
         if rollback_errors:
@@ -4153,11 +4402,21 @@ def _stage_complete_agent_mirrors(
     root: Path,
     transaction: Path,
     canonical: SkillCollection,
+    *,
+    parent_identities: Mapping[Path, tuple[int, int]] | None = None,
 ) -> list[tuple[Path, Path | None]]:
     replacements: list[tuple[Path, Path | None]] = []
     canonical_entries = _canonical_skill_entries(canonical)
     for index, (relative, _label) in enumerate(PROJECT_AGENT_DIRS):
         target = root / relative
+        expected_parent = (parent_identities or {}).get(target.parent)
+        if expected_parent is not None:
+            _assert_sync_directory_identity(
+                root,
+                target.parent,
+                expected_parent,
+                label="agent staging parent",
+            )
         _assert_safe_managed_path(root, target)
         target_mode = 0o755
         if target.exists() or target.is_symlink():
@@ -4166,6 +4425,13 @@ def _stage_complete_agent_mirrors(
                 root, target, label="agent mirror preflight"
             )
             target_mode = _bound_directory_mode(root, target)
+        if expected_parent is not None:
+            _assert_sync_directory_identity(
+                root,
+                target.parent,
+                expected_parent,
+                label="agent staging parent",
+            )
         staged = transaction / "staged" / "mirrors" / str(index)
         _materialize_sync_snapshot(
             root, staged, mode=target_mode, entries=canonical_entries
@@ -4195,22 +4461,50 @@ def sync_portable_skill_mirrors(
         canonical = discover_anchored_skill_collection(root / ".skills", anchor=root)
         transaction = _create_replacement_transaction(root, SYNC_OPERATION)
         journal_written = False
+        parent_identities: dict[Path, tuple[int, int]] = {}
+        precreated_parents: tuple[Path, ...] = ()
         try:
+            parent_identities, precreated_parents = (
+                _capture_sync_agent_parent_identities(root)
+            )
             replacements = _stage_complete_agent_mirrors(
-                root, transaction, canonical
+                root,
+                transaction,
+                canonical,
+                parent_identities=parent_identities,
             )
             payload, records = _prepare_replacement_journal(
-                root, transaction, SYNC_OPERATION, replacements
+                root,
+                transaction,
+                SYNC_OPERATION,
+                replacements,
+                precreated_parents=precreated_parents,
             )
             journal_written = True
         except BaseException:
             if not journal_written:
+                rollback_errors = _rollback_created_parents(
+                    root,
+                    precreated_parents,
+                    operation=SYNC_OPERATION,
+                    sync_parent_identities=parent_identities,
+                )
                 _cleanup_replacement_transaction(
                     root, transaction, SYNC_OPERATION
                 )
+                if rollback_errors:
+                    raise OSError(
+                        "portable skill sync preparation rollback is incomplete: "
+                        + "; ".join(rollback_errors)
+                    )
             raise
         _apply_journaled_replacements(
-            root, transaction, SYNC_OPERATION, payload, records
+            root,
+            transaction,
+            SYNC_OPERATION,
+            payload,
+            records,
+            initial_sync_parent_identities=parent_identities,
         )
         verified = plan_portable_skill_sync(root)
         if verified.status != "clean":
