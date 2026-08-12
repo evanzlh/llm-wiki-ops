@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -169,6 +170,36 @@ def test_graph_query_command_is_removed(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("sync",),
+        ("sync-setup", "git@example.invalid:wiki.git"),
+        ("repo", "migrate", "--root", ".", "--vault", "wiki", "--sources", "sources"),
+    ],
+)
+def test_personal_git_and_migration_commands_are_removed(
+    args: tuple[str, ...], tmp_path: Path
+) -> None:
+    result = run_cli(tmp_path / "home", tmp_path, *args)
+
+    assert result.returncode == 2
+
+
+@pytest.mark.parametrize("module", ["obsidian_wiki.migration", "obsidian_wiki.sync"])
+def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
+    assert importlib.util.find_spec(module) is None
+
+
+def test_framework_python_has_no_git_mutation_commands() -> None:
+    forbidden = tuple(f'["git", "{verb}"' for verb in ("init", "add", "commit", "push", "remote"))
+
+    for path in sorted((ROOT / "obsidian_wiki").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for fragment in forbidden:
+            assert fragment not in source, f"{path.relative_to(ROOT)}: {fragment}"
 
 
 def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:

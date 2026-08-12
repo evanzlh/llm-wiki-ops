@@ -10,6 +10,7 @@ from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import run_doctor
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.git_support import discover_git_root, git_branch_id, tracked_paths
+from obsidian_wiki.local_state import authoritative_fingerprint
 from obsidian_wiki.portable import setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 
@@ -78,6 +79,32 @@ def test_tracked_paths_are_repo_relative_and_sorted(tmp_path: Path) -> None:
 
 def test_tracked_paths_without_git_are_empty(tmp_path: Path) -> None:
     assert tracked_paths(tmp_path) == ()
+
+
+def test_authoritative_fingerprint_includes_read_only_branch_identity(
+    tmp_path: Path,
+) -> None:
+    source_skills = tmp_path / "source-skills"
+    skill = source_skills / "wiki-query"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: wiki-query\ndescription: Query the portable wiki.\n---\n\n"
+        "# Query\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "knowledge"
+    setup_portable_repo(root, version=__version__, source_skills=source_skills)
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    git(root, "init", "-q")
+
+    before = authoritative_fingerprint(config)
+    git(root, "symbolic-ref", "HEAD", "refs/heads/fingerprint-input")
+
+    assert authoritative_fingerprint(config) != before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permits byte-oriented path names")
