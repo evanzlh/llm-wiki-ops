@@ -15,6 +15,12 @@ from obsidian_wiki import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REMOVED_SKILL_PATHS = {
+    "obsidian_wiki/_data/skills/memory-bridge",
+    "obsidian_wiki/_data/skills/wiki-dashboard",
+    "obsidian_wiki/_data/skills/wiki-stage-commit",
+    "obsidian_wiki/_data/skills/wiki-switch",
+}
 
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -198,6 +204,23 @@ def test_personal_git_and_migration_commands_are_removed(
 @pytest.mark.parametrize("module", ["obsidian_wiki.migration", "obsidian_wiki.sync"])
 def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
     assert importlib.util.find_spec(module) is None
+
+
+def test_personal_only_skill_directories_are_removed_without_compatibility_stubs() -> None:
+    assert REMOVED_SKILL_PATHS == {
+        "obsidian_wiki/_data/skills/memory-bridge",
+        "obsidian_wiki/_data/skills/wiki-dashboard",
+        "obsidian_wiki/_data/skills/wiki-stage-commit",
+        "obsidian_wiki/_data/skills/wiki-switch",
+    }
+    for relative in REMOVED_SKILL_PATHS:
+        assert not (ROOT / relative).exists()
+
+    skills = ROOT / "obsidian_wiki/_data/skills"
+    for skill_file in skills.glob("*/SKILL.md"):
+        content = skill_file.read_text(encoding="utf-8")
+        assert "compatibility alias" not in content.lower(), skill_file
+        assert "dashboard stub" not in content.lower(), skill_file
 
 
 def _git_boundary_violations(source: str) -> list[str]:

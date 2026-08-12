@@ -10,6 +10,9 @@ from obsidian_wiki.transaction_guidance import guidance_for_record
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md"
+TRANSACTION_REVIEW = (
+    ROOT / "obsidian_wiki/_data/skills/wiki-transaction-review/SKILL.md"
+)
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -158,3 +161,34 @@ def test_recovery_protocol_cross_checks_identity_requirements_and_outcomes() -> 
         "restore`, `abort`, and `discard` do not trigger hot refresh",
     ):
         assert required in flat
+
+
+def test_transaction_review_uses_the_cli_owned_review_and_recovery_protocol() -> None:
+    text = TRANSACTION_REVIEW.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+
+    for required in (
+        "obsidian-wiki transaction list --json --pretty",
+        "candidate_vault",
+        "sources",
+        "pages",
+        "deletions",
+        "status",
+        "recommended_action",
+        "allowed_actions",
+        "prospective diff",
+        "obsidian-wiki transaction validate <id> --json --pretty",
+        "obsidian-wiki transaction commit <id> --json --pretty",
+        "explicit user approval",
+        "abort",
+        "discard",
+        "`requires`",
+        "transaction ID",
+        "refreshed record's status",
+        "ambiguous",
+        "Do not commit, push, or open a pull request",
+    ):
+        assert required in flat
+
+    for forbidden in ("_staging", "_raw", "WIKI_STAGED_WRITES"):
+        assert forbidden not in text

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -698,15 +699,26 @@ def test_legacy_digest_capture_preserves_read_error_over_close_error(
     assert "secondary close failure" not in str(error.value)
 
 
-def test_committed_legacy_catalog_covers_every_bundled_skill_name() -> None:
+def test_committed_legacy_catalog_retains_only_the_replaced_historical_skills() -> None:
     payload = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert [item["label"] for item in payload["collections"]] == [
         "portable-adapter-baseline-7596215"
     ]
+    catalog = payload["collections"][0]["skills"]
     discovered = discover_skill_collection(
         DATA / "skills", ignore_source_artifacts=True
     )
-    assert set(payload["collections"][0]["skills"]) == {
-        skill.name for skill in discovered.skills
+    current = {skill.name for skill in discovered.skills}
+    removed = {
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
     }
+
+    assert set(catalog) - current == removed
+    assert current - set(catalog) == {"wiki-transaction-review"}
+    assert "wiki-transaction-review" not in catalog
+    for name in removed:
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", catalog[name])

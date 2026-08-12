@@ -704,6 +704,103 @@ def test_setup_writes_complete_mirrors_and_v2_inventory(
     assert (root / ".skills/wiki-ingest/scripts/run.sh").stat().st_mode & 0o111
 
 
+def test_bundled_setup_installs_the_exact_current_skill_inventory(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    bundled = tuple(cli.list_skills())
+
+    setup_portable_repo(root, version=__version__, source_skills=cli.skills_dir())
+
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skills == bundled
+    assert discover_skill_collection(root / ".skills").names == bundled
+    assert_all_agent_mirrors_match(root)
+    assert "wiki-transaction-review" in bundled
+    assert set(bundled).isdisjoint(
+        {"memory-bridge", "wiki-dashboard", "wiki-stage-commit", "wiki-switch"}
+    )
+
+
+def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    legacy_source = tmp_path / "legacy-skills"
+    shutil.copytree(cli.skills_dir(), legacy_source)
+    review = legacy_source / "wiki-transaction-review"
+    if review.exists():
+        shutil.rmtree(review)
+    removed = {"memory-bridge", "wiki-dashboard", "wiki-stage-commit", "wiki-switch"}
+    for name in removed:
+        skill = legacy_source / name
+        skill.mkdir(exist_ok=True)
+        (skill / "SKILL.md").write_text(skill_markdown(name), encoding="utf-8")
+    setup_portable_repo(root, version=__version__, source_skills=legacy_source)
+    owner_paths = [root / ".skills/team-owned"] + [
+        root / agent_relative / "team-owned"
+        for agent_relative, _label in portable.PROJECT_AGENT_DIRS
+    ]
+    for path in owner_paths:
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(
+            skill_markdown("team-owned", "Team-owned workflow."), encoding="utf-8"
+        )
+    owner_before = {path: snapshot_tree(path) for path in owner_paths}
+    make_legacy_adapter_repo(root)
+    assert isinstance(read_inventory(root, allow_legacy=True), LegacyManagedSkillsInventory)
+
+    upgrade_portable_skills(root, version=__version__, source_skills=cli.skills_dir())
+
+    expected = tuple(cli.list_skills())
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skills == expected
+    assert discover_skill_collection(root / ".skills").names == tuple(
+        sorted((*expected, "team-owned"))
+    )
+    assert_all_agent_mirrors_match(root)
+    for name in removed:
+        assert not (root / ".skills" / name).exists()
+    assert (root / ".skills/wiki-transaction-review/SKILL.md").is_file()
+    assert {path: snapshot_tree(path) for path in owner_paths} == owner_before
+    assert not list(
+        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+    )
+
+
+def test_bundled_upgrade_refuses_an_owner_modified_removed_skill_adapter(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    legacy_source = tmp_path / "legacy-skills"
+    shutil.copytree(cli.skills_dir(), legacy_source)
+    shutil.rmtree(legacy_source / "wiki-transaction-review")
+    for name in (
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
+    ):
+        skill = legacy_source / name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(skill_markdown(name), encoding="utf-8")
+    setup_portable_repo(root, version=__version__, source_skills=legacy_source)
+    make_legacy_adapter_repo(root)
+    modified = root / ".claude/skills/wiki-switch/SKILL.md"
+    modified.write_text(
+        modified.read_text(encoding="utf-8") + "\nOwner modification.\n",
+        encoding="utf-8",
+    )
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="adapter|legacy"):
+        upgrade_portable_skills(
+            root, version=__version__, source_skills=cli.skills_dir()
+        )
+
+    assert snapshot_tree(root) == before
+
+
 def test_skill_sync_plan_reports_all_agent_additions_without_writing(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

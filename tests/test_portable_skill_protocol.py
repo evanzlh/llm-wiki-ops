@@ -1,9 +1,12 @@
 from pathlib import Path
 
+from obsidian_wiki.frontmatter import parse_frontmatter
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = "obsidian_wiki/_data/skills/llm-wiki/SKILL.md"
 SETUP = "obsidian_wiki/_data/skills/wiki-setup/SKILL.md"
+TRANSACTION_REVIEW = "obsidian_wiki/_data/skills/wiki-transaction-review/SKILL.md"
 BOOTSTRAPS = (
     "obsidian_wiki/_data/bootstrap/AGENTS.md",
     "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
@@ -74,3 +77,24 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
     assert "does not bypass compatibility checks or rewrite `requires_cli`" in flat
     assert "upgrade-skills --dry-run" not in flat
     assert "review its proposed changes" not in flat
+
+
+def test_transaction_review_resolves_repository_authority_before_listing() -> None:
+    review = text(TRANSACTION_REVIEW)
+    flat = " ".join(review.split())
+
+    frontmatter = parse_frontmatter(review)
+
+    assert "name: wiki-transaction-review" in review
+    assert frontmatter.scalars["name"] == "wiki-transaction-review"
+    assert frontmatter.scalars["description"].startswith("Use when ")
+    for required in (
+        "nearest ancestor `.obsidian-wiki/config.toml`",
+        "repository root",
+        "root `AGENTS.md`",
+        "vault `AGENTS.md`",
+        "canonical `llm-wiki`",
+        "obsidian-wiki transaction list --json --pretty",
+        "Do not infer",
+    ):
+        assert required in flat
