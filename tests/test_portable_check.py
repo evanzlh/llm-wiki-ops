@@ -1221,6 +1221,34 @@ def test_valid_portable_repo_passes(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+@pytest.mark.parametrize("kind", ["directory", "file", "dangling-symlink"])
+def test_check_rejects_unsupported_personal_vault_artifacts(
+    tmp_path: Path, name: str, kind: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    artifact = root / "wiki" / name
+    if artifact.is_dir() and not artifact.is_symlink():
+        shutil.rmtree(artifact)
+    elif artifact.exists() or artifact.is_symlink():
+        artifact.unlink()
+    if kind == "directory":
+        artifact.mkdir()
+    elif kind == "file":
+        artifact.write_text("personal artifact\n", encoding="utf-8")
+    else:
+        artifact.symlink_to(root / "missing-personal-artifact")
+
+    report = check_portable_repo(config)
+
+    assert {
+        "code": "unsupported-personal-artifact",
+        "path": f"wiki/{name}",
+        "message": "Personal vault artifact is not supported",
+        "severity": "error",
+    } in report["issues"]
+
+
 def test_valid_portable_repo_accepts_supported_nested_frontmatter(
     tmp_path: Path,
 ) -> None:

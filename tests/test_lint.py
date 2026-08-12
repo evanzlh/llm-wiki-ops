@@ -145,6 +145,23 @@ def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path
     assert report["findings"]["typed_relationship_issues"] == []
 
 
+def test_lint_does_not_hide_unsupported_personal_artifact_paths(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    for name in ("_archives", "_raw", "_readouts", "_staging"):
+        _page(vault, f"{name}/legacy.md", include_frontmatter=False)
+
+    report = lint_vault(vault)
+
+    assert {
+        item["page"] for item in report["findings"]["missing_frontmatter"]
+    } == {
+        "_archives/legacy.md",
+        "_raw/legacy.md",
+        "_readouts/legacy.md",
+        "_staging/legacy.md",
+    }
+
+
 def test_parse_page_text_preserves_wikilink_and_markdown_targets() -> None:
     parsed = parse_page_text(
         "concepts/alpha.md",

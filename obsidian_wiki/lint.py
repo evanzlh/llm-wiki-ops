@@ -16,7 +16,7 @@ from obsidian_wiki.trust import (
     validate_trust_metadata,
 )
 
-SKIP_DIRS = frozenset("_raw _archived _staging _archives _bootstrap .obsidian .git".split())
+SKIP_DIRS = frozenset("_archived _bootstrap .obsidian .git".split())
 REQUIRED_FRONTMATTER = (
     "title",
     "category",

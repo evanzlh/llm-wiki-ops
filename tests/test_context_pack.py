@@ -57,11 +57,28 @@ Prefer short-lived access tokens.
     assert page.base_confidence == "0.82"
 
 
-def test_load_pages_skips_control_and_staging_paths(tmp_path: Path) -> None:
+def test_load_pages_does_not_hide_unsupported_personal_artifact_paths(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
-    for relative, text in (("AGENTS.md", "# Instructions\n"), ("hot.md", "# Hot\n"), ("_raw/draft.md", "# Draft\n"), ("_staging/review.md", "# Review\n"), ("_archives/old.md", "# Old\n"), ("AI/kept.md", "# Kept\n\nUseful knowledge.\n")):
+    pages = (
+        ("AGENTS.md", "# Instructions\n"),
+        ("hot.md", "# Hot\n"),
+        ("_raw/draft.md", "# Draft\n"),
+        ("_staging/review.md", "# Review\n"),
+        ("_archives/old.md", "# Old\n"),
+        ("_readouts/brief.md", "# Brief\n"),
+        ("AI/kept.md", "# Kept\n\nUseful knowledge.\n"),
+    )
+    for relative, text in pages:
         write_note(vault, relative, text)
-    assert [page.path for page in load_pages(vault)] == ["AI/kept.md"]
+    assert [page.path for page in load_pages(vault)] == [
+        "AI/kept.md",
+        "_archives/old.md",
+        "_raw/draft.md",
+        "_readouts/brief.md",
+        "_staging/review.md",
+    ]
 
 
 def test_public_only_filters_before_ranking(tmp_path: Path) -> None:

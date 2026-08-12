@@ -357,3 +357,34 @@ def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "_legacy_settings" not in source, relative
         assert "cli_args.pop(" not in source, relative
+
+
+def test_personal_vault_artifact_literals_are_centralized() -> None:
+    governed_modules = (
+        "obsidian_wiki/config.py",
+        "obsidian_wiki/portable.py",
+        "obsidian_wiki/portable_check.py",
+        "obsidian_wiki/context_pack.py",
+        "obsidian_wiki/lint.py",
+        "obsidian_wiki/transaction.py",
+    )
+    occurrences: dict[str, list[str]] = {
+        value: []
+        for value in (
+            "OBSIDIAN_RAW_DIR",
+            "_archives",
+            "_raw",
+            "_readouts",
+            "_staging",
+        )
+    }
+    for relative in governed_modules:
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value in occurrences:
+                occurrences[node.value].append(f"{relative}:{node.lineno}")
+
+    assert occurrences["OBSIDIAN_RAW_DIR"] == []
+    for value in ("_archives", "_raw", "_readouts", "_staging"):
+        assert len(occurrences[value]) == 1
+        assert occurrences[value][0].startswith("obsidian_wiki/portable.py:")

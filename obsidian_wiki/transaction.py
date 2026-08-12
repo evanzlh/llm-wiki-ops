@@ -125,11 +125,7 @@ _CONTROL_DIRECTORIES = frozenset(
         ".manifest",
         ".obsidian",
         ".obsidian-wiki",
-        "_archives",
         "_meta",
-        "_raw",
-        "_readouts",
-        "_staging",
     }
 )
 _TRACKED_ROOT_GRAPH_PAGES = frozenset({"index.md", "log.md"})

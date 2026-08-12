@@ -520,7 +520,6 @@ def test_portable_config_is_relative_minimal_and_loadable(
         "OBSIDIAN_CATEGORIES": "concepts,entities,skills,references,synthesis,journal,projects",
         "OBSIDIAN_MAX_PAGES_PER_INGEST": "15",
         "OBSIDIAN_LINK_FORMAT": "wikilink",
-        "OBSIDIAN_RAW_DIR": "_raw",
         "OBSIDIAN_TRUST_STRICT": "false",
     }
 
@@ -564,7 +563,11 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     for relative in (*PORTABLE_VAULT_DIRS, ".manifest/sources"):
         assert (vault / relative).is_dir(), relative
     assert (root / "sources").is_dir()
-    assert not (vault / "_staging").exists()
+    for unsupported in ("_archives", "_raw", "_readouts", "_staging"):
+        assert not (vault / unsupported).exists()
+    assert "OBSIDIAN_RAW_DIR" not in (
+        root / ".obsidian-wiki/config.toml"
+    ).read_text(encoding="utf-8")
     assert not (vault / "hot.md").exists()
     assert json.loads((vault / ".manifest.json").read_text()) == {
         "schema_version": 2,

@@ -27,6 +27,7 @@ from .portable import (
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
     PROJECT_AGENT_DIRS,
+    UNSUPPORTED_PERSONAL_VAULT_PATHS,
     _bootstrap_body,
     render_portable_gitattributes,
 )
@@ -247,6 +248,21 @@ def _load_manifest(
         )
         return None, []
     return store, entries
+
+
+def _check_unsupported_personal_artifacts(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> None:
+    for name in UNSUPPORTED_PERSONAL_VAULT_PATHS:
+        path = config.vault / name
+        if path.exists() or path.is_symlink():
+            issues.append(
+                CheckIssue(
+                    "unsupported-personal-artifact",
+                    _rel(config.root, path),
+                    "Personal vault artifact is not supported",
+                )
+            )
 
 
 def _source_files(
@@ -1073,6 +1089,7 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     if loaded is None:
         return _report(issues)
 
+    _check_unsupported_personal_artifacts(loaded, issues)
     store, entries = _load_manifest(loaded, issues)
     if store is not None:
         _check_sources(store, entries, issues)

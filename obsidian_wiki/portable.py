@@ -80,9 +80,13 @@ PORTABLE_VAULT_DIRS = (
     "journal/operations",
     "projects",
     "_meta",
+    ".obsidian",
+)
+UNSUPPORTED_PERSONAL_VAULT_PATHS = (
+    "_archives",
     "_raw",
     "_readouts",
-    ".obsidian",
+    "_staging",
 )
 PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
@@ -1027,7 +1031,6 @@ def render_portable_config(
         'OBSIDIAN_CATEGORIES = "concepts,entities,skills,references,synthesis,journal,projects"\n'
         "OBSIDIAN_MAX_PAGES_PER_INGEST = 15\n"
         'OBSIDIAN_LINK_FORMAT = "wikilink"\n'
-        'OBSIDIAN_RAW_DIR = "_raw"\n'
         "OBSIDIAN_TRUST_STRICT = false\n"
     )
 
