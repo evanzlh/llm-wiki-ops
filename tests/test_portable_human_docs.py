@@ -5,6 +5,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+PORTABLE_SKILL_MIRRORS = (
+    ".claude/skills",
+    ".cursor/skills",
+    ".windsurf/skills",
+    ".agents/skills",
+    ".pi/skills",
+    ".kiro/skills",
+)
+
+USER_FACING_SKILL_DOCS = (
+    "README.md",
+    "README_ZH.md",
+    "docs/installation.md",
+    "docs/agents.md",
+    "docs/skills.md",
+    "docs/cli.md",
+    "docs/configuration.md",
+    "docs/architecture.md",
+    "docs/contributing.md",
+)
+
 
 def _text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
@@ -341,3 +362,68 @@ def test_skills_portable_contract_is_mode_local() -> None:
         "hot freshness gate",
     ):
         assert required in flat
+
+
+def test_human_docs_define_canonical_skills_and_complete_agent_mirrors() -> None:
+    architecture = _flat_text(
+        _section("docs/architecture.md", 2, "Portable repository layer")
+    )
+    agents = _flat_text(_text("docs/agents.md"))
+    skills = _flat_text(_text("docs/skills.md"))
+    contributing = _flat_text(_text("docs/contributing.md"))
+
+    assert "`obsidian_wiki/_data/skills/`" in skills
+    assert "only editable canonical skill tree" in architecture
+    assert "complete derived ordinary-file mirrors" in architecture
+    for mirror in PORTABLE_SKILL_MIRRORS:
+        assert f"`{mirror}/`" in agents
+    assert "never edit an agent mirror directly" in agents
+    assert "`obsidian_wiki/_data/skills/<name>/SKILL.md`" in contributing
+    assert "framework source has no local wiki skills by design" in contributing
+
+
+def test_human_docs_define_explicit_portable_skill_sync_and_upgrade_behavior() -> None:
+    cli = _flat_text(_text("docs/cli.md"))
+    installation = _flat_text(_text("docs/installation.md"))
+    configuration = _flat_text(_text("docs/configuration.md"))
+
+    for text in (cli, installation):
+        read_only = text.index("obsidian-wiki repo sync-skills --json --pretty")
+        apply = text.index(
+            "obsidian-wiki repo sync-skills --apply --json --pretty"
+        )
+        check = text.index("obsidian-wiki check --json --pretty", apply)
+        diff = text.index(
+            "git diff -- .skills .claude/skills .cursor/skills "
+            ".windsurf/skills .agents/skills .pi/skills .kiro/skills",
+            check,
+        )
+        assert read_only < apply < check < diff
+
+    for required in (
+        "read-only by default",
+        "rebuilds all six mirrors",
+        "upgrades framework-managed built-ins",
+        "preserves custom skills",
+        "refuses managed drift",
+        "unknown legacy changes",
+    ):
+        assert required in configuration
+
+
+def test_human_docs_remove_legacy_stop_capture_and_adapter_language() -> None:
+    combined = "\n".join(_text(relative) for relative in USER_FACING_SKILL_DOCS)
+    flat = _flat_text(combined)
+
+    assert "automatic Stop capture is not installed" in flat
+    assert "`/wiki-capture --quick`" in flat
+    assert "remove the old global Claude Stop Hook entry manually" in flat
+    assert "adapter" not in combined.lower()
+    assert "../.skills/" not in combined
+    for banned in (
+        '"Stop":',
+        "hooks.Stop",
+        ".claude/hooks/",
+        "install the Stop Hook",
+    ):
+        assert banned not in combined

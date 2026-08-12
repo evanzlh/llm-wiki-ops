@@ -37,6 +37,28 @@ The wiki lives at the path configured via `OBSIDIAN_VAULT_PATH` in `.env`.
 
 The rules governing how the wiki is structured — categories, conventions, page templates, and operational workflows. The schema tells the LLM *how* to maintain the wiki.
 
+### Portable skill distribution
+
+When the Config Resolution Protocol selects Portable Repository mode,
+`.skills/` is the only editable canonical skill tree. The agent-native
+directories are complete derived ordinary-file mirrors, never abbreviated
+forwarding files or symlinks. Never edit an agent mirror directly. Keep the
+repository root as CWD and use the CLI to inspect drift before explicitly
+rebuilding the mirrors:
+
+```bash
+obsidian-wiki repo sync-skills --json --pretty
+obsidian-wiki repo sync-skills --apply --json --pretty
+obsidian-wiki check --json --pretty
+git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
+```
+
+The first command is read-only. `--apply` rebuilds all six mirrors from the
+canonical tree; neither command edits canonical skills, commits, or pushes.
+Framework built-ins originate in the installed package's
+`obsidian_wiki/_data/skills/` tree, while custom skills in a portable repository
+remain owner-controlled canonical content.
+
 ## Wiki Organization
 
 The vault has two levels of structure: **categories** (what kind of knowledge) and **projects** (where the knowledge came from).

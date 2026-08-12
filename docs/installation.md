@@ -12,7 +12,9 @@ cd obsidian-wiki
 uv tool install --link-mode copy .
 ```
 
-The installed CLI carries the skills, bootstrap files, and hook assets that setup needs. It does not depend on the clone remaining at the same path.
+The installed CLI carries the complete `obsidian_wiki/_data/skills/` built-in
+tree and bootstrap files that setup needs. It does not depend on the clone
+remaining at the same path, and it installs no automatic capture Hook.
 
 Install it as a user/system uv tool, not inside the knowledge repository. Each
 contributor performs this framework-clone installation on their own machine. A
@@ -53,7 +55,7 @@ Portable setup accepts a missing target, an empty target, or a target containing
 Setup does not run `git init`, commit, or configure a remote. For a new repository, run setup first and then `git init`; a target containing only `.git` is supported for compatibility and keeps its existing Git metadata.
 
 The first-release CLI support boundary is Linux and macOS. The committed
-representation stays platform-neutral: agent adapters are regular Markdown
+representation stays platform-neutral: all six agent skill mirrors are ordinary
 files rather than symlinks and require no link privileges.
 
 ## Use an existing portable repository
@@ -68,11 +70,24 @@ obsidian-wiki query "what decisions shaped this project?"
 
 Repository-local skills and bootstrap files are tracked with the knowledge repository. See [Agent Compatibility](agents.md) for how each agent discovers them and [Configuration](configuration.md) for portable precedence.
 
+`.skills/` is the portable repository's only editable canonical skill tree.
+Agent-native skill directories are derived from it. Check and explicitly rebuild
+all six mirrors, validate the result, and inspect the complete skill diff with:
+
+```bash
+obsidian-wiki repo sync-skills --json --pretty
+obsidian-wiki repo sync-skills --apply --json --pretty
+obsidian-wiki check --json --pretty
+git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
+```
+
+The first command is read-only; `--apply` is the explicit mutation boundary.
+
 After installing a newer framework CLI, use this two-step portable CLI upgrade protocol.
 Do the work on a branch. First, deliberately update the tracked `requires_cli`
 value in `.obsidian-wiki/config.toml` to a reviewed PEP 440 constraint that
 accepts the installed version. Second, refresh only the managed repository
-skills and adapters, validate the result, and review the complete diff:
+skills and their mirrors, validate the result, and review the complete diff:
 
 ```bash
 git switch -c upgrade-portable-cli

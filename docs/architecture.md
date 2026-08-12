@@ -64,9 +64,11 @@ knowledge-repo/
 └── .claude/skills/, .cursor/skills/, ...
 ```
 
-TOML paths resolve from the repository root. Canonical skills are tracked once
-under `.skills/`; per-agent adapters are regular Markdown files with
-repository-relative references, not symlinks. The knowledge repository does
+TOML paths resolve from the repository root. `.skills/` is the only editable
+canonical skill tree. The six agent-native directories are complete derived
+ordinary-file mirrors, not symlinks or forwarding stubs; the CLI compares their
+bytes with the canonical tree and rebuilds them only on explicit apply. The
+knowledge repository does
 not contain `.venv` or a CLI runtime—each contributor installs the CLI from a
 framework clone with `uv tool install --link-mode copy .`. `obsidian-wiki repo upgrade-skills`
 refreshes only inventory-owned framework content and preserves owner files.
@@ -109,7 +111,7 @@ Portable repositories use this tracked/ignored boundary:
 | Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
 | Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
 | Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
-| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration, byte-stability rules, and agent behavior. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap and skill mirrors | Clone-independent configuration, byte-stability rules, and agent behavior. |
 | Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
 | Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
 | Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |
@@ -391,39 +393,28 @@ The OKF round-trip is lossless. The `graph.json` round-trip is not — it carrie
 
 ## Repo layout
 
-The source-built wheel is the bundled-data carrier for installed operation. It contains the canonical skills, bootstrap files, and hook assets, so the CLI built by `uv tool install --link-mode copy .` does not execute the source checkout or require the clone to remain in place.
+The source-built wheel is the bundled-data carrier for installed operation. It contains the framework built-ins and bootstrap files, so the CLI built by `uv tool install --link-mode copy .` does not execute the source checkout or require the clone to remain in place.
 
 ```
 obsidian-wiki/
-├── .skills/                             # ← Canonical skill definitions (source of truth)
-│   └── <skill-name>/SKILL.md            #   39 skills — see docs/skills.md
-│
 ├── obsidian_wiki/                       # Python package — CLI, setup, sync, session brain
+│   └── _data/
+│       ├── skills/<skill-name>/SKILL.md # Framework built-ins (source of truth)
+│       └── bootstrap/                   # Installed project-context templates
 ├── extensions/brain-capture/            # Zero-build Chrome capture extension
 ├── tools/check_readme_sync.py           # Translation drift reporter
-│
-├── CLAUDE.md                            # Bootstrap → Claude Code / Kilocode (→ AGENTS.md)
-├── GEMINI.md                            # Bootstrap → Gemini CLI (→ AGENTS.md)
-├── AGENTS.md                            # Bootstrap → Codex, OpenCode, Aider, Droid, Trae, Hermes, OpenClaw
-├── .hermes.md                           # Bootstrap → Hermes (symlink → AGENTS.md)
-├── .cursor/rules/obsidian-wiki.mdc      # Always-on → Cursor (alwaysApply: true)
-├── .windsurf/rules/obsidian-wiki.md     # Always-on → Windsurf
-├── .kiro/steering/obsidian-wiki.md      # Always-on → Kiro (inclusion: always)
-├── .agent/rules/obsidian-wiki.md        # Always-on → Google Antigravity
-├── .agent/workflows/obsidian-wiki.md    # Slash-command registry → Antigravity
-├── .github/copilot-instructions.md      # Always-on → GitHub Copilot (VS Code Chat)
-│
-├── .claude/skills/   → symlinks to .skills/*   (created by setup)
-├── .cursor/skills/   → symlinks to .skills/*
-├── .windsurf/skills/ → symlinks to .skills/*
-├── .agents/skills/   → symlinks to .skills/*
-├── .pi/skills/       → symlinks to .skills/*
-├── .kiro/skills/     → symlinks to .skills/*
-│
 ├── .env.example                         # Configuration template
 └── docs/                                # You are here
 ```
 
+The framework source intentionally has no root agent context or local skill
+discovery trees. Portable setup materializes those files only in a knowledge
+repository, where `.skills/` is canonical and the six agent directories are
+derived full mirrors.
+
 The two supported setup modes are described in [Installation](installation.md): personal mode connects bundled skills to agent-wide discovery paths, while Portable Repository mode writes tracked repository-local integrations.
 
-For the full pattern — three-layer architecture, page templates, project organization — read [`.skills/llm-wiki/SKILL.md`](../.skills/llm-wiki/SKILL.md).
+For the full pattern—three-layer architecture, page templates, and project
+organization—read the bundled
+`obsidian_wiki/_data/skills/llm-wiki/SKILL.md` source or invoke `/llm-wiki`
+through an installed agent integration.

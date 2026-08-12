@@ -8,7 +8,8 @@ description: >
   "build a domain-expert skill from my wiki", or wants to distill recurring, mature wiki knowledge
   into a shareable skill. Inspired by OpenKB's "drop in a book → out comes a digital expert" pattern.
   The factory ONLY reads the vault and WRITES TO A REVIEW DIRECTORY — it never installs skills,
-  never writes into .skills/, and never touches global skill directories.
+  never writes directly into a portable repository's canonical `.skills/`
+  tree, and never touches global skill directories.
 ---
 
 # Vault Skill Factory
@@ -20,7 +21,7 @@ conversation into a page; the factory turns a body of pages into a reusable skil
 
 ## Hard guardrails (read first)
 
-- **Never write into `.skills/`** or create symlinks into any global skill
+- **Never write into the canonical `.skills/` tree** or create symlinks into any global skill
   directory (`~/.claude/skills`, `~/.codex/skills`, …). Never run a global
   `obsidian-wiki setup` without the user's explicit agreement. Even with that
   agreement, generated skills stay in the review directory: this factory never
@@ -67,7 +68,8 @@ candidates.
 From the cluster, decide:
 
 - **`name`** — kebab-case, derived from the cluster's subject (e.g. `french-theory-expert`,
-  `peptide-protocols`). Must not collide with an existing skill in `.skills/`.
+  `peptide-protocols`). Must not collide with an existing skill in the target
+  portable repository's canonical `.skills/` tree.
 - **`description`** — the trigger. Write it "pushy" (per `skill-creator`): state **when** to use it
   (all the phrasings a user might say) **and** what it does. This field is what makes the skill fire.
 - **Reasoning approach** — how an agent should *use* this knowledge: the questions it answers, the
@@ -119,17 +121,23 @@ Tell the user:
 - the trigger `description`
 - **How to install if they want it (their decision, project-local only):**
   ```
-  ln -s ../../.skills/<name> <repo>/.claude/skills/<name>   # after copying <name>/ into .skills/, sans SKILL_FACTORY.md
+  # After human review, copy <name>/ into <repo>/.skills/<name>/ without
+  # SKILL_FACTORY.md, then rebuild every agent mirror from the repo root:
+  cd <repo>
+  obsidian-wiki repo sync-skills --apply --json --pretty
+  obsidian-wiki check --json --pretty
   ```
   Note explicitly: review first; never run a global `obsidian-wiki setup`
   without the user's explicit agreement, and never auto-install the generated
   skill even when that separate global-setup agreement exists.
 
-Do **not** install it yourself. Do not write to `.skills/`. Done.
+Do **not** install it yourself. Do not write to the canonical `.skills/` tree
+or any derived agent mirror. Done.
 
 ## Quality checklist
 
-- [ ] Output went to `$SKILL_FACTORY_OUTPUT_DIR`, never `.skills/` or a global dir
+- [ ] Output went to `$SKILL_FACTORY_OUTPUT_DIR`, never a canonical `.skills/`
+  tree, derived agent mirror, or global directory
 - [ ] Cluster confirmed with the user; only mature pages (per `SKILL_FACTORY_MATURITY` / `tier: core`)
 - [ ] `description` is pushy and accurate (when + what)
 - [ ] SKILL.md body is lean; depth lives in `references/`

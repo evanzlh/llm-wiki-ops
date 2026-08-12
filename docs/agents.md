@@ -4,10 +4,13 @@ Works with **any AI coding agent that can read files**. First install the CLI th
 
 Each agent has its own convention for discovering skills. Personal setup connects the CLI's bundled skills to agent-wide locations. Portable setup writes tracked repository-local skills and bootstrap files so collaborators get the same instructions from the knowledge repository.
 
-Portable agent adapters are regular Markdown files containing
-repository-relative references to the canonical `.skills/` copy. They are not
-symlinks, require no link privileges, and remain valid wherever the repository
-is cloned. The Config Resolution Protocol in `AGENTS.md` gives tracked
+In a portable repository, `.skills/` is the only editable canonical skill tree.
+The directories `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`,
+`.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` are complete derived
+ordinary-file mirrors, not symlinks or abbreviated forwarding files. You must
+never edit an agent mirror directly; inspect drift with `obsidian-wiki repo sync-skills`
+and rebuild all mirrors explicitly with `--apply`. The Config Resolution
+Protocol in `AGENTS.md` gives tracked
 `.obsidian-wiki/config.toml` precedence over personal `.env` and global config.
 
 ## Matrix
@@ -50,7 +53,14 @@ The first command configures personal, agent-wide discovery on the current machi
 Each collaborator installs the CLI independently from a framework clone with
 `uv tool install --link-mode copy .`; the knowledge repository itself does not contain `.venv`
 or a CLI runtime. Linux and macOS are the first-release CLI support boundary,
-while committed adapters and configuration use platform-neutral relative paths.
+while committed skill mirrors and configuration use platform-neutral relative paths.
+
+Portable setup installs no automatic conversation capture. In particular,
+automatic Stop capture is not installed; use `/wiki-capture --quick` when you
+explicitly want to preserve a small finding. If an older release added a global
+Claude hook, remove the old global Claude Stop Hook entry manually from your
+user-level Claude settings. Also remove its referenced legacy script if you no
+longer use it. Do not copy a Hook configuration into the knowledge repository.
 
 ## Portable agent write protocol
 
@@ -95,7 +105,7 @@ use the repository's branch/PR policy as the content approval boundary.
 <details>
 <summary><b>Claude Code</b></summary>
 
-Skills are auto-discovered from `.claude/skills/`. Personal setup connects the installed bundled skills there; portable repositories track their own `.claude/skills/` adapters. The `CLAUDE.md` file at the repo root is automatically loaded as project context.
+Skills are auto-discovered from `.claude/skills/`. Personal setup connects the installed bundled skills there; portable repositories track the complete `.claude/skills/` mirror. The `CLAUDE.md` file at the repo root is automatically loaded as project context.
 
 ```bash
 cd /path/to/obsidian-wiki && claude "set up my wiki"

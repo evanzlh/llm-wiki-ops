@@ -32,8 +32,21 @@ obsidian-wiki doctor
 ```
 
 Portable setup writes repository-relative `.obsidian-wiki/config.toml`, the
-vault, canonical tracked skills, regular Markdown agent adapters, and bootstrap
-files inside the target repository. It **does not write `~/.obsidian-wiki/config`**
+vault, canonical tracked skills, complete ordinary-file agent mirrors, and
+bootstrap files inside the target repository. In that repository, `.skills/`
+is the only editable canonical skill tree; the six agent-native directories are
+complete derived ordinary-file mirrors. Never edit an agent mirror directly.
+Inspect and explicitly repair mirror drift from the repository root:
+
+```bash
+obsidian-wiki repo sync-skills --json --pretty
+obsidian-wiki repo sync-skills --apply --json --pretty
+obsidian-wiki check --json --pretty
+git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
+```
+
+The first command is read-only; `--apply` is the mutation boundary. Portable
+setup **does not write `~/.obsidian-wiki/config`**
 or global agent skill directories. Do not add a
 repository `.venv`, vendor the CLI, or commit an absolute
 `OBSIDIAN_WIKI_REPO`; each contributor installs the CLI separately from a
@@ -42,6 +55,12 @@ framework clone:
 ```bash
 uv tool install --link-mode copy .
 ```
+
+Portable setup installs no conversation-end automation: automatic Stop capture is not installed. Quick capture remains an explicit user action through
+`/wiki-capture --quick`. If a previous version configured a user-level Claude
+hook, remove the old global Claude Stop Hook entry manually from the user's
+Claude settings and remove the referenced legacy script when it is no longer
+needed. Do not write a Hook configuration into the portable repository.
 
 Portable setup accepts a missing target, an empty target, or a target containing
 only an ordinary `.git` directory. It preserves an existing `.git` directory

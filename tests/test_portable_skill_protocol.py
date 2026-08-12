@@ -449,12 +449,41 @@ def test_portable_setup_never_writes_global_config() -> None:
         assert phrase in text
 
 
+def test_runtime_protocol_explains_canonical_tree_and_agent_mirrors() -> None:
+    runtime_docs = (
+        "obsidian_wiki/_data/skills/llm-wiki/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-setup/SKILL.md",
+    )
+    for relative in runtime_docs:
+        text = _text(relative)
+        flat = " ".join(text.split())
+        assert "`.skills/` is the only editable canonical skill tree" in flat
+        assert "complete derived ordinary-file mirrors" in flat
+        assert "Never edit an agent mirror directly" in flat
+        assert "obsidian-wiki repo sync-skills --json --pretty" in text
+        assert "obsidian-wiki repo sync-skills --apply --json --pretty" in text
+
+
+def test_runtime_protocol_does_not_install_automatic_stop_capture() -> None:
+    setup = _text("obsidian_wiki/_data/skills/wiki-setup/SKILL.md")
+    capture = _text("obsidian_wiki/_data/skills/wiki-capture/SKILL.md")
+
+    assert "automatic Stop capture is not installed" in setup
+    assert "`/wiki-capture --quick`" in setup
+    assert "remove the old global Claude Stop Hook entry manually" in setup
+    assert '"Stop":' not in setup
+    assert ".claude/hooks/" not in setup
+    assert "Trigger only when explicitly invoked" in capture
+
+
 def test_human_docs_cover_the_portable_repository_contract() -> None:
-    combined = "\n".join(_text(relative) for relative in HUMAN_DOCS)
+    combined = " ".join(
+        "\n".join(_text(relative) for relative in HUMAN_DOCS).split()
+    )
     for phrase in (
         "implementation = \"evanzlh/obsidian-wiki\"",
         "repo upgrade-skills",
-        "regular Markdown files",
+        "complete derived ordinary-file mirrors",
         "Linux and macOS",
         "does not contain `.venv`",
         SOURCE_INSTALL_COMMAND,
