@@ -12,6 +12,9 @@ Every knowledge base has one repository layout, one repository-relative configur
 
 ## Install
 
+Supported hosts are Linux or macOS. Repository and vault safety depends on
+POSIX descriptor-relative filesystem operations; unsupported platforms fail closed.
+
 Install a non-editable build from a local framework clone:
 
 ```bash

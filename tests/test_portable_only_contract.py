@@ -45,6 +45,7 @@ CURRENT_RUNTIME_ROOTS = (
     ROOT / "obsidian_wiki/_data/skills",
 )
 REMOVED_CURRENT_PATHS = {
+    ".env.example",
     ".agents/skills",
     ".claude/hooks/wiki-stop-capture.sh",
     ".claude/settings.json",
@@ -66,9 +67,11 @@ REMOVED_CURRENT_PATHS = {
     "obsidian_wiki/sync.py",
     "scripts/com.obsidian-wiki.daily-update.plist",
     "scripts/daily-update.sh",
+    "scripts/manifest.py",
     "scripts/wiki-notify.sh",
     "setup.sh",
     "tests/test_portable_migration.py",
+    "tests/test_manifest_delta.py",
     "tests/test_stop_hook_behavior.py",
     "tests/test_stop_hook_packaging.py",
     "tests/test_sync.py",
@@ -283,6 +286,10 @@ def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
     assert importlib.util.find_spec(module) is None
 
 
+def test_personal_installation_compatibility_hook_is_absent() -> None:
+    assert not hasattr(cli, "_check_stale")
+
+
 def test_removal_check_detects_a_dangling_symlink(tmp_path: Path) -> None:
     removed = tmp_path / "removed"
     try:
@@ -295,6 +302,7 @@ def test_removal_check_detects_a_dangling_symlink(tmp_path: Path) -> None:
 
 def test_retired_current_surfaces_have_one_complete_removal_inventory() -> None:
     assert REMOVED_CURRENT_PATHS == {
+        ".env.example",
         ".agents/skills",
         ".claude/hooks/wiki-stop-capture.sh",
         ".claude/settings.json",
@@ -316,9 +324,11 @@ def test_retired_current_surfaces_have_one_complete_removal_inventory() -> None:
         "obsidian_wiki/sync.py",
         "scripts/com.obsidian-wiki.daily-update.plist",
         "scripts/daily-update.sh",
+        "scripts/manifest.py",
         "scripts/wiki-notify.sh",
         "setup.sh",
         "tests/test_portable_migration.py",
+        "tests/test_manifest_delta.py",
         "tests/test_stop_hook_behavior.py",
         "tests/test_stop_hook_packaging.py",
         "tests/test_sync.py",

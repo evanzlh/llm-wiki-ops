@@ -20,14 +20,17 @@ REMOVED_DISTRIBUTION_PATHS = {
     ".github/workflows/setup.yml",
     "README_TW.md",
     "SETUP.md",
+    ".env.example",
     "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md",
     "obsidian_wiki/migration.py",
     "obsidian_wiki/sync.py",
     "scripts/com.obsidian-wiki.daily-update.plist",
     "scripts/daily-update.sh",
+    "scripts/manifest.py",
     "scripts/wiki-notify.sh",
     "setup.sh",
     "tests/test_portable_migration.py",
+    "tests/test_manifest_delta.py",
     "tests/test_stop_hook_behavior.py",
     "tests/test_stop_hook_packaging.py",
     "tests/test_sync.py",
@@ -110,6 +113,8 @@ def _source_package_inventory() -> dict[str, tuple[int, str, int]]:
             continue
         relative = encoded_path.decode("utf-8")
         path = ROOT / relative
+        if not path.exists() and not path.is_symlink():
+            continue
         assert path.is_file() and not path.is_symlink(), relative
         inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
     return inventory
@@ -129,6 +134,8 @@ def _source_distribution_inventory() -> dict[str, tuple[int, str, int]]:
             continue
         relative = encoded_path.decode("utf-8")
         path = ROOT / relative
+        if not path.exists() and not path.is_symlink():
+            continue
         assert path.is_file() and not path.is_symlink(), relative
         inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
     return inventory
@@ -267,10 +274,6 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     expected_python = {
         path for path in source_package if path.endswith(".py")
     }
-    expected_python.update(
-        f"obsidian_wiki/_data/scripts/{path.name}"
-        for path in (ROOT / "scripts").glob("*.py")
-    )
     assert expected_python == {
         path
         for path in direct_inventory

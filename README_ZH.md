@@ -12,6 +12,9 @@
 
 ## 安装
 
+支持的主机系统为 Linux 或 macOS。仓库与 vault 的安全边界依赖 POSIX
+描述符相对文件系统操作；不受支持的平台会失败并停止。
+
 从本地框架 clone 安装非 editable 构建：
 
 ```bash

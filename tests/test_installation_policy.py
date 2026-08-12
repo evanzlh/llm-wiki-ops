@@ -9,6 +9,11 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9/3.10
+    import tomli as tomllib
+
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
@@ -228,13 +233,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         if artifact.suffix == ".whl":
             with zipfile.ZipFile(artifact) as archive:
                 raw_names = archive.namelist()
-                environment_template = archive.read(
-                    "obsidian_wiki/_data/.env.example"
-                ).decode("utf-8")
-            assert "sync-setup" not in environment_template
-            assert "obsidian-wiki sync" not in environment_template
-            assert "repo migrate" not in environment_template
-            assert "Personal CLI" not in environment_template
+                assert "obsidian_wiki/_data/.env.example" not in raw_names
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()
@@ -500,7 +499,7 @@ def test_no_unsupported_install_guidance_remains() -> None:
 
 def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
     checked_roots = (ROOT / ".github", ROOT / "obsidian_wiki", ROOT / "tools")
-    files = [ROOT / "pyproject.toml", ROOT / ".env.example"]
+    files = [ROOT / "pyproject.toml"]
     for base in checked_roots:
         files.extend(
             path
@@ -524,6 +523,24 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
         if token in path.read_text(encoding="utf-8", errors="ignore")
     }
     assert offenders == {}
+
+
+def test_distribution_declares_the_posix_safety_boundary() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    classifiers = set(project["classifiers"])
+    assert "Operating System :: OS Independent" not in classifiers
+    assert "Operating System :: POSIX" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+    assert "Operating System :: MacOS :: MacOS X" in classifiers
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_zh = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
+    installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+    assert "Linux or macOS" in readme
+    assert "Linux 或 macOS" in readme_zh
+    assert "Linux or macOS" in installation
 
 
 @pytest.mark.skipif(

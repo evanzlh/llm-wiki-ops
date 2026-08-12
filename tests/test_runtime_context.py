@@ -129,14 +129,15 @@ def test_runtime_inspection_classifies_discovery_error(
     cwd = tmp_path / "project"
     cwd.mkdir()
     candidate = cwd / ".obsidian-wiki" / "config.toml"
-    original_exists = Path.exists
+    candidate.parent.mkdir()
+    original_lstat = Path.lstat
 
-    def denied_exists(path: Path) -> bool:
+    def denied_lstat(path: Path):
         if path == candidate:
             raise PermissionError("inspection denied")
-        return original_exists(path)
+        return original_lstat(path)
 
-    monkeypatch.setattr(Path, "exists", denied_exists)
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
 
     result = inspect(cwd)
 

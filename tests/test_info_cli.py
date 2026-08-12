@@ -110,6 +110,24 @@ def test_info_json_invalid_portable_is_one_error_document(tmp_path: Path) -> Non
     assert data["installation"]["skills"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_info_json_rejects_symlinked_repository_config(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    repository = tmp_path / "repository"
+    real = write_portable(tmp_path / "real")
+    linked = repository / ".obsidian-wiki" / "config.toml"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(real)
+
+    result = run_info(home, repository, "--json")
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    data = payload(result)
+    assert data["runtime"]["status"] == "error"
+    assert "symlinks are not allowed" in data["runtime"]["error"]
+
+
 def test_info_human_output_has_repository_local_sections(tmp_path: Path) -> None:
     home = tmp_path / "home"
     repository = tmp_path / "repository"

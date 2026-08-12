@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
@@ -296,20 +297,78 @@ def test_invalid_nearest_config_fails_closed(tmp_path: Path) -> None:
     assert str(outer / ".obsidian-wiki" / "config.toml") not in str(exc_info.value)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+@pytest.mark.parametrize("link_kind", ["symbolic", "hard"])
+def test_resolve_config_rejects_linked_config_files(
+    tmp_path: Path, link_kind: str
+) -> None:
+    repository = tmp_path / "repository"
+    real = tmp_path / "real.toml"
+    write_portable(tmp_path / "template").replace(real)
+    candidate = repository / ".obsidian-wiki" / "config.toml"
+    candidate.parent.mkdir(parents=True)
+    if link_kind == "symbolic":
+        candidate.symlink_to(real)
+    else:
+        os.link(real, candidate)
+
+    with pytest.raises(ConfigError, match="symlink|single-link ordinary file"):
+        resolve_config(
+            cwd=repository,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_resolve_config_rejects_linked_configuration_directory(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    real_directory = tmp_path / "configuration"
+    real_directory.mkdir()
+    write_portable(real_directory.parent / "seed").replace(
+        real_directory / "config.toml"
+    )
+    repository.mkdir()
+    (repository / ".obsidian-wiki").symlink_to(real_directory, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="symlink"):
+        resolve_config(
+            cwd=repository,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX special-file safety contract")
+def test_resolve_config_rejects_special_config_file(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    candidate = repository / ".obsidian-wiki" / "config.toml"
+    candidate.parent.mkdir(parents=True)
+    os.mkfifo(candidate)
+
+    with pytest.raises(ConfigError, match="single-link ordinary file"):
+        resolve_config(
+            cwd=repository,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
 def test_repository_discovery_error_is_a_path_qualified_config_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cwd = tmp_path / "project"
     cwd.mkdir()
     candidate = cwd / ".obsidian-wiki" / "config.toml"
-    original_exists = Path.exists
+    candidate.parent.mkdir()
+    original_lstat = Path.lstat
 
-    def denied_exists(path: Path) -> bool:
+    def denied_lstat(path: Path):
         if path == candidate:
             raise PermissionError("inspection denied")
-        return original_exists(path)
+        return original_lstat(path)
 
-    monkeypatch.setattr(Path, "exists", denied_exists)
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
 
     with pytest.raises(ConfigError) as exc_info:
         resolve_config(

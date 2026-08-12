@@ -841,10 +841,6 @@ def _portable_command_config(command: str) -> PortableConfig:
         raise ConfigError(f"{command} requires a repository: {exc}") from exc
 
 
-def _check_stale() -> None:
-    """Compatibility hook retained without inspecting personal installation state."""
-
-
 def _repository_error_message(error: Exception) -> str:
     message = str(error)
     if not isinstance(error, ConfigError) or "requires a repository:" not in message:

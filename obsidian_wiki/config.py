@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path, PureWindowsPath
+import stat
 from typing import Any, Iterator
 
 try:
@@ -11,6 +13,8 @@ except ModuleNotFoundError:  # Python 3.9/3.10
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+
+from obsidian_wiki.safe_files import UnsafeVaultError, read_safe_file
 
 
 class ConfigError(ValueError):
@@ -103,9 +107,13 @@ def _required_string(table: dict[str, Any], key: str, table_name: str = "") -> s
 
 
 def _parse_portable_config(
-    path: Path, *, installed_version: str, implementation: str
+    path: Path,
+    content: bytes,
+    *,
+    installed_version: str,
+    implementation: str,
 ) -> PortableConfig:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    data = tomllib.loads(content.decode("utf-8"))
 
     schema_version = data.get("schema_version")
     if type(schema_version) is not int or schema_version != 1:
@@ -140,7 +148,7 @@ def _parse_portable_config(
     ):
         raise ConfigError("paths.sources must be a non-empty list of non-empty strings")
 
-    root = path.parent.parent.resolve()
+    root = path.parent.parent
     vault = _contained_path(root, vault_raw, "paths.vault")
     sources = tuple(
         _contained_path(root, source, f"paths.sources[{index}]")
@@ -155,7 +163,7 @@ def _parse_portable_config(
 
     return PortableConfig(
         root=root,
-        path=path.resolve(strict=False),
+        path=path,
         schema_version=schema_version,
         implementation=configured_implementation,
         requires_cli=requires_cli,
@@ -170,15 +178,22 @@ def _parse_portable_config(
 def load_portable_config(
     path: Path, *, installed_version: str, implementation: str
 ) -> PortableConfig:
-    config_path = Path(path)
+    config_path = Path(os.path.abspath(os.fspath(path)))
     try:
+        content = read_safe_file(config_path.parent.parent, config_path)
+        assert content is not None
         return _parse_portable_config(
             config_path,
+            content,
             installed_version=installed_version,
             implementation=implementation,
         )
     except ConfigError as exc:
         raise ConfigError(f"{config_path}: {exc}") from exc
+    except UnsafeVaultError as exc:
+        raise ConfigError(
+            f"{config_path}: unsafe portable configuration: {exc}"
+        ) from exc
     except (
         InvalidSpecifier,
         InvalidVersion,
@@ -190,15 +205,8 @@ def load_portable_config(
         raise ConfigError(f"{config_path}: invalid portable configuration: {exc}") from exc
 
 
-def _safe_resolve(path: Path) -> Path:
-    try:
-        return path.resolve(strict=False)
-    except (OSError, RuntimeError):
-        return path.absolute()
-
-
 def _ancestors(path: Path) -> Iterator[Path]:
-    current = _safe_resolve(Path(path))
+    current = Path(os.path.abspath(os.fspath(path)))
     while True:
         yield current
         parent = current.parent
@@ -208,12 +216,32 @@ def _ancestors(path: Path) -> Iterator[Path]:
 
 
 def _is_portable_config_candidate(path: Path) -> bool:
+    config_directory = path.parent
     try:
-        return path.exists() or path.is_symlink()
+        directory_metadata = config_directory.lstat()
+    except FileNotFoundError:
+        return False
     except (OSError, RuntimeError) as exc:
         raise ConfigError(
             f"{path}: unable to inspect portable configuration: {exc}"
         ) from exc
+    if stat.S_ISLNK(directory_metadata.st_mode):
+        raise ConfigError(
+            f"{path}: unsafe portable configuration: configuration directory is a symlink"
+        )
+    if not stat.S_ISDIR(directory_metadata.st_mode):
+        raise ConfigError(
+            f"{path}: unsafe portable configuration: configuration path is not a directory"
+        )
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(
+            f"{path}: unable to inspect portable configuration: {exc}"
+        ) from exc
+    return True
 
 
 def resolve_config(
@@ -222,7 +250,7 @@ def resolve_config(
     installed_version: str,
     implementation: str,
 ) -> PortableConfig:
-    current_dir = _safe_resolve(Path.cwd() if cwd is None else Path(cwd))
+    current_dir = Path.cwd() if cwd is None else Path(cwd)
 
     for ancestor in _ancestors(current_dir):
         portable_path = ancestor / ".obsidian-wiki" / "config.toml"

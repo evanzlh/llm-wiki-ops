@@ -4064,24 +4064,23 @@ def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
     assert "requires: the candidate is no longer needed" in result.stderr
 
 
-def test_global_stale_warning_is_skipped_for_non_transaction_json_command(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_transaction_command_rejects_hard_linked_repository_config(
+    tmp_path: Path,
 ) -> None:
-    def stale_warning() -> None:
-        print("stale warning", file=sys.stderr)
+    root, _ = make_config(tmp_path)
+    config = root / ".obsidian-wiki" / "config.toml"
+    duplicate = tmp_path / "config-copy.toml"
+    os.link(config, duplicate)
 
-    def hot_status(args) -> int:
-        cli_module._json_print({"status": "current"}, pretty=args.pretty)
-        return 0
+    result = run_cli(tmp_path / "home", root, "transaction", "list", "--json")
 
-    monkeypatch.setattr(cli_module, "_check_stale", stale_warning)
-    monkeypatch.setattr(cli_module, "cmd_hot_status", hot_status)
-
-    assert cli_module.main(["hot", "status", "--json"]) == 0
-    captured = capsys.readouterr()
-    assert json.loads(captured.out) == {"status": "current"}
-    assert captured.err == ""
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert "single-link ordinary file" in payload["error"]["message"]
+    assert "Traceback" not in result.stdout
 
 
 def _prospective_page(

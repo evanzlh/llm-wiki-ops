@@ -732,7 +732,6 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         "OBSIDIAN_REQUIRED_TRUST_FIELDS",
         "OBSIDIAN_SCHEMA_SOURCE",
     )
-    env_example = (root / ".env.example").read_text(encoding="utf-8")
     configuration = (root / "docs" / "configuration.md").read_text(encoding="utf-8")
     skills = root / "obsidian_wiki" / "_data" / "skills"
     lint_skill = (skills / "wiki-lint" / "SKILL.md").read_text(encoding="utf-8")
@@ -740,7 +739,6 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
     capture_skill = (skills / "wiki-capture" / "SKILL.md").read_text(encoding="utf-8")
 
     for variable in variables:
-        assert variable in env_example
         assert variable in configuration
         assert variable in lint_skill
     assert "not a repository setting" in configuration
@@ -755,7 +753,6 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
     )
     assert "does not read environment variables or `.env` directly" in configuration
     assert "external wrapper" in configuration
-    assert "not loaded by the portable CLI" in env_example
     for value in (
         *ALLOWED_LIFECYCLES,
         *ALLOWED_RELATIONSHIP_TYPES,
@@ -767,12 +764,10 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         assert "nearest" in skill
         assert ".obsidian-wiki/config.toml" in skill
         assert "canonical" in skill
-    assert "CLI flags > these environment/config values >" in env_example
     assert (
         "CLI flags > resolved environment/config values > framework defaults"
         in " ".join(lint_skill.split())
     )
-    assert "Empty or whitespace-only values fail closed" in env_example
     assert "fails closed" in lint_skill
 
 

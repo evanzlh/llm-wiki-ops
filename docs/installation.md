@@ -2,6 +2,8 @@
 
 ## Prerequisites
 
+- Linux or macOS. The filesystem safety boundary requires POSIX
+  descriptor-relative operations and fails closed on unsupported platforms.
 - Git
 - Python 3.9 or newer
 - [uv](https://docs.astral.sh/uv/)
