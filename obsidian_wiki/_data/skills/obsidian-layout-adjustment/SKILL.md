@@ -65,6 +65,13 @@ concurrent change stops restore. Atomically replace an originally existing targe
 with its preimage and mode. For an originally absent target, validate the postimage
 then delete only that created ordinary single-link file. Never copy through a link.
 
+Keep a bound parent directory descriptor for every promotion and rollback.
+Immediately before `os.replace` or `unlink`, re-lstat through that descriptor and
+compare identity and SHA-256 with the expected current preimage or postimage, and
+fstat the open replacement or created file; a mismatch stops without overwrite or deletion.
+For an originally absent target, unlink only the identity-bound file this
+workflow created; a name match alone is insufficient.
+
 ## Layer and change model
 
 Translate natural language before editing. Typical mappings include:

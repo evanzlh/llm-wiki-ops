@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import obsidian_wiki.context_pack as context_pack
+from obsidian_wiki.frontmatter import FrontmatterError
 
 from obsidian_wiki.context_pack import (
     ContextError,
@@ -142,6 +143,29 @@ def test_public_only_does_not_full_read_blocked_body(tmp_path: Path, monkeypatch
 
     assert [page.path for page in pages] == ["public.md"]
     assert "blocked.md" not in reads
+
+
+def test_invalid_public_metadata_is_excluded_before_body_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    vault = tmp_path / "vault"
+    write_note(
+        vault,
+        "invalid.md",
+        "---\ntags: [public]\ntags: [visibility/internal]\n---\n"
+        "PRIVATE-BODY-SENTINEL\n",
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        context_pack,
+        "read_markdown_snapshot",
+        lambda snapshot: reads.append(snapshot.relative),
+    )
+
+    assert load_pages(vault, public_only=True) == []
+    assert reads == []
+    with pytest.raises(FrontmatterError, match="duplicate"):
+        load_pages(vault)
 
 
 def test_public_only_handles_yaml_comments_without_losing_quoted_hashes(

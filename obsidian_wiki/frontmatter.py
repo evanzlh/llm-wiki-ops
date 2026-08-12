@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+from typing import Any
 
 
 _PROVENANCE_FIELDS = frozenset({"extracted", "inferred", "ambiguous"})
 _RELATIONSHIP_FIELDS = frozenset({"target", "type"})
 _RESTRICTED_FORBIDDEN_PLAIN_STARTS = frozenset(",]}%@`")
+_BLOCK_SCALAR_HEADER = re.compile(r"^[>|](?:[1-9][+-]?|[+-][1-9]?)?$")
 
 
 class FrontmatterError(ValueError):
@@ -184,14 +187,106 @@ def _inline_list(value: str) -> tuple[str, ...]:
     return tuple(items)
 
 
+def _exact_delimiter(line: str) -> bool:
+    return line in {"---\n", "---\r\n", "---"}
+
+
+def _raw_lines(text: str) -> list[str]:
+    """Split only on LF/CRLF, preserving other YAML control characters."""
+    pieces = text.split("\n")
+    lines = [piece + "\n" for piece in pieces[:-1]]
+    if pieces[-1] or not text.endswith("\n"):
+        lines.append(pieces[-1])
+    return lines
+
+
 def _document_lines(text: str) -> tuple[list[str], int]:
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    if not lines or lines[0].strip() != "---":
+    raw_lines = _raw_lines(text)
+    if not raw_lines or not _exact_delimiter(raw_lines[0]):
         raise FrontmatterError("frontmatter opening delimiter is missing")
-    closing = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+    closing = next(
+        (
+            index
+            for index, line in enumerate(raw_lines[1:], start=1)
+            if _exact_delimiter(line)
+        ),
+        None,
+    )
     if closing is None:
         raise FrontmatterError("frontmatter closing delimiter is missing")
+    lines = [line.removesuffix("\n").removesuffix("\r") for line in raw_lines]
     return lines, closing
+
+
+def split_frontmatter(text: str) -> tuple[Frontmatter | None, str]:
+    """Parse an optional exact-delimited frontmatter block and return its body."""
+    raw_lines = _raw_lines(text)
+    if not raw_lines or not _exact_delimiter(raw_lines[0]):
+        return None, text
+    parsed = parse_frontmatter(text)
+    closing = next(
+        index
+        for index, line in enumerate(raw_lines[1:], start=1)
+        if _exact_delimiter(line)
+    )
+    return parsed, "".join(raw_lines[closing + 1 :])
+
+
+def frontmatter_values(parsed: Frontmatter | None) -> dict[str, Any]:
+    """Return the scalar/list compatibility view used by read-only scanners."""
+    if parsed is None:
+        return {}
+    return {**parsed.scalars, **parsed.lists}
+
+
+def _parse_block_scalar(
+    lines: list[str], index: int, closing: int, header: str, key: str
+) -> tuple[str, int]:
+    if not _BLOCK_SCALAR_HEADER.fullmatch(header):
+        raise FrontmatterError(f"malformed block scalar for {key}")
+    style = header[0]
+    explicit = next((int(char) for char in header[1:] if char.isdigit()), None)
+    chomping = next((char for char in header[1:] if char in "+-"), "")
+    block: list[str] = []
+    while index < closing:
+        line = lines[index]
+        if line and not line[0].isspace():
+            break
+        if "\t" in line[: len(line) - len(line.lstrip())]:
+            raise FrontmatterError(f"block scalar indentation uses tabs for {key}")
+        block.append(line)
+        index += 1
+
+    nonempty = [line for line in block if line.strip()]
+    if not nonempty:
+        return "", index
+    indentation = explicit or min(len(line) - len(line.lstrip(" ")) for line in nonempty)
+    if indentation < 1 or any(
+        line.strip() and not line.startswith(" " * indentation) for line in block
+    ):
+        raise FrontmatterError(f"malformed block scalar indentation for {key}")
+    content = [line[indentation:] if line.strip() else "" for line in block]
+    if style == "|":
+        value = "\n".join(content)
+    else:
+        paragraphs: list[str] = []
+        current: list[str] = []
+        for line in content:
+            if line == "":
+                if current:
+                    paragraphs.append(" ".join(current))
+                    current = []
+                paragraphs.append("")
+            else:
+                current.append(line)
+        if current:
+            paragraphs.append(" ".join(current))
+        value = "\n".join(paragraphs)
+    if chomping == "-":
+        value = value.rstrip("\n")
+    elif chomping == "":
+        value = value.rstrip("\n") + "\n"
+    return value, index
 
 
 def _quote_starts_key_scalar(prefix: str) -> bool:
@@ -860,6 +955,12 @@ def parse_frontmatter(text: str) -> Frontmatter:
             provenance, index = _parse_provenance(lines, index + 1, closing)
             continue
         raw = _strip_comment(raw_region).strip()
+        if raw.startswith((">", "|")):
+            value, index = _parse_block_scalar(
+                lines, index + 1, closing, raw, key
+            )
+            scalars[key] = value
+            continue
         if raw == "":
             values: list[str] = []
             index += 1

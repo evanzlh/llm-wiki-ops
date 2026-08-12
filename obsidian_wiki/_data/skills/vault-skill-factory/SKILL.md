@@ -82,14 +82,27 @@ obsidian-wiki repo sync-skills --json --pretty
 ```
 
 Require exit zero, top-level `status: "clean"`, no warnings, and no drift for the
-managed `skill-creator` mirror. Do not use `--apply`. Next verify the already-active
-Python environment can import `yaml` using argv `python`, `-c`, `import yaml`. If it
-cannot, stop and ask the owner to install PyYAML in the approved environment; never
-dynamically resolve or download a dependency. Then run separate argv entries:
+managed `skill-creator` mirror. Do not use `--apply`. Read the safe ordinary
+`.obsidian-wiki/managed-skills.json` and require the computed managed
+`skill-creator` tree digest to equal its package inventory expected digest. During
+that bound tree check, record the validator script's identity and SHA-256 preimage.
 
-```bash
-python ".skills/skill-creator/scripts/quick_validate.py" ".obsidian-wiki/local/generated-skills/<name>"
-```
+Use the current agent process's absolute interpreter, the equivalent of
+`sys.executable`; an owner-approved absolute interpreter is the only alternative.
+Never resolve a bare `python` through `PATH`. Verify the already-active environment
+can import YAML with the separate argv entries `sys.executable`, `-c`, `import yaml`.
+If it cannot, stop and ask the owner to install PyYAML in the approved environment;
+never dynamically resolve or download a dependency.
+
+Immediately before execution, retain a bound parent directory descriptor, re-lstat
+the validator path without following links, open it no-follow, and fstat and hash the
+opened ordinary single-link file. Require its identity and SHA-256 to match both the
+managed-tree check and recorded script preimage. A concurrent replacement, link
+swap, digest mismatch, or inability to keep this identity bound stops validation.
+Invoke the absolute interpreter with three separate argv entries:
+`sys.executable`, `.skills/skill-creator/scripts/quick_validate.py`, and
+`.obsidian-wiki/local/generated-skills/<name>`, without a shell. Do not interpolate
+these values into command text.
 
 The validated skill argument must be the already-created local output directory; the
 validator checks only `SKILL.md` frontmatter; it does not validate references, evals,

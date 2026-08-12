@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import obsidian_wiki.graphrag as graphrag
+from obsidian_wiki.frontmatter import FrontmatterError
 from obsidian_wiki.graphrag import (
     build_index,
     classify_query,
@@ -123,6 +124,73 @@ class TestBuildIndex:
         assert set(index) == {"public"}
         assert "private.md" not in reads
         assert "PRIVATE-BODY-SENTINEL" not in repr(index)
+
+    @pytest.mark.parametrize(
+        "tag_line",
+        [
+            "  - visibility/internal # restricted",
+            '  - "visibility/internal" # restricted',
+        ],
+    )
+    def test_public_only_parses_commented_and_quoted_block_tags_before_body_read(
+        self, vault, monkeypatch, tag_line
+    ):
+        (vault / "private.md").write_text(
+            "---\r\ntitle: Private\r\ntags:\r\n"
+            f"{tag_line}\r\n---\r\nPRIVATE-BODY-SENTINEL\r\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        original = graphrag.read_markdown_snapshot
+
+        def observed(snapshot):
+            reads.append(snapshot.relative)
+            return original(snapshot)
+
+        monkeypatch.setattr(graphrag, "read_markdown_snapshot", observed)
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+
+    def test_invalid_public_metadata_fails_closed_before_body_read(
+        self, vault, monkeypatch
+    ):
+        (vault / "private.md").write_text(
+            "---\ntags: [public]\ntags: [visibility/internal]\n---\n"
+            "PRIVATE-BODY-SENTINEL\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        monkeypatch.setattr(
+            graphrag,
+            "read_markdown_snapshot",
+            lambda snapshot: reads.append(snapshot.relative),
+        )
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+        with pytest.raises(FrontmatterError, match="duplicate"):
+            build_index(vault)
+
+    def test_shared_parser_preserves_legacy_index_keys_and_adds_trust_metadata(
+        self, simple_vault
+    ):
+        entry = build_index(simple_vault)["transformer"]
+        legacy = {
+            "title": "Transformer Architecture",
+            "tags": ["deep-learning", "nlp"],
+            "summary": "Self-attention mechanism for sequence modelling.",
+            "category": "concepts",
+            "tier": "core",
+            "path": "transformer.md",
+            "out_links": ["attention", "embedding"],
+            "in_links": ["attention"],
+        }
+
+        assert {key: entry[key] for key in legacy} == legacy
+        assert entry["visibility"] == []
+        assert entry["lifecycle"] == "reviewed"
+        assert entry["updated"] == "2026-08-13"
 
     def test_out_links(self, simple_vault):
         idx = build_index(simple_vault)

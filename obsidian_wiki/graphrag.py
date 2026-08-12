@@ -33,6 +33,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
+from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
 from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 
@@ -40,20 +41,8 @@ from .safe_files import read_markdown_snapshot, scan_markdown_headers
 # Index building
 # ---------------------------------------------------------------------------
 
-_FRONT_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
-_TAGS_RE = re.compile(r"^tags:\s*\[([^\]]+)\]", re.MULTILINE)
-_TAGS_LIST_RE = re.compile(r"^tags:\s*\n((?:\s+-\s+\S+\n)+)", re.MULTILINE)
-_CATEGORY_RE = re.compile(r"^category:\s*(\w+)", re.MULTILINE)
-_TIER_RE = re.compile(r"^tier:\s*(\w+)", re.MULTILINE)
-_LIFECYCLE_RE = re.compile(r"^lifecycle:\s*([^\n#]+)", re.MULTILINE)
-_UPDATED_RE = re.compile(r"^updated:\s*([^\n#]+)", re.MULTILINE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
-
-# A bare `>`, `>-`, `>+`, `|`, `|-`, `|+` (optionally followed by an indent
-# indicator digit) marks a YAML block scalar — the real value lives on the
-# following indented lines, not on this line.
-_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-]?\d*$")
 
 SKIP_DIRS = frozenset(
     "_archived .obsidian".split()
@@ -63,38 +52,6 @@ BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 
 def _slug(s: str) -> str:
     return s.strip().lower().replace(" ", "-")
-
-
-def _extract_scalar(front: str, key: str) -> str:
-    """Extract a YAML scalar frontmatter value, folding block scalars (>, |).
-
-    Handles both `key: value` and the block-scalar form:
-        key: >-
-          wrapped
-          text
-    where the real value lives on subsequent indented lines, not on the
-    `key:` line itself (see issue #156 — a naive same-line regex captures
-    the `>-` indicator instead of the text).
-    """
-    lines = front.splitlines()
-    pattern = re.compile(rf"^{re.escape(key)}:\s*(.*)$")
-    for i, line in enumerate(lines):
-        m = pattern.match(line)
-        if not m:
-            continue
-        rest = m.group(1).strip()
-        if not rest or _BLOCK_SCALAR_RE.match(rest):
-            block_lines = []
-            for cont in lines[i + 1:]:
-                if cont.strip() == "":
-                    continue
-                if re.match(r"^\s+\S", cont):
-                    block_lines.append(cont.strip())
-                else:
-                    break
-            return " ".join(block_lines).strip()
-        return rest.strip("\"'")
-    return ""
 
 
 def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
@@ -112,45 +69,40 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     for header in headers:
         page = header
         slug = _slug(page.path.stem)
-        text = page.text(errors="replace")
+        try:
+            text = page.text()
+        except ValueError:
+            if public_only:
+                continue
+            raise
 
-        front_m = _FRONT_RE.match(text)
-        front = front_m.group(1) if front_m else ""
-
-        title = _extract_scalar(front, "title")
-
-        tags: list[str] = []
-        m = _TAGS_RE.search(front)
-        if m:
-            tags = [t.strip().strip("'\"") for t in m.group(1).split(",")]
-        else:
-            m2 = _TAGS_LIST_RE.search(front)
-            if m2:
-                tags = [ln.strip().lstrip("- ") for ln in m2.group(1).splitlines() if ln.strip()]
+        try:
+            parsed, _body = split_frontmatter(text)
+        except FrontmatterError:
+            if public_only:
+                continue
+            raise
+        values = frontmatter_values(parsed)
+        title = str(values.get("title", "")).strip()
+        raw_tags = values.get("tags", ())
+        tags = (
+            [str(tag) for tag in raw_tags]
+            if isinstance(raw_tags, tuple)
+            else ([str(raw_tags)] if raw_tags else [])
+        )
 
         if public_only and BLOCKED_PUBLIC_TAGS.intersection(tags):
             continue
 
-        summary = _extract_scalar(front, "summary")
+        summary = str(values.get("summary", "")).strip()
 
-        category = str(Path(page.relative).parent)
-        m = _CATEGORY_RE.search(front)
-        if m:
-            category = m.group(1).strip()
+        category = str(values.get("category", "")).strip() or str(
+            Path(page.relative).parent
+        )
 
-        tier = "supporting"
-        m = _TIER_RE.search(front)
-        if m:
-            tier = m.group(1).strip()
-
-        lifecycle = ""
-        m = _LIFECYCLE_RE.search(front)
-        if m:
-            lifecycle = m.group(1).strip().strip("'\"")
-        updated = ""
-        m = _UPDATED_RE.search(front)
-        if m:
-            updated = m.group(1).strip().strip("'\"")
+        tier = str(values.get("tier", "supporting")).strip()
+        lifecycle = str(values.get("lifecycle", "")).strip()
+        updated = str(values.get("updated", "")).strip()
 
         pages[slug] = {
             "title": title or page.path.stem,

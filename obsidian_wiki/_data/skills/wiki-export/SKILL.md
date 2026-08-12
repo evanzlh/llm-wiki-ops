@@ -50,6 +50,11 @@ owner-only temporary ordinary files, flush them, and use atomic rename within th
 output directory. Never cross a link, replace a directory, or leave partial output
 described as complete.
 
+Retain a bound output-directory descriptor for each target.
+Immediately before the final `os.replace`, re-lstat and hash the destination through that descriptor and
+require the exact approved absence or collision preimage, then fstat the open
+owner-only temporary file. A mismatch stops promotion without replacing anything.
+
 ## Graph model and formats
 
 Inventory knowledge pages only. Exclude root/control/derived Markdown including

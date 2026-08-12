@@ -45,6 +45,35 @@ def test_header_scan_rejects_unbounded_frontmatter(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="header exceeds"):
         scan_markdown_headers(vault, max_header_bytes=32)
 
+
+def test_header_scan_does_not_treat_indented_block_content_as_delimiter(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "page.md").write_bytes(
+        b"---\nsummary: |-\n  first line\n  ---\n  final line\ntags: [public]\n---\n"
+        b"PRIVATE-BODY-SENTINEL\n"
+    )
+
+    header = scan_markdown_headers(vault)[0]
+
+    assert b"  ---\n  final line\ntags: [public]\n---\n" in header.content
+    assert b"PRIVATE-BODY-SENTINEL" not in header.content
+
+
+def test_header_scan_accepts_exact_column_zero_crlf_delimiters(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "page.md").write_bytes(
+        b"---\r\ntags:\r\n  - public\r\n---\r\nPRIVATE-BODY-SENTINEL\r\n"
+    )
+
+    header = scan_markdown_headers(vault)[0]
+
+    assert header.content.endswith(b"---\r\n")
+    assert b"PRIVATE-BODY-SENTINEL" not in header.content
+
 import obsidian_wiki.safe_files as safe_files
 
 

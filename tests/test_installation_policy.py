@@ -283,12 +283,14 @@ def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
     assert rebuild < adding_skill.index("Test by saying")
 
 
-def test_agents_describes_obsidian_wiki_repo_as_bundled_data_root() -> None:
+def test_agents_routes_repository_authority_without_global_source_variables() -> None:
     agents = (ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md").read_text(
         encoding="utf-8"
     )
-    assert "`OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root)" in agents
-    assert "`OBSIDIAN_WIKI_REPO` (where this repo is cloned)" not in agents
+    assert "canonical" in agents.casefold()
+    assert "task" in agents.casefold()
+    assert "nearest" in agents.casefold()
+    assert "OBSIDIAN_WIKI_REPO" not in agents
 
 
 def test_factory_uses_safe_managed_validator_from_nearest_repository(
@@ -304,6 +306,11 @@ def test_factory_uses_safe_managed_validator_from_nearest_repository(
     assert "Do not use `--apply`" in factory
     assert "uv run --with" not in factory
     assert "dynamically resolve or download" in factory
+    assert "`sys.executable`" in factory
+    assert "absolute interpreter" in factory
+    assert "without a shell" in factory
+    assert "Immediately before execution" in factory
+    assert "package inventory expected digest" in factory
 
     repository = tmp_path / "repository"
     setup = subprocess.run(

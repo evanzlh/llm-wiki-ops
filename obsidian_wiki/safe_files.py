@@ -128,27 +128,32 @@ def _read_markdown_header(
 ) -> bytes:
     """Read only a first line or a complete bounded YAML frontmatter block."""
     content = bytearray()
-    frontmatter = None
+    frontmatter: bool | None = None
+    line_start = 0
     while len(content) < max_bytes:
         try:
             chunk = os.read(descriptor, 1)
         except OSError as exc:
             raise _unsafe(relative, f"header read failed: {exc}") from exc
         if not chunk:
-            if frontmatter and bytes(content).splitlines()[-1].strip() == b"---":
+            final_line = bytes(content[line_start:])
+            if frontmatter and final_line == b"---":
                 return bytes(content)
             if frontmatter:
                 raise _unsafe(relative, "unterminated YAML frontmatter")
             return bytes(content)
         content.extend(chunk)
-        if frontmatter is None and chunk == b"\n":
-            frontmatter = bytes(content).rstrip(b"\r\n") == b"---"
+        if chunk == b"\n":
+            line = bytes(content[line_start:])
+            line_start = len(content)
+        else:
+            continue
+        if frontmatter is None:
+            frontmatter = line in {b"---\n", b"---\r\n"}
             if not frontmatter:
                 return bytes(content)
-        elif frontmatter and chunk == b"\n":
-            lines = bytes(content).splitlines()
-            if len(lines) >= 2 and lines[-1].strip() == b"---":
-                return bytes(content)
+        elif frontmatter and line in {b"---\n", b"---\r\n"}:
+            return bytes(content)
     raise _unsafe(relative, f"Markdown header exceeds {max_bytes} bytes")
 
 

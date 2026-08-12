@@ -588,13 +588,12 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     factory = _special_skill("vault-skill-factory")
     assert "$OBSIDIAN_WIKI_REPO" not in factory
     assert ".skills/skill-creator/scripts/quick_validate.py" in factory
-    assert (
-        'python ".skills/skill-creator/scripts/quick_validate.py" '
-        '".obsidian-wiki/local/generated-skills/<name>"'
-    ) in factory
+    assert "`sys.executable`" in factory
+    assert "absolute interpreter" in factory
+    assert "without a shell" in factory
     assert "obsidian-wiki repo sync-skills --json --pretty" in factory
     assert "Do not use `--apply`" in factory
-    assert "python`, `-c`, `import yaml`" in factory
+    assert "`sys.executable`, `-c`, `import yaml`" in factory
     assert "dynamically resolve or download" in factory
 
     repository = tmp_path / "repository"
@@ -662,11 +661,25 @@ def test_local_review_workflows_document_complete_safety_state_machines() -> Non
     assert "obsidian-wiki repo sync-skills --json --pretty" in factory
     assert 'status: "clean"' in factory
     assert "validator checks only `SKILL.md` frontmatter" in factory
+    for phrase in (
+        "Immediately before execution",
+        "re-lstat",
+        "fstat",
+        "package inventory expected digest",
+        "concurrent replacement",
+        "without a shell",
+    ):
+        assert phrase in factory
     for text in (graph, layout):
         assert "`existed`" in text
         assert "expected postimage identity and SHA-256" in text
         assert "originally absent" in text or "If false" in text
         assert "concurrent change stops restore" in text
+        assert "bound parent directory descriptor" in text
+        assert "Immediately before `os.replace` or `unlink`" in text
+        assert "mismatch stops without overwrite or deletion" in text
+    assert "bound output-directory descriptor" in export
+    assert "Immediately before the final `os.replace`" in export
 
 
 def test_graph_color_groups_have_exact_deterministic_queries_and_schema() -> None:

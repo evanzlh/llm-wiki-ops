@@ -113,9 +113,10 @@ def test_context_pack_public_only_never_emits_private_metadata_or_body(
 ) -> None:
     _root, vault, nested = make_repository(tmp_path)
     (vault / "private-sentinel.md").write_text(
-        "---\ntitle: Private\ntags: [visibility/internal]\n"
-        "summary: PRIVATE-METADATA-SENTINEL\n---\n"
-        "# Private\n\nPRIVATE-BODY-SENTINEL authentication\n",
+        "---\r\ntitle: Private\r\ntags:\r\n"
+        "  - visibility/internal # restricted\r\n"
+        "summary: PRIVATE-METADATA-SENTINEL\r\n---\r\n"
+        "# Private\r\n\r\nPRIVATE-BODY-SENTINEL authentication\r\n",
         encoding="utf-8",
     )
 

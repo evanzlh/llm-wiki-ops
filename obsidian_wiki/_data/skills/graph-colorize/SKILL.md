@@ -72,6 +72,13 @@ target identity, then use atomic replacement. Preserve the original formatting s
 where practical. If validation or replacement fails, leave the target unchanged and
 report the backup.
 
+Keep a bound parent directory descriptor for promotion and rollback.
+Immediately before `os.replace` or `unlink`, re-lstat through that descriptor and compare the
+ordinary-file identity and SHA-256 with the expected preimage or current postimage;
+also fstat the already-open replacement or created file; a mismatch stops without overwrite or deletion.
+An originally absent target may be unlinked only when that
+same bound check proves it is the identity-bound file created by this workflow.
+
 ## Review, restore, and reload
 
 From the resolved config, retain both its repository root and its configured vault

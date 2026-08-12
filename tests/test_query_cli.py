@@ -180,8 +180,10 @@ def test_query_cli_public_only_excludes_private_metadata_and_body(tmp_path: Path
         links=["public"],
     )
     (vault / "private-sentinel.md").write_text(
-        (vault / "private-sentinel.md").read_text(encoding="utf-8")
-        + "PRIVATE-BODY-SENTINEL\n",
+        "---\r\ntitle: Private sentinel\r\nsummary: PRIVATE-METADATA-SENTINEL\r\n"
+        'tags:\r\n  - "visibility/internal" # restricted\r\n'
+        "updated: 2026-07-01\r\nlifecycle: reviewed\r\n---\r\n"
+        "PRIVATE-BODY-SENTINEL\r\n",
         encoding="utf-8",
     )
 
