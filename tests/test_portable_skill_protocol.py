@@ -284,7 +284,6 @@ def test_maintenance_skills_are_repository_native(name: str) -> None:
         "WIKI_STAGED_WRITES",
         "cache-update",
         "QMD_",
-        "git push",
         "_raw/",
         "_staging/",
         "_readouts/",
@@ -322,8 +321,11 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
         "obsidian-wiki transaction list --json --pretty",
         "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
         "obsidian-wiki hot status --json",
-        "read-only report",
         "selected page repair",
+        "does not change knowledge pages, sources, manifest shards, or transactions",
+        "local derived-state housekeeping",
+        "may invalidate and remove a stale ignored `hot.md` artifact",
+        "`transaction list` and `cache-check` are read-only",
     ):
         assert required in flat
     for forbidden in (
@@ -333,6 +335,7 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
         "terminal-notifier",
         "notifier",
         "QMD",
+        "ordinary path is read-only",
     ):
         assert forbidden not in contents
 
@@ -348,7 +351,36 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         "freshness",
         "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
         "synthesis/wiki-insights.md",
+        "does not change knowledge pages, sources, manifest shards, or transactions",
+        "local derived-state housekeeping",
+        "may invalidate and remove a stale ignored `hot.md` artifact",
+        "`transaction list` and `cache-check` are read-only",
     ):
         assert required in flat
-    for forbidden in ("_insights.md", "direct-write", "staged writes"):
+    for forbidden in (
+        "_insights.md",
+        "direct-write",
+        "staged writes",
+        "always a read-only report",
+        "without changing it",
+    ):
         assert forbidden not in contents
+
+
+def test_update_requires_owner_committed_snapshot_before_delta() -> None:
+    contents = skill_text("wiki-update")
+    flat = " ".join(contents.split())
+    for required in (
+        "owner review, stage, and commit externally, then rerun",
+        "framework and agent must not run `git add`, `git commit`, or `git push`",
+        "valid HEAD",
+        "status output must be empty",
+        "existing replacement",
+        "owner commit",
+        "rerun",
+        "before delta planning",
+    ):
+        assert required in flat
+    assert flat.index("owner review, stage, and commit externally, then rerun") < flat.index(
+        "cache-check"
+    )

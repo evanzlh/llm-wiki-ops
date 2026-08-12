@@ -5,8 +5,9 @@ description: Use when manually checking repository freshness, retained transacti
 
 # Daily Update
 
-Run a manual maintenance report. The ordinary path is read-only. A selected page
-repair is the only write path and must use the maintenance transaction protocol.
+Run a manual maintenance report. The audit does not change knowledge pages,
+sources, manifest shards, or transactions. A selected page repair is the only
+knowledge write path and must use the maintenance transaction protocol.
 
 ## Manual report
 
@@ -19,15 +20,19 @@ obsidian-wiki cache-check <source1> [source2 ...] --json --pretty
 obsidian-wiki hot status --json
 ```
 
+`transaction list` and `cache-check` are read-only. `hot status` is local
+derived-state housekeeping: it may invalidate and remove a stale ignored `hot.md`
+artifact. That side effect does not change knowledge pages, sources, manifest
+shards, transactions, or source authority.
+
 Report retained transaction IDs, statuses, `recommended_action`, and
 `allowed_actions`; report the cache result's exact `missing`, `new`, `modified`, and
 `unchanged` Source IDs; and report hot freshness. Missing sources or an ambiguous
 retained outcome stop the run. Do not treat missing-only results as no work.
 
-If no repair is selected, return the read-only report. A stale hot artifact may be
-refreshed only with the bounded hot sequence in the protocol; that local derived
-write is not a knowledge transaction. Do not manufacture a knowledge-page change
-merely to refresh freshness state.
+If no repair is selected, return the audit and housekeeping result. Do not run
+`hot inputs` or `hot mark-current` merely because status invalidated stale local
+state, and do not manufacture a knowledge-page change to refresh it.
 
 For a selected page repair, first identify the exact final page set, supporting
 sources, intended replacements or creations, and reviewed removals. Complete this

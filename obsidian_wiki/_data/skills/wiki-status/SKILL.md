@@ -5,9 +5,9 @@ description: Use when reporting repository knowledge health, source freshness, t
 
 # Wiki Status
 
-Inspect repository state without changing it. Ordinary status is always a read-only
-report. The sole durable insight output is `synthesis/wiki-insights.md`, and it uses
-the maintenance transaction protocol.
+The audit does not change knowledge pages, sources, manifest shards, or transactions.
+The sole durable insight output is `synthesis/wiki-insights.md`, and it uses the
+maintenance transaction protocol.
 
 ## Status inventory
 
@@ -21,6 +21,11 @@ obsidian-wiki transaction list --json --pretty
 obsidian-wiki cache-check <source1> [source2 ...] --json --pretty
 obsidian-wiki hot status --json
 ```
+
+`transaction list` and `cache-check` are read-only. `hot status` is local
+derived-state housekeeping: it may invalidate and remove a stale ignored `hot.md`
+artifact. That side effect does not change knowledge pages, sources, manifest
+shards, transactions, or source authority.
 
 Pass explicitly selected Source IDs to the positional cache command. Do not infer
 freshness from modification time alone.
