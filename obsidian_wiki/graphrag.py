@@ -30,6 +30,8 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
+from .safe_files import scan_markdown_files
+
 
 # ---------------------------------------------------------------------------
 # Index building
@@ -97,18 +99,12 @@ def build_index(vault: Path) -> dict[str, dict]:
     """
     pages: dict[str, dict] = {}
 
-    md_files = [
-        p for p in vault.rglob("*.md")
-        if not any(part in SKIP_DIRS for part in p.relative_to(vault).parts)
-    ]
+    md_files = scan_markdown_files(vault, skip_dirs=SKIP_DIRS)
 
     # First pass: collect all slugs and frontmatter
     for page in md_files:
-        slug = _slug(page.stem)
-        try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        slug = _slug(page.path.stem)
+        text = page.text(errors="replace")
 
         front_m = _FRONT_RE.match(text)
         front = front_m.group(1) if front_m else ""
@@ -126,7 +122,7 @@ def build_index(vault: Path) -> dict[str, dict]:
 
         summary = _extract_scalar(front, "summary")
 
-        category = str(page.relative_to(vault).parent)
+        category = str(Path(page.relative).parent)
         m = _CATEGORY_RE.search(front)
         if m:
             category = m.group(1).strip()
@@ -137,12 +133,12 @@ def build_index(vault: Path) -> dict[str, dict]:
             tier = m.group(1).strip()
 
         pages[slug] = {
-            "title": title or page.stem,
+            "title": title or page.path.stem,
             "tags": tags,
             "summary": summary,
             "category": category,
             "tier": tier,
-            "path": str(page.relative_to(vault)),
+            "path": page.relative,
             "out_links": [],
             "in_links": [],
         }
@@ -150,13 +146,10 @@ def build_index(vault: Path) -> dict[str, dict]:
     # Second pass: extract wikilinks
     known = set(pages.keys())
     for page in md_files:
-        slug = _slug(page.stem)
+        slug = _slug(page.path.stem)
         if slug not in pages:
             continue
-        try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        text = page.text(errors="replace")
 
         for link in _WIKILINK_RE.findall(text):
             target = _slug(link.split("/")[-1])

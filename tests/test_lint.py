@@ -10,6 +10,8 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.page_graph import parse_page_text
@@ -160,6 +162,32 @@ def test_lint_does_not_hide_unsupported_personal_artifact_paths(tmp_path: Path) 
         "_readouts/legacy.md",
         "_staging/legacy.md",
     }
+
+
+def test_lint_rejects_external_symlink_without_leaking_content(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        lint_vault(vault)
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
+def test_lint_preserves_strict_utf8_trust_validation(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    page = _page(vault, "concepts/invalid.md")
+    page.write_bytes(page.read_bytes() + b"\xff")
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["trust_metadata_errors"] == [
+        {"page": "concepts/invalid.md", "issue": "page is not valid UTF-8: concepts/invalid.md"}
+    ]
 
 
 def test_parse_page_text_preserves_wikilink_and_markdown_targets() -> None:

@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .safe_files import MarkdownFile, scan_markdown_files
+
 TRUST_LEDGER_RELATIVE_PATH = Path("_meta/trust-ledger.json")
 TRUST_LEDGER_SCHEMA_VERSION = 1
 TRUST_REVIEW_METHOD = "manual-lineage-and-claim-coverage-v1"
@@ -115,6 +117,7 @@ def _effective_schema(
 def _trust_metadata(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
@@ -123,10 +126,12 @@ def _trust_metadata(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
-    try:
-        text = _normalise_text(path.read_text(encoding="utf-8"))
-    except UnicodeError as exc:
-        raise ValueError("page is not valid UTF-8") from exc
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ValueError("page is not valid UTF-8") from exc
+    text = _normalise_text(text)
     frontmatter = _frontmatter(text)
     if not frontmatter:
         raise ValueError("missing frontmatter")
@@ -208,12 +213,14 @@ def _strip_volatile_confidence_fields(frontmatter: str) -> str:
 def page_fingerprint(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> str:
     """Hash material claims and evidence, excluding validated volatile bookkeeping."""
     metadata = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -229,12 +236,14 @@ def page_fingerprint(
 def validate_trust_metadata(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Validate present trust fields even when no review ledger is configured."""
     return _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -243,11 +252,13 @@ def validate_trust_metadata(
 def _parse_confidence(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> float:
     value = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )["confidence"]
@@ -256,17 +267,17 @@ def _parse_confidence(
     return float(value)
 
 
+def _trust_snapshots(vault: Path) -> dict[str, MarkdownFile]:
+    return {
+        snapshot.relative: snapshot
+        for snapshot in scan_markdown_files(vault, skip_dirs=TRUST_SKIP_DIRS)
+        if snapshot.path.stem not in TRUST_RESERVED_STEMS
+    }
+
+
 def iter_trust_pages(vault: Path) -> list[Path]:
     """Return every non-reserved content page that must participate in trust review."""
-    pages: list[Path] = []
-    for path in vault.rglob("*.md"):
-        rel = path.relative_to(vault)
-        if any(part in TRUST_SKIP_DIRS for part in rel.parts):
-            continue
-        if path.stem in TRUST_RESERVED_STEMS:
-            continue
-        pages.append(path)
-    return sorted(pages, key=lambda item: item.relative_to(vault).as_posix())
+    return [snapshot.path for snapshot in _trust_snapshots(vault).values()]
 
 
 def build_trust_ledger(
@@ -280,10 +291,12 @@ def build_trust_ledger(
     reviewed_at = _validate_reviewed_at(reviewed_at)
     pages: dict[str, dict[str, Any]] = {}
     not_applicable: list[str] = []
-    for path in iter_trust_pages(vault):
-        rel = path.relative_to(vault).as_posix()
+    for rel, snapshot in _trust_snapshots(vault).items():
+        path = snapshot.path
+        text = snapshot.text()
         metadata = _trust_metadata(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -293,6 +306,7 @@ def build_trust_ledger(
         pages[rel] = _review_entry(
             path,
             reviewed_at,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -309,11 +323,13 @@ def _review_entry(
     path: Path,
     reviewed_at: str,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
     metadata = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -322,11 +338,13 @@ def _review_entry(
     return {
         "reviewed_confidence": _parse_confidence(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         ),
         "material_fingerprint": page_fingerprint(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         ),
@@ -376,6 +394,7 @@ def update_trust_ledger(
 ) -> dict[str, Any]:
     """Update reviewed pages and remove entries whose confidence is not applicable."""
     reviewed_at = _validate_reviewed_at(reviewed_at)
+    snapshots = _trust_snapshots(vault)
     if ledger_path.is_file():
         try:
             ledger = json.loads(
@@ -406,11 +425,13 @@ def update_trust_ledger(
             "pages": {},
         }
 
-    current = {path.relative_to(vault).as_posix(): path for path in iter_trust_pages(vault)}
+    current = {relative: snapshot.path for relative, snapshot in snapshots.items()}
     not_applicable: list[str] = []
     for rel, page in current.items():
+        text = snapshots[rel].text()
         metadata = _trust_metadata(
             page,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -436,6 +457,7 @@ def update_trust_ledger(
             ledger["pages"][rel] = _review_entry(
                 page,
                 reviewed_at,
+                text=snapshots[rel].text(),
                 allowed_lifecycles=allowed_lifecycles,
                 required_trust_keys=required_trust_keys,
             )
@@ -585,6 +607,7 @@ def check_trust_ledger(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
+    snapshots = _trust_snapshots(vault)
     path = ledger_path or vault / TRUST_LEDGER_RELATIVE_PATH
     report = _empty_report(
         path,
@@ -644,13 +667,13 @@ def check_trust_ledger(
     if report["errors"]:
         return _finalise_report(report)
 
-    current: dict[str, Path] = {
-        page.relative_to(vault).as_posix(): page for page in iter_trust_pages(vault)
-    }
+    current = {relative: snapshot.path for relative, snapshot in snapshots.items()}
     for rel, page in current.items():
+        text = snapshots[rel].text()
         try:
             page_metadata = _trust_metadata(
                 page,
+                text=text,
                 allowed_lifecycles=lifecycles,
                 required_trust_keys=required,
             )
@@ -676,6 +699,7 @@ def check_trust_ledger(
         fingerprint, reviewed_value, reviewed_at = validated_entries[rel]
         if page_fingerprint(
             page,
+            text=text,
             allowed_lifecycles=lifecycles,
             required_trust_keys=required,
         ) != fingerprint:

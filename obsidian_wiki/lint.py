@@ -9,6 +9,7 @@ from typing import Any
 
 from obsidian_wiki.frontmatter import FrontmatterError, parse_relationships
 from obsidian_wiki.page_graph import normalise_node_id, parse_page_text
+from obsidian_wiki.safe_files import MarkdownFile, scan_markdown_files
 from obsidian_wiki.trust import (
     ALLOWED_LIFECYCLES,
     TRUST_LEDGER_RELATIVE_PATH,
@@ -39,11 +40,8 @@ ALLOWED_RELATIONSHIP_TYPES = frozenset(
     {"extends", "implements", "contradicts", "derived_from", "uses", "replaces", "related_to"}
 )
 
-def _iter_pages(vault: Path) -> list[Path]:
-    return [
-        path for path in vault.rglob("*.md")
-        if not any(part in SKIP_DIRS for part in path.relative_to(vault).parts)
-    ]
+def _iter_pages(vault: Path) -> tuple[MarkdownFile, ...]:
+    return scan_markdown_files(vault, skip_dirs=SKIP_DIRS)
 
 
 def _typed_relationships(text: str) -> list[dict[str, str]]:
@@ -57,9 +55,9 @@ def _typed_relationships(text: str) -> list[dict[str, str]]:
     ]
 
 
-def _parse_page(path: Path, vault: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    parsed = parse_page_text(path.relative_to(vault).as_posix(), text)
+def _parse_page(snapshot: MarkdownFile) -> dict[str, Any]:
+    text = snapshot.text(errors="replace")
+    parsed = parse_page_text(snapshot.relative, text)
 
     return {
         "path": parsed.path,
@@ -74,6 +72,8 @@ def _parse_page(path: Path, vault: Path) -> dict[str, Any]:
             if parsed.text.startswith("---\n") and "\n---" in parsed.text[4:]
             else []
         ),
+        "text": text,
+        "snapshot": snapshot,
     }
 
 
@@ -100,7 +100,7 @@ def lint_vault(
         if required_trust_fields is not None
         else TRUST_REQUIRED_FRONTMATTER
     )
-    pages = [_parse_page(path, vault) for path in _iter_pages(vault)]
+    pages = [_parse_page(snapshot) for snapshot in _iter_pages(vault)]
     slug_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
     node_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for page in pages:
@@ -134,6 +134,7 @@ def lint_vault(
         try:
             validate_trust_metadata(
                 vault / page["path"],
+                text=page["snapshot"].text(),
                 allowed_lifecycles=lifecycles,
                 required_trust_keys=(),
             )

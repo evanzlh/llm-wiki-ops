@@ -13,6 +13,7 @@ import pytest
 from obsidian_wiki import (
     IMPLEMENTATION_ID,
     SOURCE_REINSTALL_COMMAND,
+    __version__,
     cli,
     portable,
     skill_trees,
@@ -32,6 +33,7 @@ from obsidian_wiki.portable import (
     render_portable_gitattributes,
     setup_portable_repo,
 )
+from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable import (
     upgrade_portable_skills as _upgrade_portable_skills,
 )
@@ -577,6 +579,39 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     for relative in (".obsidian/app.json", ".obsidian/appearance.json"):
         parsed = json.loads((vault / relative).read_text())
         assert isinstance(parsed, dict) and parsed
+
+
+def test_setup_rerun_preserves_unsupported_owner_artifacts_and_check_rejects_them(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version=__version__, source_skills=tiny_skills)
+    owner_file = root / "wiki/_raw"
+    owner_file.write_text("owner file\n", encoding="utf-8")
+    owner_directory_file = root / "wiki/_archives/owner.txt"
+    owner_directory_file.parent.mkdir()
+    owner_directory_file.write_text("owner directory content\n", encoding="utf-8")
+
+    setup_portable_repo(root, version=__version__, source_skills=tiny_skills)
+
+    assert owner_file.read_text(encoding="utf-8") == "owner file\n"
+    assert owner_directory_file.read_text(encoding="utf-8") == (
+        "owner directory content\n"
+    )
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    issues = check_portable_repo(config)["issues"]
+    assert {
+        (issue["code"], issue["path"])
+        for issue in issues
+        if issue["code"] == "unsupported-personal-artifact"
+    } == {
+        ("unsupported-personal-artifact", "wiki/_archives"),
+        ("unsupported-personal-artifact", "wiki/_raw"),
+    }
 
 
 def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(

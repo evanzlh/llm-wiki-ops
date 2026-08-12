@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .safe_files import MarkdownFile, scan_markdown_files
+
 
 DEFAULT_BUDGET = 8_000
 MIN_BUDGET = 256
@@ -173,27 +175,27 @@ def _without_sources(body: str) -> str:
     return "\n".join(kept)
 
 
-def _page_from_path(path: Path, vault: Path) -> PageRecord:
-    text = path.read_text(encoding="utf-8", errors="replace")
+def _page_from_snapshot(snapshot: MarkdownFile) -> PageRecord:
+    path = snapshot.path
+    text = snapshot.text(errors="replace")
     frontmatter, body = _split_frontmatter(text)
     values = _frontmatter_values(frontmatter)
     h1 = _H1_RE.search(body)
     title = str(values.get("title", "")).strip() or (h1.group(1).strip() if h1 else path.stem)
     summary = str(values.get("summary", "")).strip() or _first_paragraph(_without_sources(body))
-    updated = str(values.get("updated", "")).strip() or datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    updated = str(values.get("updated", "")).strip() or datetime.fromtimestamp(snapshot.mtime_ns / 1_000_000_000, tz=timezone.utc).isoformat()
     tier = str(values.get("tier", "supporting")).strip().lower()
-    return PageRecord(path.relative_to(vault).as_posix(), title, _as_tuple(values.get("aliases", ())), _as_tuple(values.get("tags", ())), summary, tier if tier in TIER_ORDER else "supporting", updated, str(values.get("lifecycle", "")).strip(), str(values.get("base_confidence", "")).strip(), body.strip())
+    return PageRecord(snapshot.relative, title, _as_tuple(values.get("aliases", ())), _as_tuple(values.get("tags", ())), summary, tier if tier in TIER_ORDER else "supporting", updated, str(values.get("lifecycle", "")).strip(), str(values.get("base_confidence", "")).strip(), body.strip())
 
 
 def load_pages(vault: Path, *, public_only: bool = False) -> list[PageRecord]:
     if not vault.is_dir():
         raise ContextError("vault_not_found", f"vault not found: {vault}")
     pages: list[PageRecord] = []
-    for path in sorted(vault.rglob("*.md")):
-        relative = path.relative_to(vault)
-        if path.name in SKIP_FILES or any(part in SKIP_DIRS for part in relative.parts):
-            continue
-        page = _page_from_path(path, vault)
+    for snapshot in scan_markdown_files(
+        vault, skip_dirs=SKIP_DIRS, skip_files=SKIP_FILES
+    ):
+        page = _page_from_snapshot(snapshot)
         if not public_only or not BLOCKED_PUBLIC_TAGS.intersection(page.tags):
             pages.append(page)
     return pages

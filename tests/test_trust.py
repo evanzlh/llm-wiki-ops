@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.trust import (
@@ -138,6 +140,21 @@ def test_trust_ledger_does_not_hide_personal_artifact_names(tmp_path: Path) -> N
     )
 
     assert set(ledger["pages"]) == expected
+
+
+def test_trust_ledger_rejects_external_symlink_without_leaking_content(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = _page(tmp_path, "secret.md", body="SECRET-MARKER")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        build_trust_ledger(vault, reviewed_at="2026-07-12T17:38:39+07:00")
+
+    assert "SECRET-MARKER" not in str(raised.value)
 
 
 def test_claim_change_invalidates_review_but_updated_timestamp_does_not(tmp_path: Path) -> None:

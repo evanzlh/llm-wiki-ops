@@ -113,6 +113,18 @@ class TestBuildIndex:
         idx = build_index(vault)
         assert "draft" in idx
 
+    def test_rejects_external_symlink_without_leaking_content(self, vault, tmp_path):
+        raw = vault / "_raw"
+        raw.mkdir()
+        secret = tmp_path / "secret.md"
+        secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+        (raw / "leak.md").symlink_to(secret)
+
+        with pytest.raises(RuntimeError, match="symlink") as raised:
+            build_index(vault)
+
+        assert "SECRET-MARKER" not in str(raised.value)
+
     def test_reads_folded_block_scalar_summary(self, vault):
         # Regression for #156: `summary: >-` puts the real text on the next
         # indented line(s), not on the `summary:` line itself.

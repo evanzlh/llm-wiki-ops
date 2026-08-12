@@ -360,35 +360,89 @@ def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:
         assert "cli_args.pop(" not in source, relative
 
 
-def test_personal_vault_artifact_literals_are_centralized() -> None:
+def _personal_artifact_violations(source: str, relative: str) -> list[str]:
     artifact_names = ("_archives", "_raw", "_readouts", "_staging")
     forbidden_tokens = {"OBSIDIAN_RAW_DIR", *artifact_names}
     violations: list[str] = []
+    tree = ast.parse(source)
+    allowed_nodes: set[int] = set()
+    if relative == "obsidian_wiki/portable.py":
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "UNSUPPORTED_PERSONAL_VAULT_PATHS"
+                for target in node.targets
+            )
+        ]
+        assert len(assignments) == 1
+        assert ast.literal_eval(assignments[0].value) == artifact_names
+        allowed_nodes.update(id(node) for node in ast.walk(assignments[0].value))
+
+    def static_text(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+            return node.value.decode("utf-8", errors="ignore")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = static_text(node.left)
+            right = static_text(node.right)
+            return left + right if left is not None and right is not None else None
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            tokens = {node.id}
+        elif isinstance(node, ast.arg):
+            tokens = {node.arg}
+        elif isinstance(node, ast.Attribute):
+            tokens = {node.attr}
+        elif isinstance(node, ast.alias):
+            tokens = {node.name, node.asname or ""}
+        elif isinstance(node, ast.keyword):
+            tokens = {node.arg or ""}
+        else:
+            value = static_text(node)
+            if value is None:
+                continue
+            tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", value))
+        for token in sorted(tokens & forbidden_tokens):
+            if id(node) not in allowed_nodes:
+                violations.append(f"{relative}:{node.lineno}: {token}")
+    return violations
+
+
+@pytest.mark.parametrize(
+    ("source", "token"),
+    [
+        ("OBSIDIAN_RAW_DIR = object()\n", "OBSIDIAN_RAW_DIR"),
+        ("def f(OBSIDIAN_RAW_DIR): pass\n", "OBSIDIAN_RAW_DIR"),
+        ("value.OBSIDIAN_RAW_DIR\n", "OBSIDIAN_RAW_DIR"),
+        ("from module import value as OBSIDIAN_RAW_DIR\n", "OBSIDIAN_RAW_DIR"),
+        ("f(OBSIDIAN_RAW_DIR=1)\n", "OBSIDIAN_RAW_DIR"),
+        ("value = b'_raw'\n", "_raw"),
+        ("value = f'{prefix}/_staging'\n", "_staging"),
+        ("value = '_ra' + 'w'\n", "_raw"),
+    ],
+)
+def test_personal_artifact_scanner_rejects_python_reintroductions(
+    source: str, token: str
+) -> None:
+    assert _personal_artifact_violations(source, "obsidian_wiki/example.py") == [
+        f"obsidian_wiki/example.py:1: {token}"
+    ]
+
+
+def test_personal_vault_artifact_literals_are_centralized() -> None:
+    violations: list[str] = []
     for path in sorted((ROOT / "obsidian_wiki").rglob("*.py")):
         relative = path.relative_to(ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        allowed_nodes: set[int] = set()
-        if relative == "obsidian_wiki/portable.py":
-            assignments = [
-                node
-                for node in tree.body
-                if isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name)
-                    and target.id == "UNSUPPORTED_PERSONAL_VAULT_PATHS"
-                    for target in node.targets
-                )
-            ]
-            assert len(assignments) == 1
-            assert ast.literal_eval(assignments[0].value) == artifact_names
-            allowed_nodes.update(id(node) for node in ast.walk(assignments[0].value))
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-                continue
-            tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", node.value))
-            for token in sorted(tokens & forbidden_tokens):
-                if id(node) not in allowed_nodes:
-                    violations.append(f"{relative}:{node.lineno}: {token}")
+        violations.extend(
+            _personal_artifact_violations(
+                path.read_text(encoding="utf-8"), relative
+            )
+        )
 
     assert violations == []

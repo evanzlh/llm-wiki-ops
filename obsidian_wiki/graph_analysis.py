@@ -32,6 +32,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from .safe_files import MarkdownFile, scan_markdown_files
+
 
 # ---------------------------------------------------------------------------
 # Wikilink / frontmatter parsing
@@ -48,8 +50,8 @@ def _slug(page_name: str) -> str:
     return page_name.strip().lower().replace(" ", "-")
 
 
-def _page_slug(path: Path, root: Path) -> str:
-    return _slug(path.stem)
+def _page_slug(page: MarkdownFile) -> str:
+    return _slug(page.path.stem)
 
 
 def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
@@ -62,20 +64,13 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
     tags_map: dict[str, list[str]] = {}
     skip_dirs = {"_archived", ".obsidian"}
 
-    pages: list[Path] = []
-    for p in vault.rglob("*.md"):
-        if any(part in skip_dirs for part in p.parts):
-            continue
-        pages.append(p)
+    pages = list(scan_markdown_files(vault, skip_dirs=skip_dirs))
 
-    known_slugs = {_page_slug(p, vault) for p in pages}
+    known_slugs = {_page_slug(page) for page in pages}
 
     for page in pages:
-        src = _page_slug(page, vault)
-        try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        src = _page_slug(page)
+        text = page.text(errors="replace")
 
         # Tags
         m = _TAGS_RE.search(text)
@@ -103,7 +98,7 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
 
     # Ensure every known page appears as a key
     for p in pages:
-        s = _page_slug(p, vault)
+        s = _page_slug(p)
         outgoing.setdefault(s, [])
 
     return dict(outgoing), tags_map

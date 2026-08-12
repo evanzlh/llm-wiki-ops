@@ -116,6 +116,18 @@ class TestParseVaultGraph:
 
         assert "legacy" in outgoing
 
+    def test_rejects_external_symlink_without_leaking_content(self, vault, tmp_path):
+        raw = vault / "_raw"
+        raw.mkdir()
+        secret = tmp_path / "secret.md"
+        secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+        (raw / "leak.md").symlink_to(secret)
+
+        with pytest.raises(RuntimeError, match="symlink") as raised:
+            parse_vault_graph(vault)
+
+        assert "SECRET-MARKER" not in str(raised.value)
+
 
 # ---------------------------------------------------------------------------
 # god_nodes

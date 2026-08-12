@@ -81,6 +81,22 @@ def test_load_pages_does_not_hide_unsupported_personal_artifact_paths(
     ]
 
 
+def test_load_pages_rejects_external_symlink_without_leaking_content(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        load_pages(vault)
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
 def test_public_only_filters_before_ranking(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     write_note(vault, "internal.md", "---\ntitle: Internal\ntags: [visibility/internal]\nsummary: Secret launch plan.\n---\n# Internal\n")

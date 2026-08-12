@@ -658,7 +658,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
             require_trust_ledger=False,
             strict_trust=False,
         )
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         issues.append(CheckIssue("lint-invalid", ".", _scrub(config.root, exc)))
         return
     findings = report.get("findings", {})
