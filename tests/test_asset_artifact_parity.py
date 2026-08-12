@@ -12,6 +12,38 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "obsidian_wiki" / "_data"
 ASSET_NAMES = ("skills", "bootstrap")
+REMOVED_DISTRIBUTION_PATHS = {
+    ".claude/hooks/wiki-stop-capture.sh",
+    ".claude/settings.json",
+    ".github/workflows/publish.yml",
+    ".github/workflows/setup.yml",
+    "README_TW.md",
+    "SETUP.md",
+    "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md",
+    "obsidian_wiki/migration.py",
+    "obsidian_wiki/sync.py",
+    "scripts/com.obsidian-wiki.daily-update.plist",
+    "scripts/daily-update.sh",
+    "scripts/wiki-notify.sh",
+    "setup.sh",
+    "tests/test_portable_migration.py",
+    "tests/test_stop_hook_behavior.py",
+    "tests/test_stop_hook_packaging.py",
+    "tests/test_sync.py",
+    "tests/test_sync_setup_parity.py",
+}
+REMOVED_DISTRIBUTION_PREFIXES = (
+    ".agents/skills/",
+    ".claude/skills/",
+    ".cursor/skills/",
+    ".kiro/skills/",
+    ".pi/skills/",
+    ".windsurf/skills/",
+    "obsidian_wiki/_data/skills/memory-bridge/",
+    "obsidian_wiki/_data/skills/wiki-dashboard/",
+    "obsidian_wiki/_data/skills/wiki-stage-commit/",
+    "obsidian_wiki/_data/skills/wiki-switch/",
+)
 
 
 def _source_inventory() -> dict[str, tuple[bytes, int]]:
@@ -74,6 +106,20 @@ def _sdist_inventory(sdist: Path) -> dict[str, tuple[bytes, int]]:
     return inventory
 
 
+def _wheel_paths(wheel: Path) -> set[str]:
+    with zipfile.ZipFile(wheel) as archive:
+        return {info.filename for info in archive.infolist() if not info.is_dir()}
+
+
+def _sdist_paths(sdist: Path) -> set[str]:
+    with tarfile.open(sdist) as archive:
+        return {
+            "/".join(Path(member.name).parts[1:])
+            for member in archive.getmembers()
+            if member.isfile() and len(Path(member.name).parts) > 1
+        }
+
+
 def _build(*arguments: str, cwd: Path) -> None:
     subprocess.run(
         ["uv", "build", "--quiet", *arguments],
@@ -113,3 +159,15 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     assert _wheel_inventory(direct_wheels[0]) == expected
     assert _sdist_inventory(sdist_files[0]) == expected
     assert _wheel_inventory(rebuilt_wheels[0]) == expected
+    artifact_paths = (
+        (f"direct:{direct_wheels[0].name}", _wheel_paths(direct_wheels[0])),
+        (f"sdist:{sdist_files[0].name}", _sdist_paths(sdist_files[0])),
+        (f"rebuilt:{rebuilt_wheels[0].name}", _wheel_paths(rebuilt_wheels[0])),
+    )
+    for artifact, paths in artifact_paths:
+        assert paths.isdisjoint(REMOVED_DISTRIBUTION_PATHS), artifact
+        assert not {
+            path
+            for path in paths
+            if path.startswith(REMOVED_DISTRIBUTION_PREFIXES)
+        }, artifact

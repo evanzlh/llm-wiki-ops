@@ -10,7 +10,7 @@ from pathlib import Path
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
-from obsidian_wiki.operations import write_operation
+from obsidian_wiki.operations import validate_operation, write_operation
 from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -502,6 +502,13 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     source = root / _CJK_SOURCE_ID
     source.parent.mkdir(parents=True)
     source.write_text("# 组会纪要\n\n版本管理决策。\n", encoding="utf-8")
+    _git(root, "add", "--", _CJK_SOURCE_ID)
+    _git(root, "commit", "-qm", "owner: review CJK meeting source")
+    owner_head = _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert (
+        _git_bytes(root, "show", f"HEAD:{_CJK_SOURCE_ID}").stdout
+        == source.read_bytes()
+    )
 
     cache = _cli(
         root,
@@ -621,6 +628,9 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     assert promoted_metadata.scalars["updated"] == transaction["started_at"]
     assert promoted_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
     operation = root / "wiki" / commit_payload["operation_path"]
+    operation_change = validate_operation(operation, vault=root / "wiki")
+    assert operation_change.transaction_id == transaction["transaction_id"]
+    assert operation_change.source_ids == (_CJK_SOURCE_ID,)
     operation_text = operation.read_text(encoding="utf-8")
     operation_metadata = parse_frontmatter(operation_text)
     assert operation_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
@@ -633,15 +643,17 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         "wiki/.manifest/sources/meetings/2026-08-06-组会纪要.md.json",
         f"wiki/{commit_payload['operation_path']}",
     }
+    framework_outputs = durable_paths - {_CJK_SOURCE_ID}
     untracked = set(
         _git(root, "ls-files", "--others", "--exclude-standard", "-z")
         .stdout.rstrip("\0")
         .split("\0")
     )
-    assert untracked == durable_paths
+    assert untracked == framework_outputs
     assert not any(path.startswith(".obsidian-wiki/local/") for path in untracked)
     assert _git(root, "diff", "--quiet", check=False).returncode == 0
     assert _git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
+    assert _git(root, "rev-parse", "HEAD").stdout.strip() == owner_head
     local_transaction = (
         f".obsidian-wiki/local/transactions/{transaction['transaction_id']}"
     )

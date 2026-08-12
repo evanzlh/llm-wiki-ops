@@ -40,6 +40,55 @@ REMOVED_SKILL_PATHS = {
     "obsidian_wiki/_data/skills/wiki-stage-commit",
     "obsidian_wiki/_data/skills/wiki-switch",
 }
+CURRENT_RUNTIME_ROOTS = (
+    ROOT / "obsidian_wiki/_data/bootstrap",
+    ROOT / "obsidian_wiki/_data/skills",
+)
+REMOVED_CURRENT_PATHS = {
+    ".agents/skills",
+    ".claude/hooks/wiki-stop-capture.sh",
+    ".claude/settings.json",
+    ".claude/skills",
+    ".cursor/skills",
+    ".github/workflows/publish.yml",
+    ".github/workflows/setup.yml",
+    ".kiro/skills",
+    ".pi/skills",
+    ".windsurf/skills",
+    "README_TW.md",
+    "SETUP.md",
+    "obsidian_wiki/_data/skills/memory-bridge",
+    "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md",
+    "obsidian_wiki/_data/skills/wiki-dashboard",
+    "obsidian_wiki/_data/skills/wiki-stage-commit",
+    "obsidian_wiki/_data/skills/wiki-switch",
+    "obsidian_wiki/migration.py",
+    "obsidian_wiki/sync.py",
+    "scripts/com.obsidian-wiki.daily-update.plist",
+    "scripts/daily-update.sh",
+    "scripts/wiki-notify.sh",
+    "setup.sh",
+    "tests/test_portable_migration.py",
+    "tests/test_stop_hook_behavior.py",
+    "tests/test_stop_hook_packaging.py",
+    "tests/test_sync.py",
+    "tests/test_sync_setup_parity.py",
+}
+
+
+_RETIRED_RUNTIME_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bpersonal[\s_-]+mode\b",
+        r"\bportable[\s_-]+repository[\s_-]+mode\b",
+        r"\bwiki[\s_-]+staged[\s_-]+writes\b",
+        r"\bobsidian[\s_-]+raw[\s_-]+dir\b",
+        r"\bcache[\s_-]+update\b",
+        r"~[\\/]\.obsidian-wiki[\\/]config\b",
+        r"\bqmd[\s_-]",
+        r"\bdataview\b",
+    )
+)
 
 
 def test_current_human_document_scope_is_explicit_and_complete() -> None:
@@ -228,6 +277,82 @@ def test_personal_git_and_migration_commands_are_removed(
 @pytest.mark.parametrize("module", ["obsidian_wiki.migration", "obsidian_wiki.sync"])
 def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
     assert importlib.util.find_spec(module) is None
+
+
+def test_retired_current_surfaces_have_one_complete_removal_inventory() -> None:
+    assert REMOVED_CURRENT_PATHS == {
+        ".agents/skills",
+        ".claude/hooks/wiki-stop-capture.sh",
+        ".claude/settings.json",
+        ".claude/skills",
+        ".cursor/skills",
+        ".github/workflows/publish.yml",
+        ".github/workflows/setup.yml",
+        ".kiro/skills",
+        ".pi/skills",
+        ".windsurf/skills",
+        "README_TW.md",
+        "SETUP.md",
+        "obsidian_wiki/_data/skills/memory-bridge",
+        "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md",
+        "obsidian_wiki/_data/skills/wiki-dashboard",
+        "obsidian_wiki/_data/skills/wiki-stage-commit",
+        "obsidian_wiki/_data/skills/wiki-switch",
+        "obsidian_wiki/migration.py",
+        "obsidian_wiki/sync.py",
+        "scripts/com.obsidian-wiki.daily-update.plist",
+        "scripts/daily-update.sh",
+        "scripts/wiki-notify.sh",
+        "setup.sh",
+        "tests/test_portable_migration.py",
+        "tests/test_stop_hook_behavior.py",
+        "tests/test_stop_hook_packaging.py",
+        "tests/test_sync.py",
+        "tests/test_sync_setup_parity.py",
+    }
+    assert [
+        relative for relative in REMOVED_CURRENT_PATHS if (ROOT / relative).exists()
+    ] == []
+
+
+def test_packaged_runtime_uses_only_the_current_repository_protocol() -> None:
+    violations: list[tuple[str, str]] = []
+    for runtime_root in CURRENT_RUNTIME_ROOTS:
+        for path in sorted(runtime_root.rglob("*")):
+            if path.is_file() and path.suffix.casefold() in {
+                ".md",
+                ".mdc",
+                ".json",
+            }:
+                text = path.read_text(encoding="utf-8")
+                violations.extend(
+                    (path.relative_to(ROOT).as_posix(), pattern.pattern)
+                    for pattern in _RETIRED_RUNTIME_PATTERNS
+                    if pattern.search(text)
+                )
+
+    assert violations == []
+
+
+def test_python_exposes_only_the_repository_runtime_api() -> None:
+    forbidden = (
+        re.compile(r"\bResolvedConfig\b"),
+        re.compile(r"\bload_global_config\b"),
+        re.compile(r"\bcmd_sync_setup\b"),
+        re.compile(r"\bcmd_sync\b"),
+        re.compile(r"\bcmd_repo_migrate\b"),
+        re.compile(r"\bupdate_source\s*\("),
+    )
+    violations: list[tuple[str, str]] = []
+    for path in sorted((ROOT / "obsidian_wiki").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        violations.extend(
+            (path.relative_to(ROOT).as_posix(), pattern.pattern)
+            for pattern in forbidden
+            if pattern.search(text)
+        )
+
+    assert violations == []
 
 
 def test_personal_only_skill_directories_are_removed_without_compatibility_stubs() -> None:

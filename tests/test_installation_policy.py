@@ -645,36 +645,89 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
         timeout=60,
     )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
     assert "Repository scaffolded" in setup.stdout
+    assert not (portable / ".git").exists()
     canonical_query = portable / ".skills/wiki-query/SKILL.md"
     query_bytes = canonical_query.read_bytes()
     assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         mirrored = portable / agent_relative / "wiki-query/SKILL.md"
         assert mirrored.read_bytes() == query_bytes
-    sync = subprocess.run(
-        [executable, "repo", "sync-skills", "--json"],
-        cwd=portable,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    assert '"status": "clean"' in sync.stdout
     doctor = subprocess.run(
         [executable, "doctor"],
         cwd=portable,
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
         timeout=60,
     )
+    assert doctor.returncode == 0, doctor.stdout + doctor.stderr
     assert "obsidian-wiki doctor: pass" in doctor.stdout
+    check = subprocess.run(
+        [executable, "check", "--json", "--pretty"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    assert json.loads(check.stdout) == {
+        "status": "warn",
+        "errors": 0,
+        "warnings": 1,
+        "issues": [
+            {
+                "code": "git-unavailable",
+                "path": ".",
+                "message": "Git is unavailable or the repository is not a worktree",
+                "severity": "warning",
+            }
+        ],
+    }
+    sync = subprocess.run(
+        [executable, "repo", "sync-skills", "--json"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert sync.returncode == 0, sync.stdout + sync.stderr
+    sync_payload = json.loads(sync.stdout)
+    assert sync_payload["status"] == "clean"
+    assert sync_payload["canonical_skills"] == canonical_skill_names
+    assert sync_payload["warnings"] == []
+    assert len(sync_payload["targets"]) == len(PROJECT_AGENT_DIRS)
+    assert all(
+        target["added"] == []
+        and target["changed"] == []
+        and target["removed"] == []
+        and target["unsafe"] == []
+        for target in sync_payload["targets"]
+    )
+    home = Path(env["HOME"])
+    assert not (home / ".obsidian-wiki").exists()
+    assert not (portable / ".git").exists()
+    for arguments in (("rev-parse", "--git-dir"), ("log", "-1"), ("remote",)):
+        probe = subprocess.run(
+            ["git", *arguments],
+            cwd=portable,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert probe.returncode != 0, (arguments, probe.stdout, probe.stderr)
+
     subprocess.run(
         ["git", "init"],
         cwd=portable,
@@ -684,16 +737,6 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=30,
     )
-    check = subprocess.run(
-        [executable, "check", "--json", "--pretty"],
-        cwd=portable,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    assert '"status": "pass"' in check.stdout
     subprocess.run(
         ["git", "add", "--all"],
         cwd=portable,
@@ -722,7 +765,6 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         relative = os.fsdecode(encoded_relative)
         payload = (portable / relative).read_bytes()
         assert not [value for value in forbidden_paths if value in payload], relative
-    home = Path(env["HOME"])
     assert not (home / ".obsidian-wiki").exists()
     assert not any(
         (home / agent / "skills").exists() for agent in (".claude", ".codex", ".agents")
