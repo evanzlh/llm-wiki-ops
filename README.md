@@ -18,10 +18,9 @@ Install a non-editable build from a local framework clone:
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
 uv tool install --link-mode copy .
-uv tool install --force --reinstall --link-mode copy .
 ```
 
-The installed command does not depend on the clone remaining in place. See [Installation](docs/installation.md) for prerequisites and upgrades.
+This is a fresh install from a local clone; no package-index release is supported. The installed command does not depend on the clone remaining in place. Reinstallation from a framework clone is part of the reviewed upgrade/development flow below. See [Installation](docs/installation.md) for details.
 
 ## Create a knowledge repository
 
@@ -40,13 +39,19 @@ Setup does not initialize Git. Before collaboration, the owner initializes the k
 
 Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and writes an operation record while keeping stable `wiki/index.md` and `wiki/log.md`. A transaction never modifies tracked source snapshots. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
 
-Upgrade managed skills explicitly after installing a compatible framework release:
+Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.obsidian-wiki/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
 
 ```bash
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+uv tool install --force --reinstall --link-mode copy .
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
 obsidian-wiki repo upgrade-skills
 obsidian-wiki doctor
 obsidian-wiki check
 git diff
+git commit -m "Upgrade obsidian-wiki"
 ```
 
 The current product surface is the repository workflow documented here and in `docs/`. A Dashboard is intentionally absent; any future Dashboard requires a separate design and implementation, with no placeholder in this release.

@@ -65,23 +65,29 @@ After cloning, you can work from anywhere inside it: each repository-aware comma
 
 ## Upgrade
 
-First update the framework clone and reinstall the CLI:
+Use this two-step CLI and repository upgrade protocol. First create an owner-controlled branch in the knowledge repository, update the separate framework clone, and reinstall the CLI:
 
 ```bash
+cd /path/to/team-knowledge
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
 git pull --ff-only
 uv tool install --force --reinstall --link-mode copy .
 ```
 
-Then create a branch in each knowledge repository, review the `requires_cli` constraint, and refresh managed files:
+Return to the knowledge repository and read its tracked `requires_cli`. Resolution fails closed if the old PEP 440 constraint excludes the installed CLI. Before any repository command, the owner must explicitly review and edit the constraint to accept the transition version. A range that accepts both collaborator versions can support a staged rollout; every collaborator must ultimately install an accepted version. Then refresh managed files:
 
 ```bash
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
 obsidian-wiki repo upgrade-skills
 obsidian-wiki doctor
 obsidian-wiki check
 git diff
+git commit -m "Upgrade obsidian-wiki"
 ```
 
-`repo upgrade-skills` preserves custom skills and refuses owner-modified managed files. The owner decides whether and how to publish the reviewed Git changes.
+`repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses owner-modified managed files. Collaborators review the configuration and managed-file diff before the owner commits or publishes it.
 
 ## CI
 

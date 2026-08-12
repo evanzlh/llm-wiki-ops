@@ -2,6 +2,8 @@
 
 `obsidian-wiki --help` is the command authority. The CLI resolves the nearest ancestor `.obsidian-wiki/config.toml` for repository-aware operations and writes structured data to stdout when JSON output is requested.
 
+Only commands and options printed by the current command's `--help` are supported. Unlisted interfaces are outside the current product surface.
+
 ## Setup and inspection
 
 ```bash
@@ -18,10 +20,28 @@ obsidian-wiki check [--json] [--pretty] [--strict]
 
 ```bash
 obsidian-wiki repo sync-skills [--apply] [--json] [--pretty]
-obsidian-wiki repo upgrade-skills
 ```
 
-`sync-skills` is read-only unless `--apply` is supplied. It compares or rebuilds all derived mirrors from `.skills/`. `upgrade-skills` refreshes framework-managed built-ins from the installed CLI, preserves custom skills, rebuilds mirrors, and refuses managed drift.
+`sync-skills` is read-only unless `--apply` is supplied. It compares or rebuilds all derived mirrors from `.skills/`.
+
+## Upgrade protocol
+
+Use this two-step CLI and repository upgrade protocol on an owner branch. Install the new CLI from its separate framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if that PEP 440 constraint excludes the installed version. The owner must explicitly review and edit the constraint before invoking repository maintenance:
+
+```bash
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+uv tool install --force --reinstall --link-mode copy .
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
+obsidian-wiki repo upgrade-skills
+obsidian-wiki doctor
+obsidian-wiki check
+git diff
+git commit -m "Upgrade obsidian-wiki"
+```
+
+`upgrade-skills` refreshes framework-managed built-ins, preserves custom skills, rebuilds mirrors, and refuses managed drift. It does not bypass compatibility checks and does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
 
 ## Transactions
 

@@ -2,7 +2,7 @@
 
 ## Attribution
 
-This project is an independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). It preserves upstream Git history and the MIT license, but it is not an official upstream release.
+This project is an independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). It preserves upstream Git history and the MIT license, but it is not an official upstream release and does not track future upstream changes.
 
 ## Product direction
 
@@ -10,7 +10,7 @@ This fork focuses on clone-ready, multi-contributor knowledge repositories. Conf
 
 ## Compatibility
 
-The supported product is the one repository layout created by `obsidian-wiki setup [DIR]`. Knowledge repositories declare an accepted CLI range through `requires_cli`; commands fail closed when the installed version does not satisfy it.
+The supported surface is a single repository product created by `obsidian-wiki setup [DIR]`. Knowledge repositories declare an accepted CLI range through `requires_cli`; commands fail closed when the installed version does not satisfy it.
 
 Historical design records are preserved for context and marked when superseded. They are not compatibility promises. The authoritative current surfaces are the CLI help, package behavior, tests, README pair, and current `docs/` pages.
 

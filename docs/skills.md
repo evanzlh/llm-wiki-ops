@@ -67,3 +67,9 @@ Setup and extension:
 Framework skill sources live at `obsidian_wiki/_data/skills/<name>/SKILL.md`. In a generated knowledge repository, custom skills belong in `.skills/<name>/SKILL.md`. Rebuild mirrors, run `doctor` and `check`, and review the tracked diff.
 
 A managed upgrade refuses drift in built-ins and unknown historical content rather than overwriting owner work. The package currently has no Dashboard skill or compatibility placeholder; that capability remains a separate follow-up design.
+
+## Local export and factory boundaries
+
+`wiki-export` writes review artifacts only to ignored `.obsidian-wiki/local/exports/<timestamp>/`. Public export is metadata-first: it reads bounded frontmatter, excludes restricted visibility before any body read, and never discloses excluded identities. It can emit JSON, GraphML, Cypher, HTML, and an explicitly requested OKF bundle. It never changes knowledge, starts a transaction, or performs Git publication.
+
+`vault-skill-factory` writes a review artifact only to ignored `.obsidian-wiki/local/generated-skills/<name>/`. It selects a confirmed mature cluster, preserves uncertainty and provenance, validates the generated artifact with the repository-managed validator when safe, and never installs the result. It never writes `.skills/` or any agent discovery directory; human review and a separate owner-controlled installation are required.

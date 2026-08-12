@@ -18,10 +18,9 @@
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
 uv tool install --link-mode copy .
-uv tool install --force --reinstall --link-mode copy .
 ```
 
-安装后的命令不依赖 clone 目录继续存在。前置条件与升级方式见[安装说明](docs/installation.md)。
+这是从本地 clone 完成的全新安装；本项目不支持从软件包索引安装。安装后的命令不依赖 clone 目录继续存在。从框架 clone 强制重装属于下述受审查的升级与开发流程。详情见[安装说明](docs/installation.md)。
 
 ## 创建知识库仓库
 
@@ -40,13 +39,19 @@ Setup 不会初始化 Git。协作前，所有者需要初始化知识库仓库�
 
 来源快照先由所有者审查，并在 `transaction begin` 之前纳入版本管理。此后 Agent 通过本地事务写入。候选内容提升前必须通过校验；失败时保留恢复状态。成功提交会提升候选页面、更新 manifest 分片并写入操作记录，同时保持 `wiki/index.md` 与 `wiki/log.md` 稳定。事务绝不会修改受版本管理的来源快照。CLI 不会提交、推送或创建 Pull Request：仓库所有者审查工作树 diff，并在外部完成 Git 发布。
 
-安装兼容的框架版本后，显式升级受管理技能：
+请采用这套两步 CLI 与仓库升级协议。所有者先创建分支，从框架 clone 安装新 CLI，再读取受版本管理的 `requires_cli` 约束。如果该 PEP 440 约束尚未包含新版本，仓库命令会失败并停止；因此所有者必须先显式审查并编辑 `.obsidian-wiki/config.toml`，让约束接受过渡版本，再运行维护命令。`repo upgrade-skills` 不会改写 `requires_cli`。完成校验与差异检查后，由协作者审查完整变更，所有者决定是否提交。
 
 ```bash
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+uv tool install --force --reinstall --link-mode copy .
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
 obsidian-wiki repo upgrade-skills
 obsidian-wiki doctor
 obsidian-wiki check
 git diff
+git commit -m "Upgrade obsidian-wiki"
 ```
 
 当前产品界面仅包含本文与 `docs/` 所述的仓库工作流。Dashboard 有意不提供；未来若要加入，必须另行设计与实现，本版本不包含占位实现。

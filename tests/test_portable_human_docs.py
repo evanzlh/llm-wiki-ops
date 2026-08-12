@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import PortableConfig
@@ -37,6 +38,18 @@ FORBIDDEN_CURRENT_DOC_TERMS = (
     "@name",
     "~/.obsidian-wiki/config",
     "Dataview",
+)
+
+FORBIDDEN_CURRENT_DOC_PATTERNS = (
+    r"personal[\s_-]+mode",
+    r"setup\s+--?portable",
+    r"repo[\s_-]+migrate",
+    r"sync[\s_-]+setup",
+    r"cache[\s_-]+update",
+    r"manifest[\s_-]+v1",
+    r"@\s*name",
+    r"~[\\/]\.obsidian-wiki[\\/]config",
+    r"dataview",
 )
 
 HISTORICAL_PLANS = (
@@ -79,6 +92,13 @@ def test_current_docs_describe_only_the_current_repository_product() -> None:
         text = _text(relative)
         for forbidden in FORBIDDEN_CURRENT_DOC_TERMS:
             assert forbidden not in text, (relative, forbidden)
+        for pattern in FORBIDDEN_CURRENT_DOC_PATTERNS:
+            assert re.search(pattern, text, re.IGNORECASE) is None, (
+                relative,
+                pattern,
+            )
+        for nonexistent in (".ops/", "_sources/"):
+            assert nonexistent not in text, (relative, nonexistent)
 
 
 def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
@@ -108,6 +128,28 @@ def test_current_docs_cover_the_portable_only_contract() -> None:
         "Dashboard",
     ):
         assert required in combined, required
+
+
+def test_each_authoritative_page_documents_its_role() -> None:
+    required_by_page = {
+        "README.md": ("one repository layout", "transaction begin", "Git publication"),
+        "README_ZH.md": ("一种仓库布局", "transaction begin", "Git 发布"),
+        "docs/installation.md": ("does not initialize Git", "requires_cli", "doctor"),
+        "docs/configuration.md": ("nearest ancestor", "schema_version", "Manifest v2"),
+        "docs/architecture.md": ("wiki/.manifest.json", "ShardedManifest.entry_path", "recovery"),
+        "docs/cli.md": ("obsidian-wiki --help", "Only commands", "transaction commit"),
+        "docs/cli.zh-TW.md": ("obsidian-wiki --help", "目前支援", "transaction commit"),
+        "docs/agents.md": ("canonical protocol", "candidate_vault", "Git publication"),
+        "docs/skills.md": ("36 skills", "metadata-first", "never installs"),
+        "docs/contributing.md": ("source checkout", "disposable", "check_readme_sync.py"),
+        "docs/fork.md": ("independently", "does not track future upstream changes", "single repository product"),
+        "docs/README.md": ("Installation", "Architecture", "CLI reference"),
+    }
+    assert set(required_by_page) == set(CURRENT_DOCS)
+    for relative, required_phrases in required_by_page.items():
+        text = _text(relative)
+        for phrase in required_phrases:
+            assert phrase in text, (relative, phrase)
 
 
 def test_configuration_example_uses_the_runtime_implementation_id() -> None:
@@ -209,13 +251,33 @@ def test_readmes_define_source_and_transaction_ownership() -> None:
 
 
 def test_current_documentation_links_resolve() -> None:
-    link = re.compile(r"(?<!!)\[[^]]+\]\(([^)#]+)(?:#[^)]+)?\)")
+    link = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
+
+    def anchors(path: Path) -> set[str]:
+        found: set[str] = set()
+        counts: dict[str, int] = {}
+        for heading in re.findall(r"^#{1,6}\s+(.+?)\s*$", path.read_text(encoding="utf-8"), re.MULTILINE):
+            plain = re.sub(r"[`*_~]", "", heading).casefold()
+            slug = re.sub(r"[^\w\- ]", "", plain, flags=re.UNICODE)
+            slug = re.sub(r"\s+", "-", slug.strip())
+            count = counts.get(slug, 0)
+            counts[slug] = count + 1
+            found.add(slug if count == 0 else f"{slug}-{count}")
+        return found
+
     for relative in CURRENT_DOCS:
         source = ROOT / relative
         for target in link.findall(source.read_text(encoding="utf-8")):
             if "://" in target or target.startswith("mailto:"):
                 continue
-            assert (source.parent / target).resolve().exists(), (relative, target)
+            raw_path, separator, raw_anchor = target.partition("#")
+            destination = source if not raw_path else (source.parent / unquote(raw_path)).resolve()
+            assert destination.exists(), (relative, target)
+            if separator and raw_anchor and destination.suffix.casefold() == ".md":
+                assert unquote(raw_anchor).casefold() in anchors(destination), (
+                    relative,
+                    target,
+                )
 
 
 def test_historical_documents_have_one_exact_banner_before_the_body() -> None:

@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
-from obsidian_wiki.portable import PROJECT_AGENT_DIRS
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
+from obsidian_wiki.config import ConfigError, load_portable_config
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, render_portable_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,11 +203,10 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     english_paths = (
         "README.md",
         "docs/installation.md",
-        "docs/configuration.md",
         "docs/cli.md",
-        "docs/architecture.md",
+        "docs/contributing.md",
     )
-    marker = "two-step portable CLI upgrade protocol"
+    marker = "two-step CLI and repository upgrade protocol"
     for relative in english_paths:
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert marker in text, relative
@@ -219,16 +219,18 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         if section_ends:
             protocol = protocol[: min(section_ends)]
         protocol = " ".join(protocol.split())
+        protocol_folded = protocol.casefold()
         for required in (
             "`requires_cli`",
             "PEP 440",
             "branch",
             "collaborator",
-            "does not bypass",
-            "does not automatically rewrite",
+            "does not rewrite",
             "commit",
+            SOURCE_REINSTALL_COMMAND,
         ):
-            assert required in protocol, (relative, required)
+            assert required.casefold() in protocol_folded, (relative, required)
+        assert "fail closed" in protocol_folded or "fails closed" in protocol_folded
         constraint = protocol.index("`requires_cli`")
         upgrade = protocol.index("obsidian-wiki repo upgrade-skills")
         check = protocol.index("obsidian-wiki check")
@@ -236,7 +238,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         assert constraint < upgrade < check < diff, relative
 
     chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
-    marker_zh = "两步便携式 CLI 升级协议"
+    marker_zh = "两步 CLI 与仓库升级协议"
     assert marker_zh in chinese
     protocol_zh = chinese.split(marker_zh, 1)[1].split("\n## ", 1)[0]
     protocol_zh = " ".join(protocol_zh.split())
@@ -245,9 +247,10 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         "PEP 440",
         "分支",
         "协作者",
-        "不会绕过",
-        "不会自动改写",
+        "失败并停止",
+        "不会改写",
         "提交",
+        SOURCE_REINSTALL_COMMAND,
     ):
         assert required in protocol_zh, required
     constraint = protocol_zh.index("`requires_cli`")
@@ -257,10 +260,39 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     assert constraint < upgrade < check < diff
 
 
+def test_upgrade_version_transition_fails_closed_until_owner_edits_constraint(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        render_portable_config(version="2026.8.3"), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="requires CLI"):
+        load_portable_config(
+            config_path,
+            installed_version="2026.9.1",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    reviewed = config_path.read_text(encoding="utf-8").replace(
+        'requires_cli = ">=2026.8,<2026.9"',
+        'requires_cli = ">=2026.8,<2026.10"',
+    )
+    config_path.write_text(reviewed, encoding="utf-8")
+    loaded = load_portable_config(
+        config_path,
+        installed_version="2026.9.1",
+        implementation=IMPLEMENTATION_ID,
+    )
+    assert loaded.requires_cli == ">=2026.8,<2026.10"
+
+
 def test_cli_quick_reference_does_not_skip_requires_cli_upgrade_step() -> None:
     cli = (ROOT / "docs/cli.md").read_text(encoding="utf-8")
     quick_reference = cli.split(
-        "### Upgrade portable CLI compatibility and managed skills", 1
+        "## Upgrade protocol", 1
     )[0]
 
     assert "obsidian-wiki repo upgrade-skills" not in quick_reference
@@ -270,17 +302,22 @@ def test_fork_policy_is_explicit() -> None:
     policy = (ROOT / "docs/fork.md").read_text(encoding="utf-8")
     assert "independently" in policy
     assert "does not track future upstream changes" in policy
-    assert "Portable Repository mode" in policy
+    assert "single repository product" in policy
 
 
 def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
     contributing = (ROOT / "docs/contributing.md").read_text(encoding="utf-8")
-    adding_skill = contributing.split("## Adding a new skill", 1)[1].split(
-        "## Keeping both READMEs in sync", 1
+    adding_skill = contributing.split("## Test a skill change", 1)[1].split(
+        "## Documentation", 1
     )[0]
     rebuild = adding_skill.index(SOURCE_REINSTALL_COMMAND)
     assert rebuild < adding_skill.index("obsidian-wiki setup")
-    assert rebuild < adding_skill.index("Test by saying")
+    assert adding_skill.index("obsidian-wiki setup") < adding_skill.index(
+        "obsidian-wiki check"
+    )
+    assert "obsidian-wiki repo sync-skills" in adding_skill
+    assert "tests/test_asset_artifact_parity.py" in adding_skill
+    assert "source checkout as a runtime fallback" in adding_skill
 
 
 def test_agents_routes_repository_authority_without_global_source_variables() -> None:

@@ -38,6 +38,21 @@ The optional `[settings]` table accepts only:
 
 Unknown keys fail validation. Values may be strings, numbers, booleans, or lists of those scalar types; list values are converted to comma-separated strings for the runtime context. Tables and other compound values fail validation.
 
+### Schema command inputs
+
+The distributed schema has four named inputs:
+
+- `OBSIDIAN_ALLOWED_LIFECYCLES` extends the framework lifecycle allowlist.
+- `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES` extends the relationship-type allowlist.
+- `OBSIDIAN_REQUIRED_TRUST_FIELDS` replaces the default required trust fields; allowed entries are `base_confidence`, `lifecycle`, `lifecycle_changed`, and `updated`.
+- `OBSIDIAN_SCHEMA_SOURCE` identifies the owner authority recorded in reports.
+
+The first three are among the seven supported portable `[settings]` keys above. `OBSIDIAN_SCHEMA_SOURCE` is not a repository setting: pass an authority locator with the CLI `--schema-source` option. The portable CLI does not read environment variables or `.env` directly. An external wrapper may resolve `OBSIDIAN_SCHEMA_SOURCE` from its environment and translate it to that option, but the CLI does not persist the locator in repository configuration.
+
+Framework lifecycle values are `draft`, `reviewed`, `verified`, `disputed`, and `archived`. Framework relationship types are `extends`, `implements`, `contradicts`, `derived_from`, `uses`, `replaces`, and `related_to`. Lint normally requires `base_confidence` and `lifecycle`; standalone trust commands also require `updated`. The complete required-field allowlist is `base_confidence`, `lifecycle`, `lifecycle_changed`, and `updated`.
+
+Integration policy is commonly summarized as CLI flags > resolved environment/config values > framework defaults. For direct CLI execution, this means flags > portable `[settings]` > framework defaults; any environment resolution is the external wrapper's responsibility. Lifecycle and relationship inputs extend lower-precedence allowlists; an explicit `--required-trust-field` list replaces the configured required-fields list; `--schema-source` supplies the source locator. Empty entries, unknown required fields, and attempts to put `OBSIDIAN_SCHEMA_SOURCE` in `[settings]` fail closed.
+
 ## Tracked and ignored state
 
 Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and immutable operation records.
@@ -45,6 +60,8 @@ Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-review
 Ignored local state includes `.obsidian-wiki/local/`, transaction workspaces and recovery copies, and `wiki/hot.md`. The hot page is derived from bounded deterministic inputs and can be regenerated.
 
 A transaction commit owns affected manifest shards but never modifies tracked source snapshots. Agents must never edit manifest shards directly. Stable `wiki/index.md` and `wiki/log.md` are not ordinary write targets.
+
+Manifest v2 consists of the tracked `wiki/.manifest.json` marker and shards below `wiki/.manifest/sources/`.
 
 ## Skill mirrors
 

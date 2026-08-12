@@ -36,6 +36,41 @@ Current documentation describes only the single repository product. Describe int
 
 Add a managed built-in at `obsidian_wiki/_data/skills/<name>/SKILL.md`, update inventory and parity tests, and ensure every knowledge-writing path uses transaction validation and review. Do not add generated mirrors to this source checkout.
 
+## Test a skill change
+
+Rebuild the installed CLI before testing. Create a disposable Git repository, scaffold it with the installed command, validate the generated mirrors, and run asset parity tests from the framework checkout:
+
+```bash
+uv tool install --force --reinstall --link-mode copy .
+disposable="$(mktemp -d)"
+mkdir "$disposable/knowledge"
+git -C "$disposable/knowledge" init
+obsidian-wiki setup "$disposable/knowledge"
+(cd "$disposable/knowledge" && obsidian-wiki check)
+(cd "$disposable/knowledge" && obsidian-wiki repo sync-skills --json --pretty)
+uv run --with pytest python -m pytest tests/test_asset_artifact_parity.py tests/test_skill_trees.py -q
+```
+
+The disposable repository is the runtime fixture. Never use the framework source checkout as a runtime fallback; it intentionally has no generated repository skill tree.
+
+## Upgrade protocol for maintainers
+
+Use the same two-step CLI and repository upgrade protocol as users. On an owner branch, install the new CLI from the framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if its PEP 440 constraint excludes the new version, so explicitly review and edit the constraint before maintenance:
+
+```bash
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+uv tool install --force --reinstall --link-mode copy .
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+git commit -m "Upgrade obsidian-wiki"
+```
+
+The command does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
+
 ## Commits
 
 Keep changes scoped, run `git diff --check`, and include the tests that establish the contract. Publishing a branch or pull request remains an explicit maintainer action.

@@ -13,9 +13,18 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
-from obsidian_wiki.lint import lint_vault
+from obsidian_wiki.lint import (
+    ALLOWED_RELATIONSHIP_TYPES,
+    TRUST_REQUIRED_FRONTMATTER,
+    lint_vault,
+)
 from obsidian_wiki.page_graph import parse_page_text
-from obsidian_wiki.trust import build_trust_ledger, write_trust_ledger
+from obsidian_wiki.trust import (
+    ALLOWED_LIFECYCLES,
+    TRUST_REQUIRED_FIELD_ALLOWLIST,
+    build_trust_ledger,
+    write_trust_ledger,
+)
 
 
 def _portable_cli_context(
@@ -734,6 +743,26 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         assert variable in env_example
         assert variable in configuration
         assert variable in lint_skill
+    assert "not a repository setting" in configuration
+    portable_settings = configuration.split("## Settings", 1)[1].split(
+        "## Tracked and ignored state", 1
+    )[0]
+    assert "OBSIDIAN_SCHEMA_SOURCE" not in portable_settings.split(
+        "Schema command inputs", 1
+    )[0]
+    assert "CLI flags > resolved environment/config values > framework defaults" in (
+        " ".join(configuration.split())
+    )
+    assert "does not read environment variables or `.env` directly" in configuration
+    assert "external wrapper" in configuration
+    assert "not loaded by the portable CLI" in env_example
+    for value in (
+        *ALLOWED_LIFECYCLES,
+        *ALLOWED_RELATIONSHIP_TYPES,
+        *TRUST_REQUIRED_FRONTMATTER,
+        *TRUST_REQUIRED_FIELD_ALLOWLIST,
+    ):
+        assert f"`{value}`" in configuration
     for skill in (llm_skill, capture_skill):
         assert "nearest" in skill
         assert ".obsidian-wiki/config.toml" in skill
