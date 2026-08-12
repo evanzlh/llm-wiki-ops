@@ -58,8 +58,8 @@ Use these eight steps for Full and Correction.
    `..` segment, NUL, or backslash, stays below configured sources, and is
    accepted by cache/manifest source_id semantics. From repository-root CWD,
    execute the exact read-only argument vectors
-   `["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and
-   `["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
+   `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
    Also require an existing HEAD. Both commands must return zero and status
    output must be empty. The manifest-tracked and Git-tracked states differ,
    and tracked is not committed-reviewed. On any nonzero result, status output,

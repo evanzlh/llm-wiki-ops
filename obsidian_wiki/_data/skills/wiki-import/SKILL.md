@@ -176,8 +176,8 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    contains no `.` or `..` segment, NUL, or backslash, stays below configured
    sources, and is accepted by cache/manifest source_id semantics. From
    repository-root CWD execute
-   `["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and
-   `["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
+   `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
    as exact read-only argument vectors. Require an existing HEAD, zero exits,
    and status output must be empty. The manifest-tracked and Git-tracked states
    differ, and tracked is not committed-reviewed. On any nonzero result, output,

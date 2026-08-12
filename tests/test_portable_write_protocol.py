@@ -1,11 +1,14 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from obsidian_wiki.cli import (
     _list_record_payload,
@@ -410,14 +413,14 @@ def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
             "new snapshot requires owner Git review",
             "becomes tracked authority",
             "framework and agent must not run `git add`, `git commit`, or `git push`",
-            '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
+            '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
             "manifest-tracked",
             "Git-tracked",
             "owner review, stage, and commit externally, then rerun",
         ):
             assert required in flat, f"{path}: missing {required!r}"
         assert flat.index(
-            '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
+            '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
         ) < flat.index("cache-check") < flat.index("transaction begin --source")
 
 
@@ -627,10 +630,13 @@ def test_pageindex_preflight_precedes_invocation_and_postflight() -> None:
 
 
 def test_git_authority_commands_are_argv_safe_and_require_clean_head(tmp_path: Path) -> None:
-    ls_template = '["git", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
-    status_template = (
-        '["git", "status", "--porcelain=v1", "--untracked-files=all", "--", '
+    ls_template = (
+        '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
         '"<Source ID>"]'
+    )
+    status_template = (
+        '["git", "--literal-pathspecs", "status", "--porcelain=v1", '
+        '"--untracked-files=all", "--", "<Source ID>"]'
     )
     for path in SOURCE_WORKFLOW_SKILLS:
         flat = " ".join(path.read_text(encoding="utf-8").split())
@@ -653,28 +659,76 @@ def test_git_authority_commands_are_argv_safe_and_require_clean_head(tmp_path: P
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-    source_id = "sources/reviewed name;still-data.md"
-    source = repo / source_id
-    source.parent.mkdir()
-    source.write_text("reviewed\n", encoding="utf-8")
-    subprocess.run(["git", "add", "--", source_id], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "source"], cwd=repo, check=True)
+    if os.name == "nt":
+        pytest.skip("literal colon filename is not supported on Windows")
 
-    listed = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "--", source_id],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    clean = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", source_id],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    assert listed.returncode == 0 and listed.stdout.strip() == source_id
-    assert clean.returncode == 0 and clean.stdout == ""
-    assert not (repo / "still-data.md").exists()
+    matching_tracked = ("abc.md", "a1.md", "name.md")
+    for name in matching_tracked:
+        (repo / name).write_text("tracked match\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", *matching_tracked], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "matching files"], cwd=repo, check=True)
+    (repo / ".git/info/exclude").write_text("*\n", encoding="utf-8")
+
+    literal_ids = ("a*.md", "a[1].md", ":(glob)name.md")
+    for source_id in literal_ids:
+        (repo / source_id).write_text("ignored untracked literal\n", encoding="utf-8")
+        magic_control = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", source_id],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        assert magic_control.returncode == 0, source_id
+        listed = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                source_id,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        assert listed.returncode != 0, source_id
+
+        subprocess.run(
+            ["git", "--literal-pathspecs", "add", "-f", "--", source_id],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "commit", "-qm", f"track {source_id}"], cwd=repo, check=True)
+        listed = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                source_id,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        clean = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                source_id,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        assert listed.returncode == 0 and listed.stdout.strip() == source_id
+        assert clean.returncode == 0 and clean.stdout == ""
 
 
 def test_research_uses_url_policy_and_import_full_is_orthogonal() -> None:
