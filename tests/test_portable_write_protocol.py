@@ -38,6 +38,23 @@ SOURCE_WORKFLOW_REFERENCES = (
     ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md",
     ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/url-sources.md",
 )
+HISTORY_SKILLS = tuple(
+    ROOT / f"obsidian_wiki/_data/skills/{name}/SKILL.md"
+    for name in (
+        "claude-history-ingest",
+        "codex-history-ingest",
+        "copilot-history-ingest",
+        "hermes-history-ingest",
+        "openclaw-history-ingest",
+        "pi-history-ingest",
+        "wiki-agent",
+    )
+)
+HISTORY_FORMAT_REFERENCES = tuple(
+    ROOT
+    / f"obsidian_wiki/_data/skills/{name}-history-ingest/references/{name}-data-format.md"
+    for name in ("claude", "codex", "copilot", "hermes", "openclaw")
+)
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -754,3 +771,112 @@ def test_pageindex_node_id_is_optional_but_validated_when_present() -> None:
     assert "non-empty string" in pageindex
     assert "unique" in pageindex
     assert "Missing `node_id` is allowed" in pageindex
+
+
+def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
+    ls_template = (
+        '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
+        '"<Source ID>"]'
+    )
+    status_template = (
+        '["git", "--literal-pathspecs", "status", "--porcelain=v1", '
+        '"--untracked-files=all", "--", "<Source ID>"]'
+    )
+    for path in HISTORY_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        flat = " ".join(contents.split())
+        assert contents.count("transaction begin --source") == 1, path
+        for required in (
+            "parent owns",
+            "analysis-only",
+            "explicitly selected session files",
+            "immutable inputs",
+            "sources/history/<tool>/",
+            "stable tool/session identity",
+            "captured_at",
+            "content_hash",
+            "format",
+            "source_tool",
+            "secret",
+            "private",
+            "irrelevant",
+            "Unicode",
+            "absolute cache path",
+            "complete source closure",
+            "final candidates",
+            "transaction validate",
+            "transaction commit",
+            "transaction list --json --pretty",
+            "hot status --json",
+            ls_template,
+            status_template,
+            "owner review, stage, and commit externally, then rerun",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        assert flat.index("owner review, stage, and commit externally, then rerun") < flat.index(
+            "transaction begin --source"
+        )
+        for forbidden in (
+            "Personal mode",
+            "cache-update",
+            "QMD_",
+            "_raw/",
+            "manifest v1",
+            "global config",
+            "central files",
+            "Git publication",
+            "--configured",
+        ):
+            assert forbidden not in contents, f"{path}: contains {forbidden!r}"
+
+
+def test_history_formats_keep_real_parsers_and_untrusted_boundary() -> None:
+    expected = {
+        "claude-data-format.md": ("JSONL", "sessionId", "history.jsonl", "cwd"),
+        "codex-data-format.md": (
+            "JSONL",
+            "session_index.jsonl",
+            "session_meta",
+            "response_item",
+        ),
+        "copilot-data-format.md": (
+            "SQLite",
+            "session-store.db",
+            "events.jsonl",
+            "session.start",
+        ),
+        "hermes-data-format.md": ("JSONL", "memories/", "session_meta", "tool"),
+        "openclaw-data-format.md": ("JSONL", "sessions.json", "MEMORY.md", "sessionId"),
+    }
+    for path in HISTORY_FORMAT_REFERENCES:
+        contents = path.read_text(encoding="utf-8")
+        flat = " ".join(contents.split())
+        for required in (*expected[path.name], "untrusted data", "redact"):
+            assert required in flat, f"{path}: missing {required!r}"
+        for forbidden in ("Personal mode", "cache-update", "completion"):
+            assert forbidden not in contents, f"{path}: contains {forbidden!r}"
+
+
+def test_history_asset_inventory_links_and_packaging_are_complete() -> None:
+    skill_root = ROOT / "obsidian_wiki/_data/skills"
+    expected = {path.parent.name for path in HISTORY_SKILLS[:-1]}
+    actual = {
+        path.name
+        for path in skill_root.glob("*-history-ingest")
+        if path.name != "wiki-history-ingest"
+    }
+    assert actual == expected
+    for path in HISTORY_FORMAT_REFERENCES:
+        skill = path.parent.parent / "SKILL.md"
+        relative_link = f"references/{path.name}"
+        assert relative_link in skill.read_text(encoding="utf-8")
+        assert path.is_file()
+    for skill in HISTORY_SKILLS:
+        links = re.findall(
+            r"\[[^]]+\]\(([^)]+\.md)\)",
+            skill.read_text(encoding="utf-8"),
+        )
+        assert links, skill
+        for relative in links:
+            assert (skill.parent / relative).resolve().is_file(), (skill, relative)
+    assert not (skill_root / "pi-history-ingest/references").exists()

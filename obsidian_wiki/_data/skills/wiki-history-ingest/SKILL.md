@@ -1,61 +1,19 @@
 ---
 name: wiki-history-ingest
-description: >
-  Unified wiki-history-ingest entrypoint for conversation/session sources. Use this when the user says
-  "/wiki-history-ingest claude", "/wiki-history-ingest copilot", "/wiki-history-ingest codex",
-  "/wiki-history-ingest pi", or asks to ingest agent history without naming the underlying skill.
-  This router dispatches to the specialized history skill.
+description: Use when selecting the supported tool-specific skill for coding-agent history input.
 ---
 
-# Unified History Ingest Router
+# History Ingest Router
 
-This is a thin router for **history sources only**. It does not replace `wiki-ingest` for documents.
+This skill is a thin route to one retained tool-specific skill. It does not parse sessions, does not create snapshots, does not begin transactions, and does not mutate repository, vault, or tracking state.
 
-## Subcommands
+## Routes
 
-If the user invokes `/wiki-history-ingest <target>` (or equivalent text command), dispatch directly:
+- Claude paths, Claude Code JSONL, Desktop local-agent sessions -> `claude-history-ingest`
+- Codex rollout or session-index artifacts -> `codex-history-ingest`
+- Copilot CLI, VS Code chat, or `session-store.db` -> `copilot-history-ingest`
+- Hermes memory/session artifacts -> `hermes-history-ingest`
+- OpenClaw memory/session artifacts -> `openclaw-history-ingest`
+- Pi agent session JSONL -> `pi-history-ingest`
 
-| Subcommand | Route To |
-|---|---|
-| `claude` | `claude-history-ingest` |
-| `copilot` | `copilot-history-ingest` |
-| `codex` | `codex-history-ingest` |
-| `hermes` | `hermes-history-ingest` |
-| `openclaw` | `openclaw-history-ingest` |
-| `pi` | `pi-history-ingest` |
-| `auto` | infer from context using rules below |
-
-## Routing Rules
-
-1. If the user explicitly says `claude`, `copilot`, `codex`, `hermes`, `openclaw`, or `pi`, route directly.
-2. If the user provides a path/source:
-   - `~/.claude` or Claude memory/session JSONL artifacts -> `claude-history-ingest`
-   - `~/.copilot`, `session-store.db`, VS Code copilot-chat transcripts -> `copilot-history-ingest`
-   - `~/.codex` or rollout/session index artifacts -> `codex-history-ingest`
-   - `~/.hermes` or Hermes memories/session artifacts -> `hermes-history-ingest`
-   - `~/.openclaw` or OpenClaw MEMORY.md/session JSONL artifacts -> `openclaw-history-ingest`
-   - `~/.pi/agent/sessions` or Pi session JSONL artifacts -> `pi-history-ingest`
-3. If ambiguous, ask one short clarification:
-   - "Should I ingest `claude`, `copilot`, `codex`, `hermes`, `openclaw`, or `pi` history?"
-
-## Execution Contract
-
-- After routing, execute the destination skill's workflow exactly.
-- Do not duplicate destination logic in this file.
-- Leave manifest/index/log update semantics to the destination skill.
-
-## UX Convention
-
-- Use `wiki-ingest` for **documents/content sources**
-- Use `wiki-history-ingest` for **agent history sources**
-
-Examples:
-
-- `/wiki-history-ingest claude`
-- `/wiki-history-ingest copilot`
-- `/wiki-history-ingest codex`
-- `/wiki-history-ingest hermes`
-- `/wiki-history-ingest openclaw`
-- `/wiki-history-ingest pi`
-- `$wiki-history-ingest claude` (agents that use `$skill` invocation)
-- `$wiki-history-ingest copilot`
+If the user names one tool, route directly. If a supplied input unambiguously matches one route, state the selection and invoke that skill. Otherwise ask which supported tool produced the history. For a focused cross-session question, route through `wiki-agent`, which in turn applies the selected retained tool-specific skill. Unknown tools are NEEDS_CONTEXT; do not improvise a parser or a generic write path.

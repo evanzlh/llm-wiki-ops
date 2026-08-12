@@ -16,6 +16,16 @@ SOURCE_WORKFLOW_SKILLS = (
 SOURCE_SNAPSHOT = (
     "obsidian_wiki/_data/skills/wiki-capture/references/source-snapshot.md"
 )
+HISTORY_SKILLS = (
+    "claude-history-ingest",
+    "codex-history-ingest",
+    "copilot-history-ingest",
+    "hermes-history-ingest",
+    "openclaw-history-ingest",
+    "pi-history-ingest",
+    "wiki-agent",
+)
+HISTORY_ROUTER = "obsidian_wiki/_data/skills/wiki-history-ingest/SKILL.md"
 RAW_FORMAT = "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md"
 BOOTSTRAPS = (
     "obsidian_wiki/_data/bootstrap/AGENTS.md",
@@ -163,3 +173,47 @@ def test_source_snapshot_reference_replaces_raw_format() -> None:
         "Do not commit, push, or open a pull request",
     ):
         assert required in flat
+
+
+def test_history_skills_are_repository_native_analysis_protocols() -> None:
+    for name in HISTORY_SKILLS:
+        relative = f"obsidian_wiki/_data/skills/{name}/SKILL.md"
+        skill = text(relative)
+        flat = " ".join(skill.split())
+        frontmatter = parse_frontmatter(skill)
+        assert frontmatter.scalars["name"] == name
+        assert frontmatter.scalars["description"].startswith("Use when ")
+        for required in (
+            "reviewable UTF-8 Markdown snapshot",
+            "sources/history/",
+            "transaction begin --source",
+            "parent owns",
+            "analysis-only",
+        ):
+            assert required in flat, f"{relative}: missing {required!r}"
+        for forbidden in (
+            "Personal mode",
+            "Portable Repository mode",
+            "cache-update",
+            "QMD_",
+            "_raw/",
+        ):
+            assert forbidden not in skill, f"{relative}: contains {forbidden!r}"
+
+
+def test_history_router_only_selects_retained_tool_skill() -> None:
+    router = text(HISTORY_ROUTER)
+    flat = " ".join(router.split())
+    for name in HISTORY_SKILLS[:-1]:
+        assert f"`{name}`" in router
+    for required in (
+        "route",
+        "retained tool-specific skill",
+        "does not parse sessions",
+        "does not create snapshots",
+        "does not begin transactions",
+        "does not mutate",
+    ):
+        assert required in flat
+    for forbidden in ("memory-bridge", "generic mutation", "manifest", "index/log"):
+        assert forbidden not in router
