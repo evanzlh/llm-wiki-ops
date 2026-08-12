@@ -575,21 +575,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return code
 
 
-def cmd_graph_query(args: argparse.Namespace) -> int:
-    from obsidian_wiki.graphrag import query
-
-    vault = Path(args.vault).expanduser().resolve()
-    if not vault.is_dir():
-        print(f"error: vault not found: {vault}", file=sys.stderr)
-        return 1
-    result = query(vault, args.question, top_n=args.top, max_should_read=args.max_read)
-    if args.pretty:
-        print(json.dumps(result, indent=2))
-    else:
-        print(json.dumps(result))
-    return 0
-
-
 def cmd_batch_plan(args: argparse.Namespace) -> int:
     from obsidian_wiki.batch import plan_batches
     from obsidian_wiki.portable_manifest import ManifestError
@@ -625,9 +610,11 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
 def cmd_graph_analyse(args: argparse.Namespace) -> int:
     from obsidian_wiki.graph_analysis import analyse_vault
 
-    vault = Path(args.vault).expanduser().resolve()
-    if not vault.is_dir():
-        print(f"error: vault not found: {vault}", file=sys.stderr)
+    runtime = _resolve_runtime()
+    if runtime is None:
+        return 1
+    vault = _resolved_vault(runtime)
+    if vault is None:
         return 1
     result = analyse_vault(vault, top_n=args.top)
     if args.pretty:
@@ -2262,9 +2249,6 @@ def build_parser() -> argparse.ArgumentParser:
     lp.set_defaults(func=cmd_list)
 
     ip = sub.add_parser("info", help="show install paths, version, and config")
-    ip.add_argument(
-        "--vault", metavar="PATH", help="preview PATH or @name for this invocation"
-    )
     _add_json_args(ip)
     ip.set_defaults(func=cmd_info)
 
@@ -2404,27 +2388,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_args(hot_inputs_parser)
     hot_inputs_parser.set_defaults(func=cmd_hot_inputs, json=True)
 
-    gq = sub.add_parser(
-        "graph-query",
-        help="answer a question from the vault's wikilink index without reading page bodies",
-    )
-    gq.add_argument("vault", help="path to the Obsidian vault")
-    gq.add_argument("question", help="question to answer")
-    gq.add_argument(
-        "--top",
-        type=int,
-        default=8,
-        help="number of candidate pages to rank (default: 8)",
-    )
-    gq.add_argument(
-        "--max-read",
-        type=int,
-        default=3,
-        help="max pages to return in should_read (default: 3)",
-    )
-    gq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
-    gq.set_defaults(func=cmd_graph_query)
-
     bp = sub.add_parser(
         "batch-plan",
         help="split a source directory into parallel-ingest batches, skipping unchanged files",
@@ -2454,7 +2417,6 @@ def build_parser() -> argparse.ArgumentParser:
         "graph-analyse",
         help="analyse the vault's wikilink graph: god nodes, communities, surprising connections",
     )
-    ga.add_argument("vault", help="path to the Obsidian vault")
     ga.add_argument(
         "--top",
         type=int,
@@ -2670,11 +2632,6 @@ def build_parser() -> argparse.ArgumentParser:
         "lint",
         help="lint a vault for missing frontmatter, broken links, duplicates, and orphans",
     )
-    lt.add_argument(
-        "vault",
-        nargs="?",
-        help="vault path or @name (defaults via CWD .env, then global config)",
-    )
     lt.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     lt.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     lt.add_argument(
@@ -2719,11 +2676,6 @@ def build_parser() -> argparse.ArgumentParser:
         "trust-record",
         help="record explicitly approved manual confidence reviews in the vault trust ledger",
     )
-    tr.add_argument(
-        "vault",
-        nargs="?",
-        help="vault path or @name (defaults via CWD .env, then global config)",
-    )
     selection = tr.add_mutually_exclusive_group(required=True)
     selection.add_argument(
         "--all", action="store_true", help="record every current trust-schema page"
@@ -2764,11 +2716,6 @@ def build_parser() -> argparse.ArgumentParser:
         "trust-check",
         help="validate confidence values and material fingerprints against the manual trust ledger",
     )
-    tc.add_argument(
-        "vault",
-        nargs="?",
-        help="vault path or @name (defaults via CWD .env, then global config)",
-    )
     tc.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     tc.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     tc.add_argument(
@@ -2799,7 +2746,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="query the configured vault without passing the raw path each time",
     )
     qq.add_argument("question", help="question to ask against the vault index")
-    qq.add_argument("--vault", help="override OBSIDIAN_VAULT_PATH for this query")
     qq.add_argument(
         "--top",
         type=int,
@@ -2824,7 +2770,6 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument(
         "topic", nargs="?", help="topic to retrieve; omit only with --recent"
     )
-    cp.add_argument("--vault", help="override OBSIDIAN_VAULT_PATH")
     cp.add_argument(
         "--budget",
         type=int,

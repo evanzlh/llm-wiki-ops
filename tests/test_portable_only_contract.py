@@ -141,3 +141,31 @@ def test_setup_rejects_removed_arguments(
     assert result.returncode == 2
     assert "unrecognized arguments" in result.stderr
     assert not (tmp_path / ".obsidian-wiki").exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("info", "--vault", "x"),
+        ("query", "question", "--vault", "x"),
+        ("context-pack", "topic", "--vault", "x"),
+        ("lint", "x"),
+        ("trust-check", "x"),
+    ],
+)
+def test_repository_commands_reject_removed_vault_arguments(
+    args: tuple[str, ...], tmp_path: Path
+) -> None:
+    result = run_cli(tmp_path / "home", tmp_path, *args)
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_graph_query_command_is_removed(tmp_path: Path) -> None:
+    result = run_cli(
+        tmp_path / "home", tmp_path, "graph-query", "wiki", "question"
+    )
+
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr

@@ -63,8 +63,35 @@ def _run_cli(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    cli_args = list(args)
+    if (
+        cwd is None
+        and cli_args
+        and cli_args[0] in {"trust-record", "trust-check"}
+        and len(cli_args) > 1
+        and not cli_args[1].startswith("-")
+    ):
+        vault = Path(cli_args.pop(1))
+        root = vault.parent
+        vault.mkdir(parents=True, exist_ok=True)
+        (root / ".obsidian-wiki").mkdir(exist_ok=True)
+        (root / "sources").mkdir(exist_ok=True)
+        (root / ".skills").mkdir(exist_ok=True)
+        (root / ".obsidian-wiki/config.toml").write_text(
+            f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "{vault.name}"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+            encoding="utf-8",
+        )
+        cwd = vault
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
         capture_output=True,
         text=True,
         env=env,
@@ -943,7 +970,7 @@ def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
     assert payload["counts"]["reviewed"] == 1
 
 
-def test_trust_cli_context_warnings_are_transient_and_additive(tmp_path: Path) -> None:
+def test_trust_cli_uses_portable_context_without_context_warning_fields(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
@@ -988,12 +1015,9 @@ local_state = ".obsidian-wiki/local"
     record = _run_cli(home, *record_args, cwd=nested)
 
     assert no_override_record.returncode == 0, no_override_record.stderr
-    assert json.loads(no_override_record.stdout)["context_warnings"] == []
-    assert record.returncode == 0, record.stderr
-    record_payload = json.loads(record.stdout)
-    assert len(record_payload["context_warnings"]) == 1
-    assert record_payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert record_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert "context_warnings" not in json.loads(no_override_record.stdout)
+    assert record.returncode == 2
+    assert "unrecognized arguments" in record.stderr
     ledger_path = portable_vault / "_meta" / "trust-ledger.json"
     assert "context_warnings" not in json.loads(ledger_path.read_text(encoding="utf-8"))
 
@@ -1008,12 +1032,9 @@ local_state = ".obsidian-wiki/local"
     )
 
     assert no_override.returncode == 0, no_override.stderr
-    assert json.loads(no_override.stdout)["context_warnings"] == []
-    assert overridden.returncode == 0, overridden.stderr
-    overridden_payload = json.loads(overridden.stdout)
-    assert len(overridden_payload["context_warnings"]) == 1
-    assert overridden_payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert overridden_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert "context_warnings" not in json.loads(no_override.stdout)
+    assert overridden.returncode == 2
+    assert "unrecognized arguments" in overridden.stderr
     assert ledger_path.read_bytes() == before
 
 
@@ -1194,7 +1215,7 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
     assert "removed obsolete trust ledger entries" not in record.stderr
 
 
-def test_explicit_vault_cli_override_reports_cli_schema_source(tmp_path: Path) -> None:
+def test_portable_config_path_is_used_as_cli_schema_source(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "explicit-vault"
     page = _page(vault, "concepts/alpha.md")
@@ -1215,7 +1236,9 @@ def test_explicit_vault_cli_override_reports_cli_schema_source(tmp_path: Path) -
 
     assert record.returncode == 0, record.stderr
     assert "removed obsolete trust ledger entries" not in record.stderr
-    assert json.loads(record.stdout)["schema"]["source"] == "cli:explicit-vault"
+    assert json.loads(record.stdout)["schema"]["source"] == (
+        f"cli:{tmp_path / '.obsidian-wiki/config.toml'}"
+    )
 
 
 def test_partial_trust_record_does_not_approve_other_stale_pages(tmp_path: Path) -> None:

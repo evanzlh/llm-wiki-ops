@@ -16,6 +16,46 @@ from obsidian_wiki.page_graph import parse_page_text
 from obsidian_wiki.trust import build_trust_ledger, write_trust_ledger
 
 
+def _portable_cli_context(
+    vault: Path, settings: dict[str, str] | None = None
+) -> Path:
+    root = vault.parent
+    vault.mkdir(parents=True, exist_ok=True)
+    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / "sources").mkdir(exist_ok=True)
+    (root / ".skills").mkdir(exist_ok=True)
+    setting_lines = "".join(
+        f'{key} = "{value}"\n' for key, value in (settings or {}).items()
+    )
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "{vault.name}"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+{setting_lines}''',
+        encoding="utf-8",
+    )
+    return vault
+
+
+def _legacy_settings(path: Path) -> tuple[Path | None, dict[str, str]]:
+    if not path.is_file():
+        return None, {}
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        values[key] = value.strip().strip('"')
+    raw_vault = values.pop("OBSIDIAN_VAULT_PATH", "")
+    return (Path(raw_vault) if raw_vault else None), values
+
+
 def _page(
     vault: Path,
     relpath: str,
@@ -60,12 +100,23 @@ def _page(
 def _run(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    cli_args = list(args)
+    cwd = None
+    if cli_args and cli_args[0] == "lint":
+        if len(cli_args) > 1 and not cli_args[1].startswith("-"):
+            vault = Path(cli_args.pop(1))
+            cwd = _portable_cli_context(vault)
+        else:
+            vault, settings = _legacy_settings(home / ".obsidian-wiki/config")
+            if vault is not None:
+                cwd = _portable_cli_context(vault, settings)
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
         capture_output=True,
         check=False,
         text=True,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -73,13 +124,32 @@ def _run_at(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[st
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PYTHONPATH"] = str(Path(__file__).parents[1])
+    cli_args = list(args)
+    execution_cwd = cwd
+    if cli_args and cli_args[0] in {"lint", "trust-record", "trust-check"}:
+        legacy_env = cwd / ".env"
+        has_portable_config = any(
+            (parent / ".obsidian-wiki/config.toml").is_file()
+            for parent in (cwd, *cwd.parents)
+        )
+        if (
+            len(cli_args) > 1
+            and not cli_args[1].startswith("-")
+            and not has_portable_config
+        ):
+            vault = Path(cli_args.pop(1))
+            execution_cwd = _portable_cli_context(vault)
+        elif legacy_env.is_file() or not has_portable_config:
+            vault, settings = _legacy_settings(legacy_env)
+            if vault is not None:
+                execution_cwd = _portable_cli_context(vault, settings)
     return subprocess.run(
-        [sys.executable, "-m", "obsidian_wiki.cli", *args],
+        [sys.executable, "-m", "obsidian_wiki.cli", *cli_args],
         capture_output=True,
         check=False,
         text=True,
         env=env,
-        cwd=cwd,
+        cwd=execution_cwd,
     )
 
 
@@ -239,10 +309,10 @@ OBSIDIAN_ALLOWED_LIFECYCLES = ["active"]
     assert "concepts/global.md" not in report["findings"]["missing_summaries"]
     assert "active" in report["schema"]["allowed_lifecycles"]
     assert report["schema"]["source"] == f"config:{portable_config.resolve()}"
-    assert report["context_warnings"] == []
+    assert "context_warnings" not in report
 
 
-def test_lint_cli_reports_explicit_portable_context_override(tmp_path: Path) -> None:
+def test_lint_cli_rejects_explicit_vault_in_portable_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
@@ -269,11 +339,8 @@ local_state = ".obsidian-wiki/local"
 
     proc = _run_at(home, nested, "lint", str(explicit_vault), "--json")
 
-    assert proc.returncode == 0, proc.stderr
-    payload = json.loads(proc.stdout)
-    assert len(payload["context_warnings"]) == 1
-    assert payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert proc.returncode == 2
+    assert "unrecognized arguments" in proc.stderr
 
 
 def test_lint_vault_legacy_pages_without_trust_schema_warn_by_default(tmp_path: Path) -> None:
@@ -586,12 +653,10 @@ def test_empty_configured_schema_values_fail_closed_for_all_cli_paths(tmp_path: 
             invalid = _run_at(home, project, *command)
             assert invalid.returncode == 1, (key, command, invalid.stdout, invalid.stderr)
             assert invalid.stdout == ""
-            detail = (
-                "must not be empty"
-                if key == "OBSIDIAN_SCHEMA_SOURCE"
-                else "entries must not be empty"
-            )
-            assert f"error: invalid {key} value: {detail}" in invalid.stderr
+            if key == "OBSIDIAN_SCHEMA_SOURCE":
+                assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in invalid.stderr
+            else:
+                assert f"error: invalid {key} value: entries must not be empty" in invalid.stderr
             assert "Traceback" not in invalid.stderr
 
     assert not (vault / "_meta" / "trust-ledger.json").exists()
@@ -632,7 +697,7 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
         invalid = _run_at(home, project, *command)
         assert invalid.returncode == 1, (command, invalid.stdout, invalid.stderr)
         assert invalid.stdout == ""
-        assert "error: invalid OBSIDIAN_SCHEMA_SOURCE value: must not be empty" in invalid.stderr
+        assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in invalid.stderr
         assert "Traceback" not in invalid.stderr
         after = {
             path.relative_to(vault): path.read_bytes()
@@ -733,7 +798,7 @@ def test_present_invalid_confidence_fails_without_ledger_when_not_required(tmp_p
     ]
 
 
-def test_schema_config_is_scoped_to_explicit_cwd_and_named_vaults(tmp_path: Path) -> None:
+def test_schema_source_is_portable_config_and_positional_vaults_are_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
     global_vault = tmp_path / "global-vault"
     local_vault = tmp_path / "local-vault"
@@ -758,20 +823,23 @@ def test_schema_config_is_scoped_to_explicit_cwd_and_named_vaults(tmp_path: Path
         f'OBSIDIAN_VAULT_PATH="{local_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
         encoding="utf-8",
     )
+    portable_config = tmp_path / ".obsidian-wiki/config.toml"
+    _portable_cli_context(
+        local_vault, {"OBSIDIAN_ALLOWED_LIFECYCLES": "active"}
+    )
 
     explicit = _run_at(home, project, "lint", str(explicit_vault), "--json")
-    assert explicit.returncode == 1
-    assert json.loads(explicit.stdout)["findings"]["trust_metadata_errors"][0]["issue"] == "invalid lifecycle: active"
+    assert explicit.returncode == 2
+    assert "unrecognized arguments" in explicit.stderr
 
     local = _run_at(home, project, "lint", "--json")
     assert local.returncode == 0, local.stderr
     local_source = json.loads(local.stdout)["schema"]["source"]
-    assert Path(local_source.removeprefix("config:")).resolve() == (project / ".env").resolve()
+    assert Path(local_source.removeprefix("config:")).resolve() == portable_config.resolve()
 
     named = _run_at(home, tmp_path, "lint", "@owner", "--json")
-    assert named.returncode == 0, named.stderr
-    named_source = json.loads(named.stdout)["schema"]["source"]
-    assert Path(named_source.removeprefix("config:")).resolve() == (config_dir / "config.owner").resolve()
+    assert named.returncode == 2
+    assert "unrecognized arguments" in named.stderr
 
 
 def test_correction_contract_requires_temporal_authority_and_immutable_hash_check(tmp_path: Path) -> None:

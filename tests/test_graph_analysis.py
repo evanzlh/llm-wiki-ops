@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.graph_analysis import (
     analyse_vault,
     dead_ends,
@@ -26,6 +27,21 @@ from obsidian_wiki.graph_analysis import (
 def vault(tmp_path):
     v = tmp_path / "vault"
     v.mkdir()
+    (tmp_path / ".obsidian-wiki").mkdir()
+    (tmp_path / "sources").mkdir()
+    (tmp_path / ".skills").mkdir()
+    (tmp_path / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "vault"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
     return v
 
 
@@ -255,9 +271,12 @@ class TestAnalyseVault:
 
 class TestGraphAnalyseCLI:
     def test_outputs_json(self, simple_vault):
+        nested = simple_vault.parent / "work/nested"
+        nested.mkdir(parents=True)
         proc = subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", str(simple_vault)],
+            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse"],
             capture_output=True, text=True,
+            cwd=nested,
         )
         assert proc.returncode == 0
         data = json.loads(proc.stdout)
@@ -265,16 +284,18 @@ class TestGraphAnalyseCLI:
 
     def test_pretty_flag(self, simple_vault):
         proc = subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", str(simple_vault), "--pretty"],
+            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", "--pretty"],
             capture_output=True, text=True,
+            cwd=simple_vault,
         )
         assert proc.returncode == 0
         assert "\n  " in proc.stdout
 
     def test_top_flag(self, simple_vault):
         proc = subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", str(simple_vault), "--top", "3"],
+            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", "--top", "3"],
             capture_output=True, text=True,
+            cwd=simple_vault,
         )
         assert proc.returncode == 0
         data = json.loads(proc.stdout)
@@ -282,7 +303,8 @@ class TestGraphAnalyseCLI:
 
     def test_missing_vault_exits_nonzero(self, tmp_path):
         proc = subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse", str(tmp_path / "nope")],
+            [sys.executable, "-m", "obsidian_wiki.cli", "graph-analyse"],
             capture_output=True, text=True,
+            cwd=tmp_path,
         )
         assert proc.returncode != 0
