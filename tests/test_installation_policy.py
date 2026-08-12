@@ -146,6 +146,13 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         if artifact.suffix == ".whl":
             with zipfile.ZipFile(artifact) as archive:
                 raw_names = archive.namelist()
+                environment_template = archive.read(
+                    "obsidian_wiki/_data/.env.example"
+                ).decode("utf-8")
+            assert "sync-setup" not in environment_template
+            assert "obsidian-wiki sync" not in environment_template
+            assert "repo migrate" not in environment_template
+            assert "Personal CLI" not in environment_template
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()

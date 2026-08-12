@@ -48,6 +48,17 @@ class ScriptsPackagingTest(unittest.TestCase):
             "wheel must force-include scripts/ under _data/scripts/",
         )
 
+    def test_force_included_environment_template_omits_removed_workflows(self) -> None:
+        mapping = self.pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+        self.assertEqual(
+            mapping.get(".env.example"),
+            "obsidian_wiki/_data/.env.example",
+        )
+        template = (ROOT / ".env.example").read_text(encoding="utf-8").lower()
+        for removed in ("sync-setup", "obsidian-wiki sync", "repo migrate", "personal cli"):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, template)
+
     def test_scripts_dir_not_excluded_from_sdist(self) -> None:
         # Unlike /.claude, scripts/ isn't pruned, so the default VCS-tracked
         # sdist already carries it — the wheel (built from the sdist) can

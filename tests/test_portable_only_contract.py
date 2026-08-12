@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -173,19 +174,24 @@ def test_graph_query_command_is_removed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "args",
+    ("args", "removed_command"),
     [
-        ("sync",),
-        ("sync-setup", "git@example.invalid:wiki.git"),
-        ("repo", "migrate", "--root", ".", "--vault", "wiki", "--sources", "sources"),
+        (("sync",), "sync"),
+        (("sync-setup", "git@example.invalid:wiki.git"), "sync-setup"),
+        (
+            ("repo", "migrate", "--root", ".", "--vault", "wiki", "--sources", "sources"),
+            "migrate",
+        ),
     ],
 )
 def test_personal_git_and_migration_commands_are_removed(
-    args: tuple[str, ...], tmp_path: Path
+    args: tuple[str, ...], removed_command: str, tmp_path: Path
 ) -> None:
     result = run_cli(tmp_path / "home", tmp_path, *args)
 
     assert result.returncode == 2
+    assert "invalid choice" in result.stderr
+    assert repr(removed_command) in result.stderr
 
 
 @pytest.mark.parametrize("module", ["obsidian_wiki.migration", "obsidian_wiki.sync"])
@@ -193,13 +199,157 @@ def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
     assert importlib.util.find_spec(module) is None
 
 
-def test_framework_python_has_no_git_mutation_commands() -> None:
-    forbidden = tuple(f'["git", "{verb}"' for verb in ("init", "add", "commit", "push", "remote"))
+def _git_boundary_violations(source: str) -> list[str]:
+    tree = ast.parse(source)
+    launchers = {"run", "check_call", "check_output", "Popen"}
+    read_only = {"rev-parse", "symbolic-ref", "ls-files"}
+    hosting_clis = {"gh", "glab", "hub"}
+    hosting_sdks = {"github", "gitlab"}
+    subprocess_aliases = {"subprocess"}
+    imported_launchers: set[str] = set()
+    findings: list[tuple[int, str]] = []
 
-    for path in sorted((ROOT / "obsidian_wiki").glob("*.py")):
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    subprocess_aliases.add(alias.asname or alias.name)
+                if alias.name.split(".", 1)[0] in hosting_sdks:
+                    findings.append((node.lineno, f"hosting sdk {alias.name}"))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "subprocess":
+                imported_launchers.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in launchers
+                )
+            elif node.module and node.module.split(".", 1)[0] in hosting_sdks:
+                findings.append((node.lineno, f"hosting sdk {node.module}"))
+
+    def is_launcher(call: ast.Call) -> bool:
+        function = call.func
+        return (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and function.value.id in subprocess_aliases
+            and function.attr in launchers
+        ) or (isinstance(function, ast.Name) and function.id in imported_launchers)
+
+    def argv_nodes(call: ast.Call) -> list[ast.expr] | None:
+        if not is_launcher(call) or not call.args:
+            return None
+        argv = call.args[0]
+        if not isinstance(argv, (ast.List, ast.Tuple)):
+            return None
+        return list(argv.elts)
+
+    value_options = {"-C", "-c", "--git-dir", "--work-tree"}
+
+    def command_node(argv: list[ast.expr]) -> ast.expr | None:
+        if not argv or not isinstance(argv[0], ast.Constant):
+            return None
+        if argv[0].value != "git":
+            return None
+        index = 1
+        while index < len(argv):
+            candidate = argv[index]
+            if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+                if candidate.value in value_options:
+                    index += 2
+                    continue
+                if candidate.value.startswith("-"):
+                    index += 1
+                    continue
+            return candidate
+        return None
+
+    wrappers: dict[str, int] = {}
+    for definition in (
+        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        positional = [*definition.args.posonlyargs, *definition.args.args]
+        positional_indexes = {argument.arg: index for index, argument in enumerate(positional)}
+        for call in (node for node in ast.walk(definition) if isinstance(node, ast.Call)):
+            argv = argv_nodes(call)
+            command = command_node(argv) if argv is not None else None
+            if isinstance(command, ast.Starred) and isinstance(command.value, ast.Name):
+                if definition.args.vararg and command.value.id == definition.args.vararg.arg:
+                    wrappers[definition.name] = len(positional)
+            elif isinstance(command, ast.Name) and command.id in positional_indexes:
+                wrappers[definition.name] = positional_indexes[command.id]
+
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        argv = argv_nodes(call)
+        if argv:
+            executable = argv[0]
+            if isinstance(executable, ast.Constant) and executable.value in hosting_clis:
+                findings.append((call.lineno, f"hosting cli {executable.value}"))
+            command = command_node(argv)
+            if isinstance(command, ast.Constant) and isinstance(command.value, str):
+                if command.value not in read_only:
+                    findings.append((call.lineno, f"git {command.value}"))
+        if isinstance(call.func, ast.Name) and call.func.id in wrappers:
+            command_index = wrappers[call.func.id]
+            if command_index < len(call.args):
+                command = call.args[command_index]
+                if isinstance(command, ast.Constant) and isinstance(command.value, str):
+                    if command.value not in read_only:
+                        findings.append((call.lineno, f"git {command.value}"))
+
+    return [finding for _line, finding in sorted(findings)]
+
+
+def test_git_boundary_scanner_rejects_literal_mutations_across_syntaxes() -> None:
+    source = """
+import subprocess
+
+subprocess.run(('git', 'push'))
+subprocess.Popen(['gh', 'pr', 'create'])
+from github import Github
+
+def git(root, *args):
+    return subprocess.check_output(['git', '-C', str(root), *args])
+
+git(root, 'remote', 'add', 'origin', url)
+git(root, 'status')
+"""
+
+    assert _git_boundary_violations(source) == [
+        "git push",
+        "hosting cli gh",
+        "hosting sdk github",
+        "git remote",
+        "git status",
+    ]
+
+
+def test_git_boundary_scanner_accepts_read_only_commands() -> None:
+    source = """
+import subprocess
+
+subprocess.run(("git", "ls-files", "-z"))
+
+def git(root, *args):
+    return subprocess.run(["git", "-C", str(root), *args])
+
+git(root, "rev-parse", "--show-toplevel")
+git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+"""
+
+    assert _git_boundary_violations(source) == []
+
+
+def test_framework_python_uses_only_read_only_git_commands() -> None:
+    violations: list[str] = []
+
+    for path in sorted((ROOT / "obsidian_wiki").rglob("*.py")):
         source = path.read_text(encoding="utf-8")
-        for fragment in forbidden:
-            assert fragment not in source, f"{path.relative_to(ROOT)}: {fragment}"
+        violations.extend(
+            f"{path.relative_to(ROOT)}: {command}"
+            for command in _git_boundary_violations(source)
+        )
+
+    assert violations == []
 
 
 def test_cli_tests_do_not_rewrite_legacy_vault_arguments() -> None:
