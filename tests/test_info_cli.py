@@ -128,6 +128,23 @@ def test_info_json_rejects_symlinked_repository_config(tmp_path: Path) -> None:
     assert "symlinks are not allowed" in data["runtime"]["error"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink behavior")
+def test_info_json_structures_configured_path_symlink_loop(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    repository = tmp_path / "repository"
+    write_portable(repository)
+    (repository / "wiki").symlink_to("wiki")
+
+    result = run_info(home, repository, "--json")
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    data = payload(result)
+    assert data["runtime"]["status"] == "error"
+    assert "paths.vault cannot be resolved safely" in data["runtime"]["error"]
+    assert "Traceback" not in result.stdout
+
+
 def test_info_human_output_has_repository_local_sections(tmp_path: Path) -> None:
     home = tmp_path / "home"
     repository = tmp_path / "repository"

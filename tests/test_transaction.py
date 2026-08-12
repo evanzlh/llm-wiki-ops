@@ -4083,6 +4083,24 @@ def test_transaction_command_rejects_hard_linked_repository_config(
     assert "Traceback" not in result.stdout
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink behavior")
+def test_transaction_json_structures_configured_path_symlink_loop(
+    tmp_path: Path,
+) -> None:
+    root, _ = make_config(tmp_path)
+    (root / "wiki").rename(root / "original-wiki")
+    (root / "wiki").symlink_to("wiki")
+
+    result = run_cli(tmp_path / "home", root, "transaction", "list", "--json")
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert "paths.vault cannot be resolved safely" in payload["error"]["message"]
+    assert "Traceback" not in result.stdout
+
+
 def _prospective_page(
     path: str,
     *,

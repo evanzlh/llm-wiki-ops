@@ -5,6 +5,8 @@ import os
 
 import pytest
 
+import obsidian_wiki.config as config_module
+
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import (
     ConfigError,
@@ -351,6 +353,29 @@ def test_resolve_config_rejects_special_config_file(tmp_path: Path) -> None:
             cwd=repository,
             installed_version="2026.8",
             implementation=IMPLEMENTATION_ID,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root identity contract")
+def test_load_config_rejects_repository_rebound_during_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    path = write_portable(repository)
+    original_parse = config_module._parse_portable_config
+
+    def parse_then_rebind(*args, **kwargs):
+        parsed = original_parse(*args, **kwargs)
+        repository.rename(tmp_path / "original-repository")
+        replacement = write_portable(repository)
+        assert replacement == path
+        return parsed
+
+    monkeypatch.setattr(config_module, "_parse_portable_config", parse_then_rebind)
+
+    with pytest.raises(ConfigError, match="root changed since file was read"):
+        load_portable_config(
+            path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
         )
 
 

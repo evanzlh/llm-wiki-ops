@@ -45,6 +45,17 @@ class MarkdownHeader:
             raise ValueError(f"page header is not valid UTF-8: {self.relative}") from exc
 
 
+@dataclass(frozen=True)
+class SafeFileSnapshot:
+    """Content bound to the identities of both its file and containing root."""
+
+    root: Path
+    path: Path
+    content: bytes
+    root_identity: tuple[int, ...]
+    file_identity: tuple[int, ...]
+
+
 _SUPPORTS_BOUND_SCAN = (
     os.name == "posix"
     and bool(getattr(os, "O_DIRECTORY", 0))
@@ -531,14 +542,15 @@ def read_markdown_snapshot(snapshot: MarkdownHeader) -> MarkdownFile:
     return MarkdownFile(snapshot.path, snapshot.relative, content, snapshot.mtime_ns)
 
 
-def read_safe_file(
+def read_safe_file_snapshot(
     root: Path,
     path: Path,
     *,
     missing_ok: bool = False,
     expected_identity: tuple[int, ...] | None = None,
-) -> bytes | None:
-    """Read one single-link ordinary file beneath *root* without following links."""
+    expected_root_identity: tuple[int, ...] | None = None,
+) -> SafeFileSnapshot | None:
+    """Read a file and retain identities needed to reject later root rebinding."""
     root = Path(os.path.abspath(os.fspath(root)))
     path = Path(os.path.abspath(os.fspath(path)))
     try:
@@ -568,6 +580,12 @@ def read_safe_file(
             root_observed, directory=True
         ):
             raise _unsafe(".", "vault root changed while being opened")
+        root_identity = _identity(opened_root, directory=True)
+        if (
+            expected_root_identity is not None
+            and root_identity != expected_root_identity
+        ):
+            raise _unsafe(".", "root changed since file was read")
         traversed: list[str] = []
         for part in relative_path.parts[:-1]:
             parent_relative = "/".join(traversed)
@@ -623,6 +641,39 @@ def read_safe_file(
             opened_file, directory=False
         ):
             raise _unsafe(relative, "file changed after being read")
-        return content
+        return SafeFileSnapshot(
+            root,
+            path,
+            content,
+            root_identity,
+            _identity(opened_file, directory=False),
+        )
     finally:
         _close(descriptor, relative)
+
+
+def verify_safe_file_snapshot(snapshot: SafeFileSnapshot) -> None:
+    """Re-open all path components and reject a rebound root or replaced file."""
+    read_safe_file_snapshot(
+        snapshot.root,
+        snapshot.path,
+        expected_identity=snapshot.file_identity,
+        expected_root_identity=snapshot.root_identity,
+    )
+
+
+def read_safe_file(
+    root: Path,
+    path: Path,
+    *,
+    missing_ok: bool = False,
+    expected_identity: tuple[int, ...] | None = None,
+) -> bytes | None:
+    """Read one single-link ordinary file beneath *root* without following links."""
+    snapshot = read_safe_file_snapshot(
+        root,
+        path,
+        missing_ok=missing_ok,
+        expected_identity=expected_identity,
+    )
+    return None if snapshot is None else snapshot.content

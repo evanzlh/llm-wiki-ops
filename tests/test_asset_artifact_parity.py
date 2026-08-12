@@ -65,6 +65,18 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
     assert _normalized_wheel_inventory(first) == _normalized_wheel_inventory(second)
 
 
+def test_source_inventory_rejects_tracked_missing_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["git", "ls-files"], returncode=0, stdout=b"obsidian_wiki/missing.py\0"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(AssertionError, match="obsidian_wiki/missing.py"):
+        _source_package_inventory()
+
+
 def _entry(content: bytes, mode: int) -> tuple[int, str, int]:
     return (len(content), hashlib.sha256(content).hexdigest(), mode & 0o777)
 
@@ -113,8 +125,6 @@ def _source_package_inventory() -> dict[str, tuple[int, str, int]]:
             continue
         relative = encoded_path.decode("utf-8")
         path = ROOT / relative
-        if not path.exists() and not path.is_symlink():
-            continue
         assert path.is_file() and not path.is_symlink(), relative
         inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
     return inventory
@@ -134,8 +144,6 @@ def _source_distribution_inventory() -> dict[str, tuple[int, str, int]]:
             continue
         relative = encoded_path.decode("utf-8")
         path = ROOT / relative
-        if not path.exists() and not path.is_symlink():
-            continue
         assert path.is_file() and not path.is_symlink(), relative
         inventory[relative] = _entry(path.read_bytes(), path.stat().st_mode)
     return inventory

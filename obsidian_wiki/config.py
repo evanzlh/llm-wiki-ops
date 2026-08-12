@@ -14,7 +14,11 @@ except ModuleNotFoundError:  # Python 3.9/3.10
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from obsidian_wiki.safe_files import UnsafeVaultError, read_safe_file
+from obsidian_wiki.safe_files import (
+    UnsafeVaultError,
+    read_safe_file_snapshot,
+    verify_safe_file_snapshot,
+)
 
 
 class ConfigError(ValueError):
@@ -55,8 +59,11 @@ def _contained_path(root: Path, raw: str, label: str) -> Path:
     windows_value = PureWindowsPath(raw)
     if value.is_absolute() or windows_value.is_absolute() or windows_value.drive:
         raise ConfigError(f"{label} must be repository-relative")
-    resolved_root = root.resolve()
-    resolved = (resolved_root / value).resolve(strict=False)
+    try:
+        resolved_root = root.resolve()
+        resolved = (resolved_root / value).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"{label} cannot be resolved safely: {exc}") from exc
     try:
         resolved.relative_to(resolved_root)
     except ValueError as exc:
@@ -180,14 +187,16 @@ def load_portable_config(
 ) -> PortableConfig:
     config_path = Path(os.path.abspath(os.fspath(path)))
     try:
-        content = read_safe_file(config_path.parent.parent, config_path)
-        assert content is not None
-        return _parse_portable_config(
+        snapshot = read_safe_file_snapshot(config_path.parent.parent, config_path)
+        assert snapshot is not None
+        parsed = _parse_portable_config(
             config_path,
-            content,
+            snapshot.content,
             installed_version=installed_version,
             implementation=implementation,
         )
+        verify_safe_file_snapshot(snapshot)
+        return parsed
     except ConfigError as exc:
         raise ConfigError(f"{config_path}: {exc}") from exc
     except UnsafeVaultError as exc:

@@ -5,7 +5,31 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki.safe_files import read_markdown_snapshot, scan_markdown_headers
+from obsidian_wiki.safe_files import (
+    read_markdown_snapshot,
+    read_safe_file_snapshot,
+    scan_markdown_headers,
+    verify_safe_file_snapshot,
+)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX bound-read capability")
+def test_safe_file_snapshot_rejects_repository_root_rebinding(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    configuration = repository / ".obsidian-wiki" / "config.toml"
+    configuration.parent.mkdir(parents=True)
+    configuration.write_text("original", encoding="utf-8")
+    snapshot = read_safe_file_snapshot(repository, configuration)
+    assert snapshot is not None
+
+    moved = tmp_path / "original-repository"
+    repository.rename(moved)
+    replacement = repository / ".obsidian-wiki" / "config.toml"
+    replacement.parent.mkdir(parents=True)
+    replacement.write_text("replacement", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="root changed since file was read"):
+        verify_safe_file_snapshot(snapshot)
 
 
 def test_header_scan_reads_only_frontmatter_until_eligible_full_read(tmp_path: Path) -> None:
