@@ -3288,6 +3288,36 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
     )
 
 
+def _normalize_cache_check_argv(argv: list[str]) -> list[str]:
+    """Move known zero-argument options ahead of cache-check PATH values."""
+    if not argv or argv[0] != "cache-check":
+        return argv
+    try:
+        separator = argv.index("--", 1)
+    except ValueError:
+        before_separator = argv[1:]
+        after_separator: list[str] = []
+    else:
+        before_separator = argv[1:separator]
+        after_separator = argv[separator:]
+    option_names = frozenset({"--configured", "--json", "--pretty"})
+    options = [token for token in before_separator if token in option_names]
+    paths = [token for token in before_separator if token not in option_names]
+    return [argv[0], *options, *paths, *after_separator]
+
+
+def _normalize_transaction_parent_separator(argv: list[str]) -> list[str]:
+    """Let ``transaction -- <known-command>`` select its nested parser."""
+    if (
+        len(argv) >= 3
+        and argv[0] == "transaction"
+        and argv[1] == "--"
+        and argv[2] in _TRANSACTION_SUBCOMMANDS
+    ):
+        return [argv[0], *argv[2:]]
+    return argv
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(
         prog="obsidian-wiki",
@@ -3974,6 +4004,8 @@ def main(argv: list[str] | None = None) -> int:
         argv = ["setup", *argv]
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
+    argv = _normalize_cache_check_argv(argv)
+    argv = _normalize_transaction_parent_separator(argv)
     try:
         args = parser.parse_args(argv)
     except _ArgumentParseError as exc:
