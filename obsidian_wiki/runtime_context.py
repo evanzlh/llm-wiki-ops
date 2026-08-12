@@ -4,33 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .config import ConfigError, ResolvedConfig, resolve_config
+from .config import ConfigError, PortableConfig, resolve_config
 
 
 RuntimeStatus = Literal["resolved", "unconfigured", "error"]
-SETUP_GUIDANCE = "run: obsidian-wiki setup --vault /path/to/your/vault"
-
-
-@dataclass(frozen=True)
-class ContextWarning:
-    code: str
-    message: str
-    hint: str
-    portable_config: str
-    selected_mode: str
-    selected_source: str
-    selected_vault: str
-
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "code": self.code,
-            "message": self.message,
-            "hint": self.hint,
-            "portable_config": self.portable_config,
-            "selected_mode": self.selected_mode,
-            "selected_source": self.selected_source,
-            "selected_vault": self.selected_vault,
-        }
+SETUP_GUIDANCE = "run: obsidian-wiki setup [DIR]"
 
 
 @dataclass(frozen=True)
@@ -38,8 +16,7 @@ class RuntimeInspection:
     status: RuntimeStatus
     cwd: Path
     portable_config: Path | None
-    runtime: ResolvedConfig | None
-    warnings: tuple[ContextWarning, ...]
+    config: PortableConfig | None
     error: ConfigError | None = None
     guidance: str | None = None
 
@@ -65,35 +42,26 @@ def nearest_portable_config(cwd: Path) -> Path | None:
 
 
 def inspect_runtime(
-    vault_arg: str | None = None,
     *,
     cwd: Path,
-    home: Path,
     installed_version: str,
     implementation: str,
 ) -> RuntimeInspection:
     current = _absolute(cwd)
     portable_config = nearest_portable_config(current)
     try:
-        runtime = resolve_config(
-            vault_arg,
+        config = resolve_config(
             cwd=current,
-            home=home,
             installed_version=installed_version,
             implementation=implementation,
         )
     except ConfigError as exc:
-        if (
-            vault_arg is None
-            and portable_config is None
-            and exc.args == ("vault not configured",)
-        ):
+        if portable_config is None and exc.args == ("repository not configured",):
             return RuntimeInspection(
                 status="unconfigured",
                 cwd=current,
                 portable_config=portable_config,
-                runtime=None,
-                warnings=(),
+                config=None,
                 error=exc,
                 guidance=SETUP_GUIDANCE,
             )
@@ -101,31 +69,13 @@ def inspect_runtime(
             status="error",
             cwd=current,
             portable_config=portable_config,
-            runtime=None,
-            warnings=(),
+            config=None,
             error=exc,
         )
 
-    warnings: tuple[ContextWarning, ...] = ()
-    if vault_arg is not None and portable_config is not None:
-        warnings = (
-            ContextWarning(
-                code="portable-context-overridden",
-                message=(
-                    "explicit vault selection overrides portable context discovered at "
-                    f"{portable_config}"
-                ),
-                hint="omit the explicit vault to retain portable repository semantics",
-                portable_config=str(portable_config),
-                selected_mode=runtime.mode,
-                selected_source=runtime.source,
-                selected_vault=str(runtime.vault),
-            ),
-        )
     return RuntimeInspection(
         status="resolved",
         cwd=current,
         portable_config=portable_config,
-        runtime=runtime,
-        warnings=warnings,
+        config=config,
     )
