@@ -91,6 +91,10 @@ _RETIRED_RUNTIME_PATTERNS = tuple(
 )
 
 
+def _lexically_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
 def test_current_human_document_scope_is_explicit_and_complete() -> None:
     assert len(CURRENT_HUMAN_DOCS) == 12
     assert all(path.is_file() for path in CURRENT_HUMAN_DOCS)
@@ -279,6 +283,13 @@ def test_personal_workflow_modules_are_not_packaged(module: str) -> None:
     assert importlib.util.find_spec(module) is None
 
 
+def test_removal_check_detects_a_dangling_symlink(tmp_path: Path) -> None:
+    removed = tmp_path / "removed"
+    removed.symlink_to(tmp_path / "missing-target")
+
+    assert _lexically_exists(removed)
+
+
 def test_retired_current_surfaces_have_one_complete_removal_inventory() -> None:
     assert REMOVED_CURRENT_PATHS == {
         ".agents/skills",
@@ -311,7 +322,9 @@ def test_retired_current_surfaces_have_one_complete_removal_inventory() -> None:
         "tests/test_sync_setup_parity.py",
     }
     assert [
-        relative for relative in REMOVED_CURRENT_PATHS if (ROOT / relative).exists()
+        relative
+        for relative in REMOVED_CURRENT_PATHS
+        if _lexically_exists(ROOT / relative)
     ] == []
 
 
@@ -363,7 +376,7 @@ def test_personal_only_skill_directories_are_removed_without_compatibility_stubs
         "obsidian_wiki/_data/skills/wiki-switch",
     }
     for relative in REMOVED_SKILL_PATHS:
-        assert not (ROOT / relative).exists()
+        assert not _lexically_exists(ROOT / relative)
 
     skills = ROOT / "obsidian_wiki/_data/skills"
     for skill_file in skills.glob("*/SKILL.md"):

@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -15,6 +17,46 @@ from obsidian_wiki.portable import PROJECT_AGENT_DIRS, render_portable_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _safe_tree_snapshot(root: Path) -> tuple[tuple[str, str, int, str | None], ...]:
+    entries: list[tuple[str, str, int, str | None]] = []
+
+    def visit(directory: Path) -> None:
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            metadata = path.lstat()
+            relative = path.relative_to(root).as_posix()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append((relative, "symlink", mode, os.readlink(path)))
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries.append((relative, "directory", mode, None))
+                visit(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                entries.append(
+                    (
+                        relative,
+                        "file",
+                        mode,
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+            else:
+                entries.append((relative, "special", mode, None))
+
+    visit(root)
+    return tuple(entries)
+
+
+def test_safe_home_snapshot_detects_added_agent_skill_tree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    before = _safe_tree_snapshot(home)
+    skill = home / ".gemini/skills/example/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# unexpected global skill\n", encoding="utf-8")
+
+    assert _safe_tree_snapshot(home) != before
 
 
 def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
@@ -37,6 +79,8 @@ def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
     env["PYTHONNOUSERSITE"] = "1"
     env.update(
         HOME=str(tmp_path / "home"),
+        XDG_CACHE_HOME=str(tmp_path / "xdg-cache"),
+        XDG_CONFIG_HOME=str(tmp_path / "xdg-config"),
         UV_TOOL_DIR=str(tmp_path / "tools"),
         UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
         UV_CACHE_DIR=str(tmp_path / "cache"),
@@ -80,6 +124,8 @@ def test_uv_tool_environment_ignores_parent_behavior_overrides(
     } & env.keys()
     assert not any(key.startswith("GIT_") for key in env)
     assert env["HOME"] == str(tmp_path / "home")
+    assert env["XDG_CACHE_HOME"] == str(tmp_path / "xdg-cache")
+    assert env["XDG_CONFIG_HOME"] == str(tmp_path / "xdg-config")
     assert env["UV_TOOL_DIR"] == str(tmp_path / "tools")
     assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
     assert env["UV_CACHE_DIR"] == str(tmp_path / "cache")
@@ -461,6 +507,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         symlinks=True,
     )
     env = _uv_tool_environment(tmp_path)
+    home = Path(env["HOME"])
+    home.mkdir(parents=True)
+    sentinel = home / "owner-sentinel.txt"
+    sentinel.write_text("owner home remains unchanged\n", encoding="utf-8")
+    home_before = _safe_tree_snapshot(home)
     canonical_skill_names = sorted(
         path.name
         for path in (source / "obsidian_wiki/_data/skills").iterdir()
@@ -650,7 +701,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     )
     assert setup.returncode == 0, setup.stdout + setup.stderr
     assert "Repository scaffolded" in setup.stdout
-    assert not (portable / ".git").exists()
+    assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
     canonical_query = portable / ".skills/wiki-query/SKILL.md"
     query_bytes = canonical_query.read_bytes()
     assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
@@ -713,9 +764,10 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         and target["unsafe"] == []
         for target in sync_payload["targets"]
     )
-    home = Path(env["HOME"])
+    assert _safe_tree_snapshot(home) == home_before
     assert not (home / ".obsidian-wiki").exists()
-    assert not (portable / ".git").exists()
+    assert not (home / ".obsidian-wiki").is_symlink()
+    assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
     for arguments in (("rev-parse", "--git-dir"), ("log", "-1"), ("remote",)):
         probe = subprocess.run(
             ["git", *arguments],
@@ -766,6 +818,8 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         payload = (portable / relative).read_bytes()
         assert not [value for value in forbidden_paths if value in payload], relative
     assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".obsidian-wiki").is_symlink()
     assert not any(
         (home / agent / "skills").exists() for agent in (".claude", ".codex", ".agents")
     )
+    assert _safe_tree_snapshot(home) == home_before
