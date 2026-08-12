@@ -57,11 +57,9 @@ obsidian-wiki = "obsidian_wiki.cli:main"
 source = "vcs"
 
 # ── Build configuration ──────────────────────────────────────────────────────
-# The Python package is just the thin CLI in obsidian_wiki/. The actual product
-# is the markdown skill content under .skills/ plus the agent bootstrap files.
-# We force-include those into the wheel under obsidian_wiki/_data/ so the
-# installed package is self-contained and the CLI can install skills without a
-# cloned repo. Source paths stay at the repo root (single source of truth).
+# Runtime skills and bootstrap templates live canonically under
+# obsidian_wiki/_data/, so source checkouts and built artifacts use identical
+# paths. The remaining force-includes copy non-package runtime support files.
 
 [tool.hatch.build.targets.wheel]
 packages = ["obsidian_wiki"]
@@ -74,38 +72,13 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-".skills" = "obsidian_wiki/_data/skills"
 "scripts" = "obsidian_wiki/_data/scripts"
-".claude/hooks/wiki-stop-capture.sh" = "obsidian_wiki/_data/hooks/wiki-stop-capture.sh"
 ".env.example" = "obsidian_wiki/_data/.env.example"
-"AGENTS.md" = "obsidian_wiki/_data/bootstrap/AGENTS.md"
-".cursor/rules/obsidian-wiki.mdc" = "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc"
-".windsurf/rules/obsidian-wiki.md" = "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md"
-".kiro/steering/obsidian-wiki.md" = "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md"
-".agent/rules/obsidian-wiki.md" = "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md"
-".agent/workflows/obsidian-wiki.md" = "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md"
-".github/copilot-instructions.md" = "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md"
 
 [tool.hatch.build.targets.sdist]
-# Prune build noise and the committed agent symlink mirrors (the CLI
-# regenerates those; left in, hatchling's VCS walker treats them as the
-# canonical path for each skill and drops the real .skills/<name> files).
+# Prune build noise and project-local agent configuration.
 exclude = [
   "/.claude",
-  "/.cursor/skills",
-  "/.windsurf/skills",
-  "/.agents/skills",
-  "/.pi/skills",
-  "/.kiro/skills",
   "/dist",
   "/build",
 ]
-
-# Force the real .skills/ tree into the sdist regardless of the VCS walker, so
-# the wheel (built from the sdist) can in turn force-include it under _data/.
-# The Stop hook lives under /.claude (excluded above), so re-add just the one
-# script the wiki-setup skill wires up — otherwise the wheel force-include has
-# nothing to copy and the source-install artifact contains a dangling hook reference.
-[tool.hatch.build.targets.sdist.force-include]
-".skills" = ".skills"
-".claude/hooks/wiki-stop-capture.sh" = ".claude/hooks/wiki-stop-capture.sh"

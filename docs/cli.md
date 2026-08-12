@@ -19,7 +19,8 @@ Running `obsidian-wiki` with no subcommand defaults to `setup`.
 | `list` | List the bundled skills |
 | `doctor` | Health-check config, vault shape, bootstrap assets, and installed skills |
 | `check` | Read-only deterministic validation for the current portable repository |
-| `repo upgrade-skills` | Transactionally refresh tracked framework-managed skills and adapters |
+| `repo sync-skills` | Inspect portable skill-mirror drift, or rebuild it with explicit `--apply` |
+| `repo upgrade-skills` | Transactionally upgrade tracked framework-managed built-ins and mirrors |
 | `repo migrate` | Analyze or explicitly apply a legacy-to-portable repository migration |
 
 ```bash
@@ -43,13 +44,31 @@ For framework CLI upgrades, follow the
 below; the quick reference intentionally does not skip its `requires_cli` step.
 
 Portable setup writes only inside `DIR`: repository-relative TOML, vault
-scaffolding, canonical skills, regular Markdown adapters, and bootstrap files.
+scaffolding, canonical skills, complete ordinary-file mirrors, and bootstrap files.
 It does not write global config or global agent directories. The repository
 does not contain `.venv` or a vendored CLI; contributors install the CLI with
 `uv tool install --link-mode copy .` from their own framework clone. Linux and macOS are the
 first-release CLI support boundary.
 
 Portable setup accepts a missing or empty target, or one containing only an ordinary `.git` directory; it preserves that directory and rejects arbitrary non-portable content. It does not run `git init`, commit, or configure a remote: for a new repository, run setup first and then `git init`; use `repo migrate` for legacy layouts.
+
+### Synchronize portable skill mirrors
+
+In a portable repository, `.skills/` is the only editable canonical skill tree.
+The six agent-native skill directories are derived mirrors. Inspect drift first,
+then use the explicit apply boundary, validate, and review:
+
+```bash
+obsidian-wiki repo sync-skills --json --pretty
+obsidian-wiki repo sync-skills --apply --json --pretty
+obsidian-wiki check --json --pretty
+git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
+```
+
+`repo sync-skills` is read-only unless `--apply` is present. Apply replaces all
+six mirrors transactionally from the reviewed canonical tree; it never edits
+`.skills/`, commits, or pushes. If an interrupted sync is recoverable, rerun the
+same command after reviewing the reported action.
 
 Human-output commands other than `setup`, `info`, and `doctor` may warn when
 the global Personal installation has gone stale (the package upgraded but
@@ -76,7 +95,9 @@ git diff
 Every collaborator must install a CLI version that satisfies the updated
 repository constraint. `repo upgrade-skills` validates compatibility before
 writing; it does not bypass an incompatible `requires_cli` constraint and does
-not automatically rewrite `requires_cli`. The command also does not commit or
+not automatically rewrite `requires_cli`. It upgrades framework-managed
+built-ins, preserves custom canonical skills, and refuses managed drift or
+unknown legacy changes. The command also does not commit or
 push, so review and commit both the constraint and managed-file changes before
 publishing them through the normal pull-request workflow.
 
@@ -145,7 +166,7 @@ Blockers are stable operator-facing categories:
 |---|---|
 | `outside-root` | The vault or source root is outside the migration repository; co-locate it first. |
 | `path-overlap` | The vault and source root contain one another; make them separate trees. |
-| `managed-path-overlap` | A configured tree overlaps portable-owned config, skill, adapter, or ignore paths. |
+| `managed-path-overlap` | A configured tree overlaps portable-owned config, skill, mirror, or ignore paths. |
 | `portable-artifact-conflict` | Existing manifest v2 artifacts are non-empty or unsafe; reconcile them before migration. |
 | `manifest-missing` | The legacy manifest is absent or not an ordinary file. |
 | `manifest-invalid` | The legacy manifest cannot be parsed or has invalid source entries. |
@@ -174,7 +195,7 @@ git diff
 ```
 
 Apply rechecks all analyzed preimages and refuses drift. It installs portable
-config, managed skills/adapters/bootstrap, `.gitignore`, and byte-stable
+config, managed skills/mirrors/bootstrap, `.gitignore`, and byte-stable
 `.gitattributes`; rewrites page provenance; replaces manifest v1 with the v2
 marker and one shard per source; replaces `index.md` and `log.md` with stable
 built-in-query views; removes the existing legacy `hot.md`; and writes

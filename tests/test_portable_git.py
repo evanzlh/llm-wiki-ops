@@ -114,7 +114,11 @@ def test_portable_check_and_doctor_reject_different_enclosing_git_root(
     source_skills = tmp_path / "source-skills"
     skill = source_skills / "wiki-query"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# Query\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\nname: wiki-query\ndescription: Query the portable wiki.\n---\n\n"
+        "# Query\n",
+        encoding="utf-8",
+    )
     parent = tmp_path / "outer"
     root = parent / "knowledge"
     setup_portable_repo(root, version=__version__, source_skills=source_skills)

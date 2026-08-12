@@ -11,9 +11,10 @@ from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.operations import write_operation
-from obsidian_wiki.portable import setup_portable_repo
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.skill_trees import discover_skill_collection
 from obsidian_wiki.transaction import TransactionManager
 
 
@@ -113,10 +114,122 @@ def _portable_seed(tmp_path: Path) -> Path:
     source_skills = tmp_path / "framework-skills"
     skill = source_skills / "wiki-query"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# Query\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: wiki-query\n"
+        "description: Search the compiled wiki and synthesize a cited answer.\n"
+        "---\n\n"
+        "# Query\n\n"
+        "Inspect summaries before reading only the relevant page bodies.\n",
+        encoding="utf-8",
+    )
+    reference = skill / "references/查询说明.md"
+    reference.parent.mkdir()
+    reference.write_text("# 查询说明\n", encoding="utf-8")
     root = tmp_path / "seed"
     setup_portable_repo(root, version=__version__, source_skills=source_skills)
     return root
+
+
+def test_portable_seed_exposes_complete_useful_skill_mirrors(tmp_path: Path) -> None:
+    root = _portable_seed(tmp_path)
+    canonical = discover_skill_collection(root / ".skills")
+
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        assert discover_skill_collection(root / agent_relative) == canonical
+        mirrored = root / agent_relative / "wiki-query/SKILL.md"
+        text = mirrored.read_text(encoding="utf-8")
+        assert "description: Search the compiled wiki" in text
+        assert "Inspect summaries before reading" in text
+        assert "Portable adapter" not in text
+        assert "../../../.skills/" not in text
+
+
+def test_cjk_custom_skill_sync_check_and_transaction_survive_clone_move(
+    tmp_path: Path,
+) -> None:
+    root = _portable_seed(tmp_path / "原始知识库")
+    custom = root / ".skills/团队知识"
+    custom.mkdir()
+    (custom / "SKILL.md").write_text(
+        "---\n"
+        "name: 团队知识\n"
+        "description: 维护团队知识库的协作约定。\n"
+        "---\n\n"
+        "# 团队知识\n\n"
+        "保留中文名称和资源路径。\n",
+        encoding="utf-8",
+    )
+    resource = custom / "references/协作约定.md"
+    resource.parent.mkdir()
+    resource.write_text("# 协作约定\n", encoding="utf-8")
+
+    dry = _cli(root, "repo", "sync-skills", "--json")
+    assert dry.returncode == 1, dry.stdout + dry.stderr
+    assert json.loads(dry.stdout)["status"] == "drift"
+    assert not (root / ".claude/skills/团队知识").exists()
+
+    applied = _cli(root, "repo", "sync-skills", "--apply", "--json")
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert json.loads(applied.stdout)["status"] == "applied"
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        assert discover_skill_collection(root / agent_relative) == (
+            discover_skill_collection(root / ".skills")
+        )
+        assert (root / agent_relative / "团队知识/references/协作约定.md").read_bytes() == (
+            resource.read_bytes()
+        )
+
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "seed@example.invalid")
+    _git(root, "config", "user.name", "Seed")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "add custom CJK skill")
+
+    moved = tmp_path / "新的位置" / "知识库克隆"
+    moved.parent.mkdir()
+    _clone(root, moved)
+
+    checked = _cli(moved, "check", "--json")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert json.loads(checked.stdout)["status"] == "pass"
+
+    source_id = "sources/验证/迁移检查.md"
+    source = moved / source_id
+    source.parent.mkdir(parents=True)
+    source.write_text("# 迁移检查\n", encoding="utf-8")
+    begun = _cli(
+        moved, "transaction", "begin", "--source", str(source), "--json"
+    )
+    assert begun.returncode == 0, begun.stdout + begun.stderr
+    transaction = json.loads(begun.stdout)
+    candidate = Path(transaction["candidate_vault"]) / "concepts/迁移检查.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(
+        _page(
+            title="迁移检查",
+            source_id=source_id,
+            created=transaction["started_at"],
+        ),
+        encoding="utf-8",
+    )
+    validated = _cli(
+        moved,
+        "transaction",
+        "validate",
+        transaction["transaction_id"],
+        "--json",
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    assert json.loads(validated.stdout)["status"] == "pass"
+
+    old_root = str(root.resolve()).encode("utf-8")
+    new_root = str(moved.resolve()).encode("utf-8")
+    tracked = _git(moved, "ls-files", "-z").stdout.rstrip("\0").split("\0")
+    for relative in tracked:
+        data = (moved / relative).read_bytes()
+        assert old_root not in data, relative
+        assert new_root not in data, relative
 
 
 def _page(*, title: str, source_id: str, created: str) -> str:

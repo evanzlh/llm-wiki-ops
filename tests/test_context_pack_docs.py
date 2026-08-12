@@ -11,7 +11,7 @@ def read(relative: str) -> str:
 
 
 def test_context_skill_uses_cli_and_is_read_only() -> None:
-    skill = read(".skills/wiki-context-pack/SKILL.md")
+    skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
     assert 'obsidian-wiki context-pack --vault "$OBSIDIAN_VAULT_PATH"' in skill
     assert "read-only" in skill.lower()
     assert "must not modify" in skill
@@ -20,7 +20,7 @@ def test_context_skill_uses_cli_and_is_read_only() -> None:
 
 
 def test_context_skill_canonicalizes_vault_and_requires_installed_cli() -> None:
-    skill = read(".skills/wiki-context-pack/SKILL.md")
+    skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
     assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' in skill
     assert "command -v obsidian-wiki" in skill
     assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in skill
@@ -31,7 +31,7 @@ def test_context_skill_canonicalizes_vault_and_requires_installed_cli() -> None:
 
 
 def test_context_skill_preserves_cli_output_and_recent_default_budget() -> None:
-    skill = read(".skills/wiki-context-pack/SKILL.md")
+    skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
     assert "CLI stdout unchanged as the final payload in every mode" in skill
     assert "CLI stdout only" in skill
     assert "no prose or markdown" in skill
@@ -46,13 +46,13 @@ def test_cli_lists_context_pack_as_portable() -> None:
 
 def test_all_bootstraps_route_context_pack() -> None:
     files = [
-        "AGENTS.md",
-        ".cursor/rules/obsidian-wiki.mdc",
-        ".windsurf/rules/obsidian-wiki.md",
-        ".kiro/steering/obsidian-wiki.md",
-        ".agent/rules/obsidian-wiki.md",
-        ".agent/workflows/obsidian-wiki.md",
-        ".github/copilot-instructions.md",
+        "obsidian_wiki/_data/bootstrap/AGENTS.md",
+        "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+        "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
     ]
     for relative in files:
         assert "wiki-context-pack" in read(relative), relative

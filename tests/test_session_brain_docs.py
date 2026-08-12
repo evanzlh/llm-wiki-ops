@@ -17,8 +17,8 @@ except ModuleNotFoundError:  # Python < 3.11
     tomllib = None
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS = ROOT / ".skills"
-AGENTS_MD = ROOT / "AGENTS.md"
+SKILLS = ROOT / "obsidian_wiki" / "_data" / "skills"
+AGENTS_MD = ROOT / "obsidian_wiki" / "_data" / "bootstrap" / "AGENTS.md"
 
 
 class SkillFilesTest(unittest.TestCase):

@@ -1,6 +1,13 @@
 # Skills Reference
 
-Everything lives in [`.skills/`](../.skills/). Each skill is a markdown file the agent reads when your request matches its description — there's no runtime, no plugin system, no registration step. Install this project through the supported [local-clone source build](installation.md#install-from-a-clone); this page does not define another project installation route.
+Framework built-ins live in `obsidian_wiki/_data/skills/` and are packaged into
+the installed CLI. Each skill is a Markdown file the agent reads when your
+request matches its description—there is no skill runtime or registration
+step. In a portable knowledge repository, `.skills/` is that repository's only
+editable canonical skill tree; six agent-native directories contain complete
+derived ordinary-file mirrors. Install this project through the supported
+[local-clone source build](installation.md#install-from-a-clone); this page does
+not define another project installation route.
 
 Slash commands (`/skill-name`) work in Claude Code, Cursor, Windsurf, and most CLI agents. Everywhere else, just describe what you want.
 
@@ -120,7 +127,7 @@ This framework handles the knowledge-management workflow — ingest, query, lint
 npx skills add kepano/obsidian-skills
 ```
 
-Both projects follow the same [Agent Skills spec](https://agentskills.io/specification), so they coexist in the same `.skills/` directory with no conflicts.
+Both projects follow the same [Agent Skills spec](https://agentskills.io/specification), so their skills can coexist in the same agent discovery environment without conflicts.
 
 ## Writing your own
 
@@ -128,4 +135,7 @@ See [Contributing → Adding a new skill](contributing.md#adding-a-new-skill), o
 
 > "Create a skill that generates weekly summaries from my journal entries"
 
-`skill-creator` walks you through drafting, testing, and refining it in `.skills/`.
+`skill-creator` walks you through drafting, testing, and refining it. Framework
+contributors edit `obsidian_wiki/_data/skills/<name>/SKILL.md`; portable wiki
+owners add repository-specific skills to their repository's canonical
+`.skills/<name>/SKILL.md` and then rebuild its agent mirrors.

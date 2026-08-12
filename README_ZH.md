@@ -43,6 +43,19 @@ obsidian-wiki check
 
 在 Obsidian 中将 `team-knowledge/wiki/` 作为 Vault 打开。每位协作者都从自己的框架 clone 用 uv tool 安装 CLI；clone 知识库仓库后运行 `obsidian-wiki doctor`，再通过偏好的 Agent 使用受版本管理的仓库内 Skills。知识库仓库不包含 `.venv` 或内置 CLI 副本。
 
+便携仓库中的 `.skills/` 是规范技能树。六个完整的普通文件镜像让受支持的
+Agent 获得相同的技能描述与资源。请先检查漂移，再显式重建镜像、校验并审查
+受版本管理的结果：
+
+```bash
+obsidian-wiki repo sync-skills --json --pretty
+obsidian-wiki repo sync-skills --apply --json --pretty
+obsidian-wiki check --json --pretty
+git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
+```
+
+第一条命令是只读的。只编辑 `.skills/`，不要直接编辑 Agent 镜像。
+
 升级框架时，请遵循这个两步便携式 CLI 升级协议。首先在分支上安装新版
 CLI，并审慎修改受版本管理的 `.obsidian-wiki/config.toml` 中的
 `requires_cli`，将其设为接受当前已安装版本、经过审查的 PEP 440 约束。
@@ -58,7 +71,8 @@ git diff
 
 每位协作者都必须安装满足仓库更新后约束的 CLI 版本。
 `repo upgrade-skills` 不会绕过兼容性检查，也不会自动改写
-`requires_cli`；请通过常规 Pull Request 工作流提交审查后的配置与受管理
+`requires_cli`；它会升级受管理的内置技能、保留自定义技能，并拒绝漂移或
+未知的旧版改动。请通过常规 Pull Request 工作流提交审查后的配置与受管理
 文件 diff。
 
 便携模式下，Agent 会在被忽略的本地事务工作区中暂存写入，再将已审查的候选内容提升到工作树。普通写入会保持 `wiki/index.md` 与 `wiki/log.md` 稳定，将 `wiki/hot.md` 保持为被忽略的本地状态，并追加一个不可变操作页面。事务命令不会提交或推送；请审查 Git diff，并通过常规分支和 Pull Request 工作流发布。详见 [架构](docs/architecture.md#portable-write-lifecycle)与 [CLI 事务参考](docs/cli.md#portable-transactions-and-local-hot-state)。

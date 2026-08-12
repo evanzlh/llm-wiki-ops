@@ -14,7 +14,7 @@ import pytest
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.cli import list_skills, skills_dir
 from obsidian_wiki.config import load_portable_config
-from obsidian_wiki.portable import setup_portable_repo
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 
 
@@ -292,6 +292,54 @@ def test_doctor_portable_mode_ignores_global_config_and_agent_installs(
     assert str(global_vault) not in json.dumps(report)
     assert not (root / "wiki/hot.md").exists()
     assert report["context_warnings"] == []
+
+
+@pytest.mark.parametrize(
+    ("strict", "expected_returncode"), [(False, 0), (True, 1)]
+)
+def test_doctor_reports_matching_managed_canonical_edits_as_warning(
+    tmp_path: Path, strict: bool, expected_returncode: int
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    paths = [root / ".skills/wiki-ingest/SKILL.md"] + [
+        root / relative / "wiki-ingest/SKILL.md"
+        for relative, _label in PROJECT_AGENT_DIRS
+    ]
+    for path in paths:
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nOwner extension.\n",
+            encoding="utf-8",
+        )
+    args = ["doctor", "--json"]
+    if strict:
+        args.append("--strict")
+
+    proc = _run(home, *args, cwd=nested)
+
+    assert proc.returncode == expected_returncode
+    report = json.loads(proc.stdout)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["project-skills"]["status"] == "warn"
+    assert "managed-canonical-modified" in checks["project-skills"]["detail"]
+
+
+def test_doctor_fails_on_portable_skill_mirror_drift(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    mirror = root / ".claude/skills/wiki-ingest/SKILL.md"
+    mirror.write_text(
+        mirror.read_text(encoding="utf-8") + "\nMirror drift.\n",
+        encoding="utf-8",
+    )
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    report = json.loads(proc.stdout)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["project-skills"]["status"] == "fail"
+    assert "skill-mirror-changed" in checks["project-skills"]["detail"]
 
 
 def test_doctor_explicit_portable_context_warning_is_additive_in_strict_mode(
@@ -710,3 +758,23 @@ def test_doctor_portable_mode_rejects_unsafe_managed_paths_without_fallback(
     details = json.dumps(report).lower()
     assert "symlink" in details if entry_kind == "symlink" else "hard link" in details
     assert str(global_vault) not in json.dumps(report)
+
+
+def test_doctor_rejects_agent_mirror_with_symlinked_ancestor(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    external = tmp_path / "external-claude"
+    shutil.copytree(root / ".claude", external)
+    shutil.rmtree(root / ".claude")
+    (root / ".claude").symlink_to(external, target_is_directory=True)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    report = json.loads(proc.stdout)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["project-skills"]["status"] == "fail"
+    assert "skill-mirror-unsafe" in checks["project-skills"]["detail"]
+    assert str(external) not in json.dumps(report)

@@ -37,7 +37,9 @@ READ_SKILLS = ("wiki-query", "wiki-narrate", "wiki-digest")
 
 
 def skill_text(name: str) -> str:
-    return (ROOT / ".skills" / name / "SKILL.md").read_text(encoding="utf-8")
+    return (
+        ROOT / "obsidian_wiki" / "_data" / "skills" / name / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
 
 def markdown_section(text: str, heading: str) -> str:
@@ -169,7 +171,7 @@ def test_canonical_protocol_owns_begin_commit_recovery_and_hot_commands() -> Non
 def test_canonical_portable_protocol_defines_runtime_safety_rules(
     scope: str, phrase: str
 ) -> None:
-    relative = ".skills/llm-wiki/SKILL.md"
+    relative = "obsidian_wiki/_data/skills/llm-wiki/SKILL.md"
     text = skill_text("llm-wiki")
     if scope == "completion":
         scoped = h2_section(

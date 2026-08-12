@@ -111,7 +111,13 @@ fresh clone. The CLI exposes computed absolute values such as
 files. Portable setup does not create or consult an extra repository `.env`.
 
 The tracked `.obsidian-wiki/managed-skills.json` is the ownership boundary for
-framework-managed skill directories. After installing a newer CLI, follow this
+framework-managed skill directories. Ordinary mirror maintenance uses
+`repo sync-skills`, which is read-only by default; `--apply` rebuilds all six
+mirrors from the canonical `.skills/` tree. `repo upgrade-skills` upgrades
+framework-managed built-ins, preserves custom skills, refuses managed drift,
+and also refuses unknown legacy changes rather than guessing ownership.
+
+After installing a newer CLI, follow this
 two-step portable CLI upgrade protocol on a branch. First, deliberately edit
 the tracked `requires_cli` value to a reviewed PEP 440 constraint that accepts
 the installed version. Second, refresh the managed files, validate the
@@ -143,7 +149,7 @@ Portable setup establishes this repository boundary:
 | Compilation ledger | Tracked | `<vault>/.manifest.json`, `<vault>/.manifest/sources/**` | The marker is fixed and the CLI owns affected shards. |
 | Operation history | Tracked | `<vault>/journal/operations/YYYY/MM/<UTC>-<suffix>.md` | One immutable, merge-friendly page per completed transaction. |
 | Stable query surfaces | Tracked | `<vault>/index.md`, `<vault>/log.md` | Portable setup creates them, but ordinary transactions never rewrite them. Built-in queries scan pages, shards, and operation entries instead. |
-| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap/adapters | Clone-independent configuration, byte-stability rules, and agent behavior. |
+| Repository contract | Tracked | `.obsidian-wiki/config.toml`, `.obsidian-wiki/managed-skills.json`, `.gitattributes`, `.skills/**`, agent bootstrap and skill mirrors | Clone-independent configuration, byte-stability rules, and agent behavior. |
 | Semantic hot cache | Ignored | `<vault>/hot.md` | Local derived context; invalidate and rebuild it after authoritative state or branch changes. |
 | Transaction and recovery state | Ignored | `.obsidian-wiki/local/**` | Lock, candidate pages, preimages, snapshots, metadata, and hot fingerprint; never publish it. |
 | Obsidian UI state | Ignored | `<vault>/.obsidian/workspace.json`, `<vault>/.obsidian/workspace-mobile.json`, `<vault>/.trash/**` | Machine-local viewer state, not knowledge. |

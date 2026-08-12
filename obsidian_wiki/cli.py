@@ -43,16 +43,14 @@ from obsidian_wiki.migration import (
 )
 from obsidian_wiki.portable import (
     _BOOTSTRAP_REFERENCES,
-    MANAGED_SKILLS_INVENTORY,
     MANIFEST_MARKER,
     PROJECT_AGENT_DIRS,
-    _adapter_text,
     _assert_directory,
     _assert_safe_managed_path,
-    _assert_single_link_managed_tree,
     _assert_single_link_ordinary_file,
-    _read_managed_skills_inventory_file,
+    recover_portable_skill_operations,
     setup_portable_repo,
+    sync_portable_skill_mirrors,
     upgrade_portable_skills,
 )
 from obsidian_wiki.runtime_context import (
@@ -87,38 +85,32 @@ class SchemaOptions(TypedDict):
 
 
 # ── Data resolution ──────────────────────────────────────────────────────────
-# Works for both a built wheel (data under <pkg>/_data) and an editable/source
-# checkout (data at the repo root next to the package).
+# Runtime assets have one canonical location inside the Python package. Source
+# checkouts and built wheels use the same package-relative paths.
 def _pkg_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def skills_dir() -> Path:
-    """Return the directory holding the bundled skill folders."""
-    for cand in (_pkg_dir() / "_data" / "skills", _pkg_dir().parent / ".skills"):
-        if cand.is_dir():
-            return cand
+def _data_dir(name: str) -> Path:
+    """Return one strict package-data directory or raise with recovery guidance."""
+    bundled = _pkg_dir() / "_data" / name
+    if bundled.is_dir():
+        return bundled
     raise FileNotFoundError(
-        "Could not locate bundled skills. Reinstall from a clone of "
+        f"Could not locate bundled {name}. Reinstall from a clone of "
         "https://github.com/evanzlh/obsidian-wiki with "
         f"`{SOURCE_REINSTALL_COMMAND}`."
     )
 
 
-def bootstrap_dir() -> Path | None:
-    """Return the directory containing agent bootstrap context files.
+def skills_dir() -> Path:
+    """Return the directory holding the bundled skill folders."""
+    return _data_dir("skills")
 
-    For a wheel this is ``_data/bootstrap``; for a source checkout the files are
-    spread across the repo root, so we return the repo root and resolve each
-    file via the repo-relative layout in ``_bootstrap_files``.
-    """
-    built = _pkg_dir() / "_data" / "bootstrap"
-    if built.is_dir():
-        return built
-    repo = _pkg_dir().parent
-    if (repo / "AGENTS.md").is_file():
-        return repo
-    return None
+
+def bootstrap_dir() -> Path:
+    """Return the packaged agent bootstrap directory."""
+    return _data_dir("bootstrap")
 
 
 def list_skills() -> list[str]:
@@ -245,8 +237,7 @@ def _install_hermes_profiles(mode: str) -> None:
 
 # ── Project-local install (opt-in) ───────────────────────────────────────────
 # (bootstrap-relative source path, destination relative to project dir).
-# The source path is resolved against bootstrap_dir() for a wheel, or mapped to
-# the repo layout for a source checkout (see _resolve_bootstrap_src).
+# Source paths are always resolved against the packaged bootstrap directory.
 BOOTSTRAP_FILES = [
     ("AGENTS.md", "AGENTS.md"),
     ("cursor/rules/obsidian-wiki.mdc", ".cursor/rules/obsidian-wiki.mdc"),
@@ -261,24 +252,15 @@ BOOTSTRAP_FILES = [
 AGENTS_ALIASES = ("CLAUDE.md", "GEMINI.md", ".hermes.md")
 
 
-def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path | None:
-    """Resolve a bootstrap source path under a wheel layout or repo layout."""
-    built = boot_root / rel
-    if built.exists():
-        return built
-    # Source checkout: boot_root is the repo root; files use the repo layout.
-    repo_rel = {
-        "AGENTS.md": "AGENTS.md",
-        "cursor/rules/obsidian-wiki.mdc": ".cursor/rules/obsidian-wiki.mdc",
-        "windsurf/rules/obsidian-wiki.md": ".windsurf/rules/obsidian-wiki.md",
-        "kiro/steering/obsidian-wiki.md": ".kiro/steering/obsidian-wiki.md",
-        "agent/rules/obsidian-wiki.md": ".agent/rules/obsidian-wiki.md",
-        "agent/workflows/obsidian-wiki.md": ".agent/workflows/obsidian-wiki.md",
-        "github/copilot-instructions.md": ".github/copilot-instructions.md",
-    }.get(rel)
-    if repo_rel and (boot_root / repo_rel).exists():
-        return boot_root / repo_rel
-    return None
+def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path:
+    """Resolve one required bootstrap file under the package-only layout."""
+    source = boot_root / rel
+    if source.is_file():
+        return source
+    raise FileNotFoundError(
+        f"Could not locate bundled bootstrap file {rel}. "
+        f"Reinstall with `{SOURCE_REINSTALL_COMMAND}`."
+    )
 
 
 def install_project(project_dir: Path, mode: str) -> None:
@@ -288,14 +270,9 @@ def install_project(project_dir: Path, mode: str) -> None:
         install_skills(project_dir / rel, f"{rel}/", mode=mode)
 
     boot_root = bootstrap_dir()
-    if boot_root is None:
-        print("   ⚠️  Bootstrap files not found in package; skipping context files")
-        return
 
     for rel, dest in BOOTSTRAP_FILES:
         src = _resolve_bootstrap_src(boot_root, rel)
-        if src is None:
-            continue
         dst = project_dir / dest
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.is_symlink() or dst.exists():
@@ -957,43 +934,22 @@ def _validate_portable_paths(portable: PortableConfig) -> str:
     )
 
 
-def _validate_portable_project_skills(portable: PortableConfig) -> str:
-    root = portable.root
-    inventory = root / MANAGED_SKILLS_INVENTORY
-    skills_version, skill_names = _read_managed_skills_inventory_file(root, inventory)
-    if skills_version != __version__:
-        raise ValueError(
-            f"portable managed skills version {skills_version} does not match {__version__}"
-        )
-    for skill_name in skill_names:
-        canonical = portable.skills / skill_name
-        _assert_single_link_managed_tree(
-            root, canonical, f"portable canonical skill {skill_name}"
-        )
-        _assert_single_link_ordinary_file(
-            root,
-            canonical / "SKILL.md",
-            f"portable canonical skill {skill_name}",
-        )
-        for agent_relative, _label in PROJECT_AGENT_DIRS:
-            adapter_root = root / agent_relative / skill_name
-            adapter = adapter_root / "SKILL.md"
-            _assert_single_link_managed_tree(
-                root, adapter_root, f"portable adapter {skill_name}"
-            )
-            _assert_single_link_ordinary_file(
-                root, adapter, f"portable adapter {skill_name}"
-            )
-            expected_relative = os.path.relpath(
-                canonical / "SKILL.md", adapter_root
-            ).replace(os.sep, "/")
-            expected = _adapter_text(skill_name, expected_relative)
-            if adapter.read_text(encoding="utf-8") != expected:
-                raise ValueError(
-                    f"portable adapter must be a regular relative Markdown adapter: "
-                    f"{adapter}"
-                )
-    return f"{len(skill_names)} managed skill(s) and all relative adapters are valid"
+def _validate_portable_project_skills(
+    portable: PortableConfig,
+) -> dict[str, object]:
+    from obsidian_wiki.portable_check import check_portable_skills
+
+    return check_portable_skills(portable)
+
+
+def _portable_skill_report_detail(report: dict[str, object]) -> str:
+    issues = report["issues"]
+    assert isinstance(issues, list)
+    if not issues:
+        return "canonical skills, managed ownership, and all agent mirrors are valid"
+    return "; ".join(
+        f"{issue['code']} ({issue['path']}): {issue['message']}" for issue in issues
+    )
 
 
 def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
@@ -1057,22 +1013,13 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
             status="pass",
             detail=path_detail,
         )
-    try:
-        skill_detail = _validate_portable_project_skills(loaded)
-    except (ValueError, OSError, UnicodeDecodeError) as exc:
-        _doctor_add(
-            checks,
-            name="project-skills",
-            status="fail",
-            detail=str(exc),
-        )
-    else:
-        _doctor_add(
-            checks,
-            name="project-skills",
-            status="pass",
-            detail=skill_detail,
-        )
+    skill_report = _validate_portable_project_skills(loaded)
+    _doctor_add(
+        checks,
+        name="project-skills",
+        status=str(skill_report["status"]),
+        detail=_portable_skill_report_detail(skill_report),
+    )
     return {"status": _doctor_status(checks), "checks": checks}
 
 
@@ -1144,14 +1091,24 @@ def run_doctor(
         )
         bundled = []
 
-    boot = bootstrap_dir()
-    _doctor_add(
-        checks,
-        name="bootstrap-assets",
-        status="pass" if boot else "fail",
-        detail=str(boot) if boot else "bootstrap files not found",
-        hint="" if boot else SOURCE_REINSTALL_HINT,
-    )
+    try:
+        boot = bootstrap_dir()
+    except FileNotFoundError as exc:
+        _doctor_add(
+            checks,
+            name="bootstrap-assets",
+            status="fail",
+            detail=str(exc),
+            hint=SOURCE_REINSTALL_HINT,
+        )
+    else:
+        _doctor_add(
+            checks,
+            name="bootstrap-assets",
+            status="pass",
+            detail=str(boot),
+            hint="",
+        )
 
     config = _read_config()
     config_present = GLOBAL_CONFIG.is_file()
@@ -1864,6 +1821,15 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
     from obsidian_wiki.portable_check import check_portable_repo
 
+    try:
+        recover_portable_skill_operations(
+            runtime.portable.root,
+            version=__version__,
+            source_skills=skills_dir(),
+        )
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     report = check_portable_repo(runtime.portable)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None, ensure_ascii=False))
@@ -1875,7 +1841,12 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(
                 f"{issue['severity']}: {issue['code']}: {issue['path']}: {issue['message']}"
             )
-    return 1 if report["status"] == "fail" else 0
+    return (
+        1
+        if report["status"] == "fail"
+        or (args.strict and report["status"] == "warn")
+        else 0
+    )
 
 
 def _portable_command_config(command: str) -> PortableConfig:
@@ -2986,6 +2957,7 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
+    warnings: list[dict[str, str]] = []
     try:
         resolved = resolve_config(
             cwd=Path.cwd(),
@@ -3002,12 +2974,68 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
             root,
             version=__version__,
             source_skills=skills_dir(),
+            warning_sink=warnings,
         )
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"Upgraded {len(names)} repository skills at {root} to {__version__}")
+    print(
+        f"Upgraded {len(names)} managed repository skills and rebuilt six full "
+        f"mirrors at {root} to {__version__}"
+    )
+    for warning in warnings:
+        print(f"warning [{warning['code']}]: {warning['message']}", file=sys.stderr)
     return 0
+
+
+def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
+    root: Path | None = None
+    try:
+        resolved = resolve_config(
+            cwd=Path.cwd(),
+            home=Path.home(),
+            installed_version=__version__,
+            implementation=IMPLEMENTATION_ID,
+        )
+        if resolved.mode != "portable" or resolved.portable is None:
+            raise ConfigError(
+                "repo sync-skills must run inside a portable repository"
+            )
+        root = resolved.portable.root
+        report = sync_portable_skill_mirrors(root, apply=args.apply)
+    except (ConfigError, ValueError, OSError, RuntimeError) as exc:
+        error = str(exc)
+        if root is not None:
+            error = error.replace(str(root), ".")
+        if args.json:
+            _json_print(
+                {"status": "error", "error": error, "warnings": []},
+                pretty=args.pretty,
+            )
+        else:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        _json_print(report.as_dict(), pretty=args.pretty)
+    elif report.status == "applied":
+        print(
+            "Rebuilt six derived agent skill roots from .skills/; canonical "
+            ".skills/ and the managed-skills inventory are unchanged."
+        )
+    elif report.status == "clean":
+        print("All six derived agent skill roots match canonical .skills/.")
+    else:
+        print("Portable agent skill mirror drift detected:")
+        for target in report.targets:
+            changes = len(target.added + target.changed + target.removed + target.unsafe)
+            if changes:
+                print(f"  - {target.path}: {changes} change(s)")
+        print("Run `obsidian-wiki repo sync-skills --apply` to rebuild all mirrors.")
+    if not args.json:
+        for warning in report.warnings:
+            print(f"warning: {warning['path']}: {warning['message']}", file=sys.stderr)
+    return 1 if report.status == "drift" else 0
 
 
 def _migration_path(root: Path, raw: str) -> Path:
@@ -3260,6 +3288,36 @@ def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
     )
 
 
+def _normalize_cache_check_argv(argv: list[str]) -> list[str]:
+    """Move known zero-argument options ahead of cache-check PATH values."""
+    if not argv or argv[0] != "cache-check":
+        return argv
+    try:
+        separator = argv.index("--", 1)
+    except ValueError:
+        before_separator = argv[1:]
+        after_separator: list[str] = []
+    else:
+        before_separator = argv[1:separator]
+        after_separator = argv[separator:]
+    option_names = frozenset({"--configured", "--json", "--pretty"})
+    options = [token for token in before_separator if token in option_names]
+    paths = [token for token in before_separator if token not in option_names]
+    return [argv[0], *options, *paths, *after_separator]
+
+
+def _normalize_transaction_parent_separator(argv: list[str]) -> list[str]:
+    """Let ``transaction -- <known-command>`` select its nested parser."""
+    if (
+        len(argv) >= 3
+        and argv[0] == "transaction"
+        and argv[1] == "--"
+        and argv[2] in _TRANSACTION_SUBCOMMANDS
+    ):
+        return [argv[0], *argv[2:]]
+    return argv
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(
         prog="obsidian-wiki",
@@ -3309,9 +3367,21 @@ def build_parser() -> argparse.ArgumentParser:
     repo_sub = rp.add_subparsers(dest="repo_command", required=True)
     rus = repo_sub.add_parser(
         "upgrade-skills",
-        help="upgrade repository-managed skills and adapters from this CLI",
+        help="upgrade managed skills and rebuild full agent mirrors from this CLI",
     )
     rus.set_defaults(func=cmd_repo_upgrade_skills)
+
+    rss = repo_sub.add_parser(
+        "sync-skills",
+        help="check or rebuild agent skill mirrors from repository-canonical .skills",
+    )
+    rss.add_argument(
+        "--apply",
+        action="store_true",
+        help="replace all derived mirrors from .skills",
+    )
+    _add_json_args(rss)
+    rss.set_defaults(func=cmd_repo_sync_skills)
 
     migrate = repo_sub.add_parser(
         "migrate",
@@ -3663,6 +3733,11 @@ def build_parser() -> argparse.ArgumentParser:
     ck = sub.add_parser("check", help="validate a portable repository without an LLM")
     ck.add_argument("--json", action="store_true", help="emit a JSON report")
     ck.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    ck.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero on warnings as well as failures",
+    )
     ck.set_defaults(func=cmd_check)
 
     ap = sub.add_parser(
@@ -3929,6 +4004,8 @@ def main(argv: list[str] | None = None) -> int:
         argv = ["setup", *argv]
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
+    argv = _normalize_cache_check_argv(argv)
+    argv = _normalize_transaction_parent_separator(argv)
     try:
         args = parser.parse_args(argv)
     except _ArgumentParseError as exc:

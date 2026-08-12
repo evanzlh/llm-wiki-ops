@@ -4,9 +4,9 @@ This is early. The skills work, but there's room to make the brain smarter: bett
 
 ## Adding a new skill
 
-1. Create a folder in `.skills/your-skill-name/`
+1. Create a folder in `obsidian_wiki/_data/skills/your-skill-name/`
 2. Add a `SKILL.md` with YAML frontmatter (`name`, `description`) and markdown instructions
-3. From the framework clone, rebuild the non-editable installed CLI so the updated `.skills/` tree is bundled:
+3. From the framework clone, rebuild the non-editable installed CLI so the updated bundled tree is installed:
    ```bash
    uv tool install --force --reinstall --link-mode copy .
    ```
@@ -15,7 +15,17 @@ This is early. The skills work, but there's room to make the brain smarter: bett
 
 The `description` is load-bearing — it's the only thing an agent sees when deciding whether your skill is relevant. Write it as a list of the phrases a user would actually say, and state what the skill is *not* for when it's easily confused with a neighbour.
 
-See [`.skills/skill-creator/SKILL.md`](../.skills/skill-creator/SKILL.md) for the full guide, or just ask your agent to run `/skill-creator`.
+Use the corresponding bundled skill at
+`obsidian_wiki/_data/skills/skill-creator/SKILL.md` for the full guide, or just
+ask your agent to run `/skill-creator`.
+
+The framework source has no local wiki skills by design: opening this source
+repository in a coding agent must not inject the wiki-maintenance skill set.
+Edit `obsidian_wiki/_data/skills/<name>/SKILL.md` (for example,
+`obsidian_wiki/_data/skills/wiki-ingest/SKILL.md`), reinstall with the command
+above, and exercise setup in a disposable portable repository. Inside an actual
+portable knowledge repository, `.skills/` is owner-editable canonical content;
+never copy those repository-specific edits back into the framework bundle.
 
 When you add a skill, also add it to the [skills reference](skills.md) and the routing table in `AGENTS.md`.
 
@@ -35,7 +45,7 @@ The `docs/` pages are English-only for now.
 
 ## Repo conventions
 
-- `.skills/` is the source of truth. Everything else — `.claude/skills/`, `~/.codex/skills/`, and so on — is symlinks created by setup. Never edit a symlinked copy.
+- `obsidian_wiki/_data/skills/` is the framework source of truth. Portable repositories have their own `.skills/` canonical tree and six generated agent mirrors; never edit a generated mirror.
 - `CLAUDE.md`, `GEMINI.md`, and `.hermes.md` are symlinks to `AGENTS.md`. Edit `AGENTS.md`.
 - New config variables belong in three places: `.env.example`, [`docs/configuration.md`](configuration.md), and the skill that reads them.
 - New CLI subcommands belong in [`docs/cli.md`](cli.md).

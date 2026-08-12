@@ -1,11 +1,14 @@
 import os
 import shutil
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from obsidian_wiki import SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,7 +98,73 @@ def test_build_metadata_is_retained_for_uv_source_install() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'build-backend = "hatchling.build"' in pyproject
     assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in pyproject
-    assert '".skills" = "obsidian_wiki/_data/skills"' in pyproject
+    assert '".skills" = "obsidian_wiki/_data/skills"' not in pyproject
+    assert (ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md").is_file()
+
+
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="uv is required by the supported builder"
+)
+def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "dist"
+    subprocess.run(
+        ["uv", "build", "--out-dir", str(output)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=180,
+    )
+    artifacts = sorted(output.glob("obsidian_wiki-*"))
+    assert {path.suffix for path in artifacts} == {".whl", ".gz"}
+
+    expected_data = {
+        path.relative_to(ROOT).as_posix()
+        for root in (
+            ROOT / "obsidian_wiki/_data/skills",
+            ROOT / "obsidian_wiki/_data/bootstrap",
+        )
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+        and "__pycache__" not in path.parts
+        and path.suffix not in {".pyc", ".pyo"}
+    }
+    expected_data.add("obsidian_wiki/_data/legacy-skill-digests-v1.json")
+    forbidden_roots = (
+        ".skills/",
+        ".claude/skills/",
+        ".cursor/skills/",
+        ".windsurf/skills/",
+        ".agents/skills/",
+        ".pi/skills/",
+        ".kiro/skills/",
+    )
+
+    for artifact in artifacts:
+        if artifact.suffix == ".whl":
+            with zipfile.ZipFile(artifact) as archive:
+                raw_names = archive.namelist()
+        else:
+            with tarfile.open(artifact) as archive:
+                raw_names = archive.getnames()
+        names = {
+            "/".join(Path(name).parts[1:])
+            if Path(name).parts
+            and Path(name).parts[0].startswith("obsidian_wiki-")
+            else name
+            for name in raw_names
+        }
+
+        assert expected_data <= names, artifact.name
+        assert not {
+            name
+            for name in names
+            if name.startswith(forbidden_roots)
+            or name.endswith("/.claude/settings.json")
+            or "wiki-stop-capture" in name
+        }, artifact.name
 
 
 def test_source_reinstall_command_refreshes_cached_builds() -> None:
@@ -206,13 +275,15 @@ def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
 
 
 def test_agents_describes_obsidian_wiki_repo_as_bundled_data_root() -> None:
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    agents = (ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md").read_text(
+        encoding="utf-8"
+    )
     assert "`OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root)" in agents
     assert "`OBSIDIAN_WIKI_REPO` (where this repo is cloned)" not in agents
 
 
 def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
-    factory = (ROOT / ".skills/vault-skill-factory/SKILL.md").read_text(
+    factory = (ROOT / "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md").read_text(
         encoding="utf-8"
     )
     assert "$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/" in factory
@@ -220,8 +291,13 @@ def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
 
 
 def test_no_unsupported_install_guidance_remains() -> None:
-    checked_roots = (ROOT / "docs", ROOT / ".skills")
-    files = [ROOT / "README.md", ROOT / "README_ZH.md", ROOT / "AGENTS.md"]
+    checked_roots = (ROOT / "docs", ROOT / "obsidian_wiki/_data/skills")
+    files = [
+        ROOT / "README.md",
+        ROOT / "README_ZH.md",
+        ROOT / "AGENTS.md",
+        ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md",
+    ]
     for base in checked_roots:
         files.extend(
             path
@@ -289,6 +365,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         symlinks=True,
     )
     env = _uv_tool_environment(tmp_path)
+    canonical_skill_names = sorted(
+        path.name
+        for path in (source / "obsidian_wiki/_data/skills").iterdir()
+        if path.is_dir()
+    )
     git_dir = source / ".git"
     assert not git_dir.exists(), "source copy unexpectedly retained Git metadata"
     subprocess.run(
@@ -339,13 +420,15 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=180,
     )
     marker = "<!-- source-reinstall-marker: cached-build-refresh -->"
-    source_skill = source / ".skills" / "wiki-ingest" / "SKILL.md"
+    source_skill = (
+        source / "obsidian_wiki" / "_data" / "skills" / "wiki-ingest" / "SKILL.md"
+    )
     source_skill.write_text(
         source_skill.read_text(encoding="utf-8") + f"\n{marker}\n",
         encoding="utf-8",
     )
     subprocess.run(
-        ["git", "add", ".skills/wiki-ingest/SKILL.md"],
+        ["git", "add", "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md"],
         cwd=source,
         env=env,
         text=True,
@@ -364,7 +447,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
             "-m",
             "test: update source skill marker",
             "--only",
-            ".skills/wiki-ingest/SKILL.md",
+            "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
         ],
         cwd=source,
         env=env,
@@ -382,7 +465,9 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=180,
     )
-    source.rename(tmp_path / "source-moved")
+    original_source_path = source.resolve()
+    moved_source = tmp_path / "source-moved"
+    source.rename(moved_source)
     bin_dir = Path(env["UV_TOOL_BIN_DIR"])
     executable = shutil.which("obsidian-wiki", path=str(bin_dir))
     assert executable is not None, f"obsidian-wiki was not installed in {bin_dir}"
@@ -437,10 +522,26 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=30,
     )
-    assert "wiki-ingest" in bundled.stdout.splitlines()
+    assert bundled.stdout.splitlines() == canonical_skill_names
     assert marker in (skills_path / "wiki-ingest" / "SKILL.md").read_text(
         encoding="utf-8"
     )
+    bootstrap_root = skills_path.parent / "bootstrap"
+    expected_bootstraps = (
+        "AGENTS.md",
+        "cursor/rules/obsidian-wiki.mdc",
+        "windsurf/rules/obsidian-wiki.md",
+        "kiro/steering/obsidian-wiki.md",
+        "agent/rules/obsidian-wiki.md",
+        "agent/workflows/obsidian-wiki.md",
+        "github/copilot-instructions.md",
+    )
+    assert [
+        relative
+        for relative in expected_bootstraps
+        if not (bootstrap_root / relative).is_file()
+        or (bootstrap_root / relative).is_symlink()
+    ] == []
     portable = tmp_path / "portable"
     setup = subprocess.run(
         [executable, "setup", "--portable", str(portable)],
@@ -452,6 +553,22 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=60,
     )
     assert "Portable repository scaffolded" in setup.stdout
+    canonical_query = portable / ".skills/wiki-query/SKILL.md"
+    query_bytes = canonical_query.read_bytes()
+    assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        mirrored = portable / agent_relative / "wiki-query/SKILL.md"
+        assert mirrored.read_bytes() == query_bytes
+    sync = subprocess.run(
+        [executable, "repo", "sync-skills", "--json"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    assert '"status": "clean"' in sync.stdout
     doctor = subprocess.run(
         [executable, "doctor"],
         cwd=portable,
@@ -472,7 +589,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=30,
     )
     check = subprocess.run(
-        [executable, "check"],
+        [executable, "check", "--json", "--pretty"],
         cwd=portable,
         env=env,
         text=True,
@@ -480,7 +597,35 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=60,
     )
-    assert "portable check: pass (0 errors, 0 warnings)" in check.stdout
+    assert '"status": "pass"' in check.stdout
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=portable,
+        env=env,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    ).stdout.rstrip(b"\0").split(b"\0")
+    forbidden_paths = (
+        str(original_source_path).encode(),
+        str(moved_source.resolve()).encode(),
+        str(tool_dir).encode(),
+    )
+    for encoded_relative in tracked:
+        if not encoded_relative:
+            continue
+        relative = os.fsdecode(encoded_relative)
+        payload = (portable / relative).read_bytes()
+        assert not [value for value in forbidden_paths if value in payload], relative
     home = Path(env["HOME"])
     assert not (home / ".obsidian-wiki").exists()
     assert not any(

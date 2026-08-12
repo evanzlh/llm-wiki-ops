@@ -1,7 +1,8 @@
 """obsidian-wiki: install the LLM-Wiki agent skills into your AI coding agents.
 
-The product is the markdown skill content under ``.skills/`` (bundled into this
-package as data). This module is just the installer CLI — see ``cli.py``.
+The product is the markdown skill content packaged under
+``obsidian_wiki/_data/skills``. This module is just the installer CLI — see
+``cli.py``.
 """
 
 from importlib.metadata import PackageNotFoundError, version

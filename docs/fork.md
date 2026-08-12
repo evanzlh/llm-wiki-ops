@@ -15,7 +15,7 @@ The fork targets knowledge bases maintained like software: authoritative sources
 ## Fork-specific capabilities
 
 - Portable Repository mode and repository-relative TOML configuration
-- Repository-local canonical skills and agent adapters
+- Repository-local canonical skills with complete ordinary-file mirrors for six agent discovery trees
 - Stable Source IDs with sharded manifest v2
 - Transactional page promotion and merge-friendly operation journals
 - Stable index/log views and local rebuildable `hot.md`
