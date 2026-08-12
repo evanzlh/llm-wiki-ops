@@ -33,7 +33,8 @@ def vault(tmp_path):
 
 def _page(vault: Path, name: str, *, title: str = "", summary: str = "",
           tags: list[str] | None = None, links: list[str] | None = None,
-          tier: str = "supporting", category: str = "concepts") -> Path:
+          tier: str = "supporting", category: str = "concepts",
+          lifecycle: str = "reviewed", updated: str = "2026-08-13") -> Path:
     lines = ["---", f"title: {title or name}"]
     if summary:
         lines.append(f"summary: {summary}")
@@ -41,6 +42,8 @@ def _page(vault: Path, name: str, *, title: str = "", summary: str = "",
         lines.append(f"tags: [{', '.join(tags)}]")
     lines.append(f"tier: {tier}")
     lines.append(f"category: {category}")
+    lines.append(f"lifecycle: {lifecycle}")
+    lines.append(f"updated: {updated}")
     lines.append("---")
     lines.append(f"# {title or name}")
     for lnk in (links or []):
@@ -92,6 +95,34 @@ class TestBuildIndex:
     def test_reads_tier(self, simple_vault):
         idx = build_index(simple_vault)
         assert idx["transformer"]["tier"] == "core"
+
+    def test_public_only_filters_metadata_before_body_read(self, vault, monkeypatch):
+        _page(vault, "public", summary="Public summary", tags=["public"], links=[])
+        blocked = _page(
+            vault,
+            "private",
+            summary="Private metadata",
+            tags=["visibility/internal"],
+            links=["public"],
+        )
+        blocked.write_text(
+            blocked.read_text(encoding="utf-8") + "PRIVATE-BODY-SENTINEL\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        original = graphrag.read_markdown_snapshot
+
+        def observed(snapshot):
+            reads.append(snapshot.relative)
+            return original(snapshot)
+
+        monkeypatch.setattr(graphrag, "read_markdown_snapshot", observed)
+
+        index = build_index(vault, public_only=True)
+
+        assert set(index) == {"public"}
+        assert "private.md" not in reads
+        assert "PRIVATE-BODY-SENTINEL" not in repr(index)
 
     def test_out_links(self, simple_vault):
         idx = build_index(simple_vault)
@@ -308,3 +339,35 @@ class TestQuery:
     def test_json_serialisable(self, simple_vault):
         result = query(simple_vault, "deep learning")
         json.dumps(result)
+
+    def test_public_result_has_trust_metadata_without_private_identity(self, vault):
+        _page(
+            vault,
+            "public",
+            summary="Launch summary",
+            tags=["visibility/public"],
+            lifecycle="verified",
+            updated="2026-08-12",
+        )
+        _page(
+            vault,
+            "secret-roadmap",
+            summary="SECRET-METADATA-SENTINEL",
+            tags=["visibility/pii"],
+        )
+
+        result = query(vault, "launch", public_only=True)
+
+        assert result["stats"]["indexed_pages"] == 1
+        assert "secret-roadmap" not in json.dumps(result)
+        candidate = result["candidates"][0]
+        assert candidate["visibility"] == ["visibility/public"]
+        assert candidate["lifecycle"] == "verified"
+        assert candidate["updated"] == "2026-08-12"
+        trust = result["should_read_metadata"][0]
+        assert trust == {
+            "page": "public.md",
+            "visibility": ["visibility/public"],
+            "lifecycle": "verified",
+            "updated": "2026-08-12",
+        }

@@ -75,14 +75,27 @@ mirror at `.skills/skill-creator/scripts/quick_validate.py`. Resolve that path f
 the nearest repository root; do not derive it from a package source checkout. Before
 execution, verify every path component is contained and owner-controlled and that the
 script is an ordinary single-link file, not a symbolic link, hard link, or special
-file. Then run from the repository root with separate argv entries:
+file. First run the read-only mirror preflight:
 
 ```bash
-uv run --with pyyaml python ".skills/skill-creator/scripts/quick_validate.py" ".obsidian-wiki/local/generated-skills/<name>"
+obsidian-wiki repo sync-skills --json --pretty
+```
+
+Require exit zero, top-level `status: "clean"`, no warnings, and no drift for the
+managed `skill-creator` mirror. Do not use `--apply`. Next verify the already-active
+Python environment can import `yaml` using argv `python`, `-c`, `import yaml`. If it
+cannot, stop and ask the owner to install PyYAML in the approved environment; never
+dynamically resolve or download a dependency. Then run separate argv entries:
+
+```bash
+python ".skills/skill-creator/scripts/quick_validate.py" ".obsidian-wiki/local/generated-skills/<name>"
 ```
 
 The validated skill argument must be the already-created local output directory; the
-validator must not install, move, or rewrite it elsewhere. If the repository mirror
+validator checks only `SKILL.md` frontmatter; it does not validate references, evals,
+provenance, links, or topology. Those required checks remain this workflow's own
+fail-closed responsibility. The validator must not install, move, or rewrite the
+artifact elsewhere. If the repository mirror
 is absent or unsafe, do not search home or package-source paths: fall back to the
 frontmatter, name, JSON, link, provenance, and topology checks above. If any required
 check cannot be completed, fail closed and report the artifact as unvalidated. A

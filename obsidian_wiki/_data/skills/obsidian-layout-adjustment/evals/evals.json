@@ -3,7 +3,7 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "My Obsidian vault is at ~/Documents/Window/SummerHustle. The right sidebar should feel more like the left side, but the side icons are hard to read and the backlink cards look overwrapped. Make one visual pass, preserve the current look first, and verify it with a screenshot.",
+      "prompt": "In the configured example vault, the right sidebar should feel more like the left side, but the side icons are hard to read and the backlink cards look overwrapped. Make one visual pass, preserve the current look first, and verify it with a screenshot.",
       "expected_output": "The agent reads appearance.json, identifies active snippets, obtains approval, backs them up under .obsidian-wiki/local/obsidian-config-backups, maps 'right sidebar' to the right utility split/backlink pane and 'side icons' to side-dock tab headers, atomically styles the owning shell or wrapper rather than nesting card treatments, reloads, screenshot-checks the affected pane, and reviews the Git diff without committing.",
       "expectations": [
         "Reads the vault's .obsidian/appearance.json and treats enabledCssSnippets as the active source of truth.",

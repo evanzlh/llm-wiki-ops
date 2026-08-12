@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .safe_files import MarkdownFile, scan_markdown_files
+from .safe_files import (
+    MarkdownFile,
+    read_markdown_snapshot,
+    scan_markdown_headers,
+)
 
 
 DEFAULT_BUDGET = 8_000
@@ -192,12 +196,17 @@ def load_pages(vault: Path, *, public_only: bool = False) -> list[PageRecord]:
     if not vault.is_dir():
         raise ContextError("vault_not_found", f"vault not found: {vault}")
     pages: list[PageRecord] = []
-    for snapshot in scan_markdown_files(
+    for header in scan_markdown_headers(
         vault, skip_dirs=SKIP_DIRS, skip_files=SKIP_FILES
     ):
+        if public_only:
+            frontmatter, _body = _split_frontmatter(header.text(errors="replace"))
+            tags = _as_tuple(_frontmatter_values(frontmatter).get("tags", ()))
+            if BLOCKED_PUBLIC_TAGS.intersection(tags):
+                continue
+        snapshot = read_markdown_snapshot(header)
         page = _page_from_snapshot(snapshot)
-        if not public_only or not BLOCKED_PUBLIC_TAGS.intersection(page.tags):
-            pages.append(page)
+        pages.append(page)
     return pages
 
 

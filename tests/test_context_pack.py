@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_wiki.context_pack as context_pack
+
 from obsidian_wiki.context_pack import (
     ContextError,
     build_context_pack,
@@ -116,6 +118,30 @@ def test_public_only_filters_before_ranking(tmp_path: Path) -> None:
     write_note(vault, "pii.md", "---\ntitle: PII\ntags: [visibility/pii]\nsummary: Personal details.\n---\n# PII\n")
     write_note(vault, "public.md", "# Public\n\nPublic launch plan.\n")
     assert [page.path for page in load_pages(vault, public_only=True)] == ["public.md"]
+
+
+def test_public_only_does_not_full_read_blocked_body(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_note(
+        vault,
+        "blocked.md",
+        "---\ntitle: Blocked\ntags: [visibility/internal]\nsummary: Private\n---\n"
+        "# Blocked\n\nPRIVATE-BODY-SENTINEL\n",
+    )
+    write_note(vault, "public.md", "# Public\n\nPublic body.\n")
+    reads: list[str] = []
+    original = context_pack.read_markdown_snapshot
+
+    def observed(snapshot):
+        reads.append(snapshot.relative)
+        return original(snapshot)
+
+    monkeypatch.setattr(context_pack, "read_markdown_snapshot", observed)
+
+    pages = load_pages(vault, public_only=True)
+
+    assert [page.path for page in pages] == ["public.md"]
+    assert "blocked.md" not in reads
 
 
 def test_public_only_handles_yaml_comments_without_losing_quoted_hashes(

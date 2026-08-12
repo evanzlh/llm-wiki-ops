@@ -29,9 +29,12 @@ not update manifest shards, `index.md`, or `log.md`.
 - `by-tag` (default): count tags in safe eligible Markdown, exclude visibility tags,
   and emit at most the ten most frequent groups as `tag:#<tag>`.
 - `by-category`: emit existing non-empty `concepts`, `entities`, `skills`,
-  `references`, `synthesis`, `projects`, and `journal` folders in that order.
+  `references`, `synthesis`, `projects`, and `journal` folders in that order, using
+  the exact query `path:"<folder>"`.
 - `by-visibility`: emit `visibility/pii`, `visibility/internal`, then
-  `visibility/public`, so the most restrictive first match wins.
+  `visibility/public`, using exact queries `tag:#visibility/pii`,
+  `tag:#visibility/internal`, and `tag:#visibility/public`, so the most restrictive
+  first match wins.
 - `combined`: visibility groups first, then non-visibility tag groups.
 - `custom`: honor the approved explicit query/color mapping after validating every
   query as a string and every color as a six-digit hexadecimal RGB value.
@@ -41,6 +44,10 @@ Use this stable, colorblind-friendly palette in order:
 `#4E79A7`, `#F28E2B`, `#E15759`, `#76B7B2`, `#59A14F`, `#EDC948`,
 `#B07AA1`, `#FF9DA7`, `#9C755F`, `#BAB0AC`. Convert a color to packed RGB with
 `int(hex_without_hash, 16)` and store it as `{"a": 1, "rgb": <integer>}`.
+For top tags, sort by count descending and then normalized tag ascending. Given the
+same metadata and mode, group ordering and JSON values must be deterministic. Validate
+the final `colorGroups` as an array of objects containing exactly a string `query`
+and `color` object with numeric `a` and integer RGB in `0..16777215`.
 
 ## Safe backup and atomic edit
 
@@ -53,7 +60,11 @@ backup. `.obsidian-wiki/local/` is ignored local state. Before any read or write
 - require existing `graph.json`, when present, to be an owner-owned ordinary file
   with link count one and valid JSON object content;
 - create a new owner-only timestamp backup directory and copy/flush the exact
-  preimage before editing.
+preimage before editing.
+
+The backup directory includes a manifest recording target path, `existed`, and the
+preimage SHA-256 and mode when it existed; an absent target uses an explicit absent
+marker. After writing, record the expected postimage identity and SHA-256.
 
 Preserve every existing JSON member except `colorGroups`. Write the complete new
 JSON to an owner-only temporary ordinary file in `.obsidian/`, flush it, recheck the
@@ -81,8 +92,10 @@ git --literal-pathspecs diff -- "$CONFIG_PATH"
 a glob. The owner, not this workflow, decides whether to commit any tracked config
 change; never commit, push, or publish it.
 
-To undo, select an explicit backup, validate it with the same topology checks, back
-up the current target again, and atomically restore the selected preimage. After edit
+To undo, select an explicit backup and require the current target to match the
+manifest's expected postimage identity and SHA-256; concurrent change stops restore.
+If `existed` is true, atomically restore the validated preimage and mode. If false,
+verify the created postimage and delete only that ordinary single-link file. After edit
 or restore, tell the user to reload Obsidian with Cmd/Ctrl+R and verify the graph.
 If the result is not accepted, restore rather than stacking unapproved changes.
 

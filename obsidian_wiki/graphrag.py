@@ -1,8 +1,8 @@
 """GraphRAG query index for wiki-query.
 
-Builds a compact in-memory index from vault page frontmatter and wikilinks,
-then answers structural and factual queries against it without opening any
-page bodies. Equivalent to graphify's "query the compiled graph instead of
+Builds a compact in-memory index from bounded vault frontmatter and eligible-page
+wikilinks, then answers structural and factual queries against it without requiring
+an agent to open page bodies. Equivalent to graphify's "query the compiled graph instead of
 raw files" — saves reading 10–50 pages for questions answerable from the
 graph structure.
 
@@ -12,10 +12,13 @@ The agent calls:
 And gets back a JSON response:
 {
   "answer_type": "direct" | "path" | "list" | "gap",
-  "candidates": [{"page": "...", "score": 0.N, "summary": "..."}, ...],
+  "candidates": [{"page": "...", "score": 0.N, "summary": "...",
+                  "visibility": [], "lifecycle": "...", "updated": "..."}, ...],
   "path": ["page-a", "page-b", "page-c"],   # multi-hop, if applicable
   "god_nodes_relevant": ["page", ...],        # hub pages related to query terms
   "should_read": ["page-a.md", "page-b.md"], # pages worth opening for full detail
+  "should_read_metadata": [{"page": "page-a.md", "visibility": [],
+                            "lifecycle": "...", "updated": "..."}],
   "index_only": true/false                    # true = answer is complete without page reads
 }
 
@@ -30,7 +33,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from .safe_files import scan_markdown_files
+from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +45,8 @@ _TAGS_RE = re.compile(r"^tags:\s*\[([^\]]+)\]", re.MULTILINE)
 _TAGS_LIST_RE = re.compile(r"^tags:\s*\n((?:\s+-\s+\S+\n)+)", re.MULTILINE)
 _CATEGORY_RE = re.compile(r"^category:\s*(\w+)", re.MULTILINE)
 _TIER_RE = re.compile(r"^tier:\s*(\w+)", re.MULTILINE)
+_LIFECYCLE_RE = re.compile(r"^lifecycle:\s*([^\n#]+)", re.MULTILINE)
+_UPDATED_RE = re.compile(r"^updated:\s*([^\n#]+)", re.MULTILINE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
 
@@ -53,6 +58,7 @@ _BLOCK_SCALAR_RE = re.compile(r"^[>|][+-]?\d*$")
 SKIP_DIRS = frozenset(
     "_archived .obsidian".split()
 )
+BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 
 
 def _slug(s: str) -> str:
@@ -91,7 +97,7 @@ def _extract_scalar(front: str, key: str) -> str:
     return ""
 
 
-def build_index(vault: Path) -> dict[str, dict]:
+def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     """Build a lightweight index dict from vault frontmatter and wikilinks.
 
     Returns:
@@ -99,10 +105,12 @@ def build_index(vault: Path) -> dict[str, dict]:
     """
     pages: dict[str, dict] = {}
 
-    md_files = scan_markdown_files(vault, skip_dirs=SKIP_DIRS)
+    headers = scan_markdown_headers(vault, skip_dirs=SKIP_DIRS)
+    eligible = []
 
     # First pass: collect all slugs and frontmatter
-    for page in md_files:
+    for header in headers:
+        page = header
         slug = _slug(page.path.stem)
         text = page.text(errors="replace")
 
@@ -120,6 +128,9 @@ def build_index(vault: Path) -> dict[str, dict]:
             if m2:
                 tags = [ln.strip().lstrip("- ") for ln in m2.group(1).splitlines() if ln.strip()]
 
+        if public_only and BLOCKED_PUBLIC_TAGS.intersection(tags):
+            continue
+
         summary = _extract_scalar(front, "summary")
 
         category = str(Path(page.relative).parent)
@@ -132,20 +143,34 @@ def build_index(vault: Path) -> dict[str, dict]:
         if m:
             tier = m.group(1).strip()
 
+        lifecycle = ""
+        m = _LIFECYCLE_RE.search(front)
+        if m:
+            lifecycle = m.group(1).strip().strip("'\"")
+        updated = ""
+        m = _UPDATED_RE.search(front)
+        if m:
+            updated = m.group(1).strip().strip("'\"")
+
         pages[slug] = {
             "title": title or page.path.stem,
             "tags": tags,
             "summary": summary,
             "category": category,
             "tier": tier,
+            "visibility": [tag for tag in tags if tag.startswith("visibility/")],
+            "lifecycle": lifecycle,
+            "updated": updated,
             "path": page.relative,
             "out_links": [],
             "in_links": [],
         }
+        eligible.append(header)
 
     # Second pass: extract wikilinks
     known = set(pages.keys())
-    for page in md_files:
+    for header in eligible:
+        page = read_markdown_snapshot(header)
         slug = _slug(page.path.stem)
         if slug not in pages:
             continue
@@ -211,6 +236,9 @@ def rank_candidates(
             "score": _score(slug, entry, terms),
             "summary": entry["summary"],
             "tier": entry["tier"],
+            "visibility": entry["visibility"],
+            "lifecycle": entry["lifecycle"],
+            "updated": entry["updated"],
             "in_degree": len(entry["in_links"]),
         }
         for slug, entry in index.items()
@@ -311,8 +339,9 @@ def query(
     *,
     top_n: int = 8,
     max_should_read: int = 3,
+    public_only: bool = False,
 ) -> dict[str, Any]:
-    index = build_index(vault)
+    index = build_index(vault, public_only=public_only)
     if not index:
         return {
             "answer_type": "direct",
@@ -320,6 +349,7 @@ def query(
             "path": [],
             "god_nodes_relevant": [],
             "should_read": [],
+            "should_read_metadata": [],
             "index_only": True,
             "note": "Vault appears empty.",
         }
@@ -365,6 +395,15 @@ def query(
             if p not in should_read:
                 should_read.append(p)
         should_read = should_read[:max_should_read + 2]
+    trust_by_path = {
+        entry["path"]: {
+            "page": entry["path"],
+            "visibility": entry["visibility"],
+            "lifecycle": entry["lifecycle"],
+            "updated": entry["updated"],
+        }
+        for entry in index.values()
+    }
 
     return {
         "answer_type": answer_type,
@@ -375,12 +414,16 @@ def query(
                 "score": round(c["score"], 2),
                 "summary": c["summary"],
                 "tier": c["tier"],
+                "visibility": c["visibility"],
+                "lifecycle": c["lifecycle"],
+                "updated": c["updated"],
             }
             for c in candidates
         ],
         "path": path_result,
         "god_nodes_relevant": god_relevant,
         "should_read": should_read,
+        "should_read_metadata": [trust_by_path[path] for path in should_read],
         "index_only": index_only,
         "stats": {
             "indexed_pages": len(index),

@@ -27,6 +27,24 @@ class MarkdownFile:
             raise ValueError(f"page is not valid UTF-8: {self.relative}") from exc
 
 
+@dataclass(frozen=True)
+class MarkdownHeader:
+    """Bounded metadata snapshot whose identity can guard a later full read."""
+
+    root: Path
+    path: Path
+    relative: str
+    content: bytes
+    mtime_ns: int
+    identity: tuple[int, ...]
+
+    def text(self, *, errors: str = "strict") -> str:
+        try:
+            return self.content.decode("utf-8", errors=errors)
+        except UnicodeError as exc:
+            raise ValueError(f"page header is not valid UTF-8: {self.relative}") from exc
+
+
 _SUPPORTS_BOUND_SCAN = (
     os.name == "posix"
     and bool(getattr(os, "O_DIRECTORY", 0))
@@ -100,6 +118,38 @@ def _read(descriptor: int, relative: str) -> bytes:
         if not chunk:
             return b"".join(chunks)
         chunks.append(chunk)
+
+
+def _read_markdown_header(
+    descriptor: int,
+    relative: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read only a first line or a complete bounded YAML frontmatter block."""
+    content = bytearray()
+    frontmatter = None
+    while len(content) < max_bytes:
+        try:
+            chunk = os.read(descriptor, 1)
+        except OSError as exc:
+            raise _unsafe(relative, f"header read failed: {exc}") from exc
+        if not chunk:
+            if frontmatter and bytes(content).splitlines()[-1].strip() == b"---":
+                return bytes(content)
+            if frontmatter:
+                raise _unsafe(relative, "unterminated YAML frontmatter")
+            return bytes(content)
+        content.extend(chunk)
+        if frontmatter is None and chunk == b"\n":
+            frontmatter = bytes(content).rstrip(b"\r\n") == b"---"
+            if not frontmatter:
+                return bytes(content)
+        elif frontmatter and chunk == b"\n":
+            lines = bytes(content).splitlines()
+            if len(lines) >= 2 and lines[-1].strip() == b"---":
+                return bytes(content)
+    raise _unsafe(relative, f"Markdown header exceeds {max_bytes} bytes")
 
 
 def _close(descriptor: int, relative: str) -> None:
@@ -287,6 +337,94 @@ def _scan_bound_directory(
         raise _unsafe(relative, "directory changed during scan")
 
 
+def _scan_bound_headers(
+    descriptor: int,
+    root: Path,
+    relative: str,
+    snapshots: list[MarkdownHeader],
+    *,
+    skip_dirs: Collection[str],
+    skip_files: Collection[str],
+    max_header_bytes: int,
+) -> None:
+    before = _fstat(descriptor, relative)
+    try:
+        names = sorted(os.listdir(descriptor))
+    except OSError as exc:
+        raise _unsafe(relative, f"listdir failed: {exc}") from exc
+    for name in names:
+        child_relative = f"{relative}/{name}" if relative else name
+        observed = _stat_at(descriptor, name, child_relative)
+        assert observed is not None
+        mode = observed.st_mode
+        if stat.S_ISLNK(mode):
+            if Path(name).suffix and not name.endswith(".md"):
+                continue
+            raise _unsafe(child_relative, "symlinks are not allowed")
+        if stat.S_ISDIR(mode):
+            if name in skip_dirs:
+                continue
+            child = _open_at(descriptor, name, _directory_flags(), child_relative)
+            try:
+                opened = _fstat(child, child_relative)
+                if _identity(opened, directory=True) != _identity(observed, directory=True):
+                    raise _unsafe(child_relative, "directory changed while being opened")
+                _scan_bound_headers(
+                    child,
+                    root,
+                    child_relative,
+                    snapshots,
+                    skip_dirs=skip_dirs,
+                    skip_files=skip_files,
+                    max_header_bytes=max_header_bytes,
+                )
+                attached = _stat_at(descriptor, name, child_relative)
+                assert attached is not None
+                if _identity(attached, directory=True) != _identity(opened, directory=True):
+                    raise _unsafe(child_relative, "directory changed during scan")
+            finally:
+                _close(child, child_relative)
+            continue
+        if not name.endswith(".md"):
+            continue
+        if not stat.S_ISREG(mode) or observed.st_nlink != 1:
+            raise _unsafe(child_relative, "file is not a single-link ordinary file")
+        if name in skip_files:
+            continue
+        file_descriptor = _open_at(descriptor, name, _file_flags(), child_relative)
+        try:
+            opened = _fstat(file_descriptor, child_relative)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise _unsafe(child_relative, "file is not a single-link ordinary file")
+            if _identity(opened, directory=False) != _identity(observed, directory=False):
+                raise _unsafe(child_relative, "file changed while being opened")
+            content = _read_markdown_header(
+                file_descriptor, child_relative, max_bytes=max_header_bytes
+            )
+            final_file = _fstat(file_descriptor, child_relative)
+            if _identity(final_file, directory=False) != _identity(opened, directory=False):
+                raise _unsafe(child_relative, "file changed while reading metadata")
+        finally:
+            _close(file_descriptor, child_relative)
+        attached = _stat_at(descriptor, name, child_relative)
+        assert attached is not None
+        if _identity(attached, directory=False) != _identity(opened, directory=False):
+            raise _unsafe(child_relative, "file changed after reading metadata")
+        snapshots.append(
+            MarkdownHeader(
+                root,
+                root / child_relative,
+                child_relative,
+                content,
+                opened.st_mtime_ns,
+                _identity(opened, directory=False),
+            )
+        )
+    final = _fstat(descriptor, relative)
+    if _identity(final, directory=True) != _identity(before, directory=True):
+        raise _unsafe(relative, "directory changed during scan")
+
+
 def scan_markdown_files(
     root: Path,
     *,
@@ -328,11 +466,65 @@ def scan_markdown_files(
     return tuple(sorted(snapshots, key=lambda item: item.relative))
 
 
+def scan_markdown_headers(
+    root: Path,
+    *,
+    skip_dirs: Collection[str] = (),
+    skip_files: Collection[str] = (),
+    max_header_bytes: int = 64 * 1024,
+) -> tuple[MarkdownHeader, ...]:
+    """Snapshot bounded metadata without reading Markdown page bodies."""
+    if max_header_bytes < 4:
+        raise ValueError("max_header_bytes must be at least 4")
+    root = Path(os.path.abspath(os.fspath(root)))
+    _validate_path_ancestry(root)
+    try:
+        observed = root.lstat()
+    except OSError as exc:
+        raise _unsafe(".", f"vault root lstat failed: {exc}") from exc
+    if stat.S_ISLNK(observed.st_mode) or _reparse(observed):
+        raise _unsafe(".", "vault root symlink is not allowed")
+    if not stat.S_ISDIR(observed.st_mode):
+        raise _unsafe(".", "vault root must be an ordinary directory")
+    if not _SUPPORTS_BOUND_SCAN:
+        raise _unsafe(".", "safe vault scanning is not supported on this platform")
+    snapshots: list[MarkdownHeader] = []
+    descriptor = _open_bound_root(root)
+    try:
+        opened = _fstat(descriptor, ".")
+        if _identity(opened, directory=True) != _identity(observed, directory=True):
+            raise _unsafe(".", "vault root changed while being opened")
+        _scan_bound_headers(
+            descriptor,
+            root,
+            "",
+            snapshots,
+            skip_dirs=skip_dirs,
+            skip_files=skip_files,
+            max_header_bytes=max_header_bytes,
+        )
+    finally:
+        _close(descriptor, ".")
+    return tuple(sorted(snapshots, key=lambda item: item.relative))
+
+
+def read_markdown_snapshot(snapshot: MarkdownHeader) -> MarkdownFile:
+    """Fully read a metadata snapshot only if its filesystem identity is unchanged."""
+    content = read_safe_file(
+        snapshot.root,
+        snapshot.path,
+        expected_identity=snapshot.identity,
+    )
+    assert content is not None
+    return MarkdownFile(snapshot.path, snapshot.relative, content, snapshot.mtime_ns)
+
+
 def read_safe_file(
     root: Path,
     path: Path,
     *,
     missing_ok: bool = False,
+    expected_identity: tuple[int, ...] | None = None,
 ) -> bytes | None:
     """Read one single-link ordinary file beneath *root* without following links."""
     root = Path(os.path.abspath(os.fspath(root)))
@@ -406,6 +598,10 @@ def read_safe_file(
             raise _unsafe(relative, "symlinks are not allowed")
         if not stat.S_ISREG(observed_file.st_mode) or observed_file.st_nlink != 1:
             raise _unsafe(relative, "file is not a single-link ordinary file")
+        if expected_identity is not None and _identity(
+            observed_file, directory=False
+        ) != expected_identity:
+            raise _unsafe(relative, "file changed since metadata was read")
         content, opened_file = _read_bound_file(
             descriptor, name, relative, observed_file
         )

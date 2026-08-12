@@ -5,6 +5,46 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_wiki.safe_files import read_markdown_snapshot, scan_markdown_headers
+
+
+def test_header_scan_reads_only_frontmatter_until_eligible_full_read(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    page = vault / "private.md"
+    page.write_text(
+        "---\ntags: [visibility/internal]\nsummary: Metadata\n---\n"
+        "PRIVATE-BODY-SENTINEL\n",
+        encoding="utf-8",
+    )
+
+    header = scan_markdown_headers(vault)[0]
+
+    assert b"visibility/internal" in header.content
+    assert b"PRIVATE-BODY-SENTINEL" not in header.content
+    assert b"PRIVATE-BODY-SENTINEL" in read_markdown_snapshot(header).content
+
+
+def test_full_read_rejects_identity_change_after_metadata_scan(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    page = vault / "page.md"
+    page.write_text("---\ntags: [public]\n---\nOriginal\n", encoding="utf-8")
+    header = scan_markdown_headers(vault)[0]
+    page.write_text("---\ntags: [public]\n---\nChanged body and size\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="changed since metadata"):
+        read_markdown_snapshot(header)
+
+
+def test_header_scan_rejects_unbounded_frontmatter(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "page.md").write_text("---\nsummary: " + "x" * 100 + "\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="header exceeds"):
+        scan_markdown_headers(vault, max_header_bytes=32)
+
 import obsidian_wiki.safe_files as safe_files
 
 

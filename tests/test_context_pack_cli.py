@@ -106,3 +106,29 @@ def test_context_pack_requires_portable_repository(tmp_path: Path) -> None:
 
     assert proc.returncode == 1
     assert "repository not configured" in proc.stderr
+
+
+def test_context_pack_public_only_never_emits_private_metadata_or_body(
+    tmp_path: Path,
+) -> None:
+    _root, vault, nested = make_repository(tmp_path)
+    (vault / "private-sentinel.md").write_text(
+        "---\ntitle: Private\ntags: [visibility/internal]\n"
+        "summary: PRIVATE-METADATA-SENTINEL\n---\n"
+        "# Private\n\nPRIVATE-BODY-SENTINEL authentication\n",
+        encoding="utf-8",
+    )
+
+    proc = run_cli(
+        tmp_path / "home",
+        "context-pack",
+        "authentication",
+        "--public-only",
+        "--json",
+        cwd=nested,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "private-sentinel" not in proc.stdout
+    assert "PRIVATE-METADATA-SENTINEL" not in proc.stdout
+    assert "PRIVATE-BODY-SENTINEL" not in proc.stdout

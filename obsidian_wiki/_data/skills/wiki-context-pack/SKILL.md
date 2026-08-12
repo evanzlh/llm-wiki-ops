@@ -47,7 +47,9 @@ obsidian-wiki context-pack --recent --budget 8000
 
 Reject a missing topic unless `--recent` is present. Forward requested options
 exactly; the CLI owns path containment, visibility filtering, excerpt selection,
-and token budgeting. Never replace it with an unbounded manual vault read.
+and token budgeting. With `--public-only`, it reads bounded frontmatter first,
+excludes internal/PII pages, and only then reads eligible bodies. Never replace it
+with an unbounded manual vault read or a later prose filter.
 
 ## Return
 

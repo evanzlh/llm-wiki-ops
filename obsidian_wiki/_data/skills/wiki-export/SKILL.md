@@ -36,22 +36,31 @@ Optional filters:
 
 Use an ISO-like UTC timestamp containing only digits, `T`, and `Z`. Inspect every
 existing component of `.obsidian-wiki/local/exports/` without following links;
-reject a symbolic link, hard link, special file, or non-owner directory. Create the
-timestamp directory with owner-only permissions.
+reject a symbolic link, hard link, special file, or non-owner directory. Require
+each local parent directory and the timestamp directory to be owner-only mode `0700`
+where supported; output files and temporary files default to private mode `0600`.
 
 The timestamp target should be new. On collision, overwrite only when the user
 explicitly approves and every existing target is an owner-owned ordinary file with
-link count one; otherwise fail closed. Write owner-only temporary ordinary files,
-flush them, and use atomic rename within the output directory. Never cross a link,
-replace a directory, or leave partial output described as complete.
+link count one; otherwise fail closed. Bind each approved target to its initial
+`lstat` identity, mode, link count, and SHA-256 preimage. Immediately before every
+replacement, repeat `lstat` and hash and require an exact match; concurrent change
+stops the export. Validate every nested `okf/` ancestry component the same way. Write
+owner-only temporary ordinary files, flush them, and use atomic rename within the
+output directory. Never cross a link, replace a directory, or leave partial output
+described as complete.
 
 ## Graph model and formats
 
-For each eligible page, derive `id`, `label`, category, tags, summary, and community.
+Inventory knowledge pages only. Exclude root/control/derived Markdown including
+`index.md`, `log.md`, `hot.md`, agent instruction files, and content below
+`.obsidian/` or `.obsidian-wiki/`; none becomes a graph node. For each eligible page,
+derive `id`, `label`, category, tags, summary, and community.
 Extract body wikilinks as `relation: wikilink`; preserve `EXTRACTED`, `INFERRED`, or
 `AMBIGUOUS` confidence. A valid `relationships` frontmatter entry promotes the
 matching edge to its typed relation. Drop broken or filtered endpoints. Assign
-community IDs by dominant tag, ordered by descending community size.
+community IDs deterministically by descending community size, then normalized
+dominant tag ascending for ties.
 
 Always create these four files:
 
@@ -67,7 +76,7 @@ Always create these four files:
 ## Optional OKF bundle
 
 When explicitly requested, also write `okf/` with one Markdown file per eligible
-page plus root/category indexes and a copied `log.md`. Preserve native frontmatter as
+page plus root/category indexes. Preserve native frontmatter as
 OKF extensions; map `category` to required `type`, `summary` to `description`, and
 `updated` to `timestamp`. Preserve `title`, `tags`, `sources`, `created`, lifecycle,
 tier, relationships, and uncertainty markers.
@@ -76,6 +85,10 @@ Transform resolvable wikilinks to file-relative Markdown links. Keep unresolved
 path-form forward references as relative links, degrade unresolved bare titles and
 filtered targets to plain text, and never emit an absolute or escaping path. This
 keeps OKF page bodies round-trippable while graph formats remain intentionally lossy.
+
+In public mode, never copy `log.md`, report excluded identities/paths/counts, or emit
+filtered targets. In unfiltered local mode, copy `log.md` only when the owner
+explicitly requests that additional local artifact; it is never copied by default.
 
 ## Report
 

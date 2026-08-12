@@ -503,7 +503,7 @@ def test_retained_special_workflows_are_the_exact_review_set() -> None:
 
 
 def test_read_only_knowledge_workflows_have_no_write_protocol_or_mutations() -> None:
-    for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
+    for name in ("wiki-context-pack", "wiki-query"):
         text = _special_skill(name)
         flat = " ".join(text.split())
         assert "strictly read-only knowledge workflow" in flat, name
@@ -511,6 +511,14 @@ def test_read_only_knowledge_workflows_have_no_write_protocol_or_mutations() -> 
         assert "transaction commit" not in text, name
         for forbidden in ("append to `log.md`", "update `index.md`", "--save", "_readouts"):
             assert forbidden not in text, (name, forbidden)
+
+    for name in ("wiki-digest", "wiki-narrate"):
+        text = _special_skill(name)
+        assert "does not change authoritative knowledge" in text
+        assert "`stale` boolean" in text and "`reason` string" in text
+        assert "may remove stale ignored local `hot.md`" in text
+        assert "hot mark-current" in text
+        assert "transaction begin" not in text
 
 
 def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> None:
@@ -522,7 +530,7 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     assert 'obsidian-wiki query "<question>" --json --pretty' in query
     assert 'obsidian-wiki context-pack "<topic>" --budget 8000' in context
     assert "obsidian-wiki hot status --json" in digest
-    assert "read `hot.md` only when the status is `current`" in digest
+    assert "Read `hot.md` only when `stale` is `false`" in " ".join(digest.split())
     for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
         text = _special_skill(name)
         assert "@name" not in text, name
@@ -581,9 +589,13 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     assert "$OBSIDIAN_WIKI_REPO" not in factory
     assert ".skills/skill-creator/scripts/quick_validate.py" in factory
     assert (
-        'uv run --with pyyaml python ".skills/skill-creator/scripts/quick_validate.py" '
+        'python ".skills/skill-creator/scripts/quick_validate.py" '
         '".obsidian-wiki/local/generated-skills/<name>"'
     ) in factory
+    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert "Do not use `--apply`" in factory
+    assert "python`, `-c`, `import yaml`" in factory
+    assert "dynamically resolve or download" in factory
 
     repository = tmp_path / "repository"
     setup = run_cli(tmp_path / "home", tmp_path, "setup", str(repository))
@@ -591,6 +603,7 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     validator = repository / ".skills/skill-creator/scripts/quick_validate.py"
     assert validator.is_file() and not validator.is_symlink()
     assert validator.stat().st_nlink == 1
+    assert "import yaml" in validator.read_text(encoding="utf-8")
 
     generated = repository / ".obsidian-wiki/local/generated-skills/example"
     generated.mkdir(parents=True)
@@ -598,23 +611,25 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
         "---\nname: example\ndescription: Use when testing validation.\n---\n",
         encoding="utf-8",
     )
-    validated = subprocess.run(
-        [
-            "uv",
-            "run",
-            "--with",
-            "pyyaml",
-            "python",
-            str(validator),
-            str(generated),
-        ],
+    dependency = subprocess.run(
+        [sys.executable, "-c", "import yaml"],
         cwd=repository,
         text=True,
         capture_output=True,
         timeout=60,
     )
-    assert validated.returncode == 0, validated.stdout + validated.stderr
-    assert validated.stdout == "Skill is valid!\n"
+    if dependency.returncode == 0:
+        validated = subprocess.run(
+            [sys.executable, str(validator), str(generated)],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert validated.returncode == 0, validated.stdout + validated.stderr
+        assert validated.stdout == "Skill is valid!\n"
+    else:
+        assert "No module named 'yaml'" in dependency.stderr
 
 
 def test_obsidian_layout_assets_contain_no_person_specific_wording() -> None:
@@ -623,4 +638,53 @@ def test_obsidian_layout_assets_contain_no_person_specific_wording() -> None:
     for path in sorted(path for path in root.rglob("*") if path.is_file()):
         if "Dan" in path.read_text(encoding="utf-8"):
             violations.append(path.relative_to(ROOT).as_posix())
+    assert violations == []
+
+
+def test_local_review_workflows_document_complete_safety_state_machines() -> None:
+    export = _special_skill("wiki-export")
+    factory = _special_skill("vault-skill-factory")
+    graph = _special_skill("graph-colorize")
+    layout = _special_skill("obsidian-layout-adjustment")
+    export_flat = " ".join(export.split())
+
+    for phrase in (
+        "mode `0700`",
+        "mode `0600`",
+        "SHA-256 preimage",
+        "concurrent change",
+        "nested `okf/` ancestry",
+        "normalized dominant tag ascending",
+        "never copy `log.md`",
+        "excluded identities/paths/counts",
+    ):
+        assert phrase in export_flat
+    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert 'status: "clean"' in factory
+    assert "validator checks only `SKILL.md` frontmatter" in factory
+    for text in (graph, layout):
+        assert "`existed`" in text
+        assert "expected postimage identity and SHA-256" in text
+        assert "originally absent" in text or "If false" in text
+        assert "concurrent change stops restore" in text
+
+
+def test_graph_color_groups_have_exact_deterministic_queries_and_schema() -> None:
+    graph = _special_skill("graph-colorize")
+    assert 'path:"<folder>"' in graph
+    for tag in ("pii", "internal", "public"):
+        assert f"tag:#visibility/{tag}" in graph
+    assert "count descending and then normalized tag ascending" in graph
+    assert "containing exactly a string `query`" in graph
+
+
+def test_layout_assets_have_no_home_or_project_specific_paths() -> None:
+    root = ROOT / "obsidian_wiki/_data/skills/obsidian-layout-adjustment"
+    forbidden = ("~/", "/Users/", "/home/", "Documents/", "SummerHustle")
+    violations = []
+    for path in sorted(path for path in root.rglob("*") if path.is_file()):
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                violations.append((path.relative_to(ROOT).as_posix(), token))
     assert violations == []

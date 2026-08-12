@@ -1618,7 +1618,13 @@ def cmd_query(args: argparse.Namespace) -> int:
     if vault is None:
         return 1
 
-    result = query(vault, args.question, top_n=args.top, max_should_read=args.max_read)
+    result = query(
+        vault,
+        args.question,
+        top_n=args.top,
+        max_should_read=args.max_read,
+        public_only=args.public_only,
+    )
     if args.json:
         if args.pretty:
             print(json.dumps(result, indent=2))
@@ -2458,6 +2464,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="max pages to return in should_read (default: 3)",
+    )
+    qq.add_argument(
+        "--public-only",
+        action="store_true",
+        help="exclude visibility/internal and visibility/pii before body reads",
     )
     qq.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     qq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")

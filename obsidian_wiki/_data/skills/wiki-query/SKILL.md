@@ -31,18 +31,21 @@ Use the real CLI parser surface first:
 
 ```bash
 obsidian-wiki query "<question>" --json --pretty
+obsidian-wiki query "<question>" --public-only --json --pretty
 ```
 
 Optional CLI bounds are `--top N` (default 8) and `--max-read N` (default 3).
-Use the returned `candidates`, `should_read`, `path`, `answer_type`, and
-`index_only` fields to keep reads bounded. Start with summaries/frontmatter,
+Use the returned `candidates`, `should_read`, `should_read_metadata`, `path`,
+`answer_type`, and `index_only` fields to keep reads bounded and retain visibility,
+lifecycle, and updated trust metadata. Start with summaries/frontmatter,
 then relevant sections, then at most `max-read` whole pages. Follow no more than
 one link hop unless the CLI returned a bounded path. Do not invent another graph
 command.
 
-For “public only”, “user-facing”, or “exclude internal”, exclude pages tagged
-`visibility/internal` or `visibility/pii` before reading, citing, or mentioning
-them. Pages without a visibility tag remain eligible.
+For “public only”, “user-facing”, or “exclude internal”, use the second command.
+The CLI performs metadata-first filtering and excludes `visibility/internal` and
+`visibility/pii` before body/link extraction. Do not implement a later skill-side
+filter. Candidates carry `visibility`, `lifecycle`, and `updated` trust metadata.
 
 ## Trust and answer contract
 

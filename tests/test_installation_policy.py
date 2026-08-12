@@ -1,6 +1,8 @@
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -289,12 +291,55 @@ def test_agents_describes_obsidian_wiki_repo_as_bundled_data_root() -> None:
     assert "`OBSIDIAN_WIKI_REPO` (where this repo is cloned)" not in agents
 
 
-def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
+def test_factory_uses_safe_managed_validator_from_nearest_repository(
+    tmp_path: Path,
+) -> None:
     factory = (ROOT / "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md").read_text(
         encoding="utf-8"
     )
-    assert "$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/" in factory
-    assert "$OBSIDIAN_WIKI_REPO/.skills/skill-creator/scripts/" not in factory
+    assert "$OBSIDIAN_WIKI_REPO" not in factory
+    assert ".skills/skill-creator/scripts/quick_validate.py" in factory
+    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert 'status: "clean"' in factory
+    assert "Do not use `--apply`" in factory
+    assert "uv run --with" not in factory
+    assert "dynamically resolve or download" in factory
+
+    repository = tmp_path / "repository"
+    setup = subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki", "setup", str(repository)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert setup.returncode == 0, setup.stderr
+    validator = repository / ".skills/skill-creator/scripts/quick_validate.py"
+    metadata = validator.lstat()
+    assert validator.is_file() and not validator.is_symlink()
+    assert metadata.st_nlink == 1
+
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "obsidian_wiki",
+            "repo",
+            "sync-skills",
+            "--json",
+            "--pretty",
+        ],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert preflight.returncode == 0, preflight.stderr
+    payload = json.loads(preflight.stdout)
+    assert payload["status"] == "clean"
+    assert payload["warnings"] == []
 
 
 def test_no_unsupported_install_guidance_remains() -> None:

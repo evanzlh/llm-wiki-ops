@@ -51,13 +51,19 @@ being refactored.
 backup component without following links. Reject a symbolic link, hard link, special
 file, non-owner path, escaping resolution, or identity change. Create a new
 owner-only timestamp backup directory and flush ordinary single-link preimages before
-editing.
+editing. Store a backup manifest for every target with path, `existed`, preimage
+SHA-256, and mode, using an explicit absent marker when the target did not exist.
+Record the expected postimage identity and SHA-256 after each edit. Local backup
+parents/directories use mode `0700` and backup files use `0600` where supported.
 
 Write each approved complete replacement through an owner-only temporary ordinary
 file in the target directory, flush it, recheck the target, and use atomic rename.
 Never alter app bundles, plugin source, installed theme source, or vault knowledge to
 force a visual effect. To restore, validate the selected backup, back up the current
-target, and atomically replace it; never copy through a link.
+target, and require the current identity and hash to equal the recorded postimage;
+concurrent change stops restore. Atomically replace an originally existing target
+with its preimage and mode. For an originally absent target, validate the postimage
+then delete only that created ordinary single-link file. Never copy through a link.
 
 ## Layer and change model
 

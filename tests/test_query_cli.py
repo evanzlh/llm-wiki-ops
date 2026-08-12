@@ -11,17 +11,19 @@ from pathlib import Path
 from obsidian_wiki import IMPLEMENTATION_ID
 
 
-def _page(vault: Path, name: str, *, title: str, summary: str, links: list[str] | None = None) -> None:
+def _page(vault: Path, name: str, *, title: str, summary: str, links: list[str] | None = None,
+          tags: list[str] | None = None, lifecycle: str = "reviewed") -> None:
     path = vault / f"{name}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
         f"title: {title}",
         "category: concepts",
-        "tags: [test]",
+        f"tags: [{', '.join(tags or ['test'])}]",
         "sources: [manual]",
         "created: 2026-07-01",
         "updated: 2026-07-01",
+        f"lifecycle: {lifecycle}",
         f"summary: {summary}",
         "---",
         f"# {title}",
@@ -156,3 +158,39 @@ def test_query_cli_invalid_portable_config_never_falls_back_global(
     assert "implementation" in proc.stderr
     assert str(global_vault) not in proc.stdout
     assert not any(portable_vault.iterdir())
+
+
+def test_query_cli_public_only_excludes_private_metadata_and_body(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root, vault = _portable_root(tmp_path)
+    _page(
+        vault,
+        "public",
+        title="Launch",
+        summary="Public launch summary.",
+        tags=["visibility/public"],
+        lifecycle="verified",
+    )
+    _page(
+        vault,
+        "private-sentinel",
+        title="Private sentinel",
+        summary="PRIVATE-METADATA-SENTINEL",
+        tags=["visibility/internal"],
+        links=["public"],
+    )
+    (vault / "private-sentinel.md").write_text(
+        (vault / "private-sentinel.md").read_text(encoding="utf-8")
+        + "PRIVATE-BODY-SENTINEL\n",
+        encoding="utf-8",
+    )
+
+    proc = _run(home, "query", "launch", "--public-only", "--json", cwd=root)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "PRIVATE-METADATA-SENTINEL" not in proc.stdout
+    assert "private-sentinel" not in proc.stdout
+    candidate = json.loads(proc.stdout)["candidates"][0]
+    assert candidate["visibility"] == ["visibility/public"]
+    assert candidate["lifecycle"] == "verified"
+    assert candidate["updated"] == "2026-07-01"
