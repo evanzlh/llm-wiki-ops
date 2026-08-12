@@ -982,40 +982,36 @@ def test_skill_sync_plan_binds_canonical_discovery_against_swap_and_restore(
     external = tmp_path / "external-wiki-query"
     shutil.copytree(root / ".claude/skills/wiki-query", external)
     backup = tmp_path / "canonical-wiki-query-backup"
-    original_iterdir = Path.iterdir
-    original_validate = skill_trees._validate_directory_unchanged
+    target_metadata = canonical_skill.lstat()
+    target_identity = (target_metadata.st_dev, target_metadata.st_ino)
+    original_listdir = skill_trees.os.listdir
     swapped = False
     before = snapshot_tree(root)
 
-    def swap_before_iteration(path: Path):
+    def swap_while_descriptor_is_bound(descriptor: int):
         nonlocal swapped
-        if path == canonical_skill and not swapped:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == target_identity and not swapped:
             swapped = True
             canonical_skill.rename(backup)
             canonical_skill.symlink_to(external, target_is_directory=True)
-        return original_iterdir(path)
+            try:
+                return original_listdir(descriptor)
+            finally:
+                canonical_skill.unlink()
+                backup.rename(canonical_skill)
+        return original_listdir(descriptor)
 
-    def restore_before_validation(path: Path, observed: os.stat_result) -> None:
-        if path == canonical_skill and canonical_skill.is_symlink():
-            canonical_skill.unlink()
-            backup.rename(canonical_skill)
-        original_validate(path, observed)
-
-    monkeypatch.setattr(Path, "iterdir", swap_before_iteration)
-    monkeypatch.setattr(
-        skill_trees, "_validate_directory_unchanged", restore_before_validation
-    )
+    monkeypatch.setattr(skill_trees.os, "listdir", swap_while_descriptor_is_bound)
     try:
-        report = plan_portable_skill_sync(root)
+        with pytest.raises(ValueError, match="canonical|skill|changed|unsafe"):
+            plan_portable_skill_sync(root)
     finally:
         if canonical_skill.is_symlink():
             canonical_skill.unlink()
             backup.rename(canonical_skill)
 
-    assert report.warnings[0]["code"] == "managed-canonical-modified"
-    assert all(
-        change.changed == ("wiki-query/SKILL.md",) for change in report.targets
-    )
+    assert swapped
     assert snapshot_tree(root) == before
 
 

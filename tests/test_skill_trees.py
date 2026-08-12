@@ -246,6 +246,71 @@ def test_windows_guarded_snapshot_treats_missing_root_as_safe_drift(
     assert closed == [1]
 
 
+def test_windows_guarded_snapshot_holds_repo_root_when_agent_dir_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import local_state, skill_trees
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    opened: list[Path] = []
+    closed: list[int] = []
+
+    def open_root(path: Path) -> int:
+        opened.append(path)
+        return 73
+
+    def reject_descendant_guard(
+        _anchor: Path, _paths: tuple[Path, ...], *, create: bool = False
+    ) -> list[int]:
+        raise local_state.LocalStateError(
+            "the repository root is not a contained descendant"
+        )
+
+    monkeypatch.setattr(local_state, "_open_windows_directory_handle", open_root)
+    monkeypatch.setattr(local_state, "_windows_directory_guard", reject_descendant_guard)
+    monkeypatch.setattr(local_state, "_close_windows_handles", closed.extend)
+
+    entries, unsafe = skill_trees._snapshot_windows_guarded_tree(
+        root, root / ".cursor/skills"
+    )
+
+    assert entries == () and unsafe == ()
+    assert opened == [root]
+    assert closed == [73]
+
+
+def test_windows_nested_guard_reports_access_failure_as_read_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import skill_trees
+
+    nested = tmp_path / "repo/mirror/skill"
+    nested.mkdir(parents=True)
+    entries: list[skill_trees.SkillEntry] = []
+    unsafe: list[skill_trees.UnsafeSkillEntry] = []
+
+    def fail_to_open(_anchor: Path, _path: Path, _handles: list[int]) -> None:
+        raise RuntimeError("cannot open Windows directory guard")
+
+    monkeypatch.setattr(
+        skill_trees, "_hold_windows_directory_guard", fail_to_open
+    )
+
+    skill_trees._snapshot_entry(
+        nested,
+        "skill",
+        entries,
+        ignore_source_artifacts=False,
+        unsafe_entries=unsafe,
+        windows_anchor=tmp_path / "repo",
+        windows_handles=[],
+    )
+
+    assert entries == []
+    assert unsafe == [skill_trees.UnsafeSkillEntry("skill", "read-error")]
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     [

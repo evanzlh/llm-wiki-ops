@@ -1684,28 +1684,26 @@ def test_check_binds_canonical_discovery_against_swap_and_restore(
     backup = tmp_path / "canonical-wiki-ingest-backup"
     from obsidian_wiki import skill_trees
 
-    original_iterdir = Path.iterdir
-    original_validate = skill_trees._validate_directory_unchanged
+    target_metadata = canonical_skill.lstat()
+    target_identity = (target_metadata.st_dev, target_metadata.st_ino)
+    original_listdir = skill_trees.os.listdir
     swapped = False
 
-    def swap_before_iteration(path: Path):
+    def swap_while_descriptor_is_bound(descriptor: int):
         nonlocal swapped
-        if path == canonical_skill and not swapped:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == target_identity and not swapped:
             swapped = True
             canonical_skill.rename(backup)
             canonical_skill.symlink_to(external, target_is_directory=True)
-        return original_iterdir(path)
+            try:
+                return original_listdir(descriptor)
+            finally:
+                canonical_skill.unlink()
+                backup.rename(canonical_skill)
+        return original_listdir(descriptor)
 
-    def restore_before_validation(path: Path, observed: os.stat_result) -> None:
-        if path == canonical_skill and canonical_skill.is_symlink():
-            canonical_skill.unlink()
-            backup.rename(canonical_skill)
-        original_validate(path, observed)
-
-    monkeypatch.setattr(Path, "iterdir", swap_before_iteration)
-    monkeypatch.setattr(
-        skill_trees, "_validate_directory_unchanged", restore_before_validation
-    )
+    monkeypatch.setattr(skill_trees.os, "listdir", swap_while_descriptor_is_bound)
     try:
         report = check_portable_repo(config)
     finally:
@@ -1713,8 +1711,10 @@ def test_check_binds_canonical_discovery_against_swap_and_restore(
             canonical_skill.unlink()
             backup.rename(canonical_skill)
 
-    assert "managed-canonical-modified" in issue_codes(report)
-    assert "skill-mirror-changed" in issue_codes(report)
+    assert swapped
+    assert report["status"] == "fail"
+    assert "canonical-skill-invalid" in issue_codes(report)
+    assert canonical_file.read_text(encoding="utf-8").endswith("\nOwner drift.\n")
 
 
 @pytest.mark.parametrize("mutation", ["frontmatter", "directory-name"])

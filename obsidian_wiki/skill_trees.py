@@ -192,10 +192,15 @@ def _snapshot_entry(
                 _hold_windows_directory_guard(
                     windows_anchor, path, windows_handles
                 )
-            except (OSError, RuntimeError, ValueError):
+            except ValueError:
                 if unsafe_entries is None:
                     raise
                 unsafe_entries.append(UnsafeSkillEntry(relative, "changed"))
+                return
+            except (OSError, RuntimeError):
+                if unsafe_entries is None:
+                    raise
+                unsafe_entries.append(UnsafeSkillEntry(relative, "read-error"))
                 return
         entries.append(SkillEntry(relative, "directory", False, b""))
         try:
@@ -888,8 +893,15 @@ def _deepest_existing_ordinary_directory(anchor: Path, root: Path) -> Path:
 
 
 def _open_windows_directory_guards(anchor: Path, path: Path) -> list[int]:
-    from .local_state import _windows_directory_guard
+    from .local_state import (
+        _open_windows_directory_handle,
+        _windows_directory_guard,
+    )
 
+    anchor = Path(os.path.abspath(os.fspath(anchor)))
+    path = Path(os.path.abspath(os.fspath(path)))
+    if path == anchor:
+        return [_open_windows_directory_handle(anchor)]
     return _windows_directory_guard(anchor, (path,))
 
 
