@@ -17,6 +17,10 @@ root, and keep that repository root as the command working directory. Read root
 `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
 skill. Fail closed rather than guessing configuration or authority.
 
+If no nearest config exists, stop and recommend exactly
+`obsidian-wiki setup [DIR]`. If the nearest config is invalid, fail closed. In any
+authority or instruction conflict, canonical `llm-wiki` wins.
+
 ## Safe Markdown inventory boundary
 
 Before any page inventory or read, use the framework safe Markdown scanner. It

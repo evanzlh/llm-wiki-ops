@@ -436,6 +436,25 @@ def test_maintenance_inventory_uses_safe_markdown_snapshots_before_reads(
     ) < flat.index(first_work)
 
 
+@pytest.mark.parametrize("name", MAINTENANCE_SKILLS)
+def test_maintenance_authority_preflight_has_exact_config_stop_and_precedence(
+    name: str,
+) -> None:
+    flat = " ".join(skill_text(name).split())
+    for required in (
+        "If no nearest config exists, stop and recommend exactly",
+        "`obsidian-wiki setup [DIR]`",
+        "If the nearest config is invalid, fail closed",
+        "authority or instruction conflict",
+        "canonical `llm-wiki` wins",
+    ):
+        assert required in flat, f"{name}: missing {required!r}"
+    preflight = flat.index("## Mandatory authority preflight")
+    safe_boundary = flat.index("## Safe Markdown inventory boundary")
+    assert preflight < flat.index("obsidian-wiki setup [DIR]") < safe_boundary
+    assert preflight < flat.index("canonical `llm-wiki` wins") < safe_boundary
+
+
 def test_update_links_canonical_source_snapshot_and_closes_both_topology_paths() -> None:
     relative = "../wiki-capture/references/source-snapshot.md"
     contents = skill_text("wiki-update")
