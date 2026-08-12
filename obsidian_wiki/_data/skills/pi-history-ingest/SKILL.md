@@ -9,7 +9,28 @@ Mine selected Pi JSONL sessions and materialize repository-reviewed evidence. Fo
 
 ## Discovery and parsing
 
-Inventory `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`; the filesystem is the index. Decode the directory only as an initial project hint, then prefer the session header `cwd`. Read the first JSONL record and `session_info` events for stable UUID, start time, model, and human session name before selecting. Open only explicitly selected session files. Parse user/assistant messages and relevant tool results; keep durable decisions, corrections, commands, and unresolved ambiguity, while skipping progress, large generated payloads, telemetry, and repeated output.
+Resolve the session root from `PI_CODING_AGENT_SESSION_DIR` when that override is set; otherwise use `~/.pi/agent/sessions/`. Inventory `<root>/--<cwd>--/<timestamp>_<uuid>.jsonl`; the filesystem is the index. Decode the directory only as an initial project hint, then prefer the session header `cwd`. Read the first line and require a `session` header before selecting. Use `session_info` events for the latest human session name. Open only explicitly selected session files.
+
+### Tree-JSONL structure
+
+The first line is a session header with `cwd`, `version`, `id`, `timestamp`, and optional `parentSession`. Subsequent entries form a tree: each has `id` and normally a `parentId`. Parse all bounded entries into an ID map, identify the current leaf (the last leaf/message when no separate pointer exists), walk its `parentId` chain to the root, then reverse that chain. Analyze only this active branch in chronological order. Retain entry timestamps and JSONL line numbers so evidence ordering and omissions remain reviewable. A cycle, duplicate ID, missing parent, malformed header, or ambiguous current leaf fails closed rather than silently merging branches.
+
+Entry types and handling:
+
+- `message` is the primary evidence record. Roles include `user`, `assistant`, `toolResult`, and `bashExecution`.
+- `session_info` contributes the display name, never factual knowledge.
+- `compaction` and `branch_summary` contain high-signal summaries; retain their source entry identity and distinguish them from verbatim turns.
+- `model_change`, `thinking_level_change`, `custom`, and `label` are operational state and must be filtered. A `custom_message` is context-only unless explicitly relevant.
+
+### Message content fields
+
+- A `user` message `content` is a string or ordered `(TextContent | ImageContent)[]`; retain text in array order and skip images unless explicitly authorized for transcription.
+- An `assistant` message `content` is an ordered `(TextContent | ThinkingContent | ToolCall)[]`; retain visible text, skip thinking, and summarize relevant tool names/actions without copying sensitive arguments.
+- A `toolResult` has ordered `(TextContent | ImageContent)[]`; summarize the outcome and bound raw output.
+- A `bashExecution` carries `command`, `output`, and `exitCode`; keep the command and outcome when durable, truncate/redact sensitive output.
+- Compaction/branch summary message variants carry a `summary` string.
+
+Use the header `cwd` as the primary project attribution, the decoded directory only as a cross-check, and `session_info.name` only as a topic hint. Preserve message/block order, source-internal `timestamp`, entry ID, and line number in the private evidence ledger. Redact tokens, passwords, credentials, private identifiers, sensitive paths/environment values, and irrelevant tool payloads before snapshot proposals.
 
 Append compares stable tool/session identity and content hash with existing snapshots; Full changes bounded selection only. State session/byte/line/time limits and omissions. Redact secrets, credentials, private material, and irrelevant content. Preserve valid Unicode exactly.
 

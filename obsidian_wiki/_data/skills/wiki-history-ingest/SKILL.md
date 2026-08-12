@@ -16,4 +16,4 @@ This skill is a thin route to one retained tool-specific skill. It does not pars
 - OpenClaw memory/session artifacts -> `openclaw-history-ingest`
 - Pi agent session JSONL -> `pi-history-ingest`
 
-If the user names one tool, route directly. If a supplied input unambiguously matches one route, state the selection and invoke that skill. Otherwise ask which supported tool produced the history. For a focused cross-session question, route through `wiki-agent`, which in turn applies the selected retained tool-specific skill. Unknown tools are NEEDS_CONTEXT; do not improvise a parser or a generic write path.
+If the user names one tool, route directly. If a supplied input unambiguously matches one route, state the selection and invoke that skill. Otherwise ask which supported tool produced the history. Unknown tools are NEEDS_CONTEXT; do not improvise a parser or a generic write path.

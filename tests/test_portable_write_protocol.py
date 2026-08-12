@@ -880,3 +880,76 @@ def test_history_asset_inventory_links_and_packaging_are_complete() -> None:
         for relative in links:
             assert (skill.parent / relative).resolve().is_file(), (skill, relative)
     assert not (skill_root / "pi-history-ingest/references").exists()
+
+
+def test_pi_tree_jsonl_parser_contract_survives_repository_completion() -> None:
+    pi = (ROOT / "obsidian_wiki/_data/skills/pi-history-ingest/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(pi.split())
+    for required in (
+        "PI_CODING_AGENT_SESSION_DIR",
+        "~/.pi/agent/sessions/",
+        "first line",
+        "session header",
+        "`cwd`",
+        "`version`",
+        "`id`",
+        "`timestamp`",
+        "`parentSession`",
+        "`parentId`",
+        "active branch",
+        "chronological",
+        "`user`",
+        "`assistant`",
+        "`toolResult`",
+        "`bashExecution`",
+        "`compaction`",
+        "`branch_summary`",
+        "`model_change`",
+        "`thinking_level_change`",
+        "TextContent",
+        "ImageContent",
+        "ThinkingContent",
+        "ToolCall",
+        "`command`",
+        "`output`",
+        "`exitCode`",
+        "project attribution",
+        "redact",
+        "parent owns",
+        "transaction begin --source",
+    ):
+        assert required in flat
+    assert flat.index("active branch") < flat.index("chronological")
+
+
+def test_claude_reference_preserves_extracted_and_desktop_schemas() -> None:
+    path = HISTORY_FORMAT_REFERENCES[0]
+    claude = path.read_text(encoding="utf-8")
+    flat = " ".join(claude.split())
+    for required in (
+        "~/.claude/extracted/<project-dir>/<session-id>.json",
+        '"session_id"',
+        '"project"',
+        '"cwd"',
+        '"start_ts"',
+        '"end_ts"',
+        '"n_turns"',
+        '"n_user_words"',
+        '"turns"',
+        "local_<session-uuid>.json",
+        "audit.jsonl",
+        "`sessionId`",
+        "`startedAt`",
+        "`model`",
+        "`title`",
+        "`type`",
+        "`toolName`",
+        "`input`",
+        "`output`",
+        "`timestamp`",
+        "untrusted data",
+        "redact",
+    ):
+        assert required in flat

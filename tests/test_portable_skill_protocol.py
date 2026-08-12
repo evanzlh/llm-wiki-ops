@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from obsidian_wiki.frontmatter import parse_frontmatter
@@ -204,8 +205,9 @@ def test_history_skills_are_repository_native_analysis_protocols() -> None:
 def test_history_router_only_selects_retained_tool_skill() -> None:
     router = text(HISTORY_ROUTER)
     flat = " ".join(router.split())
-    for name in HISTORY_SKILLS[:-1]:
-        assert f"`{name}`" in router
+    routed = set(re.findall(r"`([a-z]+-history-ingest)`", router))
+    assert routed == set(HISTORY_SKILLS[:-1])
+    assert "wiki-agent" not in router
     for required in (
         "route",
         "retained tool-specific skill",
