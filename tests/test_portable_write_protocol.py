@@ -80,15 +80,68 @@ def _history_snapshot_action(
     *,
     exists: bool,
     ordinary_single_link: bool,
+    head_exists: bool,
     tracked: bool,
+    clean_before_update: bool,
     expected_identity: tuple[str, str, str],
     stored_identity: tuple[str, str, str] | None,
 ) -> str:
     if not exists:
         return "create"
-    if ordinary_single_link and tracked and stored_identity == expected_identity:
+    if (
+        ordinary_single_link
+        and head_exists
+        and tracked
+        and clean_before_update
+        and stored_identity == expected_identity
+    ):
         return "owner-reviewed-atomic-replacement"
     return "collision-fail-closed"
+
+
+def _history_existing_git_gate(repo: Path, target: Path) -> bool:
+    relative = target.relative_to(repo).as_posix()
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode:
+        return False
+    tracked = subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            relative,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if tracked.returncode or tracked.stdout != f"{relative}\n":
+        return False
+    status = subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            relative,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return status.returncode == 0 and status.stdout == ""
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -1177,24 +1230,138 @@ def test_history_snapshot_logical_identity_state_table() -> None:
     assert _history_snapshot_action(
         exists=False,
         ordinary_single_link=False,
+        head_exists=False,
         tracked=False,
+        clean_before_update=False,
         expected_identity=expected,
         stored_identity=None,
     ) == "create"
     assert _history_snapshot_action(
         exists=True,
         ordinary_single_link=True,
+        head_exists=True,
         tracked=True,
+        clean_before_update=True,
         expected_identity=expected,
         stored_identity=expected,
     ) == "owner-reviewed-atomic-replacement"
     assert _history_snapshot_action(
         exists=True,
         ordinary_single_link=True,
+        head_exists=True,
         tracked=True,
+        clean_before_update=True,
         expected_identity=expected,
         stored_identity=("claude", "session-2", "slice-a"),
     ) == "collision-fail-closed"
+
+    for head_exists, tracked, clean_before_update in (
+        (False, True, True),
+        (True, False, True),
+        (True, True, False),
+    ):
+        assert _history_snapshot_action(
+            exists=True,
+            ordinary_single_link=True,
+            head_exists=head_exists,
+            tracked=tracked,
+            clean_before_update=clean_before_update,
+            expected_identity=expected,
+            stored_identity=expected,
+        ) == "collision-fail-closed"
+
+
+def test_history_dirty_existing_snapshot_is_never_overwritten(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "history@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "History Test"], cwd=repo, check=True
+    )
+    target = repo / "sources/history/claude/claude-deadbeef.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"reviewed\n")
+    subprocess.run(["git", "add", "--", target.relative_to(repo)], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "review source"], cwd=repo, check=True)
+    target.write_bytes(b"owner dirty bytes\n")
+    before = target.read_bytes()
+
+    if _history_existing_git_gate(repo, target):
+        target.write_bytes(b"replacement\n")
+
+    assert not _history_existing_git_gate(repo, target)
+    assert target.read_bytes() == before
+
+
+def test_history_existing_snapshot_prewrite_git_gate_precedes_identity_read() -> None:
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        gate = flat.index("pre-write owner preservation gate")
+        head = flat.index("rev-parse", gate)
+        tracked = flat.index("ls-files", head)
+        clean = flat.index("status", tracked)
+        metadata = flat.index("read existing frontmatter", clean)
+        replace = flat.index("owner-reviewed atomic replacement", metadata)
+        post_write = flat.index("post-write", replace)
+        for required in (
+            "dirty, untracked, missing, or no HEAD",
+            "do not overwrite",
+            "stop for owner review",
+            "rerun",
+            "before transaction begin",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        assert gate < head < tracked < clean < metadata < replace < post_write
+
+
+def test_history_slice_identity_frontmatter_and_filename_share_digest() -> None:
+    logical = {
+        "tool": "claude",
+        "native_session_id": "../../秘密/Session",
+        "slice_descriptor": "Auth/../Case",
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            logical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    frontmatter = {
+        "source_tool": logical["tool"],
+        "native_session_id": logical["native_session_id"],
+        "slice_identity": f"sha256:{digest}",
+        "slice_descriptor": "bounded redacted description",
+    }
+    assert digest == "e54ad7b34f298f74abc45b9c900420eebfd34ee6ee03f2525decc440fd431b22"
+    assert f"{logical['tool']}-{digest}.md" == frontmatter["slice_identity"].replace(
+        "sha256:", f"{logical['tool']}-"
+    ) + ".md"
+
+    for path in HISTORY_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "slice_identity: sha256:<64-lowercase-hex>",
+            "slice_descriptor: <bounded-redacted-human-description>",
+            "same digest",
+            "256 UTF-8 bytes",
+            "no absolute path",
+            "cache-sensitive",
+            "parse the existing frontmatter",
+            "source_tool",
+            "native_session_id",
+            "slice_identity",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+    pi = " ".join(HISTORY_SKILLS[5].read_text(encoding="utf-8").split())
+    assert "relative session root" in pi and "NEEDS_CONTEXT" in pi
 
 
 def test_history_workers_revalidate_and_merge_evidence_safely() -> None:

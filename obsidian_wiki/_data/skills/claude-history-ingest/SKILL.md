@@ -54,6 +54,19 @@ Parse JSONL one object per line. Associate `user`, `assistant`, `summary`, and r
 
 The parent owns selection, snapshot materialization, all repository and vault mutation, source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only: they receive immutable inputs naming explicitly selected session files and bounded ranges, and return evidence/proposals. Workers never discover extra files, create snapshots, write pages, run list actions, or mutate state.
 
+### Existing snapshot preservation and identity
+
+Persist these history-extension frontmatter fields:
+
+```yaml
+slice_identity: sha256:<64-lowercase-hex>
+slice_descriptor: <bounded-redacted-human-description>
+```
+
+The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
+
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
+
 ## Repository-native completion
 
 Snapshot identity state table: absent target -> create. The earlier target must be absent rule applies only to create. If the hashed target exists, allow only an ordinary single-link Git-tracked file whose `source_tool`, `native_session_id`, and slice descriptor/logical identity exactly match the tuple; then use the owner-reviewed atomic replacement flow. The explicit ingest request authorizes the parent agent to write/replace the source snapshot, but Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision must fail closed.

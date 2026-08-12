@@ -11,7 +11,7 @@ Mine selected Pi JSONL sessions and materialize repository-reviewed evidence. Fo
 
 Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `obsidian-wiki setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
 
-Resolve Pi's session root in this precedence: invocation `--session-dir` (the caller must explicitly pass and record it), then `PI_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json, then `<PI_CODING_AGENT_DIR>/sessions/`. `PI_CODING_AGENT_DIR` relocates the agent directory and defaults to `~/.pi/agent`, making the ordinary default `~/.pi/agent/sessions/`. Pi settings allow relative values, but this skill accepts only the caller/Pi-resolved non-empty absolute root and never guesses a relative base; reject an empty or relative final root.
+Resolve Pi's session root in this precedence: invocation `--session-dir` (the caller must explicitly pass and record it), then `PI_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json, then `<PI_CODING_AGENT_DIR>/sessions/`. `PI_CODING_AGENT_DIR` relocates the agent directory and defaults to `~/.pi/agent`, making the ordinary default `~/.pi/agent/sessions/`. Pi settings allow relative values, but this skill accepts only the caller/Pi-resolved non-empty absolute root and never guesses a relative base. An unresolved relative session root returns `NEEDS_CONTEXT`; an empty or relative final root is rejected.
 
 ## Bounded safe input
 
@@ -63,6 +63,19 @@ Append compares stable tool/session identity and content hash with existing snap
 ## Parent and worker boundary
 
 The parent owns selection, snapshot materialization, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence/proposals only; they never discover, write, list, or mutate.
+
+### Existing snapshot preservation and identity
+
+Persist these history-extension frontmatter fields:
+
+```yaml
+slice_identity: sha256:<64-lowercase-hex>
+slice_descriptor: <bounded-redacted-human-description>
+```
+
+The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
+
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
 ## Repository-native completion
 
