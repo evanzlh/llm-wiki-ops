@@ -1,11 +1,14 @@
 import os
 import shutil
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from obsidian_wiki import SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +100,71 @@ def test_build_metadata_is_retained_for_uv_source_install() -> None:
     assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in pyproject
     assert '".skills" = "obsidian_wiki/_data/skills"' not in pyproject
     assert (ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md").is_file()
+
+
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="uv is required by the supported builder"
+)
+def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "dist"
+    subprocess.run(
+        ["uv", "build", "--out-dir", str(output)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=180,
+    )
+    artifacts = sorted(output.glob("obsidian_wiki-*"))
+    assert {path.suffix for path in artifacts} == {".whl", ".gz"}
+
+    expected_data = {
+        path.relative_to(ROOT).as_posix()
+        for root in (
+            ROOT / "obsidian_wiki/_data/skills",
+            ROOT / "obsidian_wiki/_data/bootstrap",
+        )
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+        and "__pycache__" not in path.parts
+        and path.suffix not in {".pyc", ".pyo"}
+    }
+    expected_data.add("obsidian_wiki/_data/legacy-skill-digests-v1.json")
+    forbidden_roots = (
+        ".skills/",
+        ".claude/skills/",
+        ".cursor/skills/",
+        ".windsurf/skills/",
+        ".agents/skills/",
+        ".pi/skills/",
+        ".kiro/skills/",
+    )
+
+    for artifact in artifacts:
+        if artifact.suffix == ".whl":
+            with zipfile.ZipFile(artifact) as archive:
+                raw_names = archive.namelist()
+        else:
+            with tarfile.open(artifact) as archive:
+                raw_names = archive.getnames()
+        names = {
+            "/".join(Path(name).parts[1:])
+            if Path(name).parts
+            and Path(name).parts[0].startswith("obsidian_wiki-")
+            else name
+            for name in raw_names
+        }
+
+        assert expected_data <= names, artifact.name
+        assert not {
+            name
+            for name in names
+            if name.startswith(forbidden_roots)
+            or name.endswith("/.claude/settings.json")
+            or "wiki-stop-capture" in name
+        }, artifact.name
 
 
 def test_source_reinstall_command_refreshes_cached_builds() -> None:
@@ -397,7 +465,9 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=180,
     )
-    source.rename(tmp_path / "source-moved")
+    original_source_path = source.resolve()
+    moved_source = tmp_path / "source-moved"
+    source.rename(moved_source)
     bin_dir = Path(env["UV_TOOL_BIN_DIR"])
     executable = shutil.which("obsidian-wiki", path=str(bin_dir))
     assert executable is not None, f"obsidian-wiki was not installed in {bin_dir}"
@@ -483,6 +553,22 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=60,
     )
     assert "Portable repository scaffolded" in setup.stdout
+    canonical_query = portable / ".skills/wiki-query/SKILL.md"
+    query_bytes = canonical_query.read_bytes()
+    assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        mirrored = portable / agent_relative / "wiki-query/SKILL.md"
+        assert mirrored.read_bytes() == query_bytes
+    sync = subprocess.run(
+        [executable, "repo", "sync-skills", "--json"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    assert '"status": "clean"' in sync.stdout
     doctor = subprocess.run(
         [executable, "doctor"],
         cwd=portable,
@@ -503,7 +589,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=30,
     )
     check = subprocess.run(
-        [executable, "check"],
+        [executable, "check", "--json", "--pretty"],
         cwd=portable,
         env=env,
         text=True,
@@ -511,7 +597,35 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=60,
     )
-    assert "portable check: pass (0 errors, 0 warnings)" in check.stdout
+    assert '"status": "pass"' in check.stdout
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=portable,
+        env=env,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    ).stdout.rstrip(b"\0").split(b"\0")
+    forbidden_paths = (
+        str(original_source_path).encode(),
+        str(moved_source.resolve()).encode(),
+        str(tool_dir).encode(),
+    )
+    for encoded_relative in tracked:
+        if not encoded_relative:
+            continue
+        relative = os.fsdecode(encoded_relative)
+        payload = (portable / relative).read_bytes()
+        assert not [value for value in forbidden_paths if value in payload], relative
     home = Path(env["HOME"])
     assert not (home / ".obsidian-wiki").exists()
     assert not any(
