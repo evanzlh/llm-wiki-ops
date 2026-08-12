@@ -258,7 +258,9 @@ def plan_batches(
         include_code=include_code,
     )
     for file in all_files:
-        portable_store.source_id(Path(file["path"]))
+        source_path = Path(file["path"])
+        portable_store._validate_source_file(source_path)
+        portable_store.source_id(source_path)
 
     skipped_binary = 0  # files already excluded by _classify
     skipped_unchanged = 0

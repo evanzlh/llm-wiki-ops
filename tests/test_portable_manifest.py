@@ -215,6 +215,45 @@ def test_status_reports_uncompiled_and_orphaned(tmp_path: Path) -> None:
     assert status["missing"] == ["sources/tracked.md"]
 
 
+def test_status_for_reports_tracked_missing_as_source_id(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "tracked.md"
+    source.write_text("tracked", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source, pages=[])
+    source.unlink()
+
+    assert store.status_for([source])["missing"] == ["sources/tracked.md"]
+
+
+def test_status_for_reports_untracked_missing_as_source_id(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "untracked.md"
+
+    assert ShardedManifest(config).status_for([source])["missing"] == [
+        "sources/untracked.md"
+    ]
+
+
+def test_status_for_rejects_missing_source_outside_root(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+
+    with pytest.raises(ManifestError, match="configured source root"):
+        ShardedManifest(config).status_for([root / "outside-missing.md"])
+
+
+def test_status_for_rejects_dangling_terminal_symlink(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources" / "dangling.md"
+    try:
+        source.symlink_to(root / "sources" / "missing-target.md")
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ManifestError, match="single-link ordinary file"):
+        ShardedManifest(config).status_for([source])
+
+
 def _write_shard(root: Path, payload: object, name: str = "a.md.json") -> Path:
     path = root / "wiki" / ".manifest" / "sources" / name
     path.parent.mkdir(parents=True, exist_ok=True)

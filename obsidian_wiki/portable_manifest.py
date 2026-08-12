@@ -446,16 +446,16 @@ class ShardedManifest:
         selected: set[str] = set()
         for raw in source_paths:
             path = Path(raw)
-            if not path.exists():
-                result["missing"].append(str(path))
-                try:
-                    selected.add(self.source_id(path))
-                except ManifestError:
-                    pass
-                continue
-            self._validate_source_file(path)
             source_id = self.source_id(path)
             selected.add(source_id)
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                result["missing"].append(source_id)
+                continue
+            except OSError as exc:
+                raise ManifestError("source cannot be inspected") from exc
+            self._validate_source_file(path)
             entry = tracked.get(source_id)
             if entry is None:
                 result["new"].append(source_id)
@@ -465,6 +465,12 @@ class ShardedManifest:
                 result["unchanged"].append(source_id)
         for source_id in sorted(set(tracked) - selected):
             source = self.source_path(source_id)
-            if not source.exists():
+            try:
+                source.lstat()
+            except FileNotFoundError:
                 result["missing"].append(source_id)
+            except OSError as exc:
+                raise ManifestError("source cannot be inspected") from exc
+            else:
+                self._validate_source_file(source)
         return result

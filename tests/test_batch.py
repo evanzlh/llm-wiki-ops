@@ -75,6 +75,47 @@ def test_discover_sources_filters_code_and_binary(portable_repo):
     ]
 
 
+def test_discover_sources_includes_code_when_requested(portable_repo):
+    _root, config = portable_repo
+    _write(config.sources[0] / "tool.py")
+
+    files = discover_sources(config.sources[0], include_code=True)
+    assert [Path(item["path"]).name for item in files] == ["tool.py"]
+
+
+def test_discover_sources_skips_hidden_directories(portable_repo):
+    _root, config = portable_repo
+    _write(config.sources[0] / ".hidden" / "secret.md")
+    _write(config.sources[0] / "visible.md")
+
+    assert [Path(item["path"]).name for item in discover_sources(config.sources[0])] == [
+        "visible.md"
+    ]
+
+
+def test_discover_sources_reports_size(portable_repo):
+    _root, config = portable_repo
+    _write(config.sources[0] / "note.md", size=512)
+
+    assert discover_sources(config.sources[0])[0]["size_bytes"] == 512
+
+
+def test_discover_sources_respects_gitignore(portable_repo):
+    _root, config = portable_repo
+    subprocess.run(
+        ["git", "-C", str(config.sources[0]), "init", "-q"],
+        check=True,
+        capture_output=True,
+    )
+    _write(config.sources[0] / ".gitignore", "ignored/\n")
+    _write(config.sources[0] / "ignored" / "generated.md")
+    _write(config.sources[0] / "visible.md")
+
+    paths = [item["path"] for item in discover_sources(config.sources[0])]
+    assert not any("ignored" in path for path in paths)
+    assert any("visible.md" in path for path in paths)
+
+
 def test_make_batches_respects_file_limit():
     files = [
         {"path": f"f{i}.md", "kind": "text", "size_bytes": 10}
@@ -82,6 +123,23 @@ def test_make_batches_respects_file_limit():
     ]
     batches = _make_batches(files, max_batch_bytes=1_000, max_batch_files=2)
     assert [len(batch) for batch in batches] == [2, 2, 1]
+
+
+def test_make_batches_respects_byte_limit():
+    files = [
+        {"path": f"f{i}.md", "kind": "text", "size_bytes": 600_000}
+        for i in range(3)
+    ]
+    batches = _make_batches(
+        files,
+        max_batch_bytes=1_000_000,
+        max_batch_files=20,
+    )
+    assert len(batches) == 3
+
+
+def test_make_batches_handles_empty_input():
+    assert _make_batches([], max_batch_bytes=1_000, max_batch_files=2) == []
 
 
 def test_plan_batches_uses_config_and_reports_source_dir(portable_repo):
@@ -125,6 +183,16 @@ def test_plan_batches_propagates_manifest_errors(portable_repo):
         plan_batches(config.sources[0], config)
 
 
+def test_plan_batches_propagates_malformed_shard(portable_repo):
+    root, config = portable_repo
+    _write(root / "sources" / "note.md")
+    shard = root / "wiki" / ".manifest" / "sources" / "note.md.json"
+    _write(shard, "{}\n")
+
+    with pytest.raises(ManifestError, match="invalid fields|source_id"):
+        plan_batches(config.sources[0], config)
+
+
 def test_plan_batches_validates_files_even_without_cache(portable_repo):
     root, config = portable_repo
     external = _write(root / "external.md")
@@ -133,7 +201,47 @@ def test_plan_batches_validates_files_even_without_cache(portable_repo):
     except OSError:
         pytest.skip("symlinks are unavailable")
 
-    with pytest.raises(ManifestError, match="outside the configured source root"):
+    with pytest.raises(ManifestError, match="single-link ordinary file"):
+        plan_batches(config.sources[0], config, skip_unchanged=False)
+
+
+def test_plan_batches_no_cache_rejects_internal_terminal_symlink(portable_repo):
+    root, config = portable_repo
+    target = _write(root / "sources" / "target.md")
+    alias = root / "sources" / "alias.md"
+    try:
+        alias.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ManifestError, match="single-link ordinary file"):
+        plan_batches(config.sources[0], config, skip_unchanged=False)
+
+
+def test_plan_batches_no_cache_rejects_hardlinked_source(portable_repo, tmp_path):
+    root, config = portable_repo
+    external = _write(tmp_path / "external.md")
+    source = root / "sources" / "linked.md"
+    try:
+        os.link(external, source)
+    except OSError:
+        pytest.skip("hard links are unavailable")
+
+    with pytest.raises(ManifestError, match="single-link ordinary file"):
+        plan_batches(config.sources[0], config, skip_unchanged=False)
+
+
+def test_plan_batches_no_cache_rejects_fifo_source(portable_repo):
+    root, config = portable_repo
+    source = root / "sources" / "pipe.md"
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFOs are unavailable")
+    try:
+        os.mkfifo(source)
+    except OSError:
+        pytest.skip("FIFOs are unavailable")
+
+    with pytest.raises(ManifestError, match="single-link ordinary file"):
         plan_batches(config.sources[0], config, skip_unchanged=False)
 
 
@@ -173,3 +281,22 @@ def test_batch_plan_rejects_positional_paths(portable_repo, tmp_path):
         str(config.sources[0]),
     )
     assert proc.returncode == 2
+
+
+def test_batch_plan_no_cache_reports_internal_symlink_concisely(
+    portable_repo, tmp_path
+):
+    root, _config = portable_repo
+    target = _write(root / "sources" / "target.md")
+    alias = root / "sources" / "alias.md"
+    try:
+        alias.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    proc = _run(root, tmp_path / "home", "batch-plan", "--no-cache")
+
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert "single-link ordinary file" in proc.stderr
+    assert "Traceback" not in proc.stderr
