@@ -35,12 +35,14 @@ from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     LegacyManagedSkillsInventory,
     ManagedSkillsInventory,
+    parse_inventory_text,
     read_inventory,
     render_inventory,
 )
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
+    _digest as _skill_tree_digest,
     discover_anchored_skill_collection,
     discover_skill_collection,
     materialize_skill_collection,
@@ -88,6 +90,10 @@ _UPGRADE_JOURNAL = "journal.json"
 _LEGACY_UPGRADE_JOURNAL_SCHEMA = 3
 _REPLACEMENT_JOURNAL_SCHEMA = 4
 _INVENTORY_KEYS = {"implementation", "skills", "skills_version"}
+_LEGACY_SKILL_DIGEST_CATALOG = (
+    Path(__file__).parent / "_data/legacy-skill-digests-v1.json"
+)
+_SKILL_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SAFE_SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SUPPORTS_BOUND_INVENTORY_DIRECTORIES = (
     os.open in os.supports_dir_fd
@@ -880,6 +886,22 @@ def _read_managed_skills_inventory(root: Path) -> tuple[str, tuple[str, ...]]:
     )
 
 
+def _read_inventory_file(
+    root: Path, path: Path
+) -> ManagedSkillsInventory | LegacyManagedSkillsInventory:
+    content = _read_single_link_ordinary_bytes(root, path, "managed skills inventory")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"portable managed-skills.json is not valid UTF-8: {path}"
+        ) from exc
+    try:
+        return parse_inventory_text(text, allow_legacy=True)
+    except ValueError as exc:
+        raise ValueError(f"portable managed-skills.json is invalid: {exc}") from exc
+
+
 def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
     return {
         name
@@ -1290,6 +1312,157 @@ def _legacy_adapter_text(skill_name: str, relative_target: str) -> str:
     )
 
 
+def _reject_legacy_catalog_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"legacy skill digest catalog has duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _load_legacy_skill_digest_catalog() -> tuple[Mapping[str, str], ...]:
+    path = _LEGACY_SKILL_DIGEST_CATALOG
+    try:
+        content = _read_single_link_ordinary_bytes(
+            path.parent.parent, path, "legacy skill digest catalog"
+        )
+        text = content.decode("utf-8")
+        payload = json.loads(
+            text,
+            object_pairs_hook=_reject_legacy_catalog_duplicate_keys,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"legacy skill digest catalog is invalid: {path}: {exc}") from exc
+    if type(payload) is not dict or set(payload) != {"schema_version", "collections"}:
+        raise ValueError("legacy skill digest catalog has an unknown schema")
+    if payload["schema_version"] != 1 or type(payload["collections"]) is not list:
+        raise ValueError("legacy skill digest catalog has an unknown schema")
+    collections: list[Mapping[str, str]] = []
+    labels: set[str] = set()
+    for raw in payload["collections"]:
+        if type(raw) is not dict or set(raw) != {"label", "skills"}:
+            raise ValueError("legacy skill digest catalog collection is invalid")
+        label = raw["label"]
+        skills = raw["skills"]
+        if (
+            type(label) is not str
+            or not label
+            or label in labels
+            or type(skills) is not dict
+            or not skills
+        ):
+            raise ValueError("legacy skill digest catalog collection is invalid")
+        labels.add(label)
+        copied: dict[str, str] = {}
+        for name, digest in skills.items():
+            if (
+                type(name) is not str
+                or _SAFE_SKILL_NAME.fullmatch(name) is None
+                or type(digest) is not str
+                or _SKILL_DIGEST.fullmatch(digest) is None
+            ):
+                raise ValueError("legacy skill digest catalog collection is invalid")
+            copied[name] = digest
+        if tuple(copied) != tuple(sorted(copied)):
+            raise ValueError("legacy skill digest catalog skills must be sorted")
+        collections.append(MappingProxyType(copied))
+    if not collections:
+        raise ValueError("legacy skill digest catalog is empty")
+    return tuple(collections)
+
+
+def _validate_known_legacy_repository(
+    root: Path,
+    inventory: LegacyManagedSkillsInventory,
+    canonical: SkillCollection,
+) -> None:
+    canonical_by_name = canonical.by_name()
+    managed = inventory.managed_skills
+    observed = {
+        name: canonical_by_name[name].digest
+        for name in managed
+        if name in canonical_by_name
+    }
+    recognized = any(
+        tuple(collection) == managed and dict(collection) == observed
+        for collection in _load_legacy_skill_digest_catalog()
+    )
+    if not recognized:
+        raise ValueError(
+            "portable legacy canonical baseline is not recognized; preserve or "
+            "reconcile owner changes before migrating (no force mode is available)"
+        )
+
+    custom_names = set(canonical.names) - set(managed)
+    custom_presence = {name: 0 for name in custom_names}
+    for agent_relative, _label in PROJECT_AGENT_DIRS:
+        agent_root = root / agent_relative
+        mirror = discover_anchored_skill_collection(agent_root, anchor=root)
+        mirror_by_name = mirror.by_name()
+        unexpected = set(mirror_by_name) - set(managed) - custom_names
+        if unexpected:
+            raise ValueError(
+                "portable legacy adapters contain an untracked owner skill: "
+                f"{sorted(unexpected)[0]}"
+            )
+        for name in managed:
+            tree = mirror_by_name.get(name)
+            adapter_relative = PurePosixPath(agent_relative) / name / "SKILL.md"
+            canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+            expected = _legacy_adapter_text(
+                name,
+                posixpath.relpath(
+                    canonical_relative.as_posix(), adapter_relative.parent.as_posix()
+                ),
+            ).encode("utf-8")
+            if tree is None or tree.entries != (
+                SkillEntry("SKILL.md", "file", False, expected),
+            ):
+                raise ValueError(
+                    "portable legacy migration requires exact adapters; "
+                    f"preserve and reconcile {agent_relative}/{name}"
+                )
+        for name in set(mirror_by_name) - set(managed):
+            if mirror_by_name[name] != canonical_by_name[name]:
+                raise ValueError(
+                    "portable legacy custom mirror differs from canonical owner data: "
+                    f"{agent_relative}/{name}"
+                )
+            custom_presence[name] += 1
+    for name, count in custom_presence.items():
+        if count not in (0, len(PROJECT_AGENT_DIRS)):
+            raise ValueError(
+                "portable legacy custom mirror must be absent everywhere or an exact "
+                f"full copy across all agents: {name}"
+            )
+
+
+def _validate_v2_upgrade_repository(
+    root: Path,
+    inventory: ManagedSkillsInventory,
+    canonical: SkillCollection,
+) -> None:
+    canonical_by_name = canonical.by_name()
+    for name in inventory.managed_skills:
+        tree = canonical_by_name.get(name)
+        if tree is None:
+            raise ValueError(f"portable managed canonical skill is missing: {name}")
+        if tree.digest != inventory.managed_skill_digests[name]:
+            raise ValueError(
+                "portable managed canonical skill digest is modified; preserve or "
+                f"reconcile .skills/{name} before upgrading"
+            )
+    report = plan_portable_skill_sync(root)
+    if report.status != "clean":
+        raise ValueError(
+            "portable skill mirrors have drift; run `obsidian-wiki repo "
+            "sync-skills --apply` and review the result before upgrading"
+        )
+
+
 def write_agent_skill_mirrors(
     root: Path,
     collection: SkillCollection,
@@ -1481,7 +1654,7 @@ def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
         raise ValueError(f"portable canonical skills are invalid: {message}") from exc
 
     try:
-        inventory = read_inventory(root, allow_legacy=True)
+        inventory = _read_inventory_file(root, root / MANAGED_SKILLS_INVENTORY)
     except (OSError, ValueError) as exc:
         raise ValueError(f"portable managed skill inventory is invalid: {exc}") from exc
     if isinstance(inventory, LegacyManagedSkillsInventory):
@@ -2031,6 +2204,8 @@ def _journal_target_is_managed(relative: str) -> bool:
         return True
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         agent_parts = PurePosixPath(agent_relative).parts
+        if parts == agent_parts:
+            return True
         if (
             len(parts) == len(agent_parts) + 1
             and parts[: len(agent_parts)] == agent_parts
@@ -3252,6 +3427,386 @@ def _copy_staged_replacement(
         )
 
 
+def _collection_replacement_entries(
+    collection: SkillCollection,
+) -> tuple[SkillEntry, ...]:
+    return _canonical_skill_entries(collection)
+
+
+def _entries_replacement_snapshot(
+    entries: tuple[SkillEntry, ...], *, root_mode: int
+) -> tuple[tuple[str, str, int, bytes], ...]:
+    return (
+        ("", "directory", root_mode, b""),
+        *tuple(
+            (
+                entry.path,
+                entry.kind,
+                0o755
+                if entry.kind == "directory" or entry.executable
+                else 0o644,
+                entry.content,
+            )
+            for entry in entries
+        ),
+    )
+
+
+def _authorize_full_upgrade_recovery(
+    root: Path,
+    transaction: Path,
+    records: list[tuple[Path, Path, Path | None, bool]],
+    *,
+    rollback: bool,
+    version: str,
+    source: Path,
+    current_names: tuple[str, ...],
+    old_inventory: ManagedSkillsInventory | LegacyManagedSkillsInventory,
+) -> set[Path]:
+    source_collection = _snapshot_bundled_skills(source)
+    if source_collection.names != current_names:
+        raise ValueError("portable upgrade recovery bundled skill names changed")
+    old_names = old_inventory.managed_skills
+    old_set = set(old_names)
+    current_set = set(current_names)
+    record_by_target = {
+        target: (index, backup, staged, had_target)
+        for index, (target, backup, staged, had_target) in enumerate(records)
+    }
+
+    expected_targets: list[Path] = [
+        root / ".skills" / name for name in sorted(old_set | current_set)
+    ]
+    expected_targets.extend(root / relative for relative, _label in PROJECT_AGENT_DIRS)
+    fixed_bootstraps = (root / "AGENTS.md",) + tuple(
+        root / relative for relative in _BOOTSTRAP_REFERENCES
+    )
+    expected_targets.extend(fixed_bootstraps)
+    expected_targets.append(root / MANAGED_SKILLS_INVENTORY)
+    if [record[0] for record in records] != expected_targets:
+        raise ValueError(
+            "portable full-mirror upgrade recovery record plan is incomplete or unexpected"
+        )
+
+    def original_for(target: Path) -> tuple[int, Path, Path | None, bool]:
+        index, backup, staged, had_target = record_by_target[target]
+        original = backup if backup.exists() else target
+        if had_target and (not original.exists() or original.is_symlink()):
+            raise ValueError(
+                f"portable upgrade recovery original target is missing or unsafe: {target}"
+            )
+        if not had_target and (backup.exists() or backup.is_symlink()):
+            raise ValueError(
+                f"portable upgrade recovery has an unexpected backup: {target}"
+            )
+        return index, original, staged, had_target
+
+    old_managed_entries: dict[str, tuple[SkillEntry, ...]] = {}
+    observed_old_digests: dict[str, str] = {}
+    for name in old_names:
+        target = root / ".skills" / name
+        _index, original, _staged, had_target = original_for(target)
+        if not had_target:
+            raise ValueError(
+                f"portable upgrade recovery lost managed ownership for {target}"
+            )
+        entries = _bound_replacement_snapshot(
+            root, original, label="old managed canonical authority"
+        )
+        old_managed_entries[name] = entries
+        observed_old_digests[name] = _skill_tree_digest(name, entries)
+    if isinstance(old_inventory, ManagedSkillsInventory):
+        if observed_old_digests != dict(old_inventory.managed_skill_digests):
+            raise ValueError(
+                "portable upgrade recovery managed canonical digest differs from inventory"
+            )
+    elif not any(
+        tuple(collection) == old_names
+        and dict(collection) == observed_old_digests
+        for collection in _load_legacy_skill_digest_catalog()
+    ):
+        raise ValueError(
+            "portable legacy canonical baseline is not recognized during recovery"
+        )
+
+    live_canonical = discover_anchored_skill_collection(root / ".skills", anchor=root)
+    custom = tuple(
+        tree
+        for tree in live_canonical.skills
+        if tree.name not in old_set | current_set
+    )
+    collisions = current_set & {tree.name for tree in custom}
+    if collisions:
+        raise ValueError(
+            "portable upgrade recovery bundled skill collides with custom canonical: "
+            f"{sorted(collisions)[0]}"
+        )
+    prospective = SkillCollection(
+        tuple(sorted((*source_collection.skills, *custom), key=lambda tree: tree.name))
+    )
+    prospective_entries = _collection_replacement_entries(prospective)
+
+    old_full_entries: list[SkillEntry] = []
+    for name in old_names:
+        old_full_entries.append(SkillEntry(name, "directory", False, b""))
+        old_full_entries.extend(
+            SkillEntry(
+                f"{name}/{entry.path}",
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in old_managed_entries[name]
+        )
+    for tree in custom:
+        old_full_entries.append(SkillEntry(tree.name, "directory", False, b""))
+        old_full_entries.extend(
+            SkillEntry(
+                f"{tree.name}/{entry.path}",
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in tree.entries
+        )
+    old_full_entries_tuple = tuple(
+        sorted(old_full_entries, key=lambda entry: entry.path)
+    )
+
+    def validate_proof(
+        index: int,
+        staged: Path,
+        expected: tuple[tuple[str, str, int, bytes], ...],
+        label: str,
+    ) -> None:
+        if _replacement_snapshot(root, staged) != expected:
+            raise ValueError(
+                f"portable full-mirror upgrade recovery {label} proof differs"
+            )
+        install = transaction / "install" / str(index)
+        if (install.exists() or install.is_symlink()) and _replacement_snapshot(
+            root, install
+        ) != expected:
+            raise ValueError(
+                f"portable full-mirror upgrade recovery {label} install differs"
+            )
+
+    for name in sorted(old_set | current_set):
+        target = root / ".skills" / name
+        index, original, staged, had_target = original_for(target)
+        expected_staged = (
+            transaction / "staged/canonical" / name if name in current_set else None
+        )
+        if staged != expected_staged or had_target != (name in old_set):
+            raise ValueError(
+                f"portable full-mirror canonical recovery layout is invalid: {target}"
+            )
+        if staged is not None:
+            root_mode = stat.S_IMODE(original.lstat().st_mode) if had_target else 0o755
+            validate_proof(
+                index,
+                staged,
+                _source_replacement_snapshot(source / name, root_mode=root_mode),
+                f"canonical {name}",
+            )
+
+    for agent_index, (agent_relative, _label) in enumerate(PROJECT_AGENT_DIRS):
+        target = root / agent_relative
+        index, original, staged, had_target = original_for(target)
+        expected_staged = transaction / "staged/mirrors" / str(agent_index)
+        if staged != expected_staged or not had_target:
+            raise ValueError(
+                f"portable full-mirror recovery layout is invalid: {target}"
+            )
+        original_mode, original_entries = _bound_replacement_state(
+            root, original, label="old agent mirror authority"
+        )
+        if isinstance(old_inventory, ManagedSkillsInventory):
+            expected_old_entries = old_full_entries_tuple
+            if original_entries != expected_old_entries:
+                raise ValueError(
+                    f"portable upgrade recovery original mirror is not trusted: {target}"
+                )
+        else:
+            legacy_entries: list[SkillEntry] = []
+            for name in old_names:
+                legacy_entries.append(SkillEntry(name, "directory", False, b""))
+                adapter_relative = (
+                    PurePosixPath(agent_relative) / name / "SKILL.md"
+                )
+                canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
+                legacy_entries.append(
+                    SkillEntry(
+                        f"{name}/SKILL.md",
+                        "file",
+                        False,
+                        _legacy_adapter_text(
+                            name,
+                            posixpath.relpath(
+                                canonical_relative.as_posix(),
+                                adapter_relative.parent.as_posix(),
+                            ),
+                        ).encode("utf-8"),
+                    )
+                )
+            expected_managed_entries = tuple(
+                sorted(legacy_entries, key=lambda entry: entry.path)
+            )
+            actual_managed_entries = tuple(
+                entry
+                for entry in original_entries
+                if entry.path.split("/", 1)[0] in old_set
+            )
+            if actual_managed_entries != expected_managed_entries:
+                raise ValueError(
+                    f"portable upgrade recovery original adapters are not trusted: {target}"
+                )
+            custom_by_name = {tree.name: tree for tree in custom}
+            actual_extra_names = {
+                entry.path.split("/", 1)[0]
+                for entry in original_entries
+                if entry.path.split("/", 1)[0] not in old_set
+            }
+            if not actual_extra_names <= set(custom_by_name):
+                raise ValueError(
+                    f"portable upgrade recovery original mirror has owner-only drift: {target}"
+                )
+            for name in actual_extra_names:
+                expected_custom = tuple(
+                    sorted(
+                        (
+                            SkillEntry(name, "directory", False, b""),
+                            *tuple(
+                                SkillEntry(
+                                    f"{name}/{entry.path}",
+                                    entry.kind,
+                                    entry.executable,
+                                    entry.content,
+                                )
+                                for entry in custom_by_name[name].entries
+                            ),
+                        ),
+                        key=lambda entry: entry.path,
+                    )
+                )
+                actual_custom = tuple(
+                    entry
+                    for entry in original_entries
+                    if entry.path == name or entry.path.startswith(f"{name}/")
+                )
+                if actual_custom != expected_custom:
+                    raise ValueError(
+                        "portable upgrade recovery custom mirror differs from canonical: "
+                        f"{target}/{name}"
+                    )
+        validate_proof(
+            index,
+            staged,
+            _entries_replacement_snapshot(
+                prospective_entries, root_mode=original_mode
+            ),
+            f"mirror {agent_relative}",
+        )
+
+    for bootstrap_index, target in enumerate(fixed_bootstraps):
+        index, original, staged, had_target = original_for(target)
+        expected_staged = transaction / "staged/bootstrap" / str(bootstrap_index)
+        if staged != expected_staged:
+            raise ValueError(
+                f"portable full-mirror bootstrap recovery layout is invalid: {target}"
+            )
+        if had_target:
+            metadata = original.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise ValueError(
+                    f"portable upgrade recovery bootstrap is unsafe: {target}"
+                )
+            old_text = original.read_text(encoding="utf-8")
+            mode = stat.S_IMODE(metadata.st_mode)
+        else:
+            old_text = ""
+            mode = 0o644
+        validate_proof(
+            index,
+            staged,
+            (
+                (
+                    "",
+                    "file",
+                    mode,
+                    _render_bootstrap_target(root, target, old_text).encode("utf-8"),
+                ),
+            ),
+            f"bootstrap {target}",
+        )
+
+    inventory_target = root / MANAGED_SKILLS_INVENTORY
+    inventory_index, inventory_original, inventory_staged, inventory_had_target = (
+        original_for(inventory_target)
+    )
+    if (
+        not inventory_had_target
+        or inventory_staged
+        != transaction / "staged/inventory/managed-skills.json"
+    ):
+        raise ValueError("portable full-mirror inventory recovery layout is invalid")
+    inventory_mode = stat.S_IMODE(inventory_original.lstat().st_mode)
+    next_inventory = ManagedSkillsInventory(
+        skills_version=version,
+        managed_skills=source_collection.names,
+        managed_skill_digests={
+            skill.name: skill.digest for skill in source_collection.skills
+        },
+    )
+    validate_proof(
+        inventory_index,
+        inventory_staged,
+        (
+            (
+                "",
+                "file",
+                inventory_mode,
+                render_inventory(next_inventory).encode("utf-8"),
+            ),
+        ),
+        "inventory",
+    )
+
+    removable_new_targets: set[Path] = set()
+    for target, backup, staged, had_target in records[:-1]:
+        if not had_target and backup.exists():
+            raise ValueError(
+                f"portable upgrade recovery has a backup for absent target: {target}"
+            )
+        if rollback and not had_target and (target.exists() or target.is_symlink()):
+            if staged is None or _replacement_snapshot(
+                root, target
+            ) != _replacement_snapshot(root, staged):
+                raise ValueError(
+                    "portable upgrade recovery cannot prove a newly created target: "
+                    f"{target}"
+                )
+            removable_new_targets.add(target)
+    if not rollback:
+        for target, _backup, staged, _had_target in records:
+            if staged is None:
+                if target.exists() or target.is_symlink():
+                    raise ValueError(
+                        f"portable committed upgrade retained removed target: {target}"
+                    )
+            elif not target.exists() or _replacement_snapshot(
+                root, target
+            ) != _replacement_snapshot(root, staged):
+                raise ValueError(
+                    f"portable committed upgrade target differs from proof: {target}"
+                )
+    return removable_new_targets
+
+
 def _authorize_upgrade_recovery(
     root: Path,
     transaction: Path,
@@ -3304,6 +3859,21 @@ def _authorize_upgrade_recovery(
             raise ValueError(
                 "portable upgrade journal old inventory and backup are both missing"
             )
+    parsed_old_inventory = _read_inventory_file(root, old_inventory)
+    full_mirror_targets = {
+        root / relative for relative, _label in PROJECT_AGENT_DIRS
+    }
+    if full_mirror_targets.issubset({record[0] for record in records}):
+        return _authorize_full_upgrade_recovery(
+            root,
+            transaction,
+            records,
+            rollback=rollback,
+            version=version,
+            source=source,
+            current_names=current_names,
+            old_inventory=parsed_old_inventory,
+        )
     _old_version, old_names = _read_managed_skills_inventory_file(
         root, old_inventory
     )
@@ -4517,8 +5087,9 @@ def upgrade_portable_skills(
     *,
     version: str,
     source_skills: Path,
+    warning_sink: list[dict[str, str]] | None = None,
 ) -> tuple[str, ...]:
-    """Upgrade only repository-managed skills, adapters, and bootstrap blocks.
+    """Upgrade managed canonical skills, full mirrors, and bootstrap blocks.
 
     The inventory is the ownership boundary. Unlisted directories are never
     adopted, replaced, or removed, and the new inventory is committed last.
@@ -4539,11 +5110,33 @@ def upgrade_portable_skills(
             source=source,
             current_names=current_names,
         )
-        _previous_version, previous_names = _read_managed_skills_inventory(root)
+        inventory = _read_inventory_file(root, root / MANAGED_SKILLS_INVENTORY)
+        canonical = discover_anchored_skill_collection(root / ".skills", anchor=root)
+        legacy_migration = isinstance(inventory, LegacyManagedSkillsInventory)
+        if isinstance(inventory, ManagedSkillsInventory):
+            _validate_v2_upgrade_repository(root, inventory, canonical)
+        else:
+            _validate_known_legacy_repository(root, inventory, canonical)
+        previous_names = inventory.managed_skills
         bootstrap_plans = _preflight_upgrade_paths(
             root,
             previous_names=previous_names,
             current_names=current_names,
+        )
+        source_collection = _snapshot_bundled_skills(source)
+        previous = set(previous_names)
+        current = set(current_names)
+        custom = tuple(
+            tree for tree in canonical.skills if tree.name not in previous
+        )
+        collisions = sorted(current & {tree.name for tree in custom})
+        if collisions:
+            raise ValueError(
+                "new bundled skill collides with a custom canonical skill: "
+                f"{collisions[0]}"
+            )
+        prospective = SkillCollection(
+            tuple(sorted((*source_collection.skills, *custom), key=lambda tree: tree.name))
         )
 
         transactions = root / _UPGRADE_TRANSACTIONS
@@ -4554,16 +5147,11 @@ def upgrade_portable_skills(
         try:
             staged_root = transaction / "staged"
             staged_canonical = staged_root / "canonical"
-            staged_adapters = staged_root / "adapters"
+            staged_mirrors = staged_root / "mirrors"
             staged_bootstrap = staged_root / "bootstrap"
+            materialize_skill_collection(source_collection, staged_canonical)
             for name in current_names:
                 canonical_target = root / ".skills" / name
-                shutil.copytree(
-                    source / name,
-                    staged_canonical / name,
-                    symlinks=False,
-                    ignore=_ignore_source_artifacts,
-                )
                 os.chmod(
                     staged_canonical / name,
                     (
@@ -4572,36 +5160,20 @@ def upgrade_portable_skills(
                         else 0o755
                     ),
                 )
-                for agent_index, (agent_relative, _label) in enumerate(
-                    PROJECT_AGENT_DIRS
-                ):
-                    adapter = staged_adapters / str(agent_index) / name / "SKILL.md"
-                    adapter_relative = (
-                        PurePosixPath(agent_relative) / name / "SKILL.md"
+
+            staged_agent_roots: dict[Path, Path] = {}
+            for agent_index, (agent_relative, _label) in enumerate(
+                PROJECT_AGENT_DIRS
+            ):
+                target = root / agent_relative
+                staged = staged_mirrors / str(agent_index)
+                materialize_skill_collection(prospective, staged)
+                os.chmod(staged, stat.S_IMODE(target.lstat().st_mode))
+                if discover_skill_collection(staged) != prospective:
+                    raise RuntimeError(
+                        f"portable staged full mirror verification failed: {agent_relative}"
                     )
-                    canonical_relative = PurePosixPath(".skills") / name / "SKILL.md"
-                    _stage_text_for_replacement(
-                        root,
-                        transaction,
-                        adapter,
-                        root / agent_relative / name / "SKILL.md",
-                        _legacy_adapter_text(
-                            name,
-                            posixpath.relpath(
-                                canonical_relative.as_posix(),
-                                adapter_relative.parent.as_posix(),
-                            ),
-                        ),
-                    )
-                    adapter_target = root / agent_relative / name
-                    os.chmod(
-                        adapter.parent,
-                        (
-                            stat.S_IMODE(adapter_target.lstat().st_mode)
-                            if adapter_target.exists()
-                            else 0o755
-                        ),
-                    )
+                staged_agent_roots[target] = staged
 
             bootstrap_staged: dict[Path, Path] = {}
             for index, (target, text) in enumerate(bootstrap_plans):
@@ -4612,8 +5184,6 @@ def upgrade_portable_skills(
                 bootstrap_staged[target] = staged
 
             replacements: list[tuple[Path, Path | None]] = []
-            previous = set(previous_names)
-            current = set(current_names)
             for name in sorted(previous | current):
                 replacements.append(
                     (
@@ -4621,29 +5191,29 @@ def upgrade_portable_skills(
                         staged_canonical / name if name in current else None,
                     )
                 )
-                for agent_index, (agent_relative, _label) in enumerate(
-                    PROJECT_AGENT_DIRS
-                ):
-                    replacements.append(
-                        (
-                            root / agent_relative / name,
-                            staged_adapters / str(agent_index) / name
-                            if name in current
-                            else None,
-                        )
-                    )
+            replacements.extend(
+                (root / agent_relative, staged_agent_roots[root / agent_relative])
+                for agent_relative, _label in PROJECT_AGENT_DIRS
+            )
             replacements.extend(
                 (target, bootstrap_staged[target])
                 for target, _text in bootstrap_plans
             )
             inventory = root / MANAGED_SKILLS_INVENTORY
             staged_inventory = staged_root / "inventory/managed-skills.json"
+            next_inventory = ManagedSkillsInventory(
+                skills_version=version,
+                managed_skills=source_collection.names,
+                managed_skill_digests={
+                    skill.name: skill.digest for skill in source_collection.skills
+                },
+            )
             _stage_text_for_replacement(
                 root,
                 transaction,
                 staged_inventory,
                 inventory,
-                render_managed_skills_inventory(version, current_names),
+                render_inventory(next_inventory),
             )
             replacements.append((inventory, staged_inventory))
             payload, records = _prepare_upgrade_journal(
@@ -4655,6 +5225,16 @@ def upgrade_portable_skills(
                 _cleanup_upgrade_transaction(root, transaction)
             raise
         _apply_journaled_upgrade(root, transaction, payload, records)
+        if legacy_migration and warning_sink is not None:
+            warning_sink.append(
+                {
+                    "code": "legacy-adapters-migrated",
+                    "message": (
+                        "recognized legacy adapters were migrated to complete "
+                        "agent skill mirrors"
+                    ),
+                }
+            )
         return current_names
 
 

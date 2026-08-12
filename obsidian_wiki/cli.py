@@ -2957,6 +2957,7 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
+    warnings: list[dict[str, str]] = []
     try:
         resolved = resolve_config(
             cwd=Path.cwd(),
@@ -2973,11 +2974,17 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
             root,
             version=__version__,
             source_skills=skills_dir(),
+            warning_sink=warnings,
         )
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"Upgraded {len(names)} repository skills at {root} to {__version__}")
+    print(
+        f"Upgraded {len(names)} managed repository skills and rebuilt six full "
+        f"mirrors at {root} to {__version__}"
+    )
+    for warning in warnings:
+        print(f"warning [{warning['code']}]: {warning['message']}", file=sys.stderr)
     return 0
 
 
@@ -3330,7 +3337,7 @@ def build_parser() -> argparse.ArgumentParser:
     repo_sub = rp.add_subparsers(dest="repo_command", required=True)
     rus = repo_sub.add_parser(
         "upgrade-skills",
-        help="upgrade repository-managed skills and adapters from this CLI",
+        help="upgrade managed skills and rebuild full agent mirrors from this CLI",
     )
     rus.set_defaults(func=cmd_repo_upgrade_skills)
 

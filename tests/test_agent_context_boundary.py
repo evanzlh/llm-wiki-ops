@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_wiki import cli
+from obsidian_wiki import cli, portable
 from obsidian_wiki.skill_trees import discover_skill_collection
 from tools import capture_legacy_skill_digests as capture_tool
 
@@ -179,6 +179,37 @@ def test_legacy_digest_capture_is_deterministic_and_idempotent(tmp_path: Path) -
     second = _capture(source, "baseline", output)
     assert second.returncode == 0, second.stderr
     assert output.read_bytes() == expected
+
+
+def test_runtime_legacy_digest_catalog_loader_matches_captured_package_data() -> None:
+    payload = json.loads(CATALOG.read_text(encoding="utf-8"))
+
+    collections = portable._load_legacy_skill_digest_catalog()
+
+    assert [dict(collection) for collection in collections] == [
+        item["skills"] for item in payload["collections"]
+    ]
+    with pytest.raises(TypeError):
+        collections[0]["wiki-ingest"] = "sha256:" + "0" * 64  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"schema_version":1,"schema_version":1,"collections":[]}',
+        '{"schema_version":2,"collections":[]}',
+        '{"schema_version":1,"collections":[{"label":"x","skills":{}}]}',
+    ],
+)
+def test_runtime_legacy_digest_catalog_loader_fails_closed(
+    payload: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = tmp_path / "legacy.json"
+    catalog.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(portable, "_LEGACY_SKILL_DIGEST_CATALOG", catalog)
+
+    with pytest.raises(ValueError, match="legacy skill digest catalog"):
+        portable._load_legacy_skill_digest_catalog()
 
 
 def test_legacy_digest_capture_rejects_invalid_label_and_changed_overwrite(

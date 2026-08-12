@@ -74,6 +74,8 @@ description: Portable adapter for the repository-canonical wiki-ingest skill.
 Read and follow `../../../.skills/wiki-ingest/SKILL.md` from this repository. Resolve that path from this adapter file, never from the process working directory.
 '''
 
+SYNTHETIC_LEGACY_BASELINES: dict[Path, dict[str, str]] = {}
+
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -157,8 +159,14 @@ def make_legacy_adapter_repo(root: Path) -> None:
     """Convert a fresh v2 setup into the exact schema-v1 upgrade fixture."""
     inventory = read_inventory(root, allow_legacy=True)
     if isinstance(inventory, LegacyManagedSkillsInventory):
+        if root not in SYNTHETIC_LEGACY_BASELINES:
+            canonical = discover_skill_collection(root / ".skills").by_name()
+            SYNTHETIC_LEGACY_BASELINES[root] = {
+                name: canonical[name].digest for name in inventory.managed_skills
+            }
         return
     assert isinstance(inventory, ManagedSkillsInventory)
+    SYNTHETIC_LEGACY_BASELINES[root] = dict(inventory.managed_skill_digests)
     for agent_relative, _label in portable.PROJECT_AGENT_DIRS:
         agent_root = root / agent_relative
         root_modes = {
@@ -193,14 +201,28 @@ def make_legacy_adapter_repo(root: Path) -> None:
 def upgrade_portable_skills(
     root: Path, *, version: str, source_skills: Path
 ) -> tuple[str, ...]:
-    """Exercise the legacy upgrade implementation from an explicit v1 fixture."""
+    """Exercise recognized legacy migration from an explicit synthetic fixture."""
     try:
         inventory = read_inventory(root, allow_legacy=True)
     except ValueError:
         inventory = None
+    if inventory is None:
+        return _upgrade_portable_skills(
+            root, version=version, source_skills=source_skills
+        )
     if isinstance(inventory, ManagedSkillsInventory):
         make_legacy_adapter_repo(root)
-    return _upgrade_portable_skills(root, version=version, source_skills=source_skills)
+    legacy = read_inventory(root, allow_legacy=True)
+    assert isinstance(legacy, LegacyManagedSkillsInventory)
+    synthetic_baseline = SYNTHETIC_LEGACY_BASELINES[root]
+    original_loader = portable._load_legacy_skill_digest_catalog
+    portable._load_legacy_skill_digest_catalog = lambda: (synthetic_baseline,)
+    try:
+        return _upgrade_portable_skills(
+            root, version=version, source_skills=source_skills
+        )
+    finally:
+        portable._load_legacy_skill_digest_catalog = original_loader
 
 
 def write_prepared_skill_upgrade_journal(
@@ -2822,7 +2844,7 @@ def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> 
     assert "## Team policy\nUse our glossary." in agents.read_text(encoding="utf-8")
 
 
-def test_repo_upgrade_skills_repairs_adapter_and_preserves_team_sentence(
+def test_repo_upgrade_skills_refuses_mirror_drift_and_preserves_team_sentence(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "repo"
@@ -2834,15 +2856,16 @@ def test_repo_upgrade_skills_repairs_adapter_and_preserves_team_sentence(
         agents.read_text(encoding="utf-8") + "\nTeam-owned sentence.\n",
         encoding="utf-8",
     )
-    adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
-    make_legacy_adapter_repo(root)
-    adapter.unlink()
+    mirror = root / ".claude/skills/wiki-ingest/SKILL.md"
+    mirror.write_text(mirror.read_text() + "\nMirror drift.\n", encoding="utf-8")
+    before = snapshot_tree(root)
 
     result = run_cli(home, root, "repo", "upgrade-skills")
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "sync-skills --apply" in result.stderr
+    assert snapshot_tree(root) == before
     assert "Team-owned sentence." in agents.read_text(encoding="utf-8")
-    assert adapter.read_text(encoding="utf-8") == WIKI_INGEST_ADAPTER
 
 
 def test_initial_setup_writes_exact_managed_skills_inventory(
@@ -2863,6 +2886,247 @@ def test_initial_setup_writes_exact_managed_skills_inventory(
         skill.name: skill.digest for skill in canonical.skills
     }
     assert inventory_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_v2_upgrade_preserves_custom_canonical_and_rebuilds_full_mirrors(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    custom = root / ".skills/team-workflow"
+    custom.mkdir()
+    (custom / "SKILL.md").write_text(
+        skill_markdown("team-workflow", "Team-owned workflow."), encoding="utf-8"
+    )
+    (custom / "references").mkdir()
+    (custom / "references/团队约定.md").write_text(
+        "# 团队约定\n", encoding="utf-8"
+    )
+    portable.sync_portable_skill_mirrors(root, apply=True)
+    custom_before = snapshot_tree(custom)
+
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text(
+        skill_markdown("wiki-ingest", "Upgraded managed workflow."),
+        encoding="utf-8",
+    )
+    new_skill = tiny_skills / "wiki-new"
+    new_skill.mkdir()
+    (new_skill / "SKILL.md").write_text(skill_markdown("wiki-new"), encoding="utf-8")
+
+    names = _upgrade_portable_skills(
+        root, version="2026.8.4", source_skills=tiny_skills
+    )
+
+    assert names == ("wiki-ingest", "wiki-new", "wiki-query")
+    assert snapshot_tree(custom) == custom_before
+    assert_all_agent_mirrors_match(root)
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.skills_version == "2026.8.4"
+    assert inventory.managed_skills == names
+    managed = discover_skill_collection(tiny_skills, ignore_source_artifacts=True)
+    assert dict(inventory.managed_skill_digests) == {
+        skill.name: skill.digest for skill in managed.skills
+    }
+
+
+def test_v2_upgrade_refuses_modified_managed_canonical_before_staging(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    canonical = root / ".skills/wiki-ingest/SKILL.md"
+    canonical.write_text(canonical.read_text() + "\nOwner modification.\n")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="managed canonical.*digest|modified"):
+        _upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_v2_upgrade_refuses_mirror_drift_with_sync_remediation(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    mirror = root / ".claude/skills/wiki-ingest/SKILL.md"
+    mirror.write_text(mirror.read_text() + "\nMirror-only edit.\n")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="repo sync-skills --apply"):
+        _upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_legacy_adapter_upgrade_requires_known_canonical_baseline(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    make_legacy_adapter_repo(root)
+    canonical = root / ".skills/wiki-ingest/SKILL.md"
+    canonical.write_text(canonical.read_text() + "\nOwner modification.\n")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="legacy canonical.*not recognized"):
+        _upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.parametrize("corruption", ["missing", "modified", "extra", "mixed"])
+def test_legacy_adapter_migration_requires_an_exact_uniform_adapter_set(
+    corruption: str, tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    make_legacy_adapter_repo(root)
+    adapter = root / ".claude/skills/wiki-ingest"
+    if corruption == "missing":
+        (adapter / "SKILL.md").unlink()
+    elif corruption == "modified":
+        skill_file = adapter / "SKILL.md"
+        skill_file.write_text(skill_file.read_text() + "\nOwner edit.\n")
+    elif corruption == "extra":
+        (adapter / "OWNER.txt").write_text("owner bytes\n", encoding="utf-8")
+    else:
+        shutil.rmtree(adapter)
+        shutil.copytree(root / ".skills/wiki-ingest", adapter)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="adapter|SKILL.md|legacy"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_legacy_custom_skill_must_be_absent_everywhere_or_mirrored_everywhere(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    custom = root / ".skills/team-workflow"
+    custom.mkdir()
+    (custom / "SKILL.md").write_text(
+        skill_markdown("team-workflow", "Team-owned workflow."), encoding="utf-8"
+    )
+    make_legacy_adapter_repo(root)
+    shutil.copytree(custom, root / ".claude/skills/team-workflow")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="absent everywhere|across all agents"):
+        upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    assert snapshot_tree(root) == before
+
+
+def test_recognized_legacy_migration_emits_structured_warning(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    make_legacy_adapter_repo(root)
+    warnings: list[dict[str, str]] = []
+    original_loader = portable._load_legacy_skill_digest_catalog
+    portable._load_legacy_skill_digest_catalog = lambda: (
+        SYNTHETIC_LEGACY_BASELINES[root],
+    )
+    try:
+        names = _upgrade_portable_skills(
+            root,
+            version="2026.8.4",
+            source_skills=tiny_skills,
+            warning_sink=warnings,
+        )
+    finally:
+        portable._load_legacy_skill_digest_catalog = original_loader
+
+    assert names == ("wiki-ingest", "wiki-query")
+    assert warnings == [
+        {
+            "code": "legacy-adapters-migrated",
+            "message": (
+                "recognized legacy adapters were migrated to complete agent skill "
+                "mirrors"
+            ),
+        }
+    ]
+
+
+def test_v2_committed_upgrade_recovers_cleanup_after_inventory_swap(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (tiny_skills / "wiki-ingest/SKILL.md").write_text(
+        skill_markdown("wiki-ingest", "Upgraded after committed recovery."),
+        encoding="utf-8",
+    )
+    original_cleanup = portable._cleanup_replacement_transaction
+    interrupted = False
+
+    def interrupt_committed_cleanup(
+        repository: Path,
+        transaction: Path,
+        operation: portable.ReplacementOperation = portable.UPGRADE_OPERATION,
+        **kwargs: object,
+    ) -> None:
+        nonlocal interrupted
+        journal = transaction / "journal.json"
+        if (
+            operation == portable.UPGRADE_OPERATION
+            and journal.is_file()
+            and json.loads(journal.read_text(encoding="utf-8"))["status"]
+            == "committed"
+            and not interrupted
+        ):
+            interrupted = True
+            raise OSError("simulated committed upgrade cleanup interruption")
+        original_cleanup(repository, transaction, operation, **kwargs)
+
+    monkeypatch.setattr(
+        portable, "_cleanup_replacement_transaction", interrupt_committed_cleanup
+    )
+    with pytest.raises(OSError, match="committed upgrade cleanup"):
+        _upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
+
+    journals = list(
+        (root / portable.UPGRADE_OPERATION.transactions_relative).glob(
+            "*/journal.json"
+        )
+    )
+    assert interrupted and len(journals) == 1
+    assert json.loads(journals[0].read_text(encoding="utf-8"))["status"] == "committed"
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.skills_version == "2026.8.4"
+
+    monkeypatch.setattr(
+        portable, "_cleanup_replacement_transaction", original_cleanup
+    )
+    names = _upgrade_portable_skills(
+        root, version="2026.8.4", source_skills=tiny_skills
+    )
+
+    assert names == ("wiki-ingest", "wiki-query")
+    assert not journals[0].exists()
+    assert_all_agent_mirrors_match(root)
 
 
 def test_setup_v2_rerun_rejects_canonical_and_custom_skill_drift_without_writes(
@@ -3037,25 +3301,13 @@ def test_upgrade_replaces_adds_removes_and_rebuilds_managed_skills(
     for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
         assert not (root / agent_relative / "wiki-query").exists()
         for name in names:
-            adapter = root / agent_relative / name
-            assert snapshot_tree(adapter) == (
-                (
-                    "SKILL.md",
-                    "file",
-                    portable._legacy_adapter_text(
-                        name,
-                        os.path.relpath(
-                            root / ".skills" / name / "SKILL.md",
-                            adapter,
-                        ).replace(os.sep, "/"),
-                    ).encode(),
-                ),
+            assert snapshot_tree(root / agent_relative / name) == snapshot_tree(
+                root / ".skills" / name
             )
-    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text()) == {
-        "implementation": IMPLEMENTATION_ID,
-        "skills": ["wiki-ingest", "wiki-new"],
-        "skills_version": "2026.8.4",
-    }
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.skills_version == "2026.8.4"
+    assert inventory.managed_skills == names
     assert {path: path.read_bytes() for path in untouched_paths} == untouched
     assert git_config.read_text(encoding="utf-8") == "owner git data\n"
 
@@ -3065,11 +3317,13 @@ def test_upgrade_preserves_existing_skill_root_modes_and_defaults_new_roots_to_0
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    existing = [root / ".skills/wiki-ingest"] + [
-        root / agent_relative / "wiki-ingest"
+    existing_canonical = root / ".skills/wiki-ingest"
+    mirror_roots = [
+        root / agent_relative
         for agent_relative, _label in cli.PROJECT_AGENT_DIRS
     ]
-    for path in existing:
+    os.chmod(existing_canonical, 0o700)
+    for path in mirror_roots:
         os.chmod(path, 0o700)
     new_skill = tiny_skills / "wiki-new"
     new_skill.mkdir(mode=0o700)
@@ -3080,12 +3334,13 @@ def test_upgrade_preserves_existing_skill_root_modes_and_defaults_new_roots_to_0
         root, version="2026.8.4", source_skills=tiny_skills
     )
 
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in existing)
-    new_roots = [root / ".skills/wiki-new"] + [
-        root / agent_relative / "wiki-new"
-        for agent_relative, _label in cli.PROJECT_AGENT_DIRS
-    ]
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o755 for path in new_roots)
+    assert stat.S_IMODE(existing_canonical.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in mirror_roots)
+    assert stat.S_IMODE((root / ".skills/wiki-new").stat().st_mode) == 0o755
+    assert all(
+        stat.S_IMODE((path / "wiki-new").stat().st_mode) == 0o755
+        for path in mirror_roots
+    )
 
 
 def test_upgrade_never_copies_transaction_artifacts_directly_to_final_targets(
@@ -3163,7 +3418,9 @@ def test_upgrade_preserves_unlisted_owner_skill_directories(
     ]
     for path in owner_paths:
         path.mkdir(parents=True)
-        (path / "OWNER.txt").write_text(f"owner:{path}\n", encoding="utf-8")
+        (path / "SKILL.md").write_text(
+            skill_markdown("team-owned", "Team-owned workflow."), encoding="utf-8"
+        )
     before = {path: snapshot_tree(path) for path in owner_paths}
 
     upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
@@ -3187,7 +3444,9 @@ def test_upgrade_new_bundled_skill_owner_collision_fails_closed(
         else root / ".claude/skills/team-owned"
     )
     collision.mkdir(parents=True)
-    (collision / "OWNER.txt").write_text("owner\n", encoding="utf-8")
+    (collision / "SKILL.md").write_text(
+        skill_markdown("team-owned", "Owner collision."), encoding="utf-8"
+    )
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="owner|collision|unlisted"):
@@ -3351,7 +3610,6 @@ def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
     root = tmp_path / "repo"
     setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
     assert setup.returncode == 0, setup.stderr
-    make_legacy_adapter_repo(root)
     nested = root / "wiki/concepts/deep"
     nested.mkdir(parents=True)
     upgraded = run_cli(home, nested, "repo", "upgrade-skills")
@@ -3392,7 +3650,7 @@ def test_upgrade_safety_preflight_leaves_everything_unchanged(
         managed.symlink_to(external, target_is_directory=True)
     before = snapshot_tree(root)
 
-    with pytest.raises(ValueError, match="symlink"):
+    with pytest.raises(ValueError, match="symlink|symbolic link"):
         upgrade_portable_skills(root, version="2026.8.4", source_skills=tiny_skills)
 
     assert snapshot_tree(root) == before
@@ -3657,7 +3915,7 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
 
     assert stat.S_IMODE(agents.stat().st_mode) == 0o600
     assert stat.S_IMODE(inventory.stat().st_mode) == 0o640
-    assert stat.S_IMODE(adapter.stat().st_mode) == 0o600
+    assert stat.S_IMODE(adapter.stat().st_mode) == 0o644
     assert "transaction-only writes" in agents.read_text(encoding="utf-8")
 
 
@@ -3696,8 +3954,6 @@ def test_upgrade_ignores_unrelated_owner_symlinks_and_preserves_them(
     owner_links = [
         root / "wiki/concepts/owner-link",
         root / "sources/owner-link",
-        root / ".skills/team-owned/owner-link",
-        root / ".claude/skills/team-owned/owner-link",
         root / ".cursor/rules/team-owned-link",
     ]
     for link in owner_links:
@@ -4046,9 +4302,9 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
     assert not list(
         (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
     )
-    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text())[
-        "skills"
-    ] == ["wiki-ingest", "wiki-new", "wiki-query"]
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skills == ("wiki-ingest", "wiki-new", "wiki-query")
 
 
 def test_next_invocation_recovery_removes_created_bootstrap_parents_before_upgrade(
