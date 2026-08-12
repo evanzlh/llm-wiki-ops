@@ -766,6 +766,28 @@ def test_default_schema_remains_framework_compatible(tmp_path: Path) -> None:
     assert "related_to" in report["schema"]["allowed_relationship_types"]
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+def test_optional_present_fifo_ledger_is_rejected_without_opening(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    os.mkfifo(ledger_path)
+
+    report = lint_vault(
+        vault,
+        require_trust_ledger=False,
+        strict_trust=True,
+    )
+
+    assert report["status"] == "fail"
+    assert report["findings"]["confidence_ledger_errors"][0]["issue"] == (
+        "ledger_unreadable"
+    )
+
+
 def test_lifecycle_typo_fails_without_ledger_when_ledger_is_not_required(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")

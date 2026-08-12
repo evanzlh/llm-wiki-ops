@@ -223,16 +223,20 @@ def lint_vault(
                 )
 
     ledger_path = vault / TRUST_LEDGER_RELATIVE_PATH
+    candidate_trust_report = check_trust_ledger(
+        vault,
+        ledger_path,
+        allowed_lifecycles=lifecycles,
+        required_trust_keys=trust_fields,
+        schema_source=schema_source,
+    )
+    ledger_is_missing = candidate_trust_report["errors"] == [
+        {"issue": "ledger_missing", "path": str(ledger_path)}
+    ]
     trust_report = (
-        check_trust_ledger(
-            vault,
-            ledger_path,
-            allowed_lifecycles=lifecycles,
-            required_trust_keys=trust_fields,
-            schema_source=schema_source,
-        )
-        if ledger_path.is_file() or require_trust_ledger
-        else None
+        None
+        if ledger_is_missing and not require_trust_ledger
+        else candidate_trust_report
     )
 
     findings = {

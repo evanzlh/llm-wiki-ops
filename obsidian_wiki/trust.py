@@ -21,7 +21,12 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .safe_files import MarkdownFile, scan_markdown_files
+from .safe_files import (
+    MarkdownFile,
+    UnsafeVaultError,
+    read_safe_file,
+    scan_markdown_files,
+)
 
 TRUST_LEDGER_RELATIVE_PATH = Path("_meta/trust-ledger.json")
 TRUST_LEDGER_SCHEMA_VERSION = 1
@@ -395,10 +400,14 @@ def update_trust_ledger(
     """Update reviewed pages and remove entries whose confidence is not applicable."""
     reviewed_at = _validate_reviewed_at(reviewed_at)
     snapshots = _trust_snapshots(vault)
-    if ledger_path.is_file():
+    try:
+        ledger_content = read_safe_file(vault, ledger_path, missing_ok=True)
+    except UnsafeVaultError as exc:
+        raise RuntimeError(f"cannot update unreadable trust ledger: {exc}") from exc
+    if ledger_content is not None:
         try:
             ledger = json.loads(
-                ledger_path.read_text(encoding="utf-8"),
+                ledger_content.decode("utf-8"),
                 parse_constant=_reject_json_constant,
                 object_pairs_hook=_reject_duplicate_json_keys,
             )
@@ -616,15 +625,16 @@ def check_trust_ledger(
         schema_source=schema_source,
     )
     try:
+        ledger_content = read_safe_file(vault, path, missing_ok=True)
+        if ledger_content is None:
+            report["errors"].append({"issue": "ledger_missing", "path": str(path)})
+            return _finalise_report(report)
         ledger = json.loads(
-            path.read_text(encoding="utf-8"),
+            ledger_content.decode("utf-8"),
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except FileNotFoundError:
-        report["errors"].append({"issue": "ledger_missing", "path": str(path)})
-        return _finalise_report(report)
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (UnsafeVaultError, UnicodeError, ValueError) as exc:
         report["errors"].append({"issue": "ledger_unreadable", "detail": str(exc)})
         return _finalise_report(report)
 

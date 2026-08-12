@@ -595,6 +595,130 @@ def test_invalid_utf8_ledger_returns_structured_failure(tmp_path: Path) -> None:
     assert report["errors"][0]["issue"] == "ledger_unreadable"
 
 
+def test_hardlinked_ledger_returns_structured_failure_without_reading_target(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    external = tmp_path / "secret.json"
+    external.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "manual-lineage-and-claim-coverage-v1",
+                "reviewed_at": "2026-07-12T17:38:39+07:00",
+                "pages": {},
+                "secret": "SECRET-MARKER",
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        os.link(external, ledger_path)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable: {exc}")
+
+    report = check_trust_ledger(vault, ledger_path)
+
+    assert report["status"] == "fail"
+    assert report["errors"][0]["issue"] == "ledger_unreadable"
+    assert "SECRET-MARKER" not in json.dumps(report)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+def test_fifo_ledger_returns_structured_failure_without_opening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    os.mkfifo(ledger_path)
+    real_open = os.open
+
+    def guarded_open(path: object, *args: object, **kwargs: object) -> int:
+        if path == ledger_path.name:
+            raise AssertionError("FIFO was opened")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    report = check_trust_ledger(vault, ledger_path)
+
+    assert report["status"] == "fail"
+    assert report["errors"][0]["issue"] == "ledger_unreadable"
+
+
+@pytest.mark.parametrize("kind", ["terminal_symlink", "intermediate_symlink"])
+def test_linked_ledger_path_fails_cleanly_without_reading_target(
+    tmp_path: Path, kind: str
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "trust-ledger.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    meta = vault / "_meta"
+    if kind == "intermediate_symlink":
+        meta.symlink_to(outside, target_is_directory=True)
+        ledger_path = meta / "trust-ledger.json"
+    else:
+        meta.mkdir()
+        ledger_path = meta / "trust-ledger.json"
+        ledger_path.symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        check_trust_ledger(vault, ledger_path)
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "command", [("trust-check", "--json"), ("lint", "--json", "--strict-trust")]
+)
+@pytest.mark.parametrize("kind", ["hardlink", "fifo"])
+def test_unsafe_trust_ledger_cli_failure_has_no_traceback(
+    tmp_path: Path, command: tuple[str, ...], kind: str
+) -> None:
+    home = tmp_path / "home"
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    external = tmp_path / "secret.json"
+    external.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "manual-lineage-and-claim-coverage-v1",
+                "reviewed_at": "2026-07-12T17:38:39+07:00",
+                "pages": {},
+                "secret": "SECRET-MARKER",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if kind == "hardlink":
+        try:
+            os.link(external, ledger_path)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable: {exc}")
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(ledger_path)
+    nested = _portable_cli_context(vault)
+
+    result = _run_cli(home, *command, cwd=nested)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "SECRET-MARKER" not in result.stdout + result.stderr
+    assert "single-link ordinary file" in result.stdout + result.stderr
+
+
 def test_invalid_review_timestamp_is_rejected_by_record_cli(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"

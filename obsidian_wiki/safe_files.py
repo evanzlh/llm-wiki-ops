@@ -59,6 +59,74 @@ def _unsafe(relative: str, reason: str) -> UnsafeVaultError:
     return UnsafeVaultError(f"unsafe vault entry {relative or '.'}: {reason}")
 
 
+def _stat_at(
+    descriptor: int,
+    name: str,
+    relative: str,
+    *,
+    missing_ok: bool = False,
+) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return None
+        raise _unsafe(relative, f"stat failed: {exc}") from exc
+    except OSError as exc:
+        raise _unsafe(relative, f"stat failed: {exc}") from exc
+
+
+def _fstat(descriptor: int, relative: str) -> os.stat_result:
+    try:
+        return os.fstat(descriptor)
+    except OSError as exc:
+        raise _unsafe(relative, f"fstat failed: {exc}") from exc
+
+
+def _open_at(descriptor: int, name: str, flags: int, relative: str) -> int:
+    try:
+        return os.open(name, flags, dir_fd=descriptor)
+    except OSError as exc:
+        raise _unsafe(relative, f"open failed: {exc}") from exc
+
+
+def _read(descriptor: int, relative: str) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        try:
+            chunk = os.read(descriptor, 1024 * 1024)
+        except OSError as exc:
+            raise _unsafe(relative, f"read failed: {exc}") from exc
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _close(descriptor: int, relative: str) -> None:
+    try:
+        os.close(descriptor)
+    except OSError as exc:
+        raise _unsafe(relative, f"close failed: {exc}") from exc
+
+
+def _handoff_descriptor(
+    parent: int,
+    child: int,
+    *,
+    parent_relative: str,
+    child_relative: str,
+) -> int:
+    try:
+        _close(parent, parent_relative)
+    except UnsafeVaultError as initial:
+        try:
+            _close(child, child_relative)
+        except UnsafeVaultError as cleanup:
+            raise cleanup from initial
+        raise
+    return child
+
+
 def _validate_path_ancestry(path: Path) -> None:
     current = Path(path.anchor)
     for part in path.parts[1:]:
@@ -66,7 +134,7 @@ def _validate_path_ancestry(path: Path) -> None:
         try:
             metadata = current.lstat()
         except OSError as exc:
-            raise _unsafe(".", f"vault path component is unavailable: {current}") from exc
+            raise _unsafe(".", f"lstat failed for vault path component {current}: {exc}") from exc
         if stat.S_ISLNK(metadata.st_mode) or _reparse(metadata):
             raise _unsafe(".", f"vault path component is a symlink: {current}")
 
@@ -85,32 +153,42 @@ def _file_flags() -> int:
 
 
 def _open_bound_root(root: Path) -> int:
-    descriptor = os.open(root.anchor, _directory_flags())
     try:
+        descriptor = os.open(root.anchor, _directory_flags())
+    except OSError as exc:
+        raise _unsafe(".", f"open failed for vault anchor {root.anchor}: {exc}") from exc
+    try:
+        component = root.anchor
         for part in root.parts[1:]:
-            try:
-                observed = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
-            except OSError as exc:
-                raise _unsafe(".", f"vault path component is unavailable: {part}") from exc
+            parent_component = component
+            component = os.fspath(Path(component) / part)
+            observed = _stat_at(descriptor, part, component)
+            assert observed is not None
             if stat.S_ISLNK(observed.st_mode) or _reparse(observed):
-                raise _unsafe(".", f"vault path component is a symlink: {part}")
+                raise _unsafe(component, "vault path component is a symlink")
             if not stat.S_ISDIR(observed.st_mode):
-                raise _unsafe(".", f"vault path component is not a directory: {part}")
+                raise _unsafe(component, "vault path component is not a directory")
+            child = _open_at(descriptor, part, _directory_flags(), component)
             try:
-                child = os.open(part, _directory_flags(), dir_fd=descriptor)
-            except OSError as exc:
-                raise _unsafe(".", f"vault path component changed or is unsafe: {part}") from exc
-            opened = os.fstat(child)
+                opened = _fstat(child, component)
+            except BaseException:
+                _close(child, component)
+                raise
             if _identity(opened, directory=True) != _identity(
                 observed, directory=True
             ):
-                os.close(child)
-                raise _unsafe(".", f"vault path component changed while opening: {part}")
-            os.close(descriptor)
-            descriptor = child
+                _close(child, component)
+                raise _unsafe(component, "vault path component changed while opening")
+            parent = descriptor
+            descriptor = _handoff_descriptor(
+                parent,
+                child,
+                parent_relative=parent_component,
+                child_relative=component,
+            )
         return descriptor
     except BaseException:
-        os.close(descriptor)
+        _close(descriptor, ".")
         raise
 
 
@@ -120,28 +198,20 @@ def _read_bound_file(
     relative: str,
     observed: os.stat_result,
 ) -> tuple[bytes, os.stat_result]:
+    descriptor = _open_at(parent_descriptor, name, _file_flags(), relative)
     try:
-        descriptor = os.open(name, _file_flags(), dir_fd=parent_descriptor)
-    except OSError as exc:
-        raise _unsafe(relative, "file changed or could not be opened safely") from exc
-    try:
-        opened = os.fstat(descriptor)
+        opened = _fstat(descriptor, relative)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             raise _unsafe(relative, "file is not a single-link ordinary file")
         if _identity(opened, directory=False) != _identity(observed, directory=False):
             raise _unsafe(relative, "file changed while being opened")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        final = os.fstat(descriptor)
+        content = _read(descriptor, relative)
+        final = _fstat(descriptor, relative)
         if _identity(final, directory=False) != _identity(opened, directory=False):
             raise _unsafe(relative, "file changed while being read")
-        return b"".join(chunks), opened
+        return content, opened
     finally:
-        os.close(descriptor)
+        _close(descriptor, relative)
 
 
 def _scan_bound_directory(
@@ -153,29 +223,26 @@ def _scan_bound_directory(
     skip_dirs: Collection[str],
     skip_files: Collection[str],
 ) -> None:
-    before = os.fstat(descriptor)
+    before = _fstat(descriptor, relative)
     try:
         names = sorted(os.listdir(descriptor))
     except OSError as exc:
-        raise _unsafe(relative, "directory is unreadable") from exc
+        raise _unsafe(relative, f"listdir failed: {exc}") from exc
     for name in names:
         child_relative = f"{relative}/{name}" if relative else name
-        try:
-            observed = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        except OSError as exc:
-            raise _unsafe(child_relative, "entry changed during scan") from exc
+        observed = _stat_at(descriptor, name, child_relative)
+        assert observed is not None
         mode = observed.st_mode
         if stat.S_ISLNK(mode):
             raise _unsafe(child_relative, "symlinks are not allowed")
         if stat.S_ISDIR(mode):
             if name in skip_dirs:
                 continue
+            child_descriptor = _open_at(
+                descriptor, name, _directory_flags(), child_relative
+            )
             try:
-                child_descriptor = os.open(name, _directory_flags(), dir_fd=descriptor)
-            except OSError as exc:
-                raise _unsafe(child_relative, "directory changed or is unsafe") from exc
-            try:
-                opened = os.fstat(child_descriptor)
+                opened = _fstat(child_descriptor, child_relative)
                 if _identity(opened, directory=True) != _identity(
                     observed, directory=True
                 ):
@@ -188,13 +255,14 @@ def _scan_bound_directory(
                     skip_dirs=skip_dirs,
                     skip_files=skip_files,
                 )
-                attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                attached = _stat_at(descriptor, name, child_relative)
+                assert attached is not None
                 if _identity(attached, directory=True) != _identity(
                     opened, directory=True
                 ):
                     raise _unsafe(child_relative, "directory changed during scan")
             finally:
-                os.close(child_descriptor)
+                _close(child_descriptor, child_relative)
             continue
         if not name.endswith(".md"):
             continue
@@ -205,13 +273,14 @@ def _scan_bound_directory(
         if name in skip_files:
             continue
         content, opened = _read_bound_file(descriptor, name, child_relative, observed)
-        attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        attached = _stat_at(descriptor, name, child_relative)
+        assert attached is not None
         if _identity(attached, directory=False) != _identity(opened, directory=False):
             raise _unsafe(child_relative, "file changed after being read")
         snapshots.append(
             MarkdownFile(root / child_relative, child_relative, content, opened.st_mtime_ns)
         )
-    final = os.fstat(descriptor)
+    final = _fstat(descriptor, relative)
     if _identity(final, directory=True) != _identity(before, directory=True):
         raise _unsafe(relative, "directory changed during scan")
 
@@ -228,7 +297,7 @@ def scan_markdown_files(
     try:
         observed = root.lstat()
     except OSError as exc:
-        raise _unsafe(".", "vault root is unavailable") from exc
+        raise _unsafe(".", f"vault root lstat failed: {exc}") from exc
     if stat.S_ISLNK(observed.st_mode) or _reparse(observed):
         raise _unsafe(".", "vault root symlink is not allowed")
     if not stat.S_ISDIR(observed.st_mode):
@@ -239,7 +308,7 @@ def scan_markdown_files(
     snapshots: list[MarkdownFile] = []
     descriptor = _open_bound_root(root)
     try:
-        opened = os.fstat(descriptor)
+        opened = _fstat(descriptor, ".")
         if _identity(opened, directory=True) != _identity(
             observed, directory=True
         ):
@@ -253,5 +322,97 @@ def scan_markdown_files(
             skip_files=skip_files,
         )
     finally:
-        os.close(descriptor)
+        _close(descriptor, ".")
     return tuple(sorted(snapshots, key=lambda item: item.relative))
+
+
+def read_safe_file(
+    root: Path,
+    path: Path,
+    *,
+    missing_ok: bool = False,
+) -> bytes | None:
+    """Read one single-link ordinary file beneath *root* without following links."""
+    root = Path(os.path.abspath(os.fspath(root)))
+    path = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative_path = path.relative_to(root)
+    except ValueError as exc:
+        raise _unsafe(str(path), "file is outside the vault root") from exc
+    if not relative_path.parts:
+        raise _unsafe(".", "file path names the vault root")
+    relative = relative_path.as_posix()
+
+    _validate_path_ancestry(root)
+    try:
+        root_observed = root.lstat()
+    except OSError as exc:
+        raise _unsafe(".", f"vault root lstat failed: {exc}") from exc
+    if stat.S_ISLNK(root_observed.st_mode) or _reparse(root_observed):
+        raise _unsafe(".", "vault root symlink is not allowed")
+    if not stat.S_ISDIR(root_observed.st_mode):
+        raise _unsafe(".", "vault root must be an ordinary directory")
+    if not _SUPPORTS_BOUND_SCAN:
+        raise _unsafe(".", "safe vault reading is not supported on this platform")
+
+    descriptor = _open_bound_root(root)
+    try:
+        opened_root = _fstat(descriptor, ".")
+        if _identity(opened_root, directory=True) != _identity(
+            root_observed, directory=True
+        ):
+            raise _unsafe(".", "vault root changed while being opened")
+        traversed: list[str] = []
+        for part in relative_path.parts[:-1]:
+            parent_relative = "/".join(traversed)
+            traversed.append(part)
+            child_relative = "/".join(traversed)
+            observed = _stat_at(
+                descriptor, part, child_relative, missing_ok=missing_ok
+            )
+            if observed is None:
+                return None
+            if stat.S_ISLNK(observed.st_mode) or _reparse(observed):
+                raise _unsafe(child_relative, "symlinks are not allowed")
+            if not stat.S_ISDIR(observed.st_mode):
+                raise _unsafe(child_relative, "path component is not a directory")
+            child = _open_at(descriptor, part, _directory_flags(), child_relative)
+            try:
+                opened = _fstat(child, child_relative)
+                if _identity(opened, directory=True) != _identity(
+                    observed, directory=True
+                ):
+                    raise _unsafe(child_relative, "directory changed while being opened")
+            except BaseException:
+                _close(child, child_relative)
+                raise
+            parent = descriptor
+            descriptor = _handoff_descriptor(
+                parent,
+                child,
+                parent_relative=parent_relative,
+                child_relative=child_relative,
+            )
+
+        name = relative_path.parts[-1]
+        observed_file = _stat_at(
+            descriptor, name, relative, missing_ok=missing_ok
+        )
+        if observed_file is None:
+            return None
+        if stat.S_ISLNK(observed_file.st_mode) or _reparse(observed_file):
+            raise _unsafe(relative, "symlinks are not allowed")
+        if not stat.S_ISREG(observed_file.st_mode) or observed_file.st_nlink != 1:
+            raise _unsafe(relative, "file is not a single-link ordinary file")
+        content, opened_file = _read_bound_file(
+            descriptor, name, relative, observed_file
+        )
+        attached = _stat_at(descriptor, name, relative)
+        assert attached is not None
+        if _identity(attached, directory=False) != _identity(
+            opened_file, directory=False
+        ):
+            raise _unsafe(relative, "file changed after being read")
+        return content
+    finally:
+        _close(descriptor, relative)
