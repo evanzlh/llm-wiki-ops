@@ -6,6 +6,7 @@ activation: "always-on"
 # Obsidian Wiki Repository Rules
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`, then read repository
-`AGENTS.md`. Skills live in `.skills/`; `.skills/llm-wiki/SKILL.md` defines the
-single source-authority and transaction protocol. Stop when configuration is
-missing or invalid, and do not bypass the transaction CLI.
+`AGENTS.md`. First load `.skills/llm-wiki/SKILL.md` as the canonical transaction
+protocol, then load the applicable `.skills/<task>/SKILL.md`. The canonical
+protocol takes precedence over conflicts. Stop when configuration is missing or
+invalid.

@@ -78,6 +78,16 @@ Read and follow `../../../.skills/wiki-ingest/SKILL.md` from this repository. Re
 
 SYNTHETIC_LEGACY_BASELINES: dict[Path, dict[str, str]] = {}
 
+BUNDLED_BOOTSTRAP_TARGETS = {
+    "AGENTS.md": "AGENTS.md",
+    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
+    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
+    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
+    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
+    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    ".github/copilot-instructions.md": "github/copilot-instructions.md",
+}
+
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -612,6 +622,19 @@ def test_setup_rerun_preserves_unsupported_owner_artifacts_and_check_rejects_the
         ("unsupported-personal-artifact", "wiki/_archives"),
         ("unsupported-personal-artifact", "wiki/_raw"),
     }
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return "", text
+    boundary = text.index("\n---\n", 4) + len("\n---\n")
+    return text[:boundary], text[boundary:].lstrip("\n")
+
+
+def managed_body(text: str) -> str:
+    start = text.index(MANAGED_START) + len(MANAGED_START)
+    end = text.index(MANAGED_END, start)
+    return text[start:end].strip("\n") + "\n"
 
 
 def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(
@@ -2280,12 +2303,6 @@ def test_bootstrap_files_are_ordinary_markdown_with_correct_agents_reference(
         "CLAUDE.md": "AGENTS.md",
         "GEMINI.md": "AGENTS.md",
         ".hermes.md": "AGENTS.md",
-        ".agent/rules/obsidian-wiki.md": "../../AGENTS.md",
-        ".agent/workflows/obsidian-wiki.md": "../../AGENTS.md",
-        ".cursor/rules/obsidian-wiki.mdc": "../../AGENTS.md",
-        ".windsurf/rules/obsidian-wiki.md": "../../AGENTS.md",
-        ".kiro/steering/obsidian-wiki.md": "../../AGENTS.md",
-        ".github/copilot-instructions.md": "../AGENTS.md",
     }
 
     for relative, reference in references.items():
@@ -2295,18 +2312,81 @@ def test_bootstrap_files_are_ordinary_markdown_with_correct_agents_reference(
         assert f"`{reference}`" in path.read_text(encoding="utf-8")
 
 
+def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    result = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
+    assert result.returncode == 0, result.stderr
+
+    source = cli.bootstrap_dir()
+    for target_relative, asset_relative in BUNDLED_BOOTSTRAP_TARGETS.items():
+        installed = (root / target_relative).read_text(encoding="utf-8")
+        asset = (source / asset_relative).read_text(encoding="utf-8")
+        asset_frontmatter, asset_body = split_frontmatter(asset)
+        installed_frontmatter, _installed_body = split_frontmatter(installed)
+        assert installed_frontmatter == asset_frontmatter, target_relative
+        assert managed_body(installed) == asset_body, target_relative
+
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    canonical = agents.index("`.skills/llm-wiki/SKILL.md`")
+    task = agents.index("`.skills/<task>/SKILL.md`")
+    assert canonical < task
+    assert "canonical protocol takes precedence" in agents
+    checked = run_cli(tmp_path / "home", root, "check")
+    assert checked.returncode == 0, checked.stderr or checked.stdout
+
+
+def test_repo_upgrade_skills_repairs_bundled_bootstrap_managed_regions(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    setup = run_cli(home, tmp_path, "setup", str(root))
+    assert setup.returncode == 0, setup.stderr
+
+    for target_relative in BUNDLED_BOOTSTRAP_TARGETS:
+        target = root / target_relative
+        target.write_text(
+            target.read_text(encoding="utf-8").replace("transaction", "stale-rule"),
+            encoding="utf-8",
+        )
+
+    drifted = run_cli(home, root, "check", "--json")
+    assert drifted.returncode == 1
+    drift_payload = json.loads(drifted.stdout)
+    assert any(
+        issue["code"] == "managed-bootstrap-invalid"
+        for issue in drift_payload["issues"]
+    )
+
+    upgraded = run_cli(home, root, "repo", "upgrade-skills")
+    assert upgraded.returncode == 0, upgraded.stderr
+    source = cli.bootstrap_dir()
+    for target_relative, asset_relative in BUNDLED_BOOTSTRAP_TARGETS.items():
+        installed = (root / target_relative).read_text(encoding="utf-8")
+        asset = (source / asset_relative).read_text(encoding="utf-8")
+        asset_frontmatter, asset_body = split_frontmatter(asset)
+        installed_frontmatter, _installed_body = split_frontmatter(installed)
+        assert installed_frontmatter == asset_frontmatter, target_relative
+        assert managed_body(installed) == asset_body, target_relative
+    checked = run_cli(home, root, "check")
+    assert checked.returncode == 0, checked.stderr or checked.stdout
+
+
 def test_root_agents_is_portable_dedicated_and_preserves_team_conventions(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     text = (root / "AGENTS.md").read_text(encoding="utf-8")
+    flat = " ".join(text.split())
 
-    assert ".obsidian-wiki/config.toml" in text
-    assert ".skills/<name>/SKILL.md" in text
-    assert "wiki/AGENTS.md" in text
-    assert "transaction-only" in text
-    assert "commit, push, or open a pull request" in text
+    assert ".obsidian-wiki/config.toml" in flat
+    assert ".skills/<task>/SKILL.md" in flat
+    assert "canonical protocol takes precedence" in flat
+    assert "All knowledge writes use CLI transactions" in flat
+    assert "commits, pushes, and pull requests" in flat
     assert "## Team conventions" in text
     assert "terminology" in text and "writing style" in text
     assert "README Translation Parity" not in text
@@ -3605,7 +3685,9 @@ def test_upgrade_refreshes_only_bootstrap_managed_regions(
     agents.write_text(
         (
             "Owner preface\n\n"
-            + agents.read_text().replace("transaction-only writes", "stale managed rule")
+            + agents.read_text().replace(
+                "canonical protocol takes precedence", "stale managed rule"
+            )
             + "\nOwner footer\n"
         )
     )
@@ -3628,7 +3710,7 @@ def test_upgrade_refreshes_only_bootstrap_managed_regions(
     assert claude.read_text().endswith("Owner after\n")
     assert unknown.read_text() == "owner file\n"
     assert "stale managed rule" not in agents.read_text()
-    assert "transaction-only writes" in agents.read_text()
+    assert "canonical protocol takes precedence" in agents.read_text()
     assert "Stale managed bootstrap" not in claude.read_text()
     assert "Read and follow `AGENTS.md`" in claude.read_text()
     assert agents.read_text().count(MANAGED_START) == 1
@@ -4058,7 +4140,9 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
     os.chmod(inventory, 0o640)
     os.chmod(adapter, 0o600)
     agents.write_text(
-        agents.read_text().replace("transaction-only writes", "stale managed rule"),
+        agents.read_text().replace(
+            "canonical protocol takes precedence", "stale managed rule"
+        ),
         encoding="utf-8",
     )
 
@@ -4067,7 +4151,9 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
     assert stat.S_IMODE(agents.stat().st_mode) == 0o600
     assert stat.S_IMODE(inventory.stat().st_mode) == 0o640
     assert stat.S_IMODE(adapter.stat().st_mode) == 0o644
-    assert "transaction-only writes" in agents.read_text(encoding="utf-8")
+    assert "canonical protocol takes precedence" in agents.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_pre_inventory_repository_fails_without_partial_writes(

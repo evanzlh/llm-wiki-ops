@@ -14,6 +14,7 @@ commands:
 
 # Obsidian Wiki Workflow Registry
 
-Resolve `.obsidian-wiki/config.toml` and read `AGENTS.md` first. Every command
-loads its task skill from `.skills/`, which delegates all writes to the canonical
-transaction protocol in `.skills/llm-wiki/SKILL.md`.
+Resolve `.obsidian-wiki/config.toml` and read `AGENTS.md`. First load the
+canonical transaction protocol in `.skills/llm-wiki/SKILL.md`, then load the
+command's `.skills/<task>/SKILL.md`. The canonical protocol takes precedence
+over conflicts.

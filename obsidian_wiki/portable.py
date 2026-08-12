@@ -158,15 +158,6 @@ path:"journal/operations"
 ```
 '''
 
-_PORTABLE_AGENT_INSTRUCTIONS = """# Portable Obsidian Wiki Repository
-
-- Discover this repository's configuration at `.obsidian-wiki/config.toml`; resolve every configured path relative to the repository root.
-- Route user intent through `.skills/<name>/SKILL.md`, which is the repository-canonical skill location.
-- Read `wiki/AGENTS.md` when it exists and apply its owner-specific conventions after these repository rules.
-- Treat vault changes as transaction-only writes: inspect and validate the complete write set before applying it.
-- Never automatically commit, push, or open a pull request. Those source-control actions require an explicit user request.
-"""
-
 _TEAM_CONVENTIONS = """## Team conventions
 
 Maintainers may add repository-specific terminology, writing style, scope, and review rules below this heading.
@@ -182,6 +173,17 @@ _BOOTSTRAP_REFERENCES = {
     ".windsurf/rules/obsidian-wiki.md": "../../AGENTS.md",
     ".kiro/steering/obsidian-wiki.md": "../../AGENTS.md",
     ".github/copilot-instructions.md": "../AGENTS.md",
+}
+
+_BUNDLED_BOOTSTRAP_DIR = Path(__file__).parent / "_data/bootstrap"
+_BOOTSTRAP_ASSET_TARGETS = {
+    "AGENTS.md": "AGENTS.md",
+    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
+    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
+    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
+    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
+    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    ".github/copilot-instructions.md": "github/copilot-instructions.md",
 }
 
 _SOURCE_IGNORED_DIRS = frozenset(
@@ -1752,11 +1754,85 @@ def _bootstrap_body(relative_agents: str) -> str:
     )
 
 
+def _bootstrap_source(source_bootstrap: Path | None) -> Path:
+    source = _absolute_no_resolve(source_bootstrap or _BUNDLED_BOOTSTRAP_DIR)
+    try:
+        kind = _source_entry_kind(source)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"bundled bootstrap directory not found: {source}") from exc
+    if kind != "directory":
+        raise ValueError(f"bundled bootstrap source must be an ordinary directory: {source}")
+    return source
+
+
+def _read_bootstrap_asset(source: Path, relative: str) -> str:
+    parts = PurePosixPath(relative).parts
+    parent = source
+    for part in parts[:-1]:
+        parent /= part
+        if _source_entry_kind(parent) != "directory":
+            raise ValueError(
+                f"bundled bootstrap asset parent must be an ordinary directory: {parent}"
+            )
+    path = parent / parts[-1]
+    if _source_entry_kind(path) != "file":
+        raise ValueError(f"bundled bootstrap asset must be an ordinary file: {path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"bundled bootstrap asset is unreadable: {path}: {exc}") from exc
+
+
+def _split_bootstrap_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return "", text
+    boundary = text.find("\n---\n", 4)
+    if boundary < 0:
+        raise ValueError("bundled bootstrap asset has unclosed frontmatter")
+    boundary += len("\n---\n")
+    return text[:boundary], text[boundary:].lstrip("\n")
+
+
+def _owner_around_managed_bootstrap(existing: str) -> tuple[str, str] | None:
+    start_count = existing.count(MANAGED_START)
+    end_count = existing.count(MANAGED_END)
+    if start_count != end_count or start_count > 1:
+        raise ValueError("malformed obsidian-wiki managed markers")
+    if start_count == 0:
+        return None
+    start = existing.index(MANAGED_START)
+    end = existing.index(MANAGED_END, start) + len(MANAGED_END)
+    before = existing[:start]
+    _frontmatter, before = _split_bootstrap_frontmatter(before)
+    return before.strip("\n"), existing[end:].strip("\n")
+
+
+def _render_asset_bootstrap(asset: str, existing: str) -> str:
+    frontmatter, body = _split_bootstrap_frontmatter(asset)
+    if not existing or existing == asset:
+        owner_before = owner_after = ""
+    else:
+        owners = _owner_around_managed_bootstrap(existing)
+        if owners is None:
+            return existing
+        owner_before, owner_after = owners
+
+    parts = []
+    if frontmatter:
+        parts.append(frontmatter.rstrip("\n"))
+    if owner_before:
+        parts.append(owner_before)
+    parts.append(merge_managed_block("", body).rstrip("\n"))
+    if owner_after:
+        parts.append(owner_after)
+    return "\n\n".join(parts) + "\n"
+
+
 def _legacy_bootstrap_text(relative_agents: str) -> str:
     return "<!-- obsidian-wiki:portable-bootstrap -->\n" + _bootstrap_body(relative_agents)
 
 
-def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
+def _planned_reference_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     body = _bootstrap_body(relative_agents)
     if not existing:
         return merge_managed_block("", body)
@@ -1767,30 +1843,50 @@ def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     return None
 
 
-def _render_bootstrap_target(root: Path, target: Path, existing: str) -> str:
+def _render_bootstrap_target(
+    root: Path,
+    target: Path,
+    existing: str,
+    *,
+    source_bootstrap: Path | None = None,
+) -> str:
     """Render one fixed bootstrap target from its authoritative old content."""
     relative = _repo_relative_path(root, target)
-    return render_portable_bootstrap(relative, existing)
+    return render_portable_bootstrap(
+        relative, existing, source_bootstrap=source_bootstrap
+    )
 
 
-def render_portable_bootstrap(relative: str, existing: str) -> str:
+def render_portable_bootstrap(
+    relative: str, existing: str, *, source_bootstrap: Path | None = None
+) -> str:
     """Render one managed bootstrap file while preserving owner-maintained text."""
+    source = _bootstrap_source(source_bootstrap)
     if relative == "AGENTS.md":
+        asset = _read_bootstrap_asset(source, _BOOTSTRAP_ASSET_TARGETS[relative])
         if not existing:
             existing = _TEAM_CONVENTIONS
         elif MANAGED_START not in existing and "## Team conventions" not in existing:
             existing = f"{_TEAM_CONVENTIONS}\n{existing}"
-        return merge_managed_block(existing, _PORTABLE_AGENT_INSTRUCTIONS)
+        return merge_managed_block(existing, asset)
+
+    asset_relative = _BOOTSTRAP_ASSET_TARGETS.get(relative)
+    if asset_relative is not None:
+        return _render_asset_bootstrap(
+            _read_bootstrap_asset(source, asset_relative), existing
+        )
 
     try:
         agents_reference = _BOOTSTRAP_REFERENCES[relative]
     except KeyError as exc:  # pragma: no cover - callers use the fixed target set
         raise ValueError(f"unexpected portable bootstrap target: {relative}") from exc
-    planned = _planned_bootstrap_text(existing, agents_reference)
+    planned = _planned_reference_bootstrap_text(existing, agents_reference)
     return existing if planned is None else planned
 
 
-def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
+def _portable_bootstrap_plans(
+    root: Path, *, source_bootstrap: Path | None = None
+) -> list[tuple[Path, str]]:
     agents_path = root / "AGENTS.md"
     _assert_safe_managed_path(root, agents_path)
     if agents_path.exists() and not agents_path.is_file():
@@ -1799,7 +1895,12 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
         _assert_single_link_ordinary_file(root, agents_path, "AGENTS.md")
     existing = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
     plans: list[tuple[Path, str]] = [
-        (agents_path, _render_bootstrap_target(root, agents_path, existing))
+        (
+            agents_path,
+            _render_bootstrap_target(
+                root, agents_path, existing, source_bootstrap=source_bootstrap
+            ),
+        )
     ]
     for relative in _BOOTSTRAP_REFERENCES:
         target = root / relative
@@ -1816,14 +1917,23 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
                 root, target, f"bootstrap target {relative}"
             )
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        plans.append((target, _render_bootstrap_target(root, target, current)))
+        plans.append(
+            (
+                target,
+                _render_bootstrap_target(
+                    root, target, current, source_bootstrap=source_bootstrap
+                ),
+            )
+        )
     return plans
 
 
-def install_portable_bootstrap(root: Path) -> None:
+def install_portable_bootstrap(
+    root: Path, *, source_bootstrap: Path | None = None
+) -> None:
     """Install dedicated portable agent discovery and bootstrap Markdown."""
     root = _safe_root(Path(root))
-    plans = _portable_bootstrap_plans(root)
+    plans = _portable_bootstrap_plans(root, source_bootstrap=source_bootstrap)
 
     for target, text in plans:
         _write_text_if_changed(target, text, root=root)
@@ -2041,7 +2151,10 @@ def _preflight_existing_portable(
 
 
 def _populate_portable_repo(
-    root: Path, *, version: str, bundled_skills: SkillCollection
+    root: Path,
+    *,
+    version: str,
+    bundled_skills: SkillCollection,
 ) -> None:
     write_portable_config(root, version=version)
     _ensure_portable_lock_file(root)
@@ -4742,6 +4855,7 @@ def _preflight_upgrade_paths(
     *,
     previous_names: tuple[str, ...],
     current_names: tuple[str, ...],
+    source_bootstrap: Path | None = None,
 ) -> list[tuple[Path, str]]:
     """Validate all managed and potentially owner-owned upgrade targets."""
     previous = set(previous_names)
@@ -4770,7 +4884,7 @@ def _preflight_upgrade_paths(
                 root, target, f"managed skill directory {name}"
             )
 
-    return _portable_bootstrap_plans(root)
+    return _portable_bootstrap_plans(root, source_bootstrap=source_bootstrap)
 
 
 def _prepare_replacement_journal(
@@ -5568,7 +5682,11 @@ def setup_portable_repo(
     )
     removed_empty_target = False
     try:
-        _populate_portable_repo(staging, version=version, bundled_skills=bundled_skills)
+        _populate_portable_repo(
+            staging,
+            version=version,
+            bundled_skills=bundled_skills,
+        )
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)

@@ -46,6 +46,7 @@ def test_bootstraps_delegate_to_repository_authority() -> None:
 
 def test_setup_is_repository_only_and_describes_managed_assets() -> None:
     setup = text(SETUP)
+    flat = " ".join(setup.split())
     for required in (
         "obsidian-wiki setup [DIR]",
         "clone",
@@ -53,13 +54,23 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
         "check",
         "`.skills/`",
         "managed mirrors",
-        "upgrade",
+        "obsidian-wiki repo sync-skills",
+        "obsidian-wiki repo upgrade-skills",
+        "--apply",
+        "requires_cli",
         "Git",
     ):
-        assert required in setup
+        assert required in flat
     for forbidden in (
         "global install",
         "prompt publication",
         *FORBIDDEN_RUNTIME_TERMS,
     ):
         assert forbidden not in setup
+
+    assert "sync-skills` is read-only by default" in flat
+    assert "upgrade-skills` applies immediately" in flat
+    assert "deliberately edit `.obsidian-wiki/config.toml`" in flat
+    assert "does not bypass compatibility checks or rewrite `requires_cli`" in flat
+    assert "upgrade-skills --dry-run" not in flat
+    assert "review its proposed changes" not in flat

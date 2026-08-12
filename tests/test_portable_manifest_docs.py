@@ -21,5 +21,6 @@ def test_manifest_v2_is_sharded_and_has_one_source_root() -> None:
 def test_transaction_owns_manifest_mutation() -> None:
     for path in (CANONICAL, PATTERN):
         text = path.read_text(encoding="utf-8")
-        assert "transaction commit owns" in text
+        assert "transaction commit" in text
+        assert "owns" in text
         assert "never edit manifest shards directly" in text

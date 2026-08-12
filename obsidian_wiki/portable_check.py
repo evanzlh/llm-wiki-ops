@@ -22,13 +22,12 @@ from .portable import (
     _BOOTSTRAP_REFERENCES,
     _INDEX,
     _LOG,
-    _PORTABLE_AGENT_INSTRUCTIONS,
     MANAGED_END,
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
     PROJECT_AGENT_DIRS,
     UNSUPPORTED_PERSONAL_VAULT_PATHS,
-    _bootstrap_body,
+    render_portable_bootstrap,
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
@@ -1011,14 +1010,8 @@ def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
                 "portable byte-stability attributes are missing or stale",
             )
         )
-    targets: list[tuple[str, str]] = [
-        ("AGENTS.md", _PORTABLE_AGENT_INSTRUCTIONS),
-        *(
-            (relative, _bootstrap_body(reference))
-            for relative, reference in _BOOTSTRAP_REFERENCES.items()
-        ),
-    ]
-    for relative, expected_body in targets:
+    targets = ("AGENTS.md", *_BOOTSTRAP_REFERENCES)
+    for relative in targets:
         path = config.root / relative
         if not _ordinary_file(path) or _has_symlink_component(config.root, path):
             issues.append(
@@ -1053,9 +1046,11 @@ def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
                 )
             )
             continue
-        managed = text[start + len(MANAGED_START) : end]
-        expected = "\n" + expected_body.rstrip() + "\n"
-        if managed != expected:
+        try:
+            expected = render_portable_bootstrap(relative, text)
+        except (OSError, UnicodeDecodeError, ValueError):
+            expected = ""
+        if text != expected:
             issues.append(
                 CheckIssue(
                     "managed-bootstrap-invalid",

@@ -15,7 +15,7 @@ Markdown snapshot in that source root.
 
 An agent reads a bounded source closure, distils concepts, updates existing
 pages instead of duplicating them, and writes final candidate paths. Pages carry
-required frontmatter and connect related ideas with `[[wikilinks]]`.
+required frontmatter and use the repository's configured internal-link format.
 
 All mutation uses one transaction: begin with Source IDs, write candidates,
 declare deletions, validate, review, and commit. Recovery follows the structured
@@ -24,10 +24,9 @@ transaction record rather than guessing.
 ## Tracking layer
 
 The repository uses manifest v2 with sharded entries and exactly one configured
-source root. `transaction commit owns` the immutable operation record and shard
-updates; in normative terms, transaction commit owns all manifest mutation.
-Agents never edit manifest shards directly. Stable `index.md` and `log.md` are
-not rewritten during ordinary compilation.
+source root. The transaction commit command owns the immutable operation record
+and all manifest mutation. Agents never edit manifest shards directly. Stable
+`index.md` and `log.md` are not rewritten during ordinary compilation.
 
 This separation keeps provenance reviewable: sources explain why knowledge
 exists, transactions explain how it changed, and compiled pages explain what the

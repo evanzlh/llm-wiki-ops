@@ -1,5 +1,11 @@
+import argparse
+import json
 import re
 from pathlib import Path
+
+from obsidian_wiki.cli import _list_record_payload, _render_transaction_failure
+from obsidian_wiki.transaction import TransactionError, TransactionRecord
+from obsidian_wiki.transaction_guidance import guidance_for_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,16 +24,17 @@ def test_canonical_protocol_has_required_top_level_sections() -> None:
 
 def test_canonical_protocol_defines_configuration_and_authority() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
     for required in (
         "nearest ancestor `.obsidian-wiki/config.toml`",
         "obsidian-wiki setup [DIR]",
         "fail closed",
         "repository root",
-        "vault `AGENTS.md`",
+        "vault `AGENTS.md` when present",
         "repository-relative Source ID",
         "reviewed Markdown snapshot",
     ):
-        assert required in text
+        assert required in flat
 
 
 def test_canonical_protocol_is_one_eight_step_transaction() -> None:
@@ -36,7 +43,7 @@ def test_canonical_protocol_is_one_eight_step_transaction() -> None:
     steps = re.findall(r"(?m)^(\d+)\. \*\*(.+?)\*\*", protocol)
     assert [int(number) for number, _ in steps] == list(range(1, 9))
     for required in (
-        "read-only source closure",
+        "keep the wiki\n   read-only while building the source closure",
         "transaction begin --source",
         "--json --pretty",
         "candidate_vault",
@@ -72,3 +79,82 @@ def test_cli_ownership_and_git_boundary_are_explicit() -> None:
         "never rewrite stable `index.md` or `log.md`",
     ):
         assert required in text
+
+
+def test_candidate_contract_preserves_transaction_validated_invariants() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    for required in (
+        "title`, `category`, `tags`, `sources`, `created`, and `updated",
+        "created = updated = started_at",
+        "preserve the existing `created`",
+        "non-empty subset of the transaction source closure",
+        "concepts/`, `entities/`, `skills/`, `references/`, `synthesis/`, `journal/`, or `projects/",
+        "OBSIDIAN_LINK_FORMAT",
+    ):
+        assert required in flat
+
+
+def test_recovery_contract_matches_failure_and_list_payloads(
+    capsys,
+) -> None:
+    record = TransactionRecord(
+        transaction_id="tx-1",
+        status="failed",
+        started_at="2026-08-12T00:00:00+00:00",
+        source_ids=("sources/a.md",),
+        workspace=Path("/tmp/tx-1"),
+        candidate_vault=Path("/tmp/tx-1/wiki"),
+        preimages={},
+        deletions=(),
+    )
+    guidance = guidance_for_record(record)
+    listed = _list_record_payload(record, guidance)
+    assert "error" not in listed and "recovery" not in listed
+    assert set(listed["recommended_action"]) == {"command", "reason", "requires"}
+    assert listed["recommended_action"] in listed["allowed_actions"]
+    assert all(
+        set(action) == {"command", "reason", "requires"}
+        and isinstance(action["requires"], list)
+        for action in listed["allowed_actions"]
+    )
+
+    class Manager:
+        def load(self, transaction_id: str) -> TransactionRecord:
+            assert transaction_id == "tx-1"
+            return record
+
+    args = argparse.Namespace(json=True, pretty=False)
+    result = _render_transaction_failure(
+        args,
+        TransactionError("promotion failed"),
+        manager=Manager(),
+        transaction_id="tx-1",
+    )
+    assert result == 1
+    envelope = json.loads(capsys.readouterr().out)
+    assert set(envelope) == {"status", "error", "recovery"}
+    assert set(envelope["error"]) == {"code", "message"}
+    assert set(envelope["recovery"]) == {
+        "transaction_id",
+        "transaction_status",
+        "inspect_command",
+        "preferred_action",
+        "alternatives",
+    }
+    assert envelope["recovery"]["transaction_id"] == listed["transaction_id"]
+
+
+def test_recovery_protocol_cross_checks_identity_requirements_and_outcomes() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    for required in (
+        "Save the failed command envelope",
+        "does not repeat `error` or `recovery`",
+        "exactly one retained record",
+        "empty, missing, mismatched, duplicated, or ambiguous",
+        "satisfy every string in the action's `requires` list",
+        "Only a successful `transaction commit` or `transaction retry` is a knowledge commit",
+        "restore`, `abort`, and `discard` do not trigger hot refresh",
+    ):
+        assert required in flat

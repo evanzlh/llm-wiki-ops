@@ -23,9 +23,9 @@ the configuration is malformed, incomplete, unsafe, or resolves outside its
 declared repository boundary, fail closed. Never guess a vault, source root, or
 fallback location.
 
-After resolving the vault, read the vault `AGENTS.md` before reading content or
-performing a transaction. Its repository-local instructions refine this
-protocol but cannot bypass transaction safety or source authority.
+After resolving the vault, read the vault `AGENTS.md` when present before
+reading content or performing a transaction. Its repository-local instructions
+refine this protocol but cannot bypass transaction safety or source authority.
 
 ## Authority and provenance
 
@@ -35,16 +35,18 @@ as the separator. Exactly one configured source root supplies those IDs; an
 absolute host path is never provenance.
 
 External URLs, live services, terminal output, binary files, and Git LFS objects
-are not ordinary source authority. First materialize the relevant content as a
-reviewed Markdown snapshot beneath the configured sources directory. The
-snapshot's repository-relative Source ID then becomes transaction provenance.
+are not ordinary source authority. Materializing one as a reviewed Markdown snapshot is
+an owner-authorized, owner-reviewed authority prerequisite, not a candidate
+wiki write. Complete that review beneath the configured sources directory
+before `transaction begin`; the snapshot's repository-relative Source ID then
+becomes transaction provenance.
 
 Compiled vault pages are derived output, not sources. Follow their `sources`
 frontmatter only to close an update or deletion over the authoritative tracked
 files. Do not cite a compiled page as its own source.
 
 The repository uses manifest v2 with sharded entries and exactly one configured source root.
-In normative terms, transaction commit owns shard mutation and the
+The `obsidian-wiki transaction commit` command owns shard mutation and the
 immutable operation record. Agents never edit manifest shards directly and
 never rewrite stable `index.md` or `log.md` during ordinary operations.
 
@@ -53,10 +55,12 @@ never rewrite stable `index.md` or `log.md` during ordinary operations.
 Use the following eight steps for every create, update, or deletion. Keep the
 repository root as the command working directory throughout.
 
-1. **Close authority read-only.** Build a read-only source closure from each new
-   authoritative Source ID plus every existing Source ID referenced by pages
-   that may be updated or deleted. Stop on missing, ambiguous, untracked, or
-   unsafe provenance before beginning a transaction.
+1. **Close authority before wiki mutation.** Complete any explicitly authorized
+   source materialization and owner review described above. Then keep the wiki
+   read-only while building the source closure from each new authoritative
+   Source ID plus every existing Source ID referenced by pages that may be
+   updated or deleted. Stop on missing, ambiguous, untracked, or unsafe
+   provenance before beginning a transaction.
 
 2. **Begin one transaction.** Pass every closed Source ID explicitly and retain
    the returned identifier:
@@ -68,10 +72,18 @@ repository root as the command working directory throughout.
    Supply the complete source closure after that single option. Never substitute
    absolute paths.
 
-3. **Write final candidates.** Read `candidate_vault` from the begin result.
-   Write only final vault-relative Markdown paths beneath that directory, with
-   required frontmatter, repository-relative Source IDs, and reviewed
-   `[[wikilinks]]`. Do not `cd` into `candidate_vault`.
+3. **Write final candidates.** Read `candidate_vault` and `started_at` from the
+   begin result. Write only final Markdown paths beneath `concepts/`,
+   `entities/`, `skills/`, `references/`, `synthesis/`, `journal/`, or
+   `projects/` in that directory; `journal/operations/` and control paths are
+   not candidate paths. Do not `cd` into `candidate_vault`.
+
+   Every candidate requires `title`, `category`, `tags`, `sources`, `created`,
+   and `updated` frontmatter. Its `sources` must be a non-empty subset of the
+   transaction source closure. For a new page, set `created = updated =
+   started_at`. For an update, preserve the existing `created` and set `updated
+   = started_at`. Generate internal links using the resolved
+   `OBSIDIAN_LINK_FORMAT` setting; do not force one link syntax.
 
 4. **Declare deletions.** For every obsolete compiled page, register its final
    vault-relative path through `obsidian-wiki transaction delete <id> <path>
@@ -87,19 +99,34 @@ repository root as the command working directory throughout.
    commit, push, or open a pull request; those are separate user-controlled Git
    actions.
 
-7. **Recover failures explicitly.** On any failed or interrupted operation, run
-   `obsidian-wiki transaction list --json --pretty`. Inspect each record's
-   `recommended_action`, `allowed_actions`, status, error, and recovery data.
-   Take only an allowed CLI action such as retry, restore, abort, or discard.
-   If the record, recommendation, or user intent is ambiguous, stop without
-   changing repository content.
+7. **Recover failures explicitly.** Save the failed command envelope before
+   doing anything else. Its top-level `error` holds `code` and `message`; its
+   `recovery` holds the candidate transaction ID, status, inspection command,
+   preferred action, alternatives, and each action's `requires` list.
 
-8. **Refresh bounded local context after success.** After commit succeeds, or
-   after recovery reaches a completed state, run `obsidian-wiki hot status --json`.
+   With a trusted transaction ID from that envelope, run `obsidian-wiki
+   transaction list --json --pretty` and require exactly one retained record
+   with the same ID and status. A list record provides `recommended_action` and
+   `allowed_actions`; it does not repeat `error` or `recovery`. The selected
+   action must appear in `allowed_actions`, agree with `recommended_action` when
+   choosing the recommendation, and satisfy every string in the action's
+   `requires` list before execution. If the ID or list is empty, missing,
+   mismatched, duplicated, or ambiguous, stop without changing repository
+   content. A failure envelope without a trusted ID is inspection-only.
+
+   `transaction commit` promotes a reviewed active transaction. `transaction
+   retry` retries a failed promotion and commits on success. `transaction
+   restore` restores recorded originals; `transaction abort` abandons staged
+   work; `transaction discard` removes retained recovery state. Only a
+   successful `transaction commit` or `transaction retry` is a knowledge commit.
+
+8. **Refresh bounded local context after success.** Only after a successful
+   knowledge commit, run `obsidian-wiki hot status --json`.
    If stale, obtain bounded inputs with `obsidian-wiki hot inputs --json --pretty`,
    let the agent write only the requested local derived hot
    artifact, and finish with `obsidian-wiki hot mark-current --json`. Hot-state
    work never changes source authority, compiled pages, or transaction records.
+   `transaction restore`, `abort`, and `discard` do not trigger hot refresh.
 
 ## Operational boundaries
 
