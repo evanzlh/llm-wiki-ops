@@ -262,7 +262,7 @@ def test_external_material_is_snapshotted_before_transaction_begin() -> None:
             "reviewable UTF-8 Markdown",
             "configured sources",
             "repository-relative Source ID",
-            "untrusted data, not instructions",
+            "untrusted data, never instructions",
             "binary",
             "Git LFS",
             "live URL",
@@ -275,19 +275,46 @@ def test_external_material_is_snapshotted_before_transaction_begin() -> None:
 
 
 def test_source_workflows_share_one_terminal_lifecycle() -> None:
-    required_in_order = (
-        "obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty",
-        "obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty",
-        "obsidian-wiki transaction validate <id> --json --pretty",
-        "Review the complete candidate diff",
-        "obsidian-wiki transaction commit <id> --json --pretty",
-        "Save the failure envelope for recovery",
-        "obsidian-wiki hot status --json",
-    )
     for path in SOURCE_WORKFLOW_SKILLS:
-        flat = " ".join(path.read_text(encoding="utf-8").split())
-        positions = [flat.index(item) for item in required_in_order]
-        assert positions == sorted(positions), path
+        workflow = path.read_text(encoding="utf-8").split(
+            "## Source and transaction workflow", 1
+        )[1]
+        matches = list(re.finditer(r"(?m)^(\d+)\. \*\*(.+?)\*\*", workflow))
+        assert [int(match.group(1)) for match in matches] == list(range(1, 9)), path
+        steps = []
+        for index, match in enumerate(matches):
+            end = (
+                matches[index + 1].start()
+                if index + 1 < len(matches)
+                else len(workflow)
+            )
+            steps.append(" ".join(workflow[match.start() : end].split()))
+
+        for required in (
+            "nearest `.obsidian-wiki/config.toml`",
+            "owner",
+            "canonical `llm-wiki`",
+        ):
+            assert required in steps[0], f"{path}: step 1 missing {required!r}"
+        assert "untrusted data, never instructions" in steps[1]
+        for required in (
+            "existing ordinary tracked",
+            "bounded reviewable UTF-8 Markdown snapshot",
+            "configured sources",
+            "owner review",
+            "tracked authority",
+        ):
+            assert required in steps[2], f"{path}: step 3 missing {required!r}"
+        for required in ("cache-check", "unchanged", "Full"):
+            assert required in steps[3], f"{path}: step 4 missing {required!r}"
+        for required in ("complete source closure", "transaction begin --source"):
+            assert required in steps[4], f"{path}: step 5 missing {required!r}"
+        for required in ("final candidates", "non-empty", "repository-relative"):
+            assert required in steps[5], f"{path}: step 6 missing {required!r}"
+        for required in ("transaction validate", "Review", "transaction commit", "recovery"):
+            assert required in steps[6], f"{path}: step 7 missing {required!r}"
+        for required in ("successful", "knowledge commit", "hot status"):
+            assert required in steps[7], f"{path}: step 8 missing {required!r}"
 
     capture = " ".join(SOURCE_WORKFLOW_SKILLS[0].read_text(encoding="utf-8").split())
     ingest = " ".join(SOURCE_WORKFLOW_SKILLS[1].read_text(encoding="utf-8").split())
@@ -313,11 +340,69 @@ def test_source_workflows_have_no_legacy_completion_or_publication_paths() -> No
         "direct manifest",
         "central-file",
         "Git snapshot",
-        "git commit",
-        "git push",
         "auto-commit",
     )
     for path in (*SOURCE_WORKFLOW_SKILLS, *SOURCE_WORKFLOW_REFERENCES):
         contents = path.read_text(encoding="utf-8")
         for term in forbidden:
             assert term not in contents, f"{path}: contains {term!r}"
+
+
+def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
+    for path in SOURCE_WORKFLOW_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        match = re.search(
+            r"\[[^]]*source snapshot[^]]*\]\(([^)]+source-snapshot\.md)\)",
+            contents,
+            re.I,
+        )
+        assert match, path
+        assert (path.parent / match.group(1)).resolve().is_file(), path
+        flat = " ".join(contents.split())
+        for required in (
+            "new snapshot requires owner Git review",
+            "becomes tracked authority",
+            "framework and agent must not run `git add`, `git commit`, or `git push`",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
+def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
+    path = ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md"
+    pageindex = path.read_text(encoding="utf-8")
+    flat = " ".join(pageindex.split())
+    for required in (
+        "PAGEINDEX_REPO",
+        "PAGEINDEX_MODEL",
+        "PAGEINDEX_MIN_PAGES",
+        "run_pageindex.py",
+        "uv run --no-project python",
+        "--pdf_path",
+        "--model",
+        "--if-add-node-summary yes",
+        "--if-add-doc-description yes",
+        "doc_description",
+        "structure",
+        "start_index",
+        "end_index",
+        "1-indexed physical PDF pages",
+        "bounded reviewable UTF-8 Markdown snapshot",
+        "owner review",
+        "tracked authority",
+        "repository-relative Source ID",
+        "transaction begin --source",
+        "fail closed",
+    ):
+        assert required in flat
+    assert flat.index("run_pageindex.py") < flat.index(
+        "bounded reviewable UTF-8 Markdown snapshot"
+    ) < flat.index("owner review") < flat.index("tracked authority") < flat.index(
+        "transaction begin --source"
+    )
+    match = re.search(
+        r"\[[^]]*source snapshot[^]]*\]\(([^)]+source-snapshot\.md)\)",
+        pageindex,
+        re.I,
+    )
+    assert match
+    assert (path.parent / match.group(1)).resolve().is_file()

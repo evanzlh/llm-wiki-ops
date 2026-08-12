@@ -31,6 +31,7 @@ material into bounded, independently reviewable snapshots.
   authority. Preserve only reviewed text and useful origin metadata.
 - Reject symbolic links, hard links, special files, and paths outside the
   configured source root.
-- Git review ownership remains with the repository owner. Creating a snapshot
-  does not authorize the agent to publish it. Do not commit, push, or open a
-  pull request.
+- Git review ownership remains with the repository owner. A new snapshot needs
+  owner Git review and becomes tracked authority only after the owner tracks it.
+  The framework and agent must not run `git add`, `git commit`, or `git push`,
+  and must not open a pull request. Do not commit, push, or open a pull request.
