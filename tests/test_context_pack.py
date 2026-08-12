@@ -168,6 +168,27 @@ def test_invalid_public_metadata_is_excluded_before_body_read(
         load_pages(vault)
 
 
+def test_public_only_parses_cr_only_private_metadata_before_body_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "private.md").write_bytes(
+        b"---\rtitle: Private\rtags:\r"
+        b"  - visibility/internal # restricted\r---\r"
+        b"PRIVATE-BODY-SENTINEL\r"
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        context_pack,
+        "read_markdown_snapshot",
+        lambda snapshot: reads.append(snapshot.relative),
+    )
+
+    assert load_pages(vault, public_only=True) == []
+    assert reads == []
+
+
 def test_public_only_handles_yaml_comments_without_losing_quoted_hashes(
     tmp_path: Path,
 ) -> None:

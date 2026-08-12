@@ -188,15 +188,33 @@ def _inline_list(value: str) -> tuple[str, ...]:
 
 
 def _exact_delimiter(line: str) -> bool:
-    return line in {"---\n", "---\r\n", "---"}
+    return line in {"---\n", "---\r\n", "---\r", "---"}
 
 
 def _raw_lines(text: str) -> list[str]:
-    """Split only on LF/CRLF, preserving other YAML control characters."""
-    pieces = text.split("\n")
-    lines = [piece + "\n" for piece in pieces[:-1]]
-    if pieces[-1] or not text.endswith("\n"):
-        lines.append(pieces[-1])
+    """Split only on CR, LF, or CRLF, preserving other control characters."""
+    lines: list[str] = []
+    start = 0
+    index = 0
+    while index < len(text):
+        if text[index] == "\n":
+            lines.append(text[start : index + 1])
+            index += 1
+            start = index
+            continue
+        if text[index] == "\r":
+            end = (
+                index + 2
+                if index + 1 < len(text) and text[index + 1] == "\n"
+                else index + 1
+            )
+            lines.append(text[start:end])
+            index = end
+            start = index
+            continue
+        index += 1
+    if start < len(text):
+        lines.append(text[start:])
     return lines
 
 

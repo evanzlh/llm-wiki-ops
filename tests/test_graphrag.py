@@ -152,6 +152,24 @@ class TestBuildIndex:
         assert build_index(vault, public_only=True) == {}
         assert reads == []
 
+    def test_public_only_parses_cr_only_private_metadata_before_body_read(
+        self, vault, monkeypatch
+    ):
+        (vault / "private.md").write_bytes(
+            b"---\rtitle: Private\rtags:\r"
+            b"  - visibility/internal # restricted\r---\r"
+            b"PRIVATE-BODY-SENTINEL\r"
+        )
+        reads: list[str] = []
+        monkeypatch.setattr(
+            graphrag,
+            "read_markdown_snapshot",
+            lambda snapshot: reads.append(snapshot.relative),
+        )
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+
     def test_invalid_public_metadata_fails_closed_before_body_read(
         self, vault, monkeypatch
     ):

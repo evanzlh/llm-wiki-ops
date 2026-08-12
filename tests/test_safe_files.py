@@ -71,7 +71,24 @@ def test_header_scan_accepts_exact_column_zero_crlf_delimiters(tmp_path: Path) -
 
     header = scan_markdown_headers(vault)[0]
 
-    assert header.content.endswith(b"---\r\n")
+    # The scanner stops on CR so CR-only metadata cannot consume a body byte;
+    # a following LF is deliberately left unread with the closing descriptor.
+    assert header.content.endswith(b"---\r")
+    assert b"PRIVATE-BODY-SENTINEL" not in header.content
+
+
+def test_header_scan_stops_at_cr_only_column_zero_delimiter(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "page.md").write_bytes(
+        b"---\rsummary: |-\r  first line\r  ---\r  final line\r"
+        b"tags: [visibility/internal]\r---\rPRIVATE-BODY-SENTINEL\r"
+    )
+
+    header = scan_markdown_headers(vault)[0]
+
+    assert header.content.endswith(b"---\r")
+    assert b"  ---\r  final line\r" in header.content
     assert b"PRIVATE-BODY-SENTINEL" not in header.content
 
 import obsidian_wiki.safe_files as safe_files
