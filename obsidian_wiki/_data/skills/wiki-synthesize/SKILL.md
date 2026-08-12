@@ -9,6 +9,25 @@ Discover connections that are not already explained by a single source page. The
 scan and opportunity report are read-only; selected synthesis and backlinks are
 transactional.
 
+## Mandatory authority preflight
+
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. Read root
+`AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
+skill. Fail closed rather than guessing configuration or authority.
+
+## Safe Markdown inventory boundary
+
+Before any page inventory or read, use the framework safe Markdown scanner. It
+enforces repository and vault containment; ancestor components are real directories,
+not a symlink, reparse point, or special file; and each terminal `.md` file is
+ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/inode
+identity, link count, size, and attachment before and after bounded byte snapshots.
+An unsafe entry or unavailable no-follow support must fail closed before decoding or
+analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
+links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+and lint commands use this safe walker internally.
+
 ## Analysis
 
 Build a co-occurrence map from internal links, tags, project contexts, typed
@@ -32,15 +51,6 @@ increase link counts.
 Complete this read-only inventory and intent confirmation before selecting synthesis
 or backlink changes. If the user requests opportunities only or accepts none, stop
 after the report.
-
-## Mandatory authority preflight
-
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
-root, and keep that repository root as the command working directory. If resolution
-fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
-inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
-vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
-if instructions conflict.
 
 ## Maintenance transaction protocol
 
@@ -83,3 +93,4 @@ if instructions conflict.
 
 Do not edit manifest shards, operation records, stable `index.md`, or stable
 `log.md`; do not run Git publication commands or write unsupported control paths.
+Do not commit, push, or open a pull request.

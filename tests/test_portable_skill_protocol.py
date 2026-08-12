@@ -355,6 +355,10 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         "local derived-state housekeeping",
         "may invalidate and remove a stale ignored `hot.md` artifact",
         "`transaction list` and `cache-check` are read-only",
+        "operation pages or journals only when returned by those CLI surfaces",
+        "count pages from the safe Markdown snapshots",
+        "count sources from validated manifest-v2 shards",
+        "Label the origin of every count",
     ):
         assert required in flat
     for forbidden in (
@@ -384,3 +388,157 @@ def test_update_requires_owner_committed_snapshot_before_delta() -> None:
     assert flat.index("owner review, stage, and commit externally, then rerun") < flat.index(
         "cache-check"
     )
+
+
+@pytest.mark.parametrize("name", MAINTENANCE_SKILLS)
+def test_maintenance_inventory_uses_safe_markdown_snapshots_before_reads(
+    name: str,
+) -> None:
+    contents = skill_text(name)
+    flat = " ".join(contents.split())
+    first_work = {
+        "cross-linker": "Build a registry",
+        "daily-update": "inventory configured Source IDs",
+        "tag-taxonomy": "Read `_meta/taxonomy.md`",
+        "wiki-dedup": "Build a registry",
+        "wiki-lint": "Inspect knowledge pages",
+        "wiki-rebuild": "List every requested final",
+        "wiki-status": "inspect the manifest-v2 marker",
+        "wiki-synthesize": "Build a co-occurrence map",
+        "wiki-update": "Inventory the project's current architecture",
+    }[name]
+    for required in (
+        "framework safe Markdown scanner",
+        "repository and vault containment",
+        "ancestor components are real directories",
+        "symlink",
+        "reparse point",
+        "special file",
+        "terminal `.md` file is ordinary and single-link",
+        "`O_NOFOLLOW`",
+        "`fstat`",
+        "device/inode identity",
+        "bounded byte snapshots",
+        "fail closed before decoding or analysis",
+        "must not use `read_text`, `rglob`, shell globbing, or follow links",
+        "`obsidian-wiki check` alone is not a sufficient scanner preflight",
+    ):
+        assert required in flat, f"{name}: missing {required!r}"
+    assert flat.index("## Mandatory authority preflight") < flat.index(
+        "## Safe Markdown inventory boundary"
+    ) < flat.index(first_work)
+
+
+def test_update_links_canonical_source_snapshot_and_closes_both_topology_paths() -> None:
+    relative = "../wiki-capture/references/source-snapshot.md"
+    contents = skill_text("wiki-update")
+    assert relative in contents
+    assert (
+        ROOT / "obsidian_wiki/_data/skills/wiki-update" / relative
+    ).resolve().is_file()
+    flat = " ".join(contents.split())
+    for required in (
+        "absent target",
+        "existing target",
+        "pre-write owner preservation gate",
+        "ordinary single-link",
+        "safe atomic replacement",
+        "post-write owner review",
+        "owner review, stage, and commit externally, then rerun",
+        "Git-tracked symlink",
+        "does not establish authority",
+    ):
+        assert required in flat
+
+
+def test_dedup_restores_deterministic_similarity_contract() -> None:
+    flat = " ".join(skill_text("wiki-dedup").split())
+    for required in (
+        "Jaccard",
+        "normalized Levenshtein",
+        "substring",
+        "alias cross-match",
+        "same category",
+        "three or more shared tags",
+        "two shared tags",
+        "same dominant first tag",
+        "max(0.65 * token_jaccard, 0.40 * edit_similarity, substring_signal)",
+        "0.75",
+        "0.90",
+        "YAML block scalar",
+    ):
+        assert required in flat
+
+    def score(
+        token_jaccard: float,
+        edit_similarity: float,
+        substring_signal: float,
+        alias_bonus: float,
+        semantic: float,
+    ) -> float:
+        return min(
+            1.0,
+            max(0.65 * token_jaccard, 0.40 * edit_similarity, substring_signal)
+            + alias_bonus
+            + semantic,
+        )
+
+    assert score(0.2, 0.8, 0.0, 0.0, 0.15) == pytest.approx(0.47)
+    assert score(0.0, 0.1, 0.0, 0.65, 0.10) == pytest.approx(0.79)
+    assert score(0.6, 0.6, 0.5, 0.65, 0.20) == 1.0
+
+
+def test_rebuild_batches_are_sequential_and_failure_bounded() -> None:
+    flat = " ".join(skill_text("wiki-rebuild").split())
+    ordered = (
+        "current live state",
+        "previous successful batch",
+        "no forward references",
+        "deletions last",
+        "stop all subsequent batches",
+        "previous successful commits remain retained",
+        "partial completion",
+        "remaining page set",
+        "recovery state",
+    )
+    for required in ordered:
+        assert required in flat
+    assert [flat.index(item) for item in ordered] == sorted(
+        flat.index(item) for item in ordered
+    )
+
+
+def test_taxonomy_control_vocabulary_stays_outside_transactions() -> None:
+    flat = " ".join(skill_text("tag-taxonomy").split())
+    for required in (
+        "`_meta/taxonomy.md`",
+        "authoritative vocabulary",
+        "owner separately performs an explicit control-file edit",
+        "safe backup",
+        "Git diff",
+        "re-read",
+        "must not write `_meta/taxonomy.md` into `candidate_vault`",
+        "validator rejects `_meta/` candidates",
+        "existing canonical mappings only",
+    ):
+        assert required in flat
+
+
+def test_lint_preserves_material_rules_and_thresholds() -> None:
+    flat = " ".join(skill_text("wiki-lint").split())
+    for required in (
+        "zero incoming links",
+        "unresolved wikilinks",
+        "summary exceeds 200 characters",
+        "AMBIGUOUS > 15%",
+        "INFERRED > 40%",
+        "top 10 by incoming links",
+        "INFERRED > 20%",
+        "more than 0.20",
+        "cohesion < 0.15",
+        "at least 5 pages",
+        "updated more than 90 days ago",
+        "supersession",
+        "typed relationships",
+    ):
+        assert required in flat

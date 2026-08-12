@@ -8,18 +8,53 @@ description: Use when auditing wiki health, validating page schema, or applying 
 Audit repository knowledge pages before proposing narrowly scoped repairs. The
 default run is read-only and reports evidence rather than changing content.
 
+## Mandatory authority preflight
+
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. Read root
+`AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
+skill. Fail closed rather than guessing configuration or authority.
+
+## Safe Markdown inventory boundary
+
+Before any page inventory or read, use the framework safe Markdown scanner. It
+enforces repository and vault containment; ancestor components are real directories,
+not a symlink, reparse point, or special file; and each terminal `.md` file is
+ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/inode
+identity, link count, size, and attachment before and after bounded byte snapshots.
+An unsafe entry or unavailable no-follow support must fail closed before decoding or
+analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
+links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+and lint commands use this safe walker internally.
+
 ## Checks
 
 Inspect knowledge pages and report:
 
-- pages with no incoming links and links whose target cannot be resolved;
+- pages with zero incoming links and unresolved wikilinks;
 - missing or invalid required frontmatter, summaries, category/path agreement,
-  timestamps, and non-empty authoritative sources;
+  timestamps, non-empty authoritative sources, and any summary exceeds 200 characters;
 - stale high-impact pages, contradictory claims, provenance drift, and synthesis
   gaps;
 - fragmented tag clusters, visibility inconsistencies, and promotion candidates;
 - invalid confidence, lifecycle, and typed-relationship values;
 - candidate files whose link syntax disagrees with `OBSIDIAN_LINK_FORMAT`.
+
+Preserve these material thresholds from the deterministic lint contract:
+
+- provenance: `AMBIGUOUS > 15%`; `INFERRED > 40%` without sources; hubs in the
+  top 10 by incoming links with `INFERRED > 20%`; or a recorded provenance field
+  more than 0.20 away from the recomputed claim-marker fraction;
+- fragmented tags: at least 5 pages and graph cohesion < 0.15;
+- stale content: updated more than 90 days ago, with verified lifecycle pages
+  highest priority;
+- lifecycle and confidence range, supersession existence/cycles/state, and typed
+  relationships including type, target, and self-reference validation.
+
+Run `obsidian-wiki lint --json --pretty` and use the real CLI lint/check output for
+schema and trust-ledger findings, then augment
+it only from the same safe Markdown snapshots for semantic contradictions and
+synthesis gaps. Do not replace concrete findings with a generic health judgement.
 
 Resolve schema precedence as: CLI flags > resolved environment/config values >
 framework defaults. Empty or whitespace-only values fail closed. Honor
@@ -36,15 +71,6 @@ check without owner selection.
 Complete this read-only inventory and intent confirmation before selecting repairs.
 An audit-only result stops after the report. If fixes are selected, bound them to an
 explicit page set; unrelated findings remain report-only.
-
-## Mandatory authority preflight
-
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
-root, and keep that repository root as the command working directory. If resolution
-fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
-inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
-vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
-if instructions conflict.
 
 ## Maintenance transaction protocol
 
@@ -87,3 +113,4 @@ if instructions conflict.
 
 Do not edit manifest shards, operation records, stable `index.md`, or stable
 `log.md`; do not run Git publication commands or write unsupported control paths.
+Do not commit, push, or open a pull request.

@@ -10,6 +10,25 @@ create, replace, or delete only an explicit page set derived from declared sourc
 Inventory and intent confirmation are mandatory because rebuilds can replace
 substantial reviewed content.
 
+## Mandatory authority preflight
+
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. Read root
+`AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
+skill. Fail closed rather than guessing configuration or authority.
+
+## Safe Markdown inventory boundary
+
+Before any page inventory or read, use the framework safe Markdown scanner. It
+enforces repository and vault containment; ancestor components are real directories,
+not a symlink, reparse point, or special file; and each terminal `.md` file is
+ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/inode
+identity, link count, size, and attachment before and after bounded byte snapshots.
+An unsafe entry or unavailable no-follow support must fail closed before decoding or
+analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
+links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+and lint commands use this safe walker internally.
+
 ## Scope and planning
 
 List every requested final vault-relative page, its authoritative Source IDs, its
@@ -24,6 +43,17 @@ next; never open overlapping workspaces. The phrase bounded transactions means e
 batch is small enough for full candidate and deletion review, not an excuse for an
 unbounded bulk mutation.
 
+Plan batches sequentially. Batch 1 closes against the current live state. Each later
+batch recomputes inventory and source closure from the current live state including
+the previous successful batch. Permit no forward references to pages planned for a
+later batch and no later backlink repairs: every committed batch must validate as a
+self-contained graph. Order creations and replacements before any dependent removal,
+and schedule deletions last after their backlink repairs are already in the same
+batch. If any batch fails, stop all subsequent batches. The result is explicit:
+previous successful commits remain retained; never roll them back implicitly.
+Report partial completion, the remaining page set, and the failed transaction's
+recovery state before returning.
+
 Repository history restoration belongs to the owner through external Git history.
 This skill does not restore historical states or clear repository content. Ask the
 owner to select the historical revision and complete that operation outside this
@@ -32,15 +62,6 @@ runtime, then inventory the resulting current state before any derived-page rebu
 Report scope, sources, preserved material, proposed replacements, and reviewed
 deletions. Complete this read-only inventory and intent confirmation before the
 first batch. If the explicit page set is empty, stop.
-
-## Mandatory authority preflight
-
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
-root, and keep that repository root as the command working directory. If resolution
-fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
-inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
-vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
-if instructions conflict.
 
 ## Maintenance transaction protocol
 
@@ -83,3 +104,4 @@ if instructions conflict.
 
 Do not edit manifest shards, operation records, stable `index.md`, or stable
 `log.md`; do not run Git publication commands or write unsupported control paths.
+Do not commit, push, or open a pull request.

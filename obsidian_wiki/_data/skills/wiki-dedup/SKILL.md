@@ -8,16 +8,54 @@ description: Use when detecting duplicate knowledge pages, resolving identity co
 Detect page-level identity collisions conservatively. A similarity score produces a
 review candidate, never automatic proof that two pages describe the same thing.
 
+## Mandatory authority preflight
+
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. Read root
+`AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
+skill. Fail closed rather than guessing configuration or authority.
+
+## Safe Markdown inventory boundary
+
+Before any page inventory or read, use the framework safe Markdown scanner. It
+enforces repository and vault containment; ancestor components are real directories,
+not a symlink, reparse point, or special file; and each terminal `.md` file is
+ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/inode
+identity, link count, size, and attachment before and after bounded byte snapshots.
+An unsafe entry or unavailable no-follow support must fail closed before decoding or
+analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
+links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+and lint commands use this safe walker internally.
+
 ## Analysis
 
 Build a registry of each knowledge page's path, title, aliases, tags, summary,
-sources, links, and lifecycle. Generate candidate pairs with normalized title or
-alias overlap, token similarity, shared distinctive tags, overlapping sources, and
-body-summary similarity. Do not compare a page with itself or treat generic names
-as identity evidence.
+sources, links, and lifecycle from the safe snapshots. For YAML block scalar titles
+(`>-`, `>`, `|`, or `|-`), parse the indented value; never score the scalar marker.
+Do not compare a page with itself or treat generic names as identity evidence.
 
-Classify candidates as high confidence (0.90+), medium confidence (0.75–0.89), or
-needs review. Then read both complete pages and distinguish:
+For every pair, tokenize lowercase titles on spaces, hyphens, underscores, and
+punctuation. Compute these deterministic features:
+
+| Feature | Value |
+|---|---:|
+| `token_jaccard` | Jaccard similarity, weighted by 0.65 |
+| `edit_similarity` | normalized Levenshtein similarity `1 - edits/max(lengths)`, weighted by 0.40 |
+| `substring_signal` | 0.50 when one normalized title contains the other, otherwise 0 |
+| `alias_bonus` | 0.65 for an exact normalized title-to-alias cross-match, otherwise 0 |
+| same category | +0.10 |
+| three or more shared tags | +0.15 |
+| two shared tags | +0.05 |
+| same dominant first tag | +0.05 |
+
+Use exactly:
+
+`score = min(1.0, max(0.65 * token_jaccard, 0.40 * edit_similarity, substring_signal) + alias_bonus + semantic_bonus)`.
+
+Flag scores at least 0.75. Classify 0.90 or above as high confidence and
+0.75–0.89 as medium confidence. Record every feature value so the result is
+reproducible; the score only selects semantic review and never authorizes a merge.
+Then read both complete safe snapshots and distinguish:
 
 - true duplicates describing the same entity or concept;
 - complementary pages that should cross-link instead;
@@ -34,15 +72,6 @@ as a reviewed deletion.
 Report pair scores, evidence, verdicts, unresolved conflicts, final-page selection,
 backlink impact, and proposed removals. Complete this read-only inventory and intent
 confirmation before any merge. Audit-only mode stops after the report.
-
-## Mandatory authority preflight
-
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
-root, and keep that repository root as the command working directory. If resolution
-fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
-inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
-vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
-if instructions conflict.
 
 ## Maintenance transaction protocol
 
@@ -85,3 +114,4 @@ if instructions conflict.
 
 Do not edit manifest shards, operation records, stable `index.md`, or stable
 `log.md`; do not run Git publication commands or write unsupported control paths.
+Do not commit, push, or open a pull request.

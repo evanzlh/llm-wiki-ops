@@ -1627,3 +1627,60 @@ def test_daily_cache_check_command_is_real_and_has_no_removed_option() -> None:
     parsed = build_parser().parse_args(_normalize_cache_check_argv(argv))
     assert parsed.sources == ["sources/a.md", "sources/b.md"]
     assert parsed.json is True and parsed.pretty is True
+
+
+def _positive_git_publication_lines(contents: str) -> list[str]:
+    flattened = " ".join(contents.split()).lower()
+    allowed_phrases = (
+        "framework and agent must not run `git add`, `git commit`, or `git push`",
+        "do not run `git add`, `git commit`, or `git push`",
+        "do not commit, push, or open a pull request",
+        "do not run git push",
+    )
+    for phrase in allowed_phrases:
+        flattened = flattened.replace(phrase, "")
+    return [
+        match.group(0)
+        for match in re.finditer(r"\bgit\s+(?:add|commit|push)\b", flattened)
+    ]
+
+
+def test_maintenance_skills_have_only_negative_or_owner_git_publication_text() -> None:
+    for path in MAINTENANCE_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        assert _positive_git_publication_lines(contents) == [], path
+        if path.parent.name == "wiki-update":
+            assert (
+                "framework and agent must not run `git add`, `git commit`, or `git push`"
+                in " ".join(contents.split())
+            )
+        else:
+            assert "Do not commit, push, or open a pull request" in contents
+
+
+def test_git_publication_semantic_guard_rejects_positive_command() -> None:
+    injected = "After validation, git push origin HEAD."
+    assert _positive_git_publication_lines(injected) == ["git push"]
+    assert _positive_git_publication_lines("Do not run git push origin HEAD.") == []
+
+
+def test_status_graph_and_audit_commands_use_real_parser() -> None:
+    status = (
+        ROOT / "obsidian_wiki/_data/skills/wiki-status/SKILL.md"
+    ).read_text(encoding="utf-8")
+    commands = (
+        "obsidian-wiki graph-analyse --pretty",
+        "obsidian-wiki transaction list --json --pretty",
+        "obsidian-wiki hot status --json",
+    )
+    parser = build_parser()
+    for command in commands:
+        assert command in status
+        parser.parse_args(shlex.split(command)[1:])
+
+    lint = (
+        ROOT / "obsidian_wiki/_data/skills/wiki-lint/SKILL.md"
+    ).read_text(encoding="utf-8")
+    lint_command = "obsidian-wiki lint --json --pretty"
+    assert lint_command in lint
+    parser.parse_args(shlex.split(lint_command)[1:])

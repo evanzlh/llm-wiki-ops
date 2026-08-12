@@ -9,6 +9,25 @@ The audit does not change knowledge pages, sources, manifest shards, or transact
 The sole durable insight output is `synthesis/wiki-insights.md`, and it uses the
 maintenance transaction protocol.
 
+## Mandatory authority preflight
+
+Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+root, and keep that repository root as the command working directory. Read root
+`AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
+skill. Fail closed rather than guessing configuration or authority.
+
+## Safe Markdown inventory boundary
+
+Before any page inventory or read, use the framework safe Markdown scanner. It
+enforces repository and vault containment; ancestor components are real directories,
+not a symlink, reparse point, or special file; and each terminal `.md` file is
+ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/inode
+identity, link count, size, and attachment before and after bounded byte snapshots.
+An unsafe entry or unavailable no-follow support must fail closed before decoding or
+analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
+links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+and lint commands use this safe walker internally.
+
 ## Status inventory
 
 After authority preflight, inspect the manifest-v2 marker and sharded manifest,
@@ -19,6 +38,7 @@ hot freshness. Prefer CLI-owned parsing over manual reconstruction:
 obsidian-wiki check --json --pretty
 obsidian-wiki transaction list --json --pretty
 obsidian-wiki cache-check <source1> [source2 ...] --json --pretty
+obsidian-wiki graph-analyse --pretty
 obsidian-wiki hot status --json
 ```
 
@@ -35,6 +55,15 @@ missing/new/modified sources, hot freshness, broken or isolated graph nodes, and
 ranked next actions. An invalid manifest or ambiguous retained transaction is a
 reported blocker; never repair CLI-owned state manually.
 
+Take graph facts from `obsidian-wiki graph-analyse --pretty`. Take retained
+transaction state from `transaction list`, repository validation and operation
+records from `check`, and hot state from the local-state command. Inspect operation
+pages or journals only when returned by those CLI surfaces or as files in the
+configured repository read through the same safe bounded ordinary-file scanner; never
+guess a hidden path. When a CLI report does not provide page/source counts, count
+pages from the safe Markdown snapshots and count sources from validated manifest-v2
+shards returned by repository checks. Label the origin of every count.
+
 ## Graph insights
 
 For an insight request, analyze hubs, incoming and outgoing degree, dead ends,
@@ -49,15 +78,6 @@ When authority closes, prepare only `synthesis/wiki-insights.md` with synthesis
 frontmatter, concise findings, uncertainty markers, and a bounded graph snapshot.
 Complete the read-only inventory and intent confirmation before selecting that page
 change. Without valid source authority, return the analysis only.
-
-## Mandatory authority preflight
-
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
-root, and keep that repository root as the command working directory. If resolution
-fails, stop and recommend `obsidian-wiki setup [DIR]`; do not guess paths. Before
-inventory, read authority in this order: root `AGENTS.md`, canonical `llm-wiki`,
-vault `AGENTS.md` when present, then this task skill. The canonical protocol wins
-if instructions conflict.
 
 ## Maintenance transaction protocol
 
@@ -100,3 +120,4 @@ if instructions conflict.
 
 Do not edit manifest shards, operation records, stable `index.md`, or stable
 `log.md`; do not run Git publication commands or write unsupported control paths.
+Do not commit, push, or open a pull request.
