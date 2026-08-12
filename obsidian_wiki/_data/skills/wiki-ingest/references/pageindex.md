@@ -20,9 +20,13 @@ Use PageIndex only when all conditions hold:
 Installation is owner-managed: the owner clones the upstream repository into
 the configured `PAGEINDEX_REPO`, creates its environment, and installs the
 dependencies documented by that checkout. The framework does not clone,
-upgrade, or install this external project. `PAGEINDEX_WORKSPACE`, when
-configured, identifies the expected output workspace; otherwise the checkout's
-`results/` directory is the expected default.
+upgrade, or install this external project.
+
+PageIndex sends PDF content to the configured external model. Before invocation,
+disclose the provider and model and obtain explicit disclosure authorization.
+Apply the provider policy. Confidential, licensed, personal, regulated, or
+otherwise restricted material must not be transmitted without specific owner
+approval covering that provider and data.
 
 If a prerequisite, checkout entrypoint, credential, input, or output is missing
 or unsafe, fail closed for the PageIndex branch. Report it and use direct bounded
@@ -31,29 +35,39 @@ command or path.
 
 ## Run the external entrypoint
 
-Keep the wiki repository as the parent CWD. Run the owner-installed tool in a
-subshell so its expected checkout-relative behavior cannot change the parent:
+Invoke the owner-installed tool with working directory `PAGEINDEX_REPO` and an
+argument vector; use no shell evaluation, interpolation, sourced environment,
+or command assembled from PDF metadata:
 
-```bash
-(
-  cd <resolved-pageindex-repo>
-  uv run --no-project python run_pageindex.py \
-    --pdf_path <resolved-absolute-pdf-path> \
-    --model <resolved-pageindex-model> \
-    --if-add-node-summary yes --if-add-doc-description yes
-)
+```text
+cwd: <PAGEINDEX_REPO>
+argv: ["uv", "run", "--no-project", "python", "run_pageindex.py",
+       "--pdf_path", "<resolved-absolute-pdf-path>",
+       "--model", "<PAGEINDEX_MODEL>",
+       "--if-add-node-summary", "yes",
+       "--if-add-doc-description", "yes"]
 ```
 
+Equivalent display form: `uv run --no-project python run_pageindex.py
+--pdf_path <resolved-absolute-pdf-path> --model <resolved-pageindex-model>
+--if-add-node-summary yes --if-add-doc-description yes`.
+
 The PDF is transient analysis input; its absolute path is never a Source ID.
-The command normally writes `<resolved-pageindex-repo>/results/<pdfname>_structure.json`.
-Use a different output only when the command itself reports it; fail closed if
-the exact ordinary JSON output cannot be identified.
+Accept only `<PAGEINDEX_REPO>/results/<basename>_structure.json`, where
+`<basename>` is the normalized ordinary leaf filename stem from the already
+validated input, with no slash, backslash, drive, or `..`. Resolve the
+result lexically and physically beneath that fixed `results/` directory. It must
+be an ordinary single-link file, not a symbolic link, hard link, or special
+file, and at most 10 MiB. The agent must not trust stdout to select a path.
 
 The relevant output fields are `doc_description` and the `structure` tree.
-Nodes contain `title`, `summary`, `start_index`, and `end_index` plus optional
-child `nodes`; `start_index` and `end_index` are 1-indexed physical PDF pages.
-Use them to select bounded ranges and verify important claims against original
-page text.
+Parse one JSON object with string `doc_description` and array `structure`.
+Nodes require string `title`, integer `start_index`, integer `end_index`, and
+optional string `summary` plus array `nodes`. Limit the tree to 10,000 nodes and
+depth 20. Reject unknown recursive shapes, duplicate node IDs, non-tree nested
+records, and page ranges unless `1 <= start_index <= end_index <= PDF page count`.
+`start_index` and `end_index` are 1-indexed physical PDF pages. Verify important
+claims against the original page text; fail closed on schema or bounds errors.
 
 ## Snapshot gate before ingest
 

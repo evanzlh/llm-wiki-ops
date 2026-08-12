@@ -35,13 +35,18 @@ uncertainty and merge into existing semantic owners. See
    Markdown snapshot below the configured sources directory using the
    [source snapshot reference](../wiki-capture/references/source-snapshot.md).
    A new snapshot requires owner review and new snapshot requires owner Git
-   review; it becomes tracked authority only after the owner tracks it. The
+   review; it becomes tracked authority only after the owner tracks it. Reject
+   absolute IDs and IDs containing `..`; from repository-root CWD run the
+   read-only `git ls-files --error-unmatch -- <Source ID>`. The manifest-tracked
+   and Git-tracked states are different. On failure stop and require the owner to
+   complete owner review, stage, and commit externally, then rerun. The
    framework and agent must not run `git add`, `git commit`, or `git push`. Use
-   only its repository-relative Source ID.
+   only the repository-relative Source ID.
 4. **Check source cache.** Run
-   `obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty`.
-   Skip unchanged sources unless Full was explicitly selected. Stop when every
-   selected source is skipped.
+   `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
+   A `missing` result means stop. Continue with `new` and `modified`; skip
+   `unchanged` unless Full was explicitly selected. Stop when every selected
+   source is skipped.
 5. **Close sources and begin once.** Build the complete source closure from
    selected IDs and every existing Source ID of pages that may change or be
    deleted. Run exactly one

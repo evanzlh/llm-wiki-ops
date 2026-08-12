@@ -1,9 +1,18 @@
 import argparse
+import hashlib
 import json
 import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
-from obsidian_wiki.cli import _list_record_payload, _render_transaction_failure
+from obsidian_wiki.cli import (
+    _list_record_payload,
+    _normalize_cache_check_argv,
+    _render_transaction_failure,
+    build_parser,
+)
 from obsidian_wiki.transaction import TransactionError, TransactionRecord
 from obsidian_wiki.transaction_guidance import guidance_for_record
 from obsidian_wiki.transaction_validation import TransactionValidationReport
@@ -274,11 +283,49 @@ def test_external_material_is_snapshotted_before_transaction_begin() -> None:
         )
 
 
+def test_documented_cache_commands_are_accepted_by_real_parser() -> None:
+    parser = build_parser()
+    expected = (
+        "obsidian-wiki cache-check <repository-relative-source> "
+        "[additional-source ...] --json --pretty"
+    )
+    for path in SOURCE_WORKFLOW_SKILLS:
+        contents = path.read_text(encoding="utf-8")
+        assert contents.count(expected) == 1, path
+        concrete = expected.replace(
+            "<repository-relative-source> [additional-source ...]",
+            "sources/first.md sources/second.md",
+        )
+        argv = shlex.split(concrete)[1:]
+        parsed = parser.parse_args(_normalize_cache_check_argv(argv))
+        assert parsed.sources == ["sources/first.md", "sources/second.md"]
+        assert parsed.json is True and parsed.pretty is True
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "obsidian_wiki.cli", *argv],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode != 2, completed.stderr
+        assert "unrecognized arguments" not in completed.stderr
+
+        workflow = contents.split("## Source and transaction workflow", 1)[1]
+        cache_step = workflow.split("4. **", 1)[1].split("\n5. **", 1)[0]
+        assert "missing" in cache_step and "stop" in cache_step
+        assert "new" in cache_step and "modified" in cache_step
+        assert "unchanged" in cache_step and "Full" in cache_step
+
+
 def test_source_workflows_share_one_terminal_lifecycle() -> None:
     for path in SOURCE_WORKFLOW_SKILLS:
-        workflow = path.read_text(encoding="utf-8").split(
+        contents = path.read_text(encoding="utf-8")
+        workflow = contents.split(
             "## Source and transaction workflow", 1
         )[1]
+        assert contents.count("transaction begin --source") == 1, path
+        assert contents.count("transaction validate <id>") == 1, path
+        assert contents.count("transaction commit <id>") == 1, path
         matches = list(re.finditer(r"(?m)^(\d+)\. \*\*(.+?)\*\*", workflow))
         assert [int(match.group(1)) for match in matches] == list(range(1, 9)), path
         steps = []
@@ -363,8 +410,15 @@ def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
             "new snapshot requires owner Git review",
             "becomes tracked authority",
             "framework and agent must not run `git add`, `git commit`, or `git push`",
+            "git ls-files --error-unmatch -- <Source ID>",
+            "manifest-tracked",
+            "Git-tracked",
+            "owner review, stage, and commit externally, then rerun",
         ):
             assert required in flat, f"{path}: missing {required!r}"
+        assert flat.index("git ls-files --error-unmatch -- <Source ID>") < flat.index(
+            "cache-check"
+        ) < flat.index("transaction begin --source")
 
 
 def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
@@ -406,3 +460,143 @@ def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
     )
     assert match
     assert (path.parent / match.group(1)).resolve().is_file()
+
+
+def test_snapshot_hash_example_is_reproducible() -> None:
+    snapshot = SOURCE_WORKFLOW_REFERENCES[0].read_text(encoding="utf-8")
+    match = re.search(
+        r'content_hash: "(sha256:[0-9a-f]{64})".*?```text\n(.*?)```',
+        snapshot,
+        re.S,
+    )
+    assert match
+    exact_text = match.group(2)
+    assert exact_text == "Hello, wiki.\n"
+    assert "\r" not in exact_text and not exact_text.startswith("\ufeff")
+    assert match.group(1) == "sha256:" + hashlib.sha256(
+        exact_text.encode("utf-8")
+    ).hexdigest()
+
+
+def test_import_defines_executable_graph_and_okf_transformations() -> None:
+    import_skill = SOURCE_WORKFLOW_SKILLS[2].read_text(encoding="utf-8")
+
+    example = re.search(
+        r"## graph\.json detection and mapping.*?```json\n(.*?)```",
+        import_skill,
+        re.S,
+    )
+    assert example
+    graph = json.loads(example.group(1))
+    assert set(graph) >= {"nodes", "links", "graph"}
+    assert graph["nodes"] and set(graph["nodes"][0]) >= {
+        "id",
+        "label",
+        "category",
+        "tags",
+    }
+    assert set(graph["links"][0]) >= {"source", "target"}
+
+    template = re.search(
+        r"### Graph candidate template.*?```markdown\n(.*?)```",
+        import_skill,
+        re.S,
+    )
+    assert template
+    opening, metadata, body = template.group(1).split("---", 2)
+    assert opening == ""
+    keys = {
+        line.split(":", 1)[0]
+        for line in metadata.splitlines()
+        if line and not line.startswith((" ", "<"))
+    }
+    assert {"title", "category", "tags", "sources", "created", "updated"} <= keys
+    assert "## Related" in body
+
+    mode_rows = re.findall(
+        r"(?m)^\| `(merge|skip|replace)` \| ([^|]+) \|$", import_skill
+    )
+    modes = {mode: behavior.strip() for mode, behavior in mode_rows}
+    assert set(modes) == {"merge", "skip", "replace"}
+    assert "preserv" in modes["merge"]
+    assert "untouched" in modes["skip"]
+    assert "replace" in modes["replace"]
+
+    graph_section = import_skill.split("## graph.json detection and mapping", 1)[1]
+    okf_section = import_skill.split("## OKF bundle detection and mapping", 1)[1]
+    for required in ("adjacency", "typed", "## Related", "frontmatter"):
+        assert required in graph_section
+    for required in (
+        "non-empty `type`",
+        "concept ID",
+        "Reverse-map",
+        "Unicode",
+        "folder-note",
+        "OBSIDIAN_LINK_FORMAT=markdown",
+        "substantive existing body",
+    ):
+        assert required in okf_section
+
+
+def test_external_input_boundaries_are_bounded_and_fail_closed() -> None:
+    url = " ".join(SOURCE_WORKFLOW_REFERENCES[3].read_text(encoding="utf-8").split())
+    pageindex = " ".join(
+        SOURCE_WORKFLOW_REFERENCES[2].read_text(encoding="utf-8").split()
+    )
+    import_skill = " ".join(
+        SOURCE_WORKFLOW_SKILLS[2].read_text(encoding="utf-8").split()
+    )
+    research = " ".join(
+        SOURCE_WORKFLOW_SKILLS[3].read_text(encoding="utf-8").split()
+    )
+
+    for required in (
+        "HTTPS",
+        "5 redirects",
+        "30-second",
+        "10 MiB",
+        "credentials",
+        "IP literals",
+        "loopback",
+        "private",
+        "link-local",
+        "multicast",
+        "unspecified",
+        "reserved",
+        "text/plain",
+        "text/markdown",
+        "text/html",
+        "application/json",
+        "cross-origin subresources",
+        "explicit authorization",
+    ):
+        assert required in url
+
+    for required in (
+        "results/<basename>_structure.json",
+        "ordinary single-link file",
+        "10 MiB",
+        "depth",
+        "page ranges",
+        "argument vector",
+        "must not trust stdout",
+        "explicit disclosure authorization",
+        "provider policy",
+    ):
+        assert required in pageindex
+
+    archive_policy = ("10 MiB", "100 files", "10,000 records", "depth 20")
+    for document in (import_skill, research):
+        for required in archive_policy + (
+            "path traversal",
+            "absolute",
+            "symbolic links",
+            "hard links",
+            "special files",
+            "decompression bomb",
+            "Git LFS pointer",
+            "attribution",
+            "license",
+            "omission markers",
+        ):
+            assert required in document

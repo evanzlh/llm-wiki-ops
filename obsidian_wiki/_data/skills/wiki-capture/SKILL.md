@@ -53,13 +53,18 @@ Use these eight steps for Full and Correction.
    Markdown snapshot below the configured sources directory using the
    [source snapshot reference](references/source-snapshot.md). A new snapshot
    requires owner review and new snapshot requires owner Git review; it becomes
-   tracked authority only after the owner tracks it. The framework and agent
-   must not run `git add`, `git commit`, or `git push`. Use only its
-   repository-relative Source ID.
+   tracked authority only after the owner tracks it. Reject absolute IDs and
+   IDs containing `..`; from repository-root CWD verify each with the read-only
+   `git ls-files --error-unmatch -- <Source ID>`. The manifest-tracked state is
+   not the Git-tracked state. If verification fails, stop and ask the owner
+   to complete owner review, stage, and commit externally, then rerun. The
+   framework and agent must not run `git add`, `git commit`, or `git push`. Use
+   only the repository-relative Source ID.
 4. **Check source cache.** Run
-   `obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty`.
-   Skip unchanged sources unless Full processing was explicitly selected. If
-   all selected sources are skipped, report and stop.
+   `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
+   A `missing` result means stop. Continue with `new` and `modified`; skip
+   `unchanged` unless Full processing was explicitly selected. If all selected
+   sources are skipped, report and stop.
 5. **Close sources and begin once.** Build the complete source closure from the
    selected Source IDs and every existing Source ID of pages that may change or
    be deleted. Then run exactly one

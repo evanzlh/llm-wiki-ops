@@ -10,15 +10,39 @@ Use YAML frontmatter with these fields:
 
 ```yaml
 ---
-origin: <URL, service record, conversation locator, or file description>
-captured_at: <ISO-8601 timestamp>
-content_hash: <sha256 of the exact reviewed text>
-format: <original media type or serialization>
+origin: "<URL, service record, conversation locator, or file description>"
+captured_at: "<ISO-8601 timestamp>"
+content_hash: "sha256:<64 lowercase hexadecimal characters>"
+format: "<original media type or serialization>"
+# Add attribution, license, and omissions when applicable.
 ---
 ```
 
-After the frontmatter, store the exact reviewed text. Clearly label omissions
-or transcription boundaries; never imply that a partial snapshot is complete.
+The body begins with the byte immediately after the LF that terminates the
+closing `---`; do not insert a formatting blank line unless the reviewed text
+itself begins with one. Store the exact reviewed text as UTF-8 without BOM,
+normalize line endings to LF, and end with exactly one LF. `content_hash` is
+SHA-256 over those exact body bytes, including that final LF, prefixed by
+`sha256:`. The CLI does not validate this metadata: the agent computes it and
+the owner verifies it before tracking the file.
+
+Quote YAML strings containing `:`, `#`, brackets, leading punctuation, or
+ambiguous scalar values. Use YAML block scalars for multiline metadata, with an
+explicit chomping indicator. Never put the reviewed body inside a metadata
+scalar.
+
+This reproducible vector hashes the exact body `Hello, wiki.` plus one LF:
+
+```yaml
+content_hash: "sha256:aa86d74d8a419820ab0809675c187fe46825b7cd61dd62e4378f04bae0f67848"
+```
+
+```text
+Hello, wiki.
+```
+
+Clearly label omissions or transcription boundaries; never imply that a
+partial snapshot is complete.
 Use stable names such as `sources/inbox/YYYY-MM-DD-<slug>.md` and split large
 material into bounded, independently reviewable snapshots.
 

@@ -13,6 +13,15 @@ rounds. Track claims, locators, uncertainty, and limitations; plan reference,
 concept, entity, and synthesis candidates in memory. Full research is an
 analysis choice only.
 
+Bound imported research packages and archives before parsing: default maximum
+10 MiB total expanded text, 100 files, 10,000 records, and nesting depth 20.
+Reject path traversal, absolute paths, symbolic links, hard links, special
+files, decompression bomb indicators, and Git LFS pointer content. Binary data
+is transient parsing input only; snapshot only necessary reviewable textual
+records. Minimize sensitive content, preserve attribution and license fields,
+and use explicit omission markers. Lower ceilings are allowed; raising them
+requires explicit owner authorization.
+
 ## Source and transaction workflow
 
 1. **Resolve repository authority.** Resolve the nearest
@@ -27,13 +36,18 @@ analysis choice only.
    Markdown snapshot per accepted source below the configured sources directory
    using the [source snapshot reference](../wiki-capture/references/source-snapshot.md).
    A new snapshot requires owner review and new snapshot requires owner Git
-   review; it becomes tracked authority only after the owner tracks it. The
-   framework and agent must not run `git add`, `git commit`, or `git push`. Use
-   only its repository-relative Source ID.
+   review; it becomes tracked authority only after the owner tracks it. Reject
+   absolute IDs and IDs containing `..`; from repository-root CWD run the
+   read-only `git ls-files --error-unmatch -- <Source ID>`. The manifest-tracked
+   and Git-tracked states are distinct. On failure stop and require the owner to complete
+   owner review, stage, and commit externally, then rerun. The framework and
+   agent must not run `git add`, `git commit`, or `git push`. Use only the
+   repository-relative Source ID.
 4. **Check source cache.** Run
-   `obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty`.
-   Skip unchanged sources unless Full research was explicitly selected. Stop if
-   every selected source is skipped.
+   `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
+   A `missing` result means stop. Continue with `new` and `modified`; skip
+   `unchanged` unless Full research was explicitly selected. Stop if every
+   selected source is skipped.
 5. **Close sources and begin once.** Build the complete source closure from
    accepted IDs and every existing Source ID of pages that may change or be
    deleted. Run exactly one
