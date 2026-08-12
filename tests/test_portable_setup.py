@@ -418,7 +418,7 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     target = work / "knowledge"
     work.mkdir()
 
-    result = run_cli(home, work, "setup", "--portable", str(target))
+    result = run_cli(home, work, "setup", str(target))
 
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -449,7 +449,7 @@ def test_portable_complete_mirrors_are_ordinary_and_survive_repo_move(
 ) -> None:
     home = tmp_path / "home"
     target = tmp_path / "knowledge"
-    result = run_cli(home, tmp_path, "setup", "--portable", str(target))
+    result = run_cli(home, tmp_path, "setup", str(target))
     assert result.returncode == 0, result.stderr
     mirror = target / ".claude/skills/wiki-ingest/SKILL.md"
     canonical = target / ".skills/wiki-ingest/SKILL.md"
@@ -465,23 +465,6 @@ def test_portable_complete_mirrors_are_ordinary_and_survive_repo_move(
     assert (renamed / ".claude/skills/wiki-ingest/SKILL.md").read_bytes() == (
         renamed / ".skills/wiki-ingest/SKILL.md"
     ).read_bytes()
-
-
-def test_setup_portable_rejects_legacy_setup_flags(tmp_path: Path) -> None:
-    target = tmp_path / "portable"
-    result = run_cli(
-        tmp_path / "home",
-        tmp_path,
-        "setup",
-        "--portable",
-        str(target),
-        "--vault",
-        str(tmp_path / "vault"),
-    )
-
-    assert result.returncode != 0
-    assert "cannot be combined" in result.stderr
-    assert not target.exists()
 
 
 @pytest.mark.parametrize(
@@ -2322,6 +2305,7 @@ def test_merge_managed_block_rejects_malformed_markers(malformed: str) -> None:
 @pytest.mark.parametrize(
     "legacy_args",
     [
+        ["--portable"],
         ["--vault", "vault"],
         ["--project", "project"],
         ["--project-only"],
@@ -2338,12 +2322,11 @@ def test_setup_portable_rejects_every_legacy_setup_flag(
         tmp_path / "home",
         tmp_path,
         "setup",
-        "--portable",
         str(target),
         *legacy_args,
     )
-    assert result.returncode != 0
-    assert "cannot be combined" in result.stderr
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
     assert not target.exists()
 
 
@@ -2353,7 +2336,7 @@ def test_setup_portable_without_directory_defaults_to_current_directory(
     target = tmp_path / "cwd-target"
     target.mkdir()
 
-    result = run_cli(tmp_path / "home", target, "setup", "--portable")
+    result = run_cli(tmp_path / "home", target, "setup")
 
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -2763,7 +2746,7 @@ def test_setup_cli_scaffolds_git_only_target_and_validators_pass(
     assert initialized.returncode == 0, initialized.stderr
     assert {path.name for path in root.iterdir()} == {".git"}
 
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     doctor = run_cli(home, root, "doctor")
     check = run_cli(home, root, "check")
 
@@ -2830,7 +2813,7 @@ def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_reru
 
 def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> None:
     root = tmp_path / "repo"
-    first = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    first = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
     assert first.returncode == 0, first.stderr
     agents = root / "AGENTS.md"
     agents.write_text(
@@ -2838,7 +2821,7 @@ def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    second = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    second = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
 
     assert second.returncode == 0, second.stderr
     assert "## Team policy\nUse our glossary." in agents.read_text(encoding="utf-8")
@@ -2849,7 +2832,7 @@ def test_repo_upgrade_skills_refuses_mirror_drift_and_preserves_team_sentence(
 ) -> None:
     root = tmp_path / "repo"
     home = tmp_path / "home"
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     assert setup.returncode == 0, setup.stderr
     agents = root / "AGENTS.md"
     agents.write_text(
@@ -3728,7 +3711,7 @@ def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
     assert not (home / ".obsidian-wiki").exists()
 
     root = tmp_path / "repo"
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     assert setup.returncode == 0, setup.stderr
     nested = root / "wiki/concepts/deep"
     nested.mkdir(parents=True)
@@ -4723,7 +4706,7 @@ def test_cli_reports_malformed_portable_target_without_traceback(tmp_path: Path)
     (root / "README.md").write_text("owner\n", encoding="utf-8")
     before = snapshot_tree(root)
 
-    result = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    result = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
 
     assert result.returncode != 0
     assert "error:" in result.stderr

@@ -12,11 +12,9 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
@@ -29,8 +27,6 @@ from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version
 from obsidian_wiki.config import (
     ConfigError,
     PortableConfig,
-    ResolvedConfig,
-    load_global_config,
     load_portable_config,
     resolve_config,
 )
@@ -66,12 +62,6 @@ SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/obsidian-wiki, then run "
     f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
 )
-
-# Skills usable from any project (no vault context needed beyond the global
-# config). These are also installed globally for agents that only scope skills
-# per-project, so cross-project sync/query/context work everywhere.
-PORTABLE_SKILLS = ("wiki-update", "wiki-query", "wiki-context-pack")
-
 
 def version_label() -> str:
     return f"obsidian-wiki {__version__} ({IMPLEMENTATION_ID})"
@@ -139,50 +129,6 @@ def _installed_skill_names(
     return installed
 
 
-# ── Skill installation ───────────────────────────────────────────────────────
-def install_skills(
-    target_dir: Path,
-    label: str,
-    *,
-    subset: tuple[str, ...] | None = None,
-    mode: str = "symlink",
-    quiet: bool = False,
-) -> int:
-    """Install bundled skills into *target_dir*. Returns the count installed."""
-    src_root = skills_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    installed = 0
-    for skill in sorted(p for p in src_root.iterdir() if p.is_dir()):
-        name = skill.name
-        if subset is not None and name not in subset:
-            continue
-        link_path = target_dir / name
-
-        if link_path.is_symlink() or link_path.is_file():
-            link_path.unlink()
-        elif link_path.is_dir():
-            # A real directory we previously copied here is safe to replace;
-            # anything else is the user's and we leave it alone.
-            if (link_path / "SKILL.md").exists():
-                shutil.rmtree(link_path)
-            else:
-                print(f"   ⚠️  {link_path} is not a managed skill, skipping")
-                continue
-
-        if mode == "symlink":
-            link_path.symlink_to(skill, target_is_directory=True)
-        else:  # copy
-            shutil.copytree(skill, link_path)
-
-        if not (link_path / "SKILL.md").exists():
-            raise RuntimeError(f"broken skill install: {link_path} -> {skill}")
-        installed += 1
-
-    if not quiet:
-        print(f"✅  Installed {installed} skills → {label}")
-    return installed
-
-
 # Agents whose skills directory lives under $HOME. (path-under-home, label,
 # subset). All get every skill so they remain globally discoverable from any
 # project.
@@ -206,36 +152,6 @@ GLOBAL_AGENT_DIRS: list[tuple[str, str, tuple[str, ...] | None]] = [
 ]
 
 
-def install_global_skills(mode: str) -> None:
-    for rel, label, subset in GLOBAL_AGENT_DIRS:
-        install_skills(HOME / rel, label, subset=subset, mode=mode)
-    _install_hermes_profiles(mode)
-
-
-def _install_hermes_profiles(mode: str) -> None:
-    """Install into the active and all named Hermes profiles."""
-    hermes_home = os.environ.get("HERMES_HOME")
-    handled: set[Path] = set()
-    if hermes_home:
-        hp = Path(hermes_home).expanduser()
-        if hp != HOME / ".hermes":
-            install_skills(
-                hp / "skills", f"{hp}/skills/ (Hermes active profile)", mode=mode
-            )
-            handled.add(hp)
-    profiles = HOME / ".hermes" / "profiles"
-    if profiles.is_dir():
-        for prof in sorted(p for p in profiles.iterdir() if p.is_dir()):
-            if prof in handled:
-                continue
-            install_skills(
-                prof / "skills",
-                f"~/.hermes/profiles/{prof.name}/skills/ (Hermes profile: {prof.name})",
-                mode=mode,
-            )
-
-
-# ── Project-local install (opt-in) ───────────────────────────────────────────
 # (bootstrap-relative source path, destination relative to project dir).
 # Source paths are always resolved against the packaged bootstrap directory.
 BOOTSTRAP_FILES = [
@@ -263,37 +179,6 @@ def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path:
     )
 
 
-def install_project(project_dir: Path, mode: str) -> None:
-    project_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n📁  Installing project-local files → {project_dir}")
-    for rel, _label in PROJECT_AGENT_DIRS:
-        install_skills(project_dir / rel, f"{rel}/", mode=mode)
-
-    boot_root = bootstrap_dir()
-
-    for rel, dest in BOOTSTRAP_FILES:
-        src = _resolve_bootstrap_src(boot_root, rel)
-        dst = project_dir / dest
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.is_symlink() or dst.exists():
-            if dst.is_dir() and not dst.is_symlink():
-                continue
-            dst.unlink()
-        shutil.copyfile(src, dst)
-    print("✅  Installed bootstrap context files (AGENTS.md, rules, workflows)")
-
-    # AGENTS.md aliases as relative symlinks (copy fallback for symlink-hostile FS).
-    for alias in AGENTS_ALIASES:
-        link = project_dir / alias
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        try:
-            link.symlink_to("AGENTS.md")
-        except OSError:
-            shutil.copyfile(project_dir / "AGENTS.md", link)
-    print(f"✅  Linked AGENTS.md aliases ({', '.join(AGENTS_ALIASES)})")
-
-
 # ── Config ───────────────────────────────────────────────────────────────────
 def _read_config_value(key: str) -> str:
     if not GLOBAL_CONFIG.is_file():
@@ -317,22 +202,6 @@ def _read_config() -> dict[str, str]:
     return values
 
 
-def resolve_vault_path(cli_vault: str | None) -> str:
-    if cli_vault:
-        return os.path.expanduser(cli_vault)
-    existing = _read_config_value("OBSIDIAN_VAULT_PATH")
-    if existing and existing != "/path/to/your/vault":
-        return existing
-    if sys.stdin.isatty():
-        try:
-            entered = input("  Where is your Obsidian vault? (absolute path): ").strip()
-        except EOFError:
-            entered = ""
-        if entered:
-            return os.path.expanduser(entered)
-    return existing
-
-
 def _runtime_error_detail(error: ConfigError) -> str:
     detail = str(error)
     if "must be non-empty" in detail:
@@ -344,13 +213,11 @@ def _resolve_runtime(
     vault_arg: str | None = None,
     *,
     error_sink: list[ConfigError] | None = None,
-) -> ResolvedConfig | None:
+) -> PortableConfig | None:
     """Resolve one CLI runtime through the shared precedence protocol."""
     try:
         return resolve_config(
-            vault_arg,
             cwd=Path.cwd(),
-            home=HOME,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
@@ -363,24 +230,22 @@ def _resolve_runtime(
 
 
 def _context_warning_payloads(inspection: RuntimeInspection) -> list[dict[str, str]]:
-    return [warning.as_dict() for warning in inspection.warnings]
+    return []
 
 
 def _emit_context_warnings(inspection: RuntimeInspection) -> None:
-    for warning in inspection.warnings:
-        print(f"warning: {warning.message}", file=sys.stderr)
-        print(f"  {warning.hint}", file=sys.stderr)
+    return None
 
 
 def _resolved_inspection(
     vault_arg: str | None,
-) -> tuple[RuntimeInspection, ResolvedConfig] | None:
+) -> tuple[RuntimeInspection, PortableConfig] | None:
     inspection = _inspect_cli_runtime(vault_arg)
-    if inspection.runtime is None:
+    if inspection.config is None:
         error = inspection.error or ConfigError("vault not configured")
         print(f"error: {_runtime_error_detail(error)}", file=sys.stderr)
         return None
-    return inspection, inspection.runtime
+    return inspection, inspection.config
 
 
 def _attach_context_warnings(
@@ -394,9 +259,7 @@ def _portable_for_vault(vault: Path) -> PortableConfig | None:
     """Return the CWD portable config when it owns the supplied vault."""
     try:
         runtime = resolve_config(
-            None,
             cwd=Path.cwd(),
-            home=HOME,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
@@ -408,11 +271,7 @@ def _portable_for_vault(vault: Path) -> PortableConfig | None:
         ):
             raise
         return None
-    return (
-        runtime.portable
-        if runtime.mode == "portable" and runtime.vault == vault
-        else None
-    )
+    return runtime if runtime.vault == vault else None
 
 
 def _manifest_context_for_vault(vault: Path) -> PortableConfig | None:
@@ -438,128 +297,15 @@ def _manifest_context_for_vault(vault: Path) -> PortableConfig | None:
     return None
 
 
-def _resolved_vault(runtime: ResolvedConfig) -> Path | None:
+def _resolved_vault(runtime: PortableConfig) -> Path | None:
     if not runtime.vault.is_dir():
         print(f"error: vault not found: {runtime.vault}", file=sys.stderr)
         return None
     return runtime.vault
 
 
-def _schema_config_source(runtime: ResolvedConfig) -> str:
-    return "explicit-vault" if runtime.mode == "explicit" else runtime.source
-
-
-def write_config(vault_path: str) -> None:
-    GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # OBSIDIAN_WIKI_REPO points at the bundled data root so skills that reference
-    # framework assets (templates, references) can find them post-install.
-    repo_root = skills_dir().parent
-    GLOBAL_CONFIG.write_text(
-        f'OBSIDIAN_VAULT_PATH="{vault_path}"\n'
-        f'OBSIDIAN_WIKI_REPO="{repo_root}"\n'
-        f'OBSIDIAN_WIKI_VERSION="{__version__}"\n'
-    )
-    print(f"✅  Global config written to {GLOBAL_CONFIG}")
-
-
-VAULT_SUBDIRS = (
-    "concepts",
-    "entities",
-    "skills",
-    "references",
-    "synthesis",
-    "journal",
-    "projects",
-    "_archives",
-    "_raw",
-    "_staging",
-    ".obsidian",
-)
-
-
-def scaffold_vault(vault_path: Path) -> bool:
-    """Create the vault directory structure and special files if they don't exist yet.
-
-    Idempotent: existing files/dirs are left untouched. Returns True if the vault
-    directory itself had to be created (i.e. this is a brand new vault).
-    """
-    created = not vault_path.is_dir()
-    for name in VAULT_SUBDIRS:
-        (vault_path / name).mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    index_md = vault_path / "index.md"
-    if not index_md.exists():
-        index_md.write_text(
-            "---\n"
-            "title: Wiki Index\n"
-            "---\n\n"
-            "# Wiki Index\n\n"
-            f"*This index is automatically maintained. Last updated: {timestamp}*\n\n"
-            "## Concepts\n\n"
-            "*No pages yet. Use `wiki-ingest` to add your first source.*\n\n"
-            "## Entities\n\n"
-            "## Skills\n\n"
-            "## References\n\n"
-            "## Synthesis\n\n"
-            "## Journal\n"
-        )
-
-    log_md = vault_path / "log.md"
-    if not log_md.exists():
-        log_md.write_text(
-            "---\n"
-            "title: Wiki Log\n"
-            "---\n\n"
-            "# Wiki Log\n\n"
-            f'- [{timestamp}] INIT vault_path="{vault_path}" '
-            "categories=concepts,entities,skills,references,synthesis,journal\n"
-        )
-
-    hot_md = vault_path / "hot.md"
-    if not hot_md.exists():
-        hot_md.write_text(
-            "---\n"
-            "title: Hot Cache\n"
-            f"updated: {timestamp}\n"
-            "---\n\n"
-            "# Hot Cache\n\n"
-            "*A ~500-word semantic snapshot of recent activity. Updated after every major write operation.*\n\n"
-            "## Recent Activity\n\n"
-            f"- [{timestamp}] INIT — vault created at {vault_path}\n\n"
-            "## Active Threads\n\n"
-            "*None yet — start ingesting sources to populate.*\n\n"
-            "## Key Takeaways\n\n"
-            "*None yet.*\n\n"
-            "## Flagged Contradictions\n\n"
-            "*None yet.*\n"
-        )
-
-    manifest_json = vault_path / ".manifest.json"
-    if not manifest_json.exists():
-        manifest_json.write_text("{}\n")
-
-    app_json = vault_path / ".obsidian" / "app.json"
-    if not app_json.exists():
-        app_json.write_text(
-            json.dumps(
-                {
-                    "strictLineBreaks": False,
-                    "showFrontmatter": False,
-                    "defaultViewMode": "preview",
-                    "livePreview": True,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-
-    appearance_json = vault_path / ".obsidian" / "appearance.json"
-    if not appearance_json.exists():
-        appearance_json.write_text(json.dumps({"baseFontSize": 16}, indent=2) + "\n")
-
-    return created
+def _schema_config_source(runtime: PortableConfig) -> str:
+    return str(runtime.path)
 
 
 _STALE_SETUP_VERSION_UNSET = object()
@@ -1036,14 +782,10 @@ def run_doctor(
     inspection: RuntimeInspection | None = None,
 ) -> dict[str, object]:
     inspected = inspection or _inspect_cli_runtime(vault_override)
-    runtime = inspected.runtime
+    runtime = inspected.config
     portable_candidate = inspected.portable_config
-    if (
-        runtime is not None
-        and runtime.mode == "portable"
-        and runtime.portable is not None
-    ):
-        return _doctor_with_context(_run_portable_doctor(runtime.portable), inspected)
+    if runtime is not None:
+        return _doctor_with_context(_run_portable_doctor(runtime), inspected)
     if portable_candidate is not None and vault_override is None:
         try:
             _assert_single_link_ordinary_file(
@@ -1314,128 +1056,19 @@ def _print_doctor(report: dict[str, object]) -> None:
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────
-def _maybe_configure_sync(vault_path: Path, remote_arg: str | None) -> bool:
-    """Offer (or apply) GitHub sync setup for the vault.
-
-    Non-interactive (`--remote` passed, or no TTY and no remote given): only
-    acts when a remote was explicitly supplied. The interactive
-    `obsidian-wiki setup` flow prompts for the remote when sync is not already
-    configured.
-    """
-    from obsidian_wiki.sync import configure_sync, get_remote
-
-    if get_remote(vault_path):
-        return True  # already configured — nothing to do
-
-    remote = remote_arg
-    if not remote:
-        if not sys.stdin.isatty():
-            return False
-        print()
-        try:
-            answer = input("  Set up GitHub sync for your vault? [y/N]: ").strip()
-        except EOFError:
-            answer = ""
-        if answer.lower() != "y":
-            return False
-        try:
-            remote = input(
-                "  GitHub repo URL (e.g. https://github.com/you/my-wiki.git): "
-            ).strip()
-        except EOFError:
-            remote = ""
-        if not remote:
-            return False
-
-    try:
-        messages = configure_sync(vault_path, remote)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        print(f"⚠️  GitHub sync setup skipped: {exc}", file=sys.stderr)
-        return False
-    for m in messages:
-        print(f"✅  {m}")
-    print("✅  Run `obsidian-wiki sync` any time to commit and push vault changes.")
-    return True
-
-
 def cmd_setup(args: argparse.Namespace) -> int:
-    if args.portable is not None:
-        conflicts = (
-            args.vault is not None
-            or args.project is not None
-            or args.project_only
-            or args.copy
-            or args.remote is not None
+    target = Path(args.directory).expanduser().absolute()
+    try:
+        target = setup_portable_repo(
+            target,
+            version=__version__,
+            source_skills=skills_dir(),
         )
-        if conflicts:
-            print(
-                "error: --portable cannot be combined with --vault, --project, "
-                "--project-only, --copy, or --remote",
-                file=sys.stderr,
-            )
-            return 2
-        target = Path(args.portable).expanduser().absolute()
-        try:
-            target = setup_portable_repo(
-                target,
-                version=__version__,
-                source_skills=skills_dir(),
-            )
-        except (ValueError, OSError, RuntimeError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        print(f"Portable repository scaffolded at {target}")
-        print(f"Open {target / 'wiki'} in Obsidian")
-        return 0
-
-    mode = "copy" if args.copy else "symlink"
-    print("\n╔══════════════════════════════════════════════════╗")
-    print("║         obsidian-wiki — Agent Setup              ║")
-    print("╚══════════════════════════════════════════════════╝\n")
-
-    vault_path = resolve_vault_path(args.vault)
-    write_config(vault_path)
-    if not vault_path:
-        print("    → Vault path not set yet. Re-run with `--vault /path/to/vault`")
-        print("      or edit OBSIDIAN_VAULT_PATH in ~/.obsidian-wiki/config.")
-    else:
-        vault_dir = Path(vault_path).expanduser()
-        vault_created = scaffold_vault(vault_dir)
-        if vault_created:
-            print(f"✅  Vault created at {vault_dir}")
-        else:
-            print(f"✅  Vault verified at {vault_dir}")
-
-    if not args.project_only:
-        print()
-        install_global_skills(mode)
-
-    if args.project is not None:
-        project_dir = Path(args.project or os.getcwd()).expanduser().resolve()
-        install_project(project_dir, mode)
-
-    sync_configured = False
-    if vault_path and Path(vault_path).expanduser().is_dir():
-        sync_configured = _maybe_configure_sync(
-            Path(vault_path).expanduser(), args.remote
-        )
-
-    n = len(list_skills())
-    print("\n───────────────────────────────────────────────────")
-    print(" Setup complete!\n")
-    print(f" Skills installed: {n}  (mode: {mode})")
-    if vault_path:
-        print(f" Vault:            {vault_path}")
-    if sync_configured:
-        print(" GitHub sync:      obsidian-wiki sync")
-    print("\n Next steps:")
-    print("   1. Open a project in your agent")
-    print('   2. Say: "set up my wiki"\n')
-    print(" From any project:")
-    print("   /wiki-update    → sync knowledge into your vault")
-    print("   /wiki-query     → ask questions against your wiki")
-    print("   /wiki-context-pack → compile bounded context for another agent")
-    print("───────────────────────────────────────────────────\n")
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Repository scaffolded at {target}")
+    print(f"Open {target / 'wiki'} in Obsidian")
     return 0
 
 
@@ -1816,21 +1449,18 @@ def cmd_check(args: argparse.Namespace) -> int:
         else:
             print("error: check requires a portable repository", file=sys.stderr)
         return 1
-    if runtime.portable is None:
-        print("error: check requires a portable repository", file=sys.stderr)
-        return 1
     from obsidian_wiki.portable_check import check_portable_repo
 
     try:
         recover_portable_skill_operations(
-            runtime.portable.root,
+            runtime.root,
             version=__version__,
             source_skills=skills_dir(),
         )
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    report = check_portable_repo(runtime.portable)
+    report = check_portable_repo(runtime)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None, ensure_ascii=False))
     else:
@@ -1860,7 +1490,6 @@ def _portable_command_config(command: str) -> PortableConfig:
     try:
         runtime = resolve_config(
             cwd=cwd,
-            home=HOME,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
@@ -1871,9 +1500,7 @@ def _portable_command_config(command: str) -> PortableConfig:
             f"{command} requires a portable repository: "
             f"cannot resolve portable configuration from {cwd}: {exc}"
         ) from exc
-    if runtime.mode != "portable" or runtime.portable is None:
-        raise ConfigError(f"{command} requires a portable repository")
-    return runtime.portable
+    return runtime
 
 
 def _json_print(
@@ -2711,16 +2338,14 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def _inspect_cli_runtime(vault_arg: str | None = None) -> RuntimeInspection:
     return inspect_runtime(
-        vault_arg,
         cwd=Path.cwd(),
-        home=HOME,
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
 
 
 def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
-    runtime = inspection.runtime
+    runtime = inspection.config
     if runtime is None:
         payload: dict[str, object] = {"status": inspection.status}
         if inspection.status == "error":
@@ -2732,19 +2357,16 @@ def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
 
     payload = {
         "status": "resolved",
-        "mode": runtime.mode,
-        "source": runtime.source,
+        "mode": "portable",
+        "source": str(runtime.path),
         "vault": str(runtime.vault),
-        "portable": None,
-    }
-    if runtime.portable is not None:
-        portable = runtime.portable
-        payload["portable"] = {
-            "root": str(portable.root),
-            "sources": [str(source) for source in portable.sources],
-            "skills": str(portable.skills),
-            "local_state": str(portable.local_state),
+        "portable": {
+            "root": str(runtime.root),
+            "sources": [str(source) for source in runtime.sources],
+            "skills": str(runtime.skills),
+            "local_state": str(runtime.local_state),
         }
+    }
     return payload
 
 
@@ -2937,7 +2559,7 @@ def _print_info(payload: dict[str, object]) -> None:
 def cmd_info(args: argparse.Namespace) -> int:
     inspection = _inspect_cli_runtime(args.vault)
     installation, install_warnings = _installation_payload()
-    warnings = [warning.as_dict() for warning in inspection.warnings] + install_warnings
+    warnings = install_warnings
     payload: dict[str, object] = {
         "runtime": _runtime_payload(inspection),
         "installation": installation,
@@ -2961,15 +2583,10 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
     try:
         resolved = resolve_config(
             cwd=Path.cwd(),
-            home=Path.home(),
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
-        if resolved.mode != "portable" or resolved.portable is None:
-            raise ConfigError(
-                "repo upgrade-skills must run inside a portable repository"
-            )
-        root = resolved.portable.root
+        root = resolved.root
         names = upgrade_portable_skills(
             root,
             version=__version__,
@@ -2993,15 +2610,10 @@ def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
     try:
         resolved = resolve_config(
             cwd=Path.cwd(),
-            home=Path.home(),
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
-        if resolved.mode != "portable" or resolved.portable is None:
-            raise ConfigError(
-                "repo sync-skills must run inside a portable repository"
-            )
-        root = resolved.portable.root
+        root = resolved.root
         report = sync_portable_skill_mirrors(root, apply=args.apply)
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         error = str(exc)
@@ -3326,9 +2938,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-V", "--version", action="version", version=version_label())
     sub = p.add_subparsers(dest="command")
 
-    sp = sub.add_parser(
-        "setup", help="install skills into your agents and write config (default)"
-    )
+    sp = sub.add_parser("setup", help="create a portable knowledge repository")
     _add_setup_args(sp)
     sp.set_defaults(func=cmd_setup)
 
@@ -3954,40 +3564,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_setup_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument(
-        "--portable",
+        "directory",
         nargs="?",
-        const=".",
-        default=None,
+        default=".",
         metavar="DIR",
         help="create a clone-ready portable knowledge repository in DIR",
-    )
-    sp.add_argument(
-        "--vault", metavar="PATH", help="absolute path to your Obsidian vault"
-    )
-    sp.add_argument(
-        "--project",
-        nargs="?",
-        const="",
-        default=None,
-        metavar="DIR",
-        help="also install project-local skills + bootstrap files into DIR "
-        "(defaults to the current directory if no DIR given)",
-    )
-    sp.add_argument(
-        "--project-only",
-        action="store_true",
-        help="skip the global agent install (use with --project)",
-    )
-    sp.add_argument(
-        "--copy",
-        action="store_true",
-        help="copy skill files instead of symlinking to the installed package",
-    )
-    sp.add_argument(
-        "--remote",
-        metavar="URL",
-        help="GitHub (or any git host) repo URL for vault sync — skips the interactive "
-        "prompt and configures it non-interactively (see also: obsidian-wiki sync-setup)",
     )
 
 
@@ -3997,11 +3578,9 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
-    # No subcommand → default to `setup` (the common case).
-    if not argv or (
-        argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")
-    ):
-        argv = ["setup", *argv]
+    if not argv:
+        parser.print_help()
+        return 0
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
     argv = _normalize_cache_check_argv(argv)

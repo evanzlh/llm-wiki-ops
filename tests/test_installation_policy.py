@@ -544,7 +544,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     ] == []
     portable = tmp_path / "portable"
     setup = subprocess.run(
-        [executable, "setup", "--portable", str(portable)],
+        [executable, "setup", str(portable)],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -552,7 +552,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=60,
     )
-    assert "Portable repository scaffolded" in setup.stdout
+    assert "Repository scaffolded" in setup.stdout
     canonical_query = portable / ".skills/wiki-query/SKILL.md"
     query_bytes = canonical_query.read_bytes()
     assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
