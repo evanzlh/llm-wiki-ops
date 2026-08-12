@@ -1,430 +1,133 @@
+from __future__ import annotations
+
 import re
-import shlex
+import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PORTABLE_SKILL_MIRRORS = (
-    ".claude/skills",
-    ".cursor/skills",
-    ".windsurf/skills",
-    ".agents/skills",
-    ".pi/skills",
-    ".kiro/skills",
-)
-
-USER_FACING_SKILL_DOCS = (
+CURRENT_DOCS = (
     "README.md",
     "README_ZH.md",
-    "docs/installation.md",
+    "docs/README.md",
     "docs/agents.md",
-    "docs/skills.md",
-    "docs/cli.md",
-    "docs/configuration.md",
     "docs/architecture.md",
-    "docs/fork.md",
+    "docs/cli.md",
+    "docs/cli.zh-TW.md",
+    "docs/configuration.md",
     "docs/contributing.md",
+    "docs/fork.md",
+    "docs/installation.md",
+    "docs/skills.md",
 )
+
+FORBIDDEN_CURRENT_DOC_TERMS = (
+    "Personal mode",
+    "setup --portable",
+    "repo migrate",
+    "sync-setup",
+    "cache-update",
+    "manifest v1",
+    "@name",
+    "~/.obsidian-wiki/config",
+    "Dataview",
+)
+
+HISTORICAL_PLANS = (
+    "docs/superpowers/plans/2026-08-07-fork-identity-and-source-install.md",
+    "docs/superpowers/plans/2026-08-07-portable-config-and-setup.md",
+    "docs/superpowers/plans/2026-08-07-portable-migration-and-e2e.md",
+    "docs/superpowers/plans/2026-08-07-portable-transactions-and-derived-state.md",
+    "docs/superpowers/plans/2026-08-07-sharded-manifest-and-check.md",
+    "docs/superpowers/plans/2026-08-10-cli-runtime-context-and-recovery-guidance.md",
+    "docs/superpowers/plans/2026-08-10-portable-setup-installation-compatibility.md",
+    "docs/superpowers/plans/2026-08-11-portable-agent-preflight-cli.md",
+    "docs/superpowers/plans/2026-08-11-portable-agent-skill-docs.md",
+    "docs/superpowers/plans/2026-08-12-agent-context-and-full-skill-mirrors.md",
+)
+
+HISTORICAL_SPECS = (
+    "docs/superpowers/specs/2026-08-07-portable-repo-mode-design.md",
+    "docs/superpowers/specs/2026-08-10-cli-runtime-context-and-recovery-guidance-design.md",
+    "docs/superpowers/specs/2026-08-10-portable-setup-installation-compatibility-design.md",
+    "docs/superpowers/specs/2026-08-11-portable-agent-ergonomics-design.md",
+)
+
+PLAN_BANNER = (
+    "> **Superseded (2026-08-12):** Current behavior is defined by the\n"
+    "> [Portable-Only Repository Design](../specs/2026-08-12-portable-only-design.md).\n\n"
+)
+SPEC_BANNER = (
+    "> **Superseded (2026-08-12):** Current behavior is defined by the\n"
+    "> [Portable-Only Repository Design](2026-08-12-portable-only-design.md).\n\n"
+)
+HISTORICAL_BODY_BASE = "ba9990717e931bb5c78f6ec2d08b2e8a0c0c6b98"
 
 
 def _text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def _flat_text(text: str) -> str:
-    return " ".join(text.split())
+def test_current_docs_describe_only_the_current_repository_product() -> None:
+    for relative in CURRENT_DOCS:
+        text = _text(relative)
+        for forbidden in FORBIDDEN_CURRENT_DOC_TERMS:
+            assert forbidden not in text, (relative, forbidden)
 
 
-def _headings(text: str) -> list[tuple[int, str, int, int]]:
-    headings: list[tuple[int, str, int, int]] = []
-    fence: tuple[str, int] | None = None
-    offset = 0
-    for line in text.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        fence_match = re.match(
-            r"^[ \t]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", content
-        )
-        if fence_match is not None:
-            marker = fence_match.group("marker")
-            tail = fence_match.group("tail")
-            if fence is None:
-                fence = (marker[0], len(marker))
-            elif (
-                marker[0] == fence[0]
-                and len(marker) >= fence[1]
-                and not tail.strip()
-            ):
-                fence = None
-            offset += len(line)
-            continue
-
-        if fence is None:
-            heading_match = re.match(
-                r"^(?P<marks>#{2,3})[ \t]+(?P<title>[^\r\n]+?)[ \t]*$",
-                content,
-            )
-            if heading_match is not None:
-                headings.append(
-                    (
-                        len(heading_match.group("marks")),
-                        heading_match.group("title"),
-                        offset,
-                        offset + len(line),
-                    )
-                )
-        offset += len(line)
-    return headings
-
-
-def _section(relative: str, level: int, title: str) -> str:
-    text = _text(relative)
-    headings = _headings(text)
-    matches = [item for item in headings if item[:2] == (level, title)]
-    assert len(matches) == 1, (
-        f"{relative}: expected one H{level} {title!r}, found {len(matches)}"
+def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
+    commands = (
+        "obsidian-wiki setup ./team-knowledge",
+        "cd ./team-knowledge",
+        "obsidian-wiki doctor",
+        "obsidian-wiki check",
+        "obsidian-wiki repo upgrade-skills",
     )
-    selected = matches[0]
-    position = headings.index(selected)
-    end = next(
-        (
-            heading[2]
-            for heading in headings[position + 1 :]
-            if heading[0] <= level
-        ),
-        len(text),
-    )
-    return text[selected[3] : end]
+    for command in commands:
+        assert command in _text("README.md")
+        assert command in _text("README_ZH.md")
 
 
-def _fenced_blocks(text: str, language: str) -> list[str]:
-    blocks: list[str] = []
-    marker: tuple[str, int] | None = None
-    selected = False
-    lines: list[str] = []
-    for line in text.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        fence_match = re.match(
-            r"^[ \t]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", content
-        )
-        if marker is None:
-            if fence_match is None:
+def test_current_docs_cover_the_portable_only_contract() -> None:
+    combined = "\n".join(_text(relative) for relative in CURRENT_DOCS)
+    for required in (
+        "nearest ancestor",
+        "manifest v2",
+        "tracked source snapshots",
+        "transaction review",
+        "recovery",
+        "stable `wiki/index.md` and `wiki/log.md`",
+        "ignored `wiki/hot.md`",
+        "Git publication",
+        "Dashboard",
+    ):
+        assert required in combined, required
+
+
+def test_current_documentation_links_resolve() -> None:
+    link = re.compile(r"(?<!!)\[[^]]+\]\(([^)#]+)(?:#[^)]+)?\)")
+    for relative in CURRENT_DOCS:
+        source = ROOT / relative
+        for target in link.findall(source.read_text(encoding="utf-8")):
+            if "://" in target or target.startswith("mailto:"):
                 continue
-            opening = fence_match.group("marker")
-            marker = (opening[0], len(opening))
-            info = fence_match.group("tail").strip().split(None, 1)
-            selected = bool(info and info[0] == language)
-            lines = []
-            continue
-
-        if fence_match is not None:
-            closing = fence_match.group("marker")
-            if (
-                closing[0] == marker[0]
-                and len(closing) >= marker[1]
-                and not fence_match.group("tail").strip()
-            ):
-                if selected:
-                    blocks.append("".join(lines))
-                marker = None
-                selected = False
-                lines = []
-                continue
-        if selected:
-            lines.append(line)
-    assert marker is None, "unclosed Markdown fence"
-    return blocks
+            assert (source.parent / target).resolve().exists(), (relative, target)
 
 
-def _bash_commands(section: str) -> list[tuple[str, list[str]]]:
-    commands: list[tuple[str, list[str]]] = []
-    for block in _fenced_blocks(section, "bash"):
-        pending = ""
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            pending += stripped
-            if pending.endswith("\\"):
-                pending = pending[:-1] + " "
-                continue
-            commands.append((pending, shlex.split(pending, comments=True)))
-            pending = ""
-        assert not pending, "unfinished shell continuation"
-    return commands
-
-
-def _command(
-    commands: list[tuple[str, list[str]]], prefix: tuple[str, ...]
-) -> tuple[str, list[str]]:
-    matches = [item for item in commands if tuple(item[1][: len(prefix)]) == prefix]
-    assert matches, f"missing command prefix: {' '.join(prefix)}"
-    return matches[0]
-
-
-def test_section_parser_ignores_headings_inside_fences(tmp_path: Path) -> None:
-    relative = tmp_path / "synthetic.md"
-    relative.write_text(
-        "## Target\n```markdown\n## Not a boundary\n```\nbody\n## Next\n",
-        encoding="utf-8",
-    )
-    text = relative.read_text(encoding="utf-8")
-    headings = _headings(text)
-    assert [(level, title) for level, title, _start, _end in headings] == [
-        (2, "Target"),
-        (2, "Next"),
-    ]
-
-
-def test_cli_transaction_section_documents_preflight_contract() -> None:
-    section = _section("docs/cli.md", 2, "Portable transactions and local hot state")
-    flat = _flat_text(section)
-    commands = _bash_commands(section)
-    _command(commands, ("obsidian-wiki", "transaction", "begin"))
-    _command(commands, ("obsidian-wiki", "transaction", "validate"))
-    _command(commands, ("obsidian-wiki", "transaction", "commit"))
-
-    begin_fields = re.search(
-        r"JSON result includes at least (?P<fields>.*?)\.", flat
-    )
-    assert begin_fields is not None
-    documented = set(re.findall(r"`([^`]+)`", begin_fields.group("fields")))
-    assert {
-        "transaction_id",
-        "status",
-        "started_at",
-        "source_ids",
-        "workspace",
-        "candidate_vault",
-        "snapshots",
-        "deletions",
-    } <= documented
-
-    report_fields = re.search(r"JSON report contains (?P<fields>.*?)\.", flat)
-    assert report_fields is not None
-    documented = set(re.findall(r"`([^`]+)`", report_fields.group("fields")))
-    assert documented == {
-        "transaction_id",
-        "status",
-        "candidate_pages",
-        "deletions",
-        "issues",
-        "warnings",
-    }
-    for required in (
-        "Exit status is `0` for `pass` and `1` for `fail`",
-        "prospective vault = (live knowledge pages - declared deletions) + "
-        "candidate replacements",
-        "non-empty subset of the transaction's `source_ids`",
-        "before any recovery snapshot or live-vault promotion",
+def test_historical_documents_have_one_exact_banner_before_the_body() -> None:
+    for relative, banner in (
+        *((path, PLAN_BANNER) for path in HISTORICAL_PLANS),
+        *((path, SPEC_BANNER) for path in HISTORICAL_SPECS),
     ):
-        assert required in flat
-
-
-def test_cli_lower_level_section_documents_cache_contract() -> None:
-    section = _section("docs/cli.md", 2, "Lower-level commands")
-    flat = _flat_text(section)
-    commands = _bash_commands(section)
-    configured = _command(commands, ("obsidian-wiki", "cache-check", "--configured"))
-    assert configured[1][-2:] == ["--json", "--pretty"]
-    legacy = [
-        command
-        for command in commands
-        if command[1][:2] == ["obsidian-wiki", "cache-check"]
-        and "--configured" not in command[1]
-    ]
-    assert legacy and legacy[0][1][-2:] == ["--json", "--pretty"]
-    _command(commands, ("obsidian-wiki", "cache-update"))
-    _command(commands, ("obsidian-wiki", "cache-hash"))
-    for required in (
-        "Cache output is JSON by default",
-        "`context_warnings`",
-        "structured JSON stdout remains parseable and stderr stays empty",
-        "`cache-update` is a low-level compatibility interface",
-        "It is not a Portable transaction completion step",
-    ):
-        assert required in flat
-
-
-def test_portable_manifest_sections_route_drift_through_transactions() -> None:
-    configuration = _flat_text(
-        _section("docs/configuration.md", 2, "Manifest mode selected by configuration")
-    )
-    assert (
-        "Use `obsidian-wiki cache-check` and `cache-update` for v2 state"
-        not in configuration
-    )
-    for required in (
-        "Use `obsidian-wiki cache-check --configured` for Portable v2 freshness",
-        "compile or recompile candidate pages through a transaction",
-        "transaction commit owns the affected manifest shards",
-        "not a Portable transaction completion step",
-    ):
-        assert required in configuration
-
-    section = _section("docs/cli.md", 2, "Portable repository validation")
-    flat = _flat_text(section)
-    commands = _bash_commands(section)
-    raw_begin, begin = _command(commands, ("obsidian-wiki", "transaction", "begin"))
-    assert "--source <source1> [source2 ...]" in raw_begin
-    assert begin[-2:] == ["--json", "--pretty"]
-    _command(commands, ("obsidian-wiki", "transaction", "validate"))
-    _command(commands, ("obsidian-wiki", "transaction", "commit"))
-    _command(commands, ("obsidian-wiki", "check"))
-    for required in (
-        "For `source-new` or `source-stale`, compile or recompile the source "
-        "through a transaction",
-        "every Source ID cited by a candidate",
-        "every existing source cited by a page being updated or deleted",
-        "After commit, rerun `obsidian-wiki check`",
-        "git rm <vault>/.manifest/sources/<relative>.json",
-        "whole-file Git deletion",
-    ):
-        assert required in flat
-
-
-def test_cli_transaction_section_documents_hot_inputs_contract() -> None:
-    section = _section("docs/cli.md", 2, "Portable transactions and local hot state")
-    flat = _flat_text(section)
-    commands = _bash_commands(section)
-    _command(commands, ("obsidian-wiki", "hot", "status"))
-    _raw, inputs = _command(commands, ("obsidian-wiki", "hot", "inputs"))
-    assert inputs[inputs.index("--pages") + 1] == "50"
-    assert inputs[inputs.index("--operations") + 1] == "10"
-    assert inputs[-2:] == ["--json", "--pretty"]
-    _command(commands, ("obsidian-wiki", "hot", "mark-current"))
-    for required in (
-        "read-only",
-        "`fingerprint`, `pages`, and `operations`",
-        "Each validated immutable operation record",
-    ):
-        assert required in flat
-
-
-def test_architecture_portable_lifecycle_places_validation_before_snapshots() -> None:
-    flat = _flat_text(_section("docs/architecture.md", 3, "Portable write lifecycle"))
-    for required in (
-        "prospective vault = (live knowledge pages - declared deletions) + "
-        "candidate replacements",
-        "candidate-to-candidate",
-        "unchanged live pages",
-        "before recovery snapshots or promotion",
-        "reviewed candidate bytes are the bytes promoted",
-    ):
-        assert required in flat
-
-
-def test_configuration_sections_document_runtime_and_version_contracts() -> None:
-    resolution = _flat_text(_section("docs/configuration.md", 2, "How config is resolved"))
-    for required in (
-        "does not export `OBSIDIAN_VAULT_PATH` into the parent shell",
-        "config-aware command such as `cache-check --configured`",
-    ):
-        assert required in resolution
-
-    portable = _flat_text(
-        _section("docs/configuration.md", 2, "Portable Repository configuration")
-    )
-    for required in (
-        "release-tag-based compatible PEP 440 range",
-        "Exact development-build pins",
-        "exact CLI/source-revision compatibility or reproducibility",
-        "high-churn",
-        "`setup-version-stale`",
-        "independent from Portable `requires_cli` compatibility",
-    ):
-        assert required in portable
-    assert "byte-for-byte reproducibility" not in portable
-
-
-def test_agents_portable_protocol_documents_cwd_timestamps_and_recovery() -> None:
-    flat = _flat_text(_section("docs/agents.md", 2, "Portable agent write protocol"))
-    for required in (
-        "Keep the repository root as the command working directory",
-        "do not `cd` into it",
-        "runtime-only absolute path",
-        "`created = updated = started_at`",
-        "preserve `created` and set `updated = started_at`",
-        "explicit adjacent Portable Repository completion and Personal mode completion branches",
-        "validate before commit",
-        "hot status` → `hot inputs` → semantic rewrite → `hot mark-current",
-    ):
-        assert required in flat
-
-
-def test_skills_portable_contract_is_mode_local() -> None:
-    flat = _flat_text(_section("docs/skills.md", 2, "Portable write-skill contract"))
-    for required in (
-        "explicit adjacent Portable Repository completion and Personal mode completion branches",
-        "repository root as CWD",
-        "runtime-only absolute `candidate_vault`",
-        "transaction `started_at`",
-        "status-aware recovery",
-        "hot freshness gate",
-    ):
-        assert required in flat
-
-
-def test_human_docs_define_canonical_skills_and_complete_agent_mirrors() -> None:
-    architecture = _flat_text(
-        _section("docs/architecture.md", 2, "Portable repository layer")
-    )
-    agents = _flat_text(_text("docs/agents.md"))
-    skills = _flat_text(_text("docs/skills.md"))
-    contributing = _flat_text(_text("docs/contributing.md"))
-
-    assert "`obsidian_wiki/_data/skills/`" in skills
-    assert "only editable canonical skill tree" in architecture
-    assert "complete derived ordinary-file mirrors" in architecture
-    for mirror in PORTABLE_SKILL_MIRRORS:
-        assert f"`{mirror}/`" in agents
-    assert "never edit an agent mirror directly" in agents
-    assert "`obsidian_wiki/_data/skills/<name>/SKILL.md`" in contributing
-    assert "framework source has no local wiki skills by design" in contributing
-
-
-def test_human_docs_define_explicit_portable_skill_sync_and_upgrade_behavior() -> None:
-    cli = _flat_text(_text("docs/cli.md"))
-    installation = _flat_text(_text("docs/installation.md"))
-    configuration = _flat_text(_text("docs/configuration.md"))
-
-    for text in (cli, installation):
-        read_only = text.index("obsidian-wiki repo sync-skills --json --pretty")
-        apply = text.index(
-            "obsidian-wiki repo sync-skills --apply --json --pretty"
-        )
-        check = text.index("obsidian-wiki check --json --pretty", apply)
-        diff = text.index(
-            "git diff -- .skills .claude/skills .cursor/skills "
-            ".windsurf/skills .agents/skills .pi/skills .kiro/skills",
-            check,
-        )
-        assert read_only < apply < check < diff
-
-    for required in (
-        "read-only by default",
-        "rebuilds all six mirrors",
-        "upgrades framework-managed built-ins",
-        "preserves custom skills",
-        "refuses managed drift",
-        "unknown legacy changes",
-    ):
-        assert required in configuration
-
-
-def test_human_docs_remove_legacy_stop_capture_and_adapter_language() -> None:
-    combined = "\n".join(_text(relative) for relative in USER_FACING_SKILL_DOCS)
-    flat = _flat_text(combined)
-
-    assert "automatic Stop capture is not installed" in flat
-    assert "`/wiki-capture --quick`" in flat
-    assert "remove the old global Claude Stop Hook entry manually" in flat
-    assert "adapter" not in combined.lower()
-    assert "../.skills/" not in combined
-    for banned in (
-        '"Stop":',
-        "hooks.Stop",
-        ".claude/hooks/",
-        "install the Stop Hook",
-    ):
-        assert banned not in combined
+        text = _text(relative)
+        assert text.startswith(banner), relative
+        assert text.count("> **Superseded (2026-08-12):**") == 1, relative
+        original = subprocess.run(
+            ["git", "show", f"{HISTORICAL_BODY_BASE}:{relative}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert text.removeprefix(banner) == original, relative

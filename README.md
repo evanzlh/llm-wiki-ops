@@ -1,119 +1,66 @@
 # obsidian-wiki
 
-> An independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6bec8b26bab6594ac37fb4d8371469fbab`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). This is not an official upstream release and does not track future upstream changes. See [Fork relationship and rationale](docs/fork.md).
+> An independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). See the [fork rationale](docs/fork.md).
 
 [English](README.md) | [简体中文](README_ZH.md)
 
-A skill-based framework for compiling source material into an AI-maintained Obsidian knowledge graph.
+A portable, Git-native framework for compiling tracked sources into an AI-maintained Obsidian knowledge graph.
 
-## Why this fork
+## Product model
 
-This fork focuses on Git-native, multi-contributor knowledge bases: sources and the compiled vault live in one repository, contributors work on branches, and generated changes go through pull-request review.
-
-## Fork features
-
-- Portable Repository mode with repository-relative configuration
-- Tracked repository-local skills and multi-agent bootstrap files
-- Stable repository-relative Source IDs and sharded manifest state
-- Recoverable local transactions, immutable operation pages, and rebuildable local hot state
-- Dry-run-first legacy migration with byte-for-byte rollback snapshots
-- Clone-stable source bytes and merge-friendly concurrent branches
-- Deterministic, LLM-free validation for any CI platform
+Every knowledge base has one repository layout, one repository-relative configuration, and one tracked skill tree. Sources, source snapshots, manifest v2 shards, generated pages, and agent instructions travel together through branches and pull requests. Local transaction workspaces and `wiki/hot.md` stay ignored.
 
 ## Install
 
-The only supported installation is a non-editable build from a local clone:
+Install a non-editable build from a local framework clone:
 
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
 uv tool install --link-mode copy .
+uv tool install --force --reinstall --link-mode copy .
 ```
 
-The installed CLI does not depend on the clone remaining in place. To upgrade, pull the clone and run `uv tool install --force --reinstall --link-mode copy .`.
+The installed command does not depend on the clone remaining in place. See [Installation](docs/installation.md) for prerequisites and upgrades.
 
-## Start a portable team wiki
+## Create a knowledge repository
 
 ```bash
-obsidian-wiki setup --portable ./team-knowledge
+obsidian-wiki setup ./team-knowledge
 cd ./team-knowledge
 obsidian-wiki doctor
 obsidian-wiki check
 ```
 
-Open `team-knowledge/wiki/` as the Obsidian vault. Contributors clone the knowledge repository, install the CLI as a uv tool from their own framework clone, run `obsidian-wiki doctor`, and use the tracked repository-local skills from their preferred agent. The knowledge repository contains no `.venv` or vendored CLI.
+Open `wiki/` in Obsidian. Commands resolve the nearest ancestor `.obsidian-wiki/config.toml`, so they work from the repository root or a nested directory. Setup also installs the canonical `.skills/` tree and complete agent mirrors.
 
-The portable repository's `.skills/` tree is canonical. Six complete
-ordinary-file mirrors make the same skill descriptions and resources available
-to supported agents. Inspect drift, explicitly rebuild the mirrors, validate,
-and review the tracked result:
+## Collaborate safely
 
-```bash
-obsidian-wiki repo sync-skills --json --pretty
-obsidian-wiki repo sync-skills --apply --json --pretty
-obsidian-wiki check --json --pretty
-git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
-```
+Agents write through local transactions. Validation happens before candidate pages are promoted; failures retain recovery state. Successful writes keep stable `wiki/index.md` and `wiki/log.md`, update tracked source snapshots and manifest v2 shards, and leave an immutable operation record. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
 
-The first command is read-only. Edit only `.skills/`, never an agent mirror.
-
-When upgrading the framework, use this two-step portable CLI upgrade protocol.
-On a branch, first install the new CLI and deliberately edit the tracked
-`requires_cli` value in `.obsidian-wiki/config.toml` to a reviewed PEP 440
-constraint that accepts the installed version. Then refresh the managed files,
-validate the repository, and review every change:
+Upgrade managed skills explicitly after installing a compatible framework release:
 
 ```bash
-git switch -c upgrade-portable-cli
-# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
 obsidian-wiki repo upgrade-skills
+obsidian-wiki doctor
 obsidian-wiki check
 git diff
 ```
 
-Every collaborator must install a CLI version that satisfies the repository's
-updated constraint. `repo upgrade-skills` does not bypass compatibility checks
-and does not automatically rewrite `requires_cli`; it upgrades managed
-built-ins, preserves custom skills, and refuses drift or unknown legacy
-changes. Commit the reviewed config and managed-file diff through the normal
-pull-request workflow.
-
-Portable agents stage writes in ignored local transaction workspaces and promote reviewed candidates into the working tree. Ordinary writes leave `wiki/index.md` and `wiki/log.md` stable, keep `wiki/hot.md` local and ignored, and append an immutable operation page. Transaction commands do not commit or push; review the Git diff and publish through your normal branch and pull-request workflow. See [Architecture](docs/architecture.md#portable-write-lifecycle) and the [CLI transaction reference](docs/cli.md#portable-transactions-and-local-hot-state).
-
-## Migrate an existing repository
-
-When a legacy vault and its sources are already separate directories in one repository, run the read-only analysis first:
-
-```bash
-obsidian-wiki repo migrate --root . --vault wiki --sources sources
-```
-
-Before applying, require the enclosing Git root to equal `--root`, commit the complete legacy baseline, and confirm a clean worktree. Then run the exact apply command printed by dry-run:
-
-```bash
-obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
-```
-
-Migration never imports external sources or publishes Git changes. See the [dry-run, blocker, and rollback reference](docs/cli.md#legacy-to-portable-migration).
-
-## Personal mode
-
-The existing personal workflow remains available through the source-installed CLI:
-
-```bash
-obsidian-wiki setup --vault ~/brain
-```
+The current product surface is the repository workflow documented here and in `docs/`. A Dashboard is intentionally absent; any future Dashboard requires a separate design and implementation, with no placeholder in this release.
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Installation](docs/installation.md)
-- [Portable configuration](docs/configuration.md)
-- [Agent compatibility](docs/agents.md)
-- [CLI reference](docs/cli.md)
+- [Configuration](docs/configuration.md)
 - [Architecture](docs/architecture.md)
+- [CLI reference](docs/cli.md)
+- [Agent protocol](docs/agents.md)
 - [Skills](docs/skills.md)
-- [Fork relationship and rationale](docs/fork.md)
+- [Contributing](docs/contributing.md)
+- [Fork relationship](docs/fork.md)
 
-## Upstream and license
+## License
 
-The original work is by Ar9av and contributors. This fork preserves the upstream Git history and MIT license. See [docs/fork.md](docs/fork.md) for attribution and compatibility details.
+The original work is by Ar9av and contributors. This fork preserves the upstream Git history and MIT license; see [LICENSE](LICENSE).

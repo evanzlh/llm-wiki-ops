@@ -15,6 +15,15 @@ from obsidian_wiki import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_HUMAN_DOCS = (
+    ROOT / "README.md",
+    ROOT / "README_ZH.md",
+    *(ROOT / "docs" / name for name in (
+        "README.md", "agents.md", "architecture.md", "cli.md", "cli.zh-TW.md",
+        "configuration.md", "contributing.md", "fork.md", "installation.md",
+        "skills.md",
+    )),
+)
 SPECIAL_WORKFLOW_SKILLS = {
     "graph-colorize",
     "obsidian-layout-adjustment",
@@ -31,6 +40,11 @@ REMOVED_SKILL_PATHS = {
     "obsidian_wiki/_data/skills/wiki-stage-commit",
     "obsidian_wiki/_data/skills/wiki-switch",
 }
+
+
+def test_current_human_document_scope_is_explicit_and_complete() -> None:
+    assert len(CURRENT_HUMAN_DOCS) == 12
+    assert all(path.is_file() for path in CURRENT_HUMAN_DOCS)
 
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

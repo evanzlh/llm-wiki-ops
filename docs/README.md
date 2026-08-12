@@ -1,16 +1,15 @@
 # Documentation
 
-Everything beyond the [README](../README.md) landing page.
+The README is the landing page. These guides define the current repository product in detail:
 
-| Page | What's in it |
-|---|---|
-| [Installation](installation.md) | The supported clone-and-`uv` install, upgrades, portable repositories, and personal mode |
-| [Agent Compatibility](agents.md) | The full agent matrix and personal/portable setup modes |
-| [Skills Reference](skills.md) | All 39 skills, what each does, and its slash command |
-| [CLI Reference](cli.md) | Every `obsidian-wiki` subcommand ([繁體中文: context packs](cli.zh-TW.md)) |
-| [Configuration](configuration.md) | Every config variable, QMD semantic search, `_raw/` staging, GitHub sync |
-| [Architecture](architecture.md) | The four ingest stages, vault structure, what we added to Karpathy's pattern |
-| [Session Brain](session-brain.md) | Topic graph over your agent session history |
-| [Contributing](contributing.md) | Adding skills, keeping the two READMEs in sync |
+- [Installation](installation.md) — install the CLI, create or clone a knowledge repository, and upgrade managed files.
+- [Configuration](configuration.md) — nearest-ancestor resolution, supported keys, and tracked versus ignored state.
+- [Architecture](architecture.md) — repository layout, data flow, manifest v2, transactions, and recovery.
+- [CLI reference](cli.md) — the command surface reported by `obsidian-wiki --help`.
+- [CLI reference in Traditional Chinese](cli.zh-TW.md) — current command forms and the core workflow.
+- [Agent protocol](agents.md) — authority, skill discovery, reads, writes, and Git boundaries.
+- [Skills](skills.md) — the complete bundled inventory and authoring rules.
+- [Contributing](contributing.md) — source layout, tests, and documentation synchronization.
+- [Fork relationship](fork.md) — attribution, scope, and compatibility policy.
 
-New here? Read [Installation](installation.md), then [Skills Reference](skills.md).
+Historical plans and specifications under `docs/superpowers/` are retained as decision records. A Superseded banner distinguishes records that no longer define current behavior.
