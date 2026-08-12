@@ -103,7 +103,9 @@ def test_portable_info_ignores_residual_legacy_home_config(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert "Traceback" not in result.stderr
-    assert json.loads(result.stdout)["runtime"]["mode"] == "portable"
+    runtime = json.loads(result.stdout)["runtime"]
+    assert runtime["status"] == "resolved"
+    assert runtime["root"] == str(repository)
 
 
 def test_portable_commands_do_not_emit_global_setup_warnings(tmp_path: Path) -> None:

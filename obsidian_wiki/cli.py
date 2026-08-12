@@ -46,15 +46,6 @@ from obsidian_wiki.portable import (
     sync_portable_skill_mirrors,
     upgrade_portable_skills,
 )
-from obsidian_wiki.runtime_context import (
-    RuntimeInspection,
-    inspect_runtime,
-    nearest_portable_config,
-)
-
-HOME = Path.home()
-GLOBAL_CONFIG_DIR = HOME / ".obsidian-wiki"
-GLOBAL_CONFIG = GLOBAL_CONFIG_DIR / "config"
 SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/obsidian-wiki, then run "
     f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
@@ -132,19 +123,6 @@ def _resolve_bootstrap_src(boot_root: Path, rel: str) -> Path:
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
-def _read_config() -> dict[str, str]:
-    if not GLOBAL_CONFIG.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for raw in GLOBAL_CONFIG.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"')
-    return values
-
-
 def _runtime_error_detail(error: ConfigError) -> str:
     detail = str(error)
     if "must be non-empty" in detail:
@@ -153,7 +131,6 @@ def _runtime_error_detail(error: ConfigError) -> str:
 
 
 def _resolve_runtime(
-    vault_arg: str | None = None,
     *,
     error_sink: list[ConfigError] | None = None,
 ) -> PortableConfig | None:
@@ -168,76 +145,18 @@ def _resolve_runtime(
         if error_sink is not None:
             error_sink.append(exc)
         else:
-            print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+            print(f"error: {exc}", file=sys.stderr)
         return None
 
 
-def _context_warning_payloads(inspection: RuntimeInspection) -> list[dict[str, str]]:
-    return []
-
-
-def _emit_context_warnings(inspection: RuntimeInspection) -> None:
-    return None
-
-
-def _resolved_inspection(
-    vault_arg: str | None,
-) -> tuple[RuntimeInspection, PortableConfig] | None:
-    inspection = _inspect_cli_runtime(vault_arg)
-    if inspection.config is None:
-        error = inspection.error or ConfigError("vault not configured")
-        print(f"error: {_runtime_error_detail(error)}", file=sys.stderr)
-        return None
-    return inspection, inspection.config
-
-
-def _attach_context_warnings(
-    payload: dict[str, object], inspection: RuntimeInspection
-) -> dict[str, object]:
-    payload["context_warnings"] = _context_warning_payloads(inspection)
-    return payload
-
-
-def _portable_for_vault(vault: Path) -> PortableConfig | None:
-    """Return the CWD portable config when it owns the supplied vault."""
-    try:
-        runtime = resolve_config(
-            cwd=Path.cwd(),
-            installed_version=__version__,
-            implementation=IMPLEMENTATION_ID,
-        )
-    except ConfigError:
-        current = Path.cwd().resolve(strict=False)
-        if any(
-            (ancestor / ".obsidian-wiki" / "config.toml").exists()
-            for ancestor in (current, *current.parents)
-        ):
-            raise
-        return None
-    return runtime if runtime.vault == vault else None
-
-
-def _manifest_context_for_vault(vault: Path) -> PortableConfig | None:
-    """Resolve cache context, refusing to treat an unresolved v2 marker as v1."""
-    portable = _portable_for_vault(vault)
-    if portable is not None:
-        return portable
-    try:
-        marker = json.loads((vault / ".manifest.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if (
-        isinstance(marker, dict)
-        and marker.get("schema_version") == 2
-        and marker.get("storage") == "sharded"
-    ):
-        from obsidian_wiki.portable_manifest import ManifestError
-
-        raise ManifestError(
-            "manifest v2 is portable-only; "
-            "run this command inside the portable repository"
-        )
-    return None
+def _config_values(config: PortableConfig) -> dict[str, str]:
+    values = {
+        "OBSIDIAN_VAULT_PATH": str(config.vault),
+        "OBSIDIAN_SOURCES_DIR": ",".join(str(path) for path in config.sources),
+        "OBSIDIAN_WIKI_REPO": str(config.root),
+    }
+    values.update(config.settings)
+    return values
 
 
 def _resolved_vault(runtime: PortableConfig) -> Path | None:
@@ -299,53 +218,15 @@ def _doctor_status(checks: list[dict[str, str]]) -> str:
     return "pass"
 
 
-def _required_vault_paths(vault: Path) -> list[Path]:
-    return [
-        vault / "index.md",
-        vault / "log.md",
-        vault / "hot.md",
-        vault / ".manifest.json",
-    ]
-
-
-def _doctor_project_check(project_dir: Path) -> dict[str, str]:
-    required = [
-        project_dir / "AGENTS.md",
-        *[project_dir / dest for _src, dest in BOOTSTRAP_FILES[1:]],
-    ]
-    missing = [
-        str(path.relative_to(project_dir)) for path in required if not path.exists()
-    ]
-    if missing:
-        return {
-            "status": "warn",
-            "detail": f"missing {len(missing)} bootstrap file(s)",
-            "hint": f"run: obsidian-wiki setup --project {project_dir}",
-        }
-    aliases_missing = [
-        alias for alias in AGENTS_ALIASES if not (project_dir / alias).exists()
-    ]
-    if aliases_missing:
-        return {
-            "status": "warn",
-            "detail": f"missing AGENTS aliases: {', '.join(aliases_missing)}",
-            "hint": f"run: obsidian-wiki setup --project {project_dir}",
-        }
-    return {
-        "status": "pass",
-        "detail": "bootstrap files and aliases present",
-        "hint": "",
-    }
-
-
 def _refuse_portable_git_workflow() -> bool:
-    portable_config = nearest_portable_config(Path.cwd())
-    if portable_config is None:
+    errors: list[ConfigError] = []
+    runtime = _resolve_runtime(error_sink=errors)
+    if runtime is None:
         return False
     print(
         "error: portable repositories use branch and pull-request workflows; "
         "configure remotes and publish changes with Git "
-        f"(portable config: {portable_config})",
+        f"(portable config: {runtime.path})",
         file=sys.stderr,
     )
     return True
@@ -366,18 +247,6 @@ def _portable_doctor_error(config_path: Path, error: str) -> dict[str, object]:
         status="fail",
         detail=error,
         hint=f"expected {IMPLEMENTATION_ID} with compatible CLI {__version__}",
-    )
-    return {"status": "fail", "checks": checks}
-
-
-def _doctor_resolution_error(error: ConfigError) -> dict[str, object]:
-    checks: list[dict[str, str]] = []
-    _doctor_add(
-        checks,
-        name="vault-config",
-        status="fail",
-        detail=_runtime_error_detail(error),
-        hint="repair the selected vault configuration or pass a valid --vault",
     )
     return {"status": "fail", "checks": checks}
 
@@ -601,233 +470,46 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
     return {"status": _doctor_status(checks), "checks": checks}
 
 
-def _doctor_with_context(
-    report: dict[str, object], inspection: RuntimeInspection
-) -> dict[str, object]:
-    return _attach_context_warnings(report, inspection)
+def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
+    if config is not None:
+        return _run_portable_doctor(config)
 
-
-def run_doctor(
-    *,
-    vault_override: str | None = None,
-    project_dir: str | None = None,
-    inspection: RuntimeInspection | None = None,
-) -> dict[str, object]:
-    inspected = inspection or _inspect_cli_runtime(vault_override)
-    runtime = inspected.config
-    portable_candidate = inspected.portable_config
+    errors: list[ConfigError] = []
+    runtime = _resolve_runtime(error_sink=errors)
     if runtime is not None:
-        return _doctor_with_context(_run_portable_doctor(runtime), inspected)
-    if portable_candidate is not None and vault_override is None:
+        return _run_portable_doctor(runtime)
+
+    current = Path.cwd().resolve(strict=False)
+    candidate = next(
+        (
+            ancestor / ".obsidian-wiki/config.toml"
+            for ancestor in (current, *current.parents)
+            if (ancestor / ".obsidian-wiki/config.toml").exists()
+            or (ancestor / ".obsidian-wiki/config.toml").is_symlink()
+        ),
+        None,
+    )
+    error = errors[0] if errors else ConfigError("repository not configured")
+    if candidate is not None:
         try:
             _assert_single_link_ordinary_file(
-                portable_candidate.parent.parent,
-                portable_candidate,
+                candidate.parent.parent,
+                candidate,
                 "portable configuration",
             )
-            load_portable_config(
-                portable_candidate,
-                installed_version=__version__,
-                implementation=IMPLEMENTATION_ID,
-            )
-        except (ConfigError, ValueError) as exc:
-            return _doctor_with_context(
-                _portable_doctor_error(portable_candidate, str(exc)), inspected
-            )
-        return _doctor_with_context(
-            _portable_doctor_error(
-                portable_candidate,
-                "portable configuration was discovered but did not resolve",
-            ),
-            inspected,
-        )
-    if inspected.status == "error" and inspected.error is not None:
-        return _doctor_with_context(_doctor_resolution_error(inspected.error), inspected)
+        except (ValueError, OSError) as exc:
+            return _portable_doctor_error(candidate, str(exc))
+        return _portable_doctor_error(candidate, str(error))
 
     checks: list[dict[str, str]] = []
-
-    try:
-        bundled = list_skills()
-        _doctor_add(
-            checks,
-            name="bundled-skills",
-            status="pass" if bundled else "fail",
-            detail=f"{len(bundled)} bundled skill(s) available",
-            hint="" if bundled else SOURCE_REINSTALL_HINT,
-        )
-    except FileNotFoundError as exc:
-        _doctor_add(
-            checks,
-            name="bundled-skills",
-            status="fail",
-            detail=str(exc),
-            hint=SOURCE_REINSTALL_HINT,
-        )
-        bundled = []
-
-    try:
-        boot = bootstrap_dir()
-    except FileNotFoundError as exc:
-        _doctor_add(
-            checks,
-            name="bootstrap-assets",
-            status="fail",
-            detail=str(exc),
-            hint=SOURCE_REINSTALL_HINT,
-        )
-    else:
-        _doctor_add(
-            checks,
-            name="bootstrap-assets",
-            status="pass",
-            detail=str(boot),
-            hint="",
-        )
-
-    config = _read_config()
-    config_present = GLOBAL_CONFIG.is_file()
     _doctor_add(
         checks,
-        name="global-config",
-        status="pass" if config_present else "fail",
-        detail=str(GLOBAL_CONFIG) if config_present else "global config not written",
-        hint=""
-        if config_present
-        else "run: obsidian-wiki setup --vault /path/to/your/vault",
+        name="portable-config",
+        status="fail",
+        detail=_runtime_error_detail(error),
+        hint="run: obsidian-wiki setup [DIR]",
     )
-
-    vault_path = ""
-    if runtime is not None:
-        vault_path = str(runtime.vault)
-    elif config_present:
-        vault_path = config.get("OBSIDIAN_VAULT_PATH", "")
-
-    if not vault_path:
-        _doctor_add(
-            checks,
-            name="vault-config",
-            status="fail",
-            detail="OBSIDIAN_VAULT_PATH is not set",
-            hint="run: obsidian-wiki setup --vault /path/to/your/vault",
-        )
-        vault = None
-    else:
-        vault = Path(vault_path).expanduser().resolve()
-        _doctor_add(
-            checks,
-            name="vault-config",
-            status="pass",
-            detail=str(vault),
-            hint="",
-        )
-
-    setup_version = config.get("OBSIDIAN_WIKI_VERSION", "") if config_present else ""
-    if setup_version and setup_version != __version__:
-        _doctor_add(
-            checks,
-            name="setup-version",
-            status="warn",
-            detail=f"setup ran with {setup_version}; installed package is {version_label()}",
-            hint="run: obsidian-wiki setup",
-        )
-    elif config_present:
-        _doctor_add(
-            checks,
-            name="setup-version",
-            status="pass",
-            detail=f"setup version matches installed package ({version_label()})"
-            if setup_version
-            else "setup version not recorded",
-            hint="" if setup_version else "re-run setup to record install metadata",
-        )
-
-    if vault is not None:
-        if vault.is_dir():
-            _doctor_add(
-                checks,
-                name="vault-path",
-                status="pass",
-                detail="vault directory exists",
-                hint="",
-            )
-            missing_core = [
-                str(path.relative_to(vault))
-                for path in _required_vault_paths(vault)
-                if not path.exists()
-            ]
-            if missing_core:
-                _doctor_add(
-                    checks,
-                    name="vault-core-files",
-                    status="warn",
-                    detail=f"missing {len(missing_core)} core file(s): {', '.join(missing_core)}",
-                    hint="run the wiki setup skill or create the missing files",
-                )
-            else:
-                _doctor_add(
-                    checks,
-                    name="vault-core-files",
-                    status="pass",
-                    detail="core vault files present",
-                    hint="",
-                )
-
-            manifest_path = vault / ".manifest.json"
-            if manifest_path.exists():
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    sources = data.get("sources", {})
-                    _doctor_add(
-                        checks,
-                        name="manifest-json",
-                        status="pass",
-                        detail=f"valid JSON with {len(sources)} tracked source(s)",
-                        hint="",
-                    )
-                except (json.JSONDecodeError, OSError) as exc:
-                    _doctor_add(
-                        checks,
-                        name="manifest-json",
-                        status="fail",
-                        detail=f"invalid manifest: {exc}",
-                        hint="repair or regenerate .manifest.json",
-                    )
-        else:
-            _doctor_add(
-                checks,
-                name="vault-path",
-                status="fail",
-                detail=f"vault directory not found: {vault}",
-                hint="fix OBSIDIAN_VAULT_PATH or re-run setup",
-            )
-
-    if project_dir:
-        project = Path(project_dir).expanduser().resolve()
-        if project.is_dir():
-            project_check = _doctor_project_check(project)
-            _doctor_add(
-                checks,
-                name="project-bootstrap",
-                status=project_check["status"],
-                detail=project_check["detail"],
-                hint=project_check["hint"],
-            )
-        else:
-            _doctor_add(
-                checks,
-                name="project-bootstrap",
-                status="fail",
-                detail=f"project directory not found: {project}",
-                hint="pass an existing directory",
-            )
-
-    return _doctor_with_context(
-        {
-            "status": _doctor_status(checks),
-            "checks": checks,
-        },
-        inspected,
-    )
+    return {"status": "fail", "checks": checks}
 
 
 def _print_doctor(report: dict[str, object]) -> None:
@@ -863,15 +545,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
 def cmd_sync_setup(args: argparse.Namespace) -> int:
     if _refuse_portable_git_workflow():
         return 1
-    runtime = _resolve_runtime(args.vault)
+    runtime = _resolve_runtime()
     if runtime is None:
-        return 1
-    if runtime.mode == "portable":
-        print(
-            "error: portable repositories use branch and pull-request workflows; "
-            "configure remotes and publish changes with Git",
-            file=sys.stderr,
-        )
         return 1
     from obsidian_wiki.sync import configure_sync
 
@@ -890,15 +565,8 @@ def cmd_sync_setup(args: argparse.Namespace) -> int:
 def cmd_sync(args: argparse.Namespace) -> int:
     if _refuse_portable_git_workflow():
         return 1
-    runtime = _resolve_runtime(args.vault)
+    runtime = _resolve_runtime()
     if runtime is None:
-        return 1
-    if runtime.mode == "portable":
-        print(
-            "error: portable repositories use branch and pull-request workflows; "
-            "commit on a branch and open a pull request with Git",
-            file=sys.stderr,
-        )
         return 1
     from obsidian_wiki.sync import run_sync
 
@@ -928,10 +596,8 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
 
     source_dir = Path(args.source_dir).expanduser().resolve()
     vault = Path(args.vault).expanduser().resolve()
-    try:
-        portable = _manifest_context_for_vault(vault)
-    except ConfigError as exc:
-        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+    portable = _resolve_runtime()
+    if portable is None:
         return 1
     if not source_dir.is_dir():
         print(f"error: source directory not found: {source_dir}", file=sys.stderr)
@@ -1163,30 +829,21 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
         )
         return 2
 
-    if args.configured:
-        vault_arg = None
-    else:
+    if not args.configured:
         vault = _cache_vault_path(args.path)
-        vault_arg = str(vault)
-    resolved = _resolved_inspection(vault_arg)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     if args.configured:
         vault = runtime.vault
         sources_raw = [args.path, *args.paths]
-        portable = runtime.portable
+        portable = runtime
     else:
         sources_raw = args.paths
-        try:
-            portable = _manifest_context_for_vault(vault)
-        except ConfigError as exc:
-            print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
-            return 1
+        portable = runtime
 
     sources = [_cache_source_path(path) for path in sources_raw]
     result = check_sources(vault, sources, portable=portable)
-    _attach_context_warnings(result, inspection)
     _json_print(result, pretty=args.pretty)
     return 0
 
@@ -1197,10 +854,8 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
     vault = _cache_vault_path(args.vault)
     source = _cache_source_path(args.source)
     pages = args.pages or []
-    try:
-        portable = _manifest_context_for_vault(vault)
-    except ConfigError as exc:
-        print(f"error: {_runtime_error_detail(exc)}", file=sys.stderr)
+    portable = _resolve_runtime()
+    if portable is None:
         return 1
     h = update_source(vault, source, pages_produced=pages, portable=portable)
     _json_print(
@@ -1225,11 +880,10 @@ def cmd_cache_hash(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    portable_candidate = nearest_portable_config(Path.cwd())
     resolution_errors: list[ConfigError] = []
     runtime = _resolve_runtime(error_sink=resolution_errors)
     if runtime is None:
-        if portable_candidate is not None and resolution_errors:
+        if resolution_errors and str(resolution_errors[0]) != "repository not configured":
             print(
                 f"error: {_runtime_error_detail(resolution_errors[0])}",
                 file=sys.stderr,
@@ -1269,26 +923,26 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def _portable_command_config(command: str) -> PortableConfig:
     try:
-        cwd = Path.cwd()
-    except OSError as exc:
-        raise ConfigError(
-            f"{command} requires a portable repository: "
-            f"cannot resolve current working directory: {exc}"
-        ) from exc
-    try:
-        runtime = resolve_config(
-            cwd=cwd,
+        return resolve_config(
+            cwd=Path.cwd(),
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
-    except ConfigError as exc:
-        raise ConfigError(f"{command} requires a portable repository: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(
-            f"{command} requires a portable repository: "
-            f"cannot resolve portable configuration from {cwd}: {exc}"
-        ) from exc
-    return runtime
+    except (ConfigError, OSError) as exc:
+        raise ConfigError(f"{command} requires a repository: {exc}") from exc
+
+
+def _check_stale() -> None:
+    """Compatibility hook retained without inspecting personal installation state."""
+
+
+def _repository_error_message(error: Exception) -> str:
+    message = str(error)
+    if not isinstance(error, ConfigError) or "requires a repository:" not in message:
+        return message
+    if isinstance(error.__cause__, OSError):
+        message = f"{message}; current working directory is unavailable"
+    return f"{message}; portable repository required"
 
 
 def _json_print(
@@ -1366,7 +1020,7 @@ def _render_transaction_failure(
         "status": "error",
         "error": {
             "code": _transaction_error_code(error),
-            "message": str(error),
+            "message": _repository_error_message(error),
         },
         "recovery": guidance.as_dict(),
     }
@@ -1374,7 +1028,10 @@ def _render_transaction_failure(
         _json_print(payload, pretty=args.pretty, ensure_ascii=True)
         return 1
 
-    print(f"error: {_terminal_safe_text(error)}", file=sys.stderr)
+    print(
+        f"error: {_terminal_safe_text(_repository_error_message(error))}",
+        file=sys.stderr,
+    )
     if guidance.transaction_status is not None:
         print(
             f"transaction status: {guidance.transaction_status}",
@@ -1701,19 +1358,13 @@ def cmd_ast_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    inspection = _inspect_cli_runtime(args.vault)
-    report = run_doctor(
-        vault_override=args.vault,
-        project_dir=args.project,
-        inspection=inspection,
-    )
+    report = run_doctor()
     if args.json:
         if args.pretty:
             print(json.dumps(report, indent=2))
         else:
             print(json.dumps(report))
     else:
-        _emit_context_warnings(inspection)
         _print_doctor(report)
     statuses = {check["status"] for check in report["checks"]}
     if "fail" in statuses or (args.strict and "warn" in statuses):
@@ -1845,14 +1496,13 @@ def _schema_options(
 def cmd_lint(args: argparse.Namespace) -> int:
     from obsidian_wiki.lint import lint_vault
 
-    resolved = _resolved_inspection(args.vault)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
-    config = runtime.values
+    config = _config_values(runtime)
     config_source = _schema_config_source(runtime)
 
     strict_trust = args.strict_trust or config.get(
@@ -1873,14 +1523,12 @@ def cmd_lint(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    report = _attach_context_warnings(report, inspection)
     if args.json:
         if args.pretty:
             print(json.dumps(report, indent=2))
         else:
             print(json.dumps(report))
     else:
-        _emit_context_warnings(inspection)
         _print_lint(report)
     if report["status"] == "fail" or (args.strict and report["status"] == "warn"):
         return 1
@@ -1896,14 +1544,13 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
         write_trust_ledger,
     )
 
-    resolved = _resolved_inspection(args.vault)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
-    config = runtime.values
+    config = _config_values(runtime)
     config_source = _schema_config_source(runtime)
     try:
         schema = _schema_options(
@@ -1970,11 +1617,9 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
             "required_trust_fields": list(schema["required_trust_fields"]),
         },
     }
-    result = _attach_context_warnings(result, inspection)
     if args.json:
         print(json.dumps(result, indent=2 if args.pretty else None))
     else:
-        _emit_context_warnings(inspection)
         print(f"recorded {result['recorded_pages']} reviewed page(s) in {path}")
         print(
             "not applicable (excluded from trust review): "
@@ -2001,14 +1646,13 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
 def cmd_trust_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.trust import check_trust_ledger
 
-    resolved = _resolved_inspection(args.vault)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
-    config = runtime.values
+    config = _config_values(runtime)
     config_source = _schema_config_source(runtime)
     try:
         schema = _schema_options(
@@ -2026,11 +1670,9 @@ def cmd_trust_check(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    report = _attach_context_warnings(report, inspection)
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None))
     else:
-        _emit_context_warnings(inspection)
         print(f"obsidian-wiki trust-check: {report['status']}")
         for name, count in report["counts"].items():
             print(f"{name}: {count}")
@@ -2060,25 +1702,20 @@ def _print_query(result: dict[str, object]) -> None:
 def cmd_query(args: argparse.Namespace) -> int:
     from obsidian_wiki.graphrag import query
 
-    resolved = _resolved_inspection(args.vault)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
 
-    result = _attach_context_warnings(
-        query(vault, args.question, top_n=args.top, max_should_read=args.max_read),
-        inspection,
-    )
+    result = query(vault, args.question, top_n=args.top, max_should_read=args.max_read)
     if args.json:
         if args.pretty:
             print(json.dumps(result, indent=2))
         else:
             print(json.dumps(result))
     else:
-        _emit_context_warnings(inspection)
         _print_query(result)
     return 0
 
@@ -2090,10 +1727,9 @@ def cmd_context_pack(args: argparse.Namespace) -> int:
         render_markdown,
     )
 
-    resolved = _resolved_inspection(args.vault)
-    if resolved is None:
+    runtime = _resolve_runtime()
+    if runtime is None:
         return 1
-    inspection, runtime = resolved
     vault = _resolved_vault(runtime)
     if vault is None:
         return 1
@@ -2109,11 +1745,9 @@ def cmd_context_pack(args: argparse.Namespace) -> int:
     except ContextError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    pack = _attach_context_warnings(pack, inspection)
     if args.json:
         print(json.dumps(pack, indent=2 if args.pretty else None))
     else:
-        _emit_context_warnings(inspection)
         print(render_markdown(pack), end="")
     return 0
 
@@ -2124,38 +1758,26 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _inspect_cli_runtime(vault_arg: str | None = None) -> RuntimeInspection:
-    return inspect_runtime(
-        cwd=Path.cwd(),
-        installed_version=__version__,
-        implementation=IMPLEMENTATION_ID,
-    )
-
-
-def _runtime_payload(inspection: RuntimeInspection) -> dict[str, object]:
-    runtime = inspection.config
+def _runtime_payload(
+    runtime: PortableConfig | None, error: ConfigError | None = None
+) -> dict[str, object]:
     if runtime is None:
-        payload: dict[str, object] = {"status": inspection.status}
-        if inspection.status == "error":
-            assert inspection.error is not None
-            payload["error"] = _runtime_error_detail(inspection.error)
-        if inspection.guidance is not None:
-            payload["guidance"] = inspection.guidance
-        return payload
-
-    payload = {
-        "status": "resolved",
-        "mode": "portable",
-        "source": str(runtime.path),
-        "vault": str(runtime.vault),
-        "portable": {
-            "root": str(runtime.root),
-            "sources": [str(source) for source in runtime.sources],
-            "skills": str(runtime.skills),
-            "local_state": str(runtime.local_state),
+        if error is not None and str(error) != "repository not configured":
+            return {"status": "error", "error": _runtime_error_detail(error)}
+        return {
+            "status": "unconfigured",
+            "guidance": "run: obsidian-wiki setup [DIR]",
         }
+
+    return {
+        "status": "resolved",
+        "config": str(runtime.path),
+        "root": str(runtime.root),
+        "vault": str(runtime.vault),
+        "sources": [str(source) for source in runtime.sources],
+        "skills": str(runtime.skills),
+        "local_state": str(runtime.local_state),
     }
-    return payload
 
 
 def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
@@ -2180,7 +1802,10 @@ def _installation_payload() -> tuple[dict[str, object], list[dict[str, str]]]:
         )
 
     payload: dict[str, object] = {
+        "implementation": IMPLEMENTATION_ID,
         "version": version_label(),
+        "install_path": str(_pkg_dir()),
+        "reinstall_command": SOURCE_REINSTALL_COMMAND,
         "skills": skill_root,
         "bootstrap": str(boot) if boot is not None else None,
         "bundled_skills": len(bundled) if bundled is not None else None,
@@ -2195,19 +1820,18 @@ def _print_info(payload: dict[str, object]) -> None:
     assert isinstance(installation, dict)
 
     print("Runtime context")
-    for key in ("status", "mode", "source", "vault", "guidance", "error"):
+    for key in ("status", "config", "guidance", "error"):
         if key in runtime:
             print(f"  {key}: {runtime[key]}")
-    portable = runtime.get("portable")
-    if portable is not None:
-        assert isinstance(portable, dict)
-        print(f"  repository: {portable['root']}")
-        sources = portable["sources"]
+    if runtime.get("status") == "resolved":
+        print(f"  repository: {runtime['root']}")
+        print(f"  vault: {runtime['vault']}")
+        sources = runtime["sources"]
         assert isinstance(sources, list)
         for source in sources:
             print(f"  source: {source}")
-        print(f"  skills: {portable['skills']}")
-        print(f"  local state: {portable['local_state']}")
+        print(f"  skills: {runtime['skills']}")
+        print(f"  local state: {runtime['local_state']}")
 
     print()
     print("CLI installation")
@@ -2222,11 +1846,13 @@ def _print_info(payload: dict[str, object]) -> None:
 
 
 def cmd_info(args: argparse.Namespace) -> int:
-    inspection = _inspect_cli_runtime(args.vault)
+    errors: list[ConfigError] = []
+    runtime = _resolve_runtime(error_sink=errors)
+    resolution_error = errors[0] if errors else None
     installation, install_warnings = _installation_payload()
     warnings = install_warnings
     payload: dict[str, object] = {
-        "runtime": _runtime_payload(inspection),
+        "runtime": _runtime_payload(runtime, resolution_error),
         "installation": installation,
         "warnings": warnings,
     }
@@ -2234,13 +1860,17 @@ def cmd_info(args: argparse.Namespace) -> int:
         _json_print(payload, pretty=args.pretty)
     else:
         _print_info(payload)
-        if inspection.status == "error":
-            assert inspection.error is not None
-            print(f"error: {_runtime_error_detail(inspection.error)}", file=sys.stderr)
+        if resolution_error is not None and str(resolution_error) != "repository not configured":
+            print(f"error: {_runtime_error_detail(resolution_error)}", file=sys.stderr)
         for warning in warnings:
             print(f"warning: {warning['message']}", file=sys.stderr)
             print(f"  {warning['hint']}", file=sys.stderr)
-    return 1 if inspection.status == "error" else 0
+    return (
+        1
+        if resolution_error is not None
+        and str(resolution_error) != "repository not configured"
+        else 0
+    )
 
 
 def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
@@ -3027,12 +2657,6 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="check config, vault shape, bootstrap assets, and installed skills",
     )
-    dr.add_argument(
-        "--vault", help="override OBSIDIAN_VAULT_PATH for this health check"
-    )
-    dr.add_argument(
-        "--project", help="also check project-local bootstrap files in this directory"
-    )
     dr.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     dr.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     dr.add_argument(
@@ -3275,7 +2899,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (ConfigError, ManifestError, TransactionError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_repository_error_message(exc)}", file=sys.stderr)
         return 1
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -110,158 +110,14 @@ def _portable_check(proc: subprocess.CompletedProcess[str], name: str) -> dict[s
     return next(check for check in report["checks"] if check["name"] == name)
 
 
-def test_doctor_json_clean_install(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = tmp_path / "vault"
-    _make_vault(vault)
-    _write_config(home, vault)
-    _install_all_skills(home)
-
-    proc = _run(home, "doctor", "--json")
-
-    assert proc.returncode == 0
-    data = json.loads(proc.stdout)
-    assert data["status"] == "pass"
-    assert any(check["name"] == "manifest-json" and check["status"] == "pass" for check in data["checks"])
-
-
-def test_doctor_warns_without_agent_installs_but_exits_zero(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = tmp_path / "vault"
-    _make_vault(vault)
-    _write_config(home, vault)
-
-    proc = _run(home, "doctor", "--json")
-
-    assert proc.returncode == 0
-    data = json.loads(proc.stdout)
-    assert data["status"] == "warn"
-    assert any(check["name"] == "agent-installs" and check["status"] == "warn" for check in data["checks"])
-
-
-def test_doctor_fails_on_invalid_manifest(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = tmp_path / "vault"
-    _make_vault(vault, manifest="{not json")
-    _write_config(home, vault)
-    _install_all_skills(home)
-
-    proc = _run(home, "doctor", "--json")
-
-    assert proc.returncode == 1
-    data = json.loads(proc.stdout)
-    assert data["status"] == "fail"
-    assert any(check["name"] == "manifest-json" and check["status"] == "fail" for check in data["checks"])
-
-
-def test_doctor_strict_turns_warnings_into_nonzero_exit(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = tmp_path / "vault"
-    _make_vault(vault)
-    _write_config(home, vault, version="0.0.0")
-
-    proc = _run(home, "doctor", "--json", "--strict")
-
-    assert proc.returncode == 1
-    data = json.loads(proc.stdout)
-    assert any(check["name"] == "setup-version" and check["status"] == "warn" for check in data["checks"])
-
-
-def _assert_doctor_resolution_failure(
-    proc: subprocess.CompletedProcess[str], *, forbidden_vault: Path
+@pytest.mark.parametrize("legacy_option", ["--vault", "--project"])
+def test_doctor_rejects_non_repository_selectors(
+    legacy_option: str, tmp_path: Path
 ) -> None:
-    assert proc.returncode == 1
-    assert proc.stderr == ""
-    report = json.loads(proc.stdout)
-    assert report["status"] == "fail"
-    checks = {check["name"]: check for check in report["checks"]}
-    assert checks["vault-config"]["status"] == "fail"
-    assert "global-config" not in checks
-    assert str(forbidden_vault) not in json.dumps(report)
+    proc = _run(tmp_path / "home", "doctor", legacy_option, "x")
 
-
-def test_doctor_missing_named_vault_never_falls_back_to_global(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    global_vault = tmp_path / "global-vault"
-    _make_vault(global_vault)
-    _write_config(home, global_vault)
-
-    proc = _run(home, "doctor", "--vault", "@missing", "--json")
-
-    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
-    assert "config.missing" in proc.stdout
-
-
-def test_doctor_invalid_named_vault_never_falls_back_to_global(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    global_vault = tmp_path / "global-vault"
-    _make_vault(global_vault)
-    _write_config(home, global_vault)
-    (home / ".obsidian-wiki/config.broken").write_text(
-        'OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8"
-    )
-
-    proc = _run(home, "doctor", "--vault", "@broken", "--json")
-
-    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
-    assert "unterminated quoted value" in proc.stdout
-
-
-def test_doctor_malformed_nearest_env_never_falls_back_to_global(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    global_vault = tmp_path / "global-vault"
-    _make_vault(global_vault)
-    _write_config(home, global_vault)
-    project = tmp_path / "project"
-    nested = project / "work/nested"
-    nested.mkdir(parents=True)
-    (project / ".env").write_text(
-        'OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8"
-    )
-
-    proc = _run(home, "doctor", "--json", cwd=nested)
-
-    _assert_doctor_resolution_failure(proc, forbidden_vault=global_vault)
-    assert str(project / ".env") in proc.stdout
-
-
-def test_doctor_malformed_global_config_reports_resolution_failure(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    forbidden_vault = tmp_path / "must-not-be-audited"
-    config = home / ".obsidian-wiki/config"
-    config.parent.mkdir(parents=True)
-    config.write_text('OBSIDIAN_VAULT_PATH="unterminated\n', encoding="utf-8")
-
-    proc = _run(home, "doctor", "--json")
-
-    _assert_doctor_resolution_failure(proc, forbidden_vault=forbidden_vault)
-    assert str(config) in proc.stdout
-
-
-def test_doctor_without_any_config_keeps_personal_diagnostics(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-
-    proc = _run(home, "doctor", "--json")
-
-    assert proc.returncode == 1
-    assert proc.stderr == ""
-    report = json.loads(proc.stdout)
-    checks = {check["name"]: check for check in report["checks"]}
-    assert checks["global-config"]["status"] == "fail"
-    assert checks["vault-config"]["status"] == "fail"
-    assert "bundled-skills" in checks
-    assert "bootstrap-assets" in checks
-    assert "agent-installs" in checks
+    assert proc.returncode == 2
+    assert "unrecognized arguments" in proc.stderr
 
 
 def test_doctor_portable_mode_ignores_global_config_and_agent_installs(
@@ -291,7 +147,6 @@ def test_doctor_portable_mode_ignores_global_config_and_agent_installs(
     assert str(root / "wiki") in json.dumps(report)
     assert str(global_vault) not in json.dumps(report)
     assert not (root / "wiki/hot.md").exists()
-    assert report["context_warnings"] == []
 
 
 @pytest.mark.parametrize(
@@ -340,43 +195,6 @@ def test_doctor_fails_on_portable_skill_mirror_drift(tmp_path: Path) -> None:
     checks = {check["name"]: check for check in report["checks"]}
     assert checks["project-skills"]["status"] == "fail"
     assert "skill-mirror-changed" in checks["project-skills"]["detail"]
-
-
-def test_doctor_explicit_portable_context_warning_is_additive_in_strict_mode(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    root, nested = _make_portable_repo(tmp_path)
-    explicit_vault = tmp_path / "explicit-vault"
-    _make_vault(explicit_vault)
-    _write_config(home, explicit_vault)
-    _install_all_skills(home)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    args = ("doctor", "--vault", str(explicit_vault), "--json", "--strict")
-
-    overridden = _run(home, *args, cwd=nested)
-    baseline = _run(home, *args, cwd=outside)
-
-    assert baseline.returncode == 0
-    assert overridden.returncode == 0
-    overridden_report = json.loads(overridden.stdout)
-    baseline_report = json.loads(baseline.stdout)
-    assert baseline_report["status"] == "pass"
-    assert overridden_report["status"] == "pass"
-    assert overridden_report["checks"] == baseline_report["checks"]
-    baseline_warning_count = sum(
-        check["status"] == "warn" for check in baseline_report["checks"]
-    )
-    overridden_warning_count = sum(
-        check["status"] == "warn" for check in overridden_report["checks"]
-    )
-    assert baseline_warning_count == 0
-    assert overridden_warning_count == baseline_warning_count
-    assert len(overridden_report["context_warnings"]) == 1
-    assert overridden_report["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert overridden_report["context_warnings"][0]["selected_mode"] == "explicit"
-    assert baseline_report["context_warnings"] == []
 
 
 def test_doctor_portable_mode_does_not_require_global_config(tmp_path: Path) -> None:
