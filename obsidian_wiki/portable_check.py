@@ -39,7 +39,7 @@ from .skill_inventory import (
 from .skill_trees import (
     SkillCollection,
     SkillEntry,
-    discover_skill_collection,
+    discover_anchored_skill_collection,
     snapshot_ordinary_tree_with_unsafe,
 )
 
@@ -727,7 +727,7 @@ def _load_canonical_skills(
     config: PortableConfig, issues: list[CheckIssue]
 ) -> SkillCollection | None:
     try:
-        return discover_skill_collection(config.skills)
+        return discover_anchored_skill_collection(config.skills, anchor=config.root)
     except (OSError, ValueError) as exc:
         issues.append(
             CheckIssue(

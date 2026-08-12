@@ -160,6 +160,92 @@ def test_tolerant_snapshot_preserves_structured_unsafe_reasons(
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX bound-walk capability")
+def test_bound_snapshot_fails_closed_when_fd_listing_is_not_implemented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import skill_trees
+
+    root = tmp_path / "repo"
+    tree = root / "mirror"
+    tree.mkdir(parents=True)
+    (tree / "file").write_text("content\n", encoding="utf-8")
+
+    def unsupported(_descriptor: int):
+        raise NotImplementedError("fd listing unavailable")
+
+    monkeypatch.setattr(skill_trees.os, "listdir", unsupported)
+
+    entries, unsafe = skill_trees.snapshot_ordinary_tree_with_unsafe(
+        tree, anchor=root
+    )
+
+    assert entries == ()
+    assert unsafe == (skill_trees.UnsafeSkillEntry(".", "read-error"),)
+
+
+def test_windows_guarded_snapshot_holds_every_existing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import skill_trees
+
+    root = tmp_path / "repo"
+    tree = root / "mirror"
+    (tree / "skill/nested").mkdir(parents=True)
+    (tree / "skill/SKILL.md").write_text("content\n", encoding="utf-8")
+    guarded: list[Path] = []
+    closed: list[int] = []
+
+    def record_guard(_anchor: Path, path: Path) -> list[int]:
+        guarded.append(path)
+        return [len(guarded)]
+
+    monkeypatch.setattr(skill_trees, "_open_windows_directory_guards", record_guard)
+    monkeypatch.setattr(
+        skill_trees, "_close_windows_directory_guards", closed.extend
+    )
+
+    entries, unsafe = skill_trees._snapshot_windows_guarded_tree(root, tree)
+
+    assert unsafe == ()
+    assert {entry.path for entry in entries} == {
+        "skill",
+        "skill/SKILL.md",
+        "skill/nested",
+    }
+    assert guarded == [tree, tree / "skill", tree / "skill/nested"]
+    assert closed == [1, 2, 3]
+
+
+def test_windows_guarded_snapshot_treats_missing_root_as_safe_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from obsidian_wiki import skill_trees
+
+    root = tmp_path / "repo"
+    parent = root / ".cursor"
+    parent.mkdir(parents=True)
+    guarded: list[Path] = []
+    closed: list[int] = []
+
+    def record_guard(_anchor: Path, path: Path) -> list[int]:
+        guarded.append(path)
+        return [1]
+
+    monkeypatch.setattr(skill_trees, "_open_windows_directory_guards", record_guard)
+    monkeypatch.setattr(
+        skill_trees, "_close_windows_directory_guards", closed.extend
+    )
+
+    entries, unsafe = skill_trees._snapshot_windows_guarded_tree(
+        root, parent / "skills"
+    )
+
+    assert entries == () and unsafe == ()
+    assert guarded == [parent]
+    assert closed == [1]
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     [

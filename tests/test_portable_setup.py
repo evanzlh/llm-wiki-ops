@@ -931,6 +931,57 @@ def test_skill_sync_plan_binds_mirror_scan_against_swap_and_restore(
     changed = target / changed_relative
     changed.write_text(changed.read_text(encoding="utf-8") + "\nreal drift\n")
     backup = tmp_path / "kiro-skills-backup"
+    target_metadata = target.lstat()
+    target_identity = (target_metadata.st_dev, target_metadata.st_ino)
+    original_listdir = skill_trees.os.listdir
+    swapped = False
+    before = snapshot_tree(root)
+
+    def swap_while_descriptor_is_bound(descriptor: int):
+        nonlocal swapped
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == target_identity and not swapped:
+            swapped = True
+            target.rename(backup)
+            target.symlink_to(root / ".skills", target_is_directory=True)
+            try:
+                return original_listdir(descriptor)
+            finally:
+                target.unlink()
+                backup.rename(target)
+        return original_listdir(descriptor)
+
+    monkeypatch.setattr(skill_trees.os, "listdir", swap_while_descriptor_is_bound)
+    try:
+        report = plan_portable_skill_sync(root)
+    finally:
+        if target.is_symlink():
+            target.unlink()
+            backup.rename(target)
+
+    change = next(item for item in report.targets if item.path == ".kiro/skills")
+    assert swapped
+    assert change.changed == (changed_relative,) or change.unsafe == (".",)
+    assert snapshot_tree(root) == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap race")
+def test_skill_sync_plan_binds_canonical_discovery_against_swap_and_restore(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    canonical_skill = root / ".skills/wiki-query"
+    canonical_file = canonical_skill / "SKILL.md"
+    canonical_file.write_text(
+        skill_markdown("wiki-query", "Owner-modified query workflow."),
+        encoding="utf-8",
+    )
+    external = tmp_path / "external-wiki-query"
+    shutil.copytree(root / ".claude/skills/wiki-query", external)
+    backup = tmp_path / "canonical-wiki-query-backup"
     original_iterdir = Path.iterdir
     original_validate = skill_trees._validate_directory_unchanged
     swapped = False
@@ -938,16 +989,16 @@ def test_skill_sync_plan_binds_mirror_scan_against_swap_and_restore(
 
     def swap_before_iteration(path: Path):
         nonlocal swapped
-        if path == target and not swapped:
+        if path == canonical_skill and not swapped:
             swapped = True
-            target.rename(backup)
-            target.symlink_to(root / ".skills", target_is_directory=True)
+            canonical_skill.rename(backup)
+            canonical_skill.symlink_to(external, target_is_directory=True)
         return original_iterdir(path)
 
     def restore_before_validation(path: Path, observed: os.stat_result) -> None:
-        if path == target and target.is_symlink():
-            target.unlink()
-            backup.rename(target)
+        if path == canonical_skill and canonical_skill.is_symlink():
+            canonical_skill.unlink()
+            backup.rename(canonical_skill)
         original_validate(path, observed)
 
     monkeypatch.setattr(Path, "iterdir", swap_before_iteration)
@@ -957,13 +1008,14 @@ def test_skill_sync_plan_binds_mirror_scan_against_swap_and_restore(
     try:
         report = plan_portable_skill_sync(root)
     finally:
-        if target.is_symlink():
-            target.unlink()
-            backup.rename(target)
+        if canonical_skill.is_symlink():
+            canonical_skill.unlink()
+            backup.rename(canonical_skill)
 
-    change = next(item for item in report.targets if item.path == ".kiro/skills")
-    assert change.changed == (changed_relative,)
-    assert not change.unsafe
+    assert report.warnings[0]["code"] == "managed-canonical-modified"
+    assert all(
+        change.changed == ("wiki-query/SKILL.md",) for change in report.targets
+    )
     assert snapshot_tree(root) == before
 
 
@@ -1006,9 +1058,10 @@ def test_skill_sync_plan_rejects_invalid_canonical_skill_without_writing(
     )
     before = snapshot_tree(root)
 
-    with pytest.raises(ValueError, match="canonical skill"):
+    with pytest.raises(ValueError, match="canonical skill") as captured:
         plan_portable_skill_sync(root)
 
+    assert str(root) not in str(captured.value)
     assert snapshot_tree(root) == before
 
 

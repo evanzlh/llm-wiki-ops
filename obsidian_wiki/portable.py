@@ -40,6 +40,7 @@ from obsidian_wiki.skill_inventory import (
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
+    discover_anchored_skill_collection,
     discover_skill_collection,
     materialize_skill_collection,
     snapshot_ordinary_tree_with_unsafe,
@@ -1295,7 +1296,7 @@ def _validate_agent_skill_mirrors(
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         target = root / agent_relative
         try:
-            mirror = discover_skill_collection(target)
+            mirror = discover_anchored_skill_collection(target, anchor=root)
         except (OSError, ValueError) as exc:
             suffix = (
                 "; run `obsidian-wiki repo sync-skills --apply`" if remediation else ""
@@ -1454,10 +1455,11 @@ def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
     canonical_root = root / ".skills"
     try:
         _assert_safe_managed_path(root, canonical_root)
-        canonical = discover_skill_collection(canonical_root)
+        canonical = discover_anchored_skill_collection(canonical_root, anchor=root)
         _assert_safe_managed_path(root, canonical_root)
     except (OSError, ValueError) as exc:
-        raise ValueError(f"portable canonical skills are invalid: {exc}") from exc
+        message = str(exc).replace(str(root), ".")
+        raise ValueError(f"portable canonical skills are invalid: {message}") from exc
 
     try:
         inventory = read_inventory(root, allow_legacy=True)
@@ -1514,7 +1516,7 @@ def _materialize_complete_skill_trees(
     canonical_root = root / ".skills"
     _assert_safe_managed_path(root, canonical_root)
     materialize_skill_collection(bundled, canonical_root)
-    canonical = discover_skill_collection(canonical_root)
+    canonical = discover_anchored_skill_collection(canonical_root, anchor=root)
     write_agent_skill_mirrors(root, canonical)
     _validate_agent_skill_mirrors(root, canonical)
     return canonical
@@ -3105,7 +3107,9 @@ def setup_portable_repo(
                         "`obsidian-wiki repo upgrade-skills`"
                     )
                 assert isinstance(inventory, ManagedSkillsInventory)
-                canonical = discover_skill_collection(root / ".skills")
+                canonical = discover_anchored_skill_collection(
+                    root / ".skills", anchor=root
+                )
                 _preflight_existing_portable(
                     root, version=version, skill_names=canonical.names
                 )

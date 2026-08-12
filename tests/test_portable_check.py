@@ -1668,6 +1668,55 @@ def test_managed_canonical_edit_is_warning_when_mirrors_match(
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap race")
+def test_check_binds_canonical_discovery_against_swap_and_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    canonical_skill = root / ".skills/wiki-ingest"
+    canonical_file = canonical_skill / "SKILL.md"
+    canonical_file.write_text(
+        canonical_file.read_text(encoding="utf-8") + "\nOwner drift.\n",
+        encoding="utf-8",
+    )
+    external = tmp_path / "external-wiki-ingest"
+    shutil.copytree(root / ".claude/skills/wiki-ingest", external)
+    backup = tmp_path / "canonical-wiki-ingest-backup"
+    from obsidian_wiki import skill_trees
+
+    original_iterdir = Path.iterdir
+    original_validate = skill_trees._validate_directory_unchanged
+    swapped = False
+
+    def swap_before_iteration(path: Path):
+        nonlocal swapped
+        if path == canonical_skill and not swapped:
+            swapped = True
+            canonical_skill.rename(backup)
+            canonical_skill.symlink_to(external, target_is_directory=True)
+        return original_iterdir(path)
+
+    def restore_before_validation(path: Path, observed: os.stat_result) -> None:
+        if path == canonical_skill and canonical_skill.is_symlink():
+            canonical_skill.unlink()
+            backup.rename(canonical_skill)
+        original_validate(path, observed)
+
+    monkeypatch.setattr(Path, "iterdir", swap_before_iteration)
+    monkeypatch.setattr(
+        skill_trees, "_validate_directory_unchanged", restore_before_validation
+    )
+    try:
+        report = check_portable_repo(config)
+    finally:
+        if canonical_skill.is_symlink():
+            canonical_skill.unlink()
+            backup.rename(canonical_skill)
+
+    assert "managed-canonical-modified" in issue_codes(report)
+    assert "skill-mirror-changed" in issue_codes(report)
+
+
 @pytest.mark.parametrize("mutation", ["frontmatter", "directory-name"])
 def test_malformed_canonical_skill_is_reported_separately(
     tmp_path: Path, mutation: str

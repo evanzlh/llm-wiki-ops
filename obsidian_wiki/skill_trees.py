@@ -41,8 +41,11 @@ _SOURCE_IGNORED_FILES = frozenset(
 _SUPPORTED_DESCRIPTION_BLOCKS = frozenset({">", ">-", ">+"})
 _SUPPORTS_BOUND_TREE_WALK = (
     os.name == "posix"
+    and bool(getattr(os, "O_NOFOLLOW", 0))
+    and bool(getattr(os, "O_DIRECTORY", 0))
     and os.open in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
     and os.listdir in os.supports_fd
 )
 
@@ -87,6 +90,11 @@ def _error(path: Path, message: str) -> ValueError:
 
 def _same_identity(left: os.stat_result, right: os.stat_result) -> bool:
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(metadata, "st_file_attributes", 0) & flag)
 
 
 def _read_ordinary_file(path: Path, observed: os.stat_result) -> bytes:
@@ -159,6 +167,8 @@ def _snapshot_entry(
     *,
     ignore_source_artifacts: bool,
     unsafe_entries: list[UnsafeSkillEntry] | None = None,
+    windows_anchor: Path | None = None,
+    windows_handles: list[int] | None = None,
 ) -> None:
     try:
         metadata = path.lstat()
@@ -168,7 +178,7 @@ def _snapshot_entry(
         unsafe_entries.append(UnsafeSkillEntry(relative, "read-error"))
         return
     mode = metadata.st_mode
-    if stat.S_ISLNK(mode):
+    if stat.S_ISLNK(mode) or _is_reparse_point(metadata):
         if unsafe_entries is not None:
             unsafe_entries.append(UnsafeSkillEntry(relative, "symlink"))
             return
@@ -176,6 +186,17 @@ def _snapshot_entry(
     if stat.S_ISDIR(mode):
         if ignore_source_artifacts and _is_ignored_source_artifact(path.name, mode):
             return
+        if windows_anchor is not None:
+            assert windows_handles is not None
+            try:
+                _hold_windows_directory_guard(
+                    windows_anchor, path, windows_handles
+                )
+            except (OSError, RuntimeError, ValueError):
+                if unsafe_entries is None:
+                    raise
+                unsafe_entries.append(UnsafeSkillEntry(relative, "changed"))
+                return
         entries.append(SkillEntry(relative, "directory", False, b""))
         try:
             children = sorted(path.iterdir(), key=lambda item: item.name)
@@ -197,6 +218,8 @@ def _snapshot_entry(
                 entries,
                 ignore_source_artifacts=ignore_source_artifacts,
                 unsafe_entries=unsafe_entries,
+                windows_anchor=windows_anchor,
+                windows_handles=windows_handles,
             )
         try:
             _validate_directory_unchanged(path, metadata)
@@ -475,6 +498,64 @@ def _normalized_skill_frontmatter(text: str) -> tuple[str, str | None]:
     return "\n".join(normalized) + "\n", folded
 
 
+def _skill_tree_from_entries(
+    root: Path, name: str, entries: tuple[SkillEntry, ...]
+) -> SkillTree:
+    skill_file = root / name / "SKILL.md"
+    skill_entry = next((entry for entry in entries if entry.path == "SKILL.md"), None)
+    if skill_entry is None:
+        raise _error(skill_file, "SKILL.md is missing")
+    if skill_entry.kind != "file":
+        raise _error(skill_file, "SKILL.md must be an ordinary file")
+    try:
+        skill_text = skill_entry.content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _error(skill_file, "invalid UTF-8 SKILL.md: {}".format(exc)) from exc
+    try:
+        normalized, folded_description = _normalized_skill_frontmatter(skill_text)
+        frontmatter = parse_frontmatter(normalized)
+    except FrontmatterError as exc:
+        raise _error(skill_file, "invalid skill frontmatter: {}".format(exc)) from exc
+    discovered_name = frontmatter.scalars.get("name", "")
+    description = (
+        folded_description
+        if folded_description is not None
+        else frontmatter.scalars.get("description", "")
+    )
+    if not discovered_name or not description:
+        raise _error(skill_file, "frontmatter name and description are required")
+    if discovered_name != name:
+        raise _error(skill_file, "frontmatter name must equal directory name")
+    return SkillTree(name, description, entries, _digest(name, entries))
+
+
+def _collection_from_root_entries(
+    root: Path, entries: tuple[SkillEntry, ...]
+) -> SkillCollection:
+    top_level = tuple(entry for entry in entries if "/" not in entry.path)
+    skills: list[SkillTree] = []
+    for directory in top_level:
+        if directory.kind != "directory":
+            raise _error(root / directory.path, "each skill must be an ordinary directory")
+        if not _SKILL_NAME.fullmatch(directory.path):
+            raise _error(root / directory.path, "unsafe skill directory name")
+        prefix = directory.path + "/"
+        skill_entries = tuple(
+            SkillEntry(
+                entry.path[len(prefix) :],
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in entries
+            if entry.path.startswith(prefix)
+        )
+        skills.append(_skill_tree_from_entries(root, directory.path, skill_entries))
+    if not skills:
+        raise _error(root, "skill collection must not be empty")
+    return SkillCollection(tuple(skills))
+
+
 def discover_skill_collection(
     root: Path, *, ignore_source_artifacts: bool = False
 ) -> SkillCollection:
@@ -483,7 +564,7 @@ def discover_skill_collection(
     if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
         raise _error(root, "skill root must be an ordinary directory")
 
-    skills: list[SkillTree] = []
+    root_entries: list[SkillEntry] = []
     for directory in sorted(root.iterdir(), key=lambda item: item.name):
         metadata = directory.lstat()
         mode = metadata.st_mode
@@ -506,6 +587,7 @@ def discover_skill_collection(
             raise _error(directory, "special files are not allowed")
         if not _SKILL_NAME.fullmatch(directory.name):
             raise _error(directory, "unsafe skill directory name")
+        root_entries.append(SkillEntry(directory.name, "directory", False, b""))
         entries: list[SkillEntry] = []
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
             _snapshot_entry(
@@ -515,39 +597,19 @@ def discover_skill_collection(
                 ignore_source_artifacts=ignore_source_artifacts,
             )
         _validate_directory_unchanged(directory, metadata)
-        frozen_entries = tuple(sorted(entries, key=lambda entry: entry.path))
-        skill_file = directory / "SKILL.md"
-        skill_entry = next(
-            (entry for entry in frozen_entries if entry.path == "SKILL.md"), None
+        root_entries.extend(
+            SkillEntry(
+                f"{directory.name}/{entry.path}",
+                entry.kind,
+                entry.executable,
+                entry.content,
+            )
+            for entry in entries
         )
-        if skill_entry is None:
-            raise _error(skill_file, "SKILL.md is missing")
-        if skill_entry.kind != "file":
-            raise _error(skill_file, "SKILL.md must be an ordinary file")
-        try:
-            skill_text = skill_entry.content.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise _error(skill_file, "invalid UTF-8 SKILL.md: {}".format(exc)) from exc
-        try:
-            normalized, folded_description = _normalized_skill_frontmatter(skill_text)
-            frontmatter = parse_frontmatter(normalized)
-        except FrontmatterError as exc:
-            raise _error(skill_file, "invalid skill frontmatter: {}".format(exc)) from exc
-        name = frontmatter.scalars.get("name", "")
-        description = (
-            folded_description
-            if folded_description is not None
-            else frontmatter.scalars.get("description", "")
-        )
-        if not name or not description:
-            raise _error(skill_file, "frontmatter name and description are required")
-        if name != directory.name:
-            raise _error(skill_file, "frontmatter name must equal directory name")
-        skills.append(SkillTree(name, description, frozen_entries, _digest(name, frozen_entries)))
     _validate_directory_unchanged(root, root_metadata)
-    if not skills:
-        raise _error(root, "skill collection must not be empty")
-    return SkillCollection(tuple(skills))
+    return _collection_from_root_entries(
+        root, tuple(sorted(root_entries, key=lambda entry: entry.path))
+    )
 
 
 def snapshot_ordinary_tree(root: Path) -> tuple[SkillEntry, ...]:
@@ -640,7 +702,7 @@ def _snapshot_bound_directory(
     before = os.fstat(descriptor)
     try:
         names = sorted(os.listdir(descriptor))
-    except OSError:
+    except (OSError, NotImplementedError):
         unsafe_entries.append(UnsafeSkillEntry(relative or ".", "read-error"))
         _remove_entry_subtree(entries, relative)
         return
@@ -728,7 +790,7 @@ def _snapshot_posix_bound_tree(
         anchor_observed = anchor.lstat()
     except FileNotFoundError:
         return (), ()
-    except OSError:
+    except (OSError, NotImplementedError):
         return (), (UnsafeSkillEntry(".", "read-error"),)
     if stat.S_ISLNK(anchor_observed.st_mode):
         return (), (UnsafeSkillEntry(".", "symlink"),)
@@ -790,7 +852,7 @@ def _snapshot_posix_bound_tree(
                 sorted(set(unsafe_entries), key=lambda item: (item.path, item.reason))
             ),
         )
-    except OSError:
+    except (OSError, NotImplementedError):
         return (), (UnsafeSkillEntry(".", "read-error"),)
     finally:
         for descriptor in reversed(descriptors):
@@ -814,16 +876,114 @@ def _deepest_existing_ordinary_directory(anchor: Path, root: Path) -> Path:
             metadata = current.lstat()
         except FileNotFoundError:
             return current.parent
-        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISDIR(metadata.st_mode)
-            or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+            or _is_reparse_point(metadata)
         ):
             raise ValueError(
                 f"tree anchor path must contain only ordinary directories: {current}"
             )
     return current
+
+
+def _open_windows_directory_guards(anchor: Path, path: Path) -> list[int]:
+    from .local_state import _windows_directory_guard
+
+    return _windows_directory_guard(anchor, (path,))
+
+
+def _close_windows_directory_guards(handles: list[int]) -> None:
+    from .local_state import _close_windows_handles
+
+    _close_windows_handles(handles)
+
+
+def _hold_windows_directory_guard(
+    anchor: Path, path: Path, handles: list[int]
+) -> None:
+    observed = path.lstat()
+    if (
+        stat.S_ISLNK(observed.st_mode)
+        or not stat.S_ISDIR(observed.st_mode)
+        or _is_reparse_point(observed)
+    ):
+        raise ValueError(f"Windows guarded path is not an ordinary directory: {path}")
+    acquired = _open_windows_directory_guards(anchor, path)
+    try:
+        attached = path.lstat()
+        if not _same_bound_snapshot(observed, attached, directory=True):
+            raise ValueError(f"Windows guarded directory changed while opening: {path}")
+    except BaseException:
+        _close_windows_directory_guards(acquired)
+        raise
+    handles.extend(acquired)
+
+
+def _snapshot_windows_guarded_tree(
+    anchor: Path, root: Path
+) -> tuple[tuple[SkillEntry, ...], tuple[UnsafeSkillEntry, ...]]:
+    try:
+        deepest = _deepest_existing_ordinary_directory(anchor, root)
+    except (OSError, ValueError):
+        return (), (UnsafeSkillEntry(".", "changed"),)
+    if deepest != Path(os.path.abspath(os.fspath(root))):
+        handles: list[int] = []
+        try:
+            _hold_windows_directory_guard(anchor, deepest, handles)
+        except (OSError, RuntimeError, ValueError):
+            return (), (UnsafeSkillEntry(".", "read-error"),)
+        try:
+            if not root.exists() and not root.is_symlink():
+                return (), ()
+            return (), (UnsafeSkillEntry(".", "changed"),)
+        finally:
+            _close_windows_directory_guards(handles)
+
+    try:
+        metadata = root.lstat()
+    except FileNotFoundError:
+        return (), ()
+    except OSError:
+        return (), (UnsafeSkillEntry(".", "read-error"),)
+    if stat.S_ISLNK(metadata.st_mode) or _is_reparse_point(metadata):
+        return (), (UnsafeSkillEntry(".", "symlink"),)
+    if not stat.S_ISDIR(metadata.st_mode):
+        return (), (UnsafeSkillEntry(".", "special"),)
+
+    handles: list[int] = []
+    try:
+        _hold_windows_directory_guard(anchor, root, handles)
+        entries: list[SkillEntry] = []
+        unsafe_entries: list[UnsafeSkillEntry] = []
+        try:
+            children = sorted(root.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return (), (UnsafeSkillEntry(".", "read-error"),)
+        for child in children:
+            _snapshot_entry(
+                child,
+                child.name,
+                entries,
+                ignore_source_artifacts=False,
+                unsafe_entries=unsafe_entries,
+                windows_anchor=anchor,
+                windows_handles=handles,
+            )
+        try:
+            _validate_directory_unchanged(root, metadata)
+        except (OSError, ValueError):
+            return (), (UnsafeSkillEntry(".", "changed"),)
+        return (
+            tuple(sorted(entries, key=lambda entry: entry.path)),
+            tuple(
+                sorted(set(unsafe_entries), key=lambda item: (item.path, item.reason))
+            ),
+        )
+    except (OSError, RuntimeError, ValueError):
+        return (), (UnsafeSkillEntry(".", "read-error"),)
+    finally:
+        _close_windows_directory_guards(handles)
 
 
 def snapshot_ordinary_tree_with_unsafe(
@@ -835,17 +995,7 @@ def snapshot_ordinary_tree_with_unsafe(
             return _snapshot_posix_bound_tree(anchor, root)
         if os.name != "nt":
             return (), (UnsafeSkillEntry(".", "read-error"),)
-        from .local_state import _close_windows_handles, _windows_directory_guard
-
-        try:
-            guarded = _deepest_existing_ordinary_directory(anchor, root)
-            handles = _windows_directory_guard(anchor, (guarded,))
-        except (OSError, RuntimeError, ValueError):
-            return (), (UnsafeSkillEntry(".", "read-error"),)
-        try:
-            return snapshot_ordinary_tree_with_unsafe(root)
-        finally:
-            _close_windows_handles(handles)
+        return _snapshot_windows_guarded_tree(anchor, root)
     try:
         root_metadata = root.lstat()
     except FileNotFoundError:
@@ -879,6 +1029,25 @@ def snapshot_ordinary_tree_with_unsafe(
         tuple(sorted(entries, key=lambda entry: entry.path)),
         tuple(sorted(set(unsafe_entries), key=lambda item: (item.path, item.reason))),
     )
+
+
+_UNSAFE_DISCOVERY_MESSAGES = {
+    "symlink": "symbolic links are not allowed",
+    "hard-link": "multiply-linked regular files are not allowed",
+    "special": "special files are not allowed",
+    "changed": "skill tree changed during scan",
+    "read-error": "skill tree could not be read safely",
+}
+
+
+def discover_anchored_skill_collection(root: Path, *, anchor: Path) -> SkillCollection:
+    """Discover skills from one anchor-bound raw snapshot and no path re-reads."""
+    entries, unsafe = snapshot_ordinary_tree_with_unsafe(root, anchor=anchor)
+    if unsafe:
+        finding = unsafe[0]
+        path = root if finding.path == "." else root.joinpath(*finding.path.split("/"))
+        raise _error(path, _UNSAFE_DISCOVERY_MESSAGES[finding.reason])
+    return _collection_from_root_entries(root, entries)
 
 
 def _materialize_path(root: Path, relative: str) -> Path:
