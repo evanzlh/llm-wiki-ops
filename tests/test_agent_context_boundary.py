@@ -709,7 +709,7 @@ def test_committed_legacy_catalog_retains_replaced_historical_skills() -> None:
     discovered = discover_skill_collection(
         DATA / "skills", ignore_source_artifacts=True
     )
-    current = {skill.name for skill in discovered.skills}
+    current_names = {skill.name for skill in discovered.skills}
     removed = {
         "memory-bridge",
         "wiki-dashboard",
@@ -718,9 +718,10 @@ def test_committed_legacy_catalog_retains_replaced_historical_skills() -> None:
     }
 
     catalog_names = set(catalog)
-    assert removed <= catalog_names - current
-    assert {"llm-wiki", "wiki-ingest"} <= current & catalog_names
-    assert "wiki-transaction-review" in current
+    assert removed <= catalog_names - current_names
+    assert {"llm-wiki", "wiki-ingest"} <= current_names & catalog_names
+    assert current_names - catalog_names == {"wiki-transaction-review"}
+    assert "wiki-transaction-review" in current_names
     assert "wiki-transaction-review" not in catalog
     for digest in catalog.values():
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
