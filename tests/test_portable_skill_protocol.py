@@ -1,3 +1,5 @@
+import hashlib
+import itertools
 import json
 import re
 from datetime import datetime, timezone
@@ -542,10 +544,10 @@ def test_lint_preserves_material_rules_and_thresholds() -> None:
         "more than 0.20",
         "cohesion < 0.15",
         "at least 5 pages",
-        "source modification time is later than the page's parsed `updated`",
+        "later source modification time also produces a page-stale finding",
         "repository-relative Source ID",
         "timezone-aware",
-        "invalid or ambiguous timestamp",
+        "invalid or ambiguous page timestamps",
         "supersession",
         "typed relationships",
     ):
@@ -569,6 +571,80 @@ def test_lint_source_relative_staleness_has_stable_old_and_newer_source_cases() 
     new_page = "2026-08-13T08:00:00+08:00"
     newer_source = datetime(2026, 8, 13, 1, 0, tzinfo=timezone.utc).timestamp()
     assert is_stale(new_page, newer_source) is True
+
+
+def test_lint_distinguishes_hash_drift_timestamp_stale_and_corrupt_shards() -> None:
+    def findings(
+        *,
+        recorded_hash: str | None,
+        source_bytes: bytes,
+        source_mtime: float,
+        page_updated: str,
+    ) -> set[str]:
+        if recorded_hash is None:
+            raise ValueError("manifest-corrupt")
+        current_hash = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+        parsed = datetime.fromisoformat(page_updated.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("invalid-clock-or-timestamp")
+        result: set[str] = set()
+        if current_hash != recorded_hash:
+            result.update({"source-stale", "hash-drift", "page-stale"})
+        if datetime.fromtimestamp(source_mtime, tz=timezone.utc) > parsed:
+            result.add("page-stale")
+            if current_hash == recorded_hash:
+                result.add("timestamp-only-freshness")
+        return result
+
+    old_bytes = b"old\n"
+    recorded = "sha256:" + hashlib.sha256(old_bytes).hexdigest()
+    updated = "2026-08-13T00:00:00Z"
+    later = datetime(2026, 8, 13, 1, tzinfo=timezone.utc).timestamp()
+    earlier = datetime(2026, 8, 12, 23, tzinfo=timezone.utc).timestamp()
+
+    changed = findings(
+        recorded_hash=recorded,
+        source_bytes=b"changed\n",
+        source_mtime=later,
+        page_updated=updated,
+    )
+    assert {"source-stale", "hash-drift", "page-stale"} <= changed
+
+    preserved_mtime = findings(
+        recorded_hash=recorded,
+        source_bytes=b"changed\n",
+        source_mtime=earlier,
+        page_updated=updated,
+    )
+    assert {"hash-drift", "page-stale"} <= preserved_mtime
+
+    touched = findings(
+        recorded_hash=recorded,
+        source_bytes=old_bytes,
+        source_mtime=later,
+        page_updated=updated,
+    )
+    assert touched == {"page-stale", "timestamp-only-freshness"}
+
+    with pytest.raises(ValueError, match="manifest-corrupt"):
+        findings(
+            recorded_hash=None,
+            source_bytes=old_bytes,
+            source_mtime=earlier,
+            page_updated=updated,
+        )
+
+    flat = " ".join(skill_text("wiki-lint").split())
+    for required in (
+        "safely snapshot the current source bytes",
+        "recompute SHA-256",
+        "`source-stale` / `hash-drift`",
+        "strong page-stale evidence",
+        "timestamp-only freshness",
+        "clock or timestamp errors",
+        "corrupt shard",
+    ):
+        assert required in flat
 
 
 def test_status_contract_matches_real_graph_and_portable_manifest_layout(
@@ -666,3 +742,86 @@ def test_dedup_bounds_candidate_generation_before_similarity_scoring() -> None:
         assert required in flat
     assert "For every pair," not in flat
     assert flat.index("candidate blocks") < flat.index("For every candidate pair")
+
+
+def test_dedup_cursor_resumes_exclusively_without_pair_loss_or_duplicates() -> None:
+    def fingerprint(inventory: tuple[tuple[str, str], ...]) -> str:
+        canonical = json.dumps(sorted(inventory), separators=(",", ":")).encode()
+        return hashlib.sha256(canonical).hexdigest()
+
+    def emit(
+        inventory: tuple[tuple[str, str], ...],
+        *,
+        limit: int,
+        block_key: str,
+        cursor: dict[str, object] | None = None,
+    ) -> tuple[list[tuple[str, str]], dict[str, object] | None]:
+        stable_inventory = tuple(sorted(inventory))
+        stable_ids = tuple(page_id for page_id, _blocking_fields in stable_inventory)
+        inventory_fingerprint = fingerprint(stable_inventory)
+        pairs = list(itertools.combinations(stable_ids, 2))
+        start = 0
+        if cursor is not None:
+            if cursor["inventory_fingerprint"] != inventory_fingerprint:
+                raise ValueError("inventory-changed")
+            if cursor["block_key"] != block_key:
+                raise ValueError("block-key-mismatch")
+            start = pairs.index(cursor["last_emitted_pair"]) + 1
+        batch = pairs[start : start + limit]
+        if start + len(batch) == len(pairs):
+            return batch, None
+        return batch, {
+            "inventory_fingerprint": inventory_fingerprint,
+            "block_key": block_key,
+            "last_emitted_pair": batch[-1],
+        }
+
+    inventory = tuple(
+        (f"concepts/page-{number:02}.md", "tags=shared") for number in range(33)
+    )
+    page_ids = tuple(page_id for page_id, _blocking_fields in inventory)
+    expected = list(itertools.combinations(page_ids, 2))
+    first, cursor = emit(inventory, limit=500, block_key="tag:shared", cursor=None)
+    assert len(expected) == 528
+    assert cursor == {
+        "inventory_fingerprint": fingerprint(inventory),
+        "block_key": "tag:shared",
+        "last_emitted_pair": first[-1],
+    }
+    second, final_cursor = emit(
+        inventory, limit=500, block_key="tag:shared", cursor=cursor
+    )
+    assert second[0] == expected[500]
+    assert first + second == expected
+    assert len(set(first) & set(second)) == 0
+    assert final_cursor is None
+
+    total_limited, total_cursor = emit(
+        inventory, limit=17, block_key="tag:shared", cursor=None
+    )
+    resumed, _ = emit(
+        inventory, limit=17, block_key="tag:shared", cursor=total_cursor
+    )
+    assert total_limited + resumed == expected[:34]
+
+    with pytest.raises(ValueError, match="inventory-changed"):
+        emit(
+            inventory[:-1] + ((inventory[-1][0], "tags=changed"),),
+            limit=500,
+            block_key="tag:shared",
+            cursor=cursor,
+        )
+
+    flat = " ".join(skill_text("wiki-dedup").split())
+    for required in (
+        "`block_key`",
+        "`last_emitted_pair`",
+        "two stable page IDs",
+        "resume exclusively after",
+        "mid-block",
+        "inventory fingerprint",
+        "invalidates the cursor",
+        "fail closed",
+        "no duplicate or skipped pair",
+    ):
+        assert required in flat

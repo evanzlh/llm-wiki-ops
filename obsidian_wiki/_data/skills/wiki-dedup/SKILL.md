@@ -41,8 +41,20 @@ a candidate when it shares at least one non-generic blocking key. Sort block key
 page paths before pair generation and de-duplicate pairs in deterministic order.
 The configurable limits default to 500 pairs per block and 10,000 candidate pairs
 total. When either bound is reached, stop adding pairs from that block or the run,
-and report the deferred block keys, pair count, and next lexicographic resume key
-rather than silently omitting work.
+and report a resumable deferred cursor rather than silently omitting work. Compute an
+inventory fingerprint from the canonical, sorted registry fields that affect
+blocking. The cursor contains that fingerprint, the current `block_key`, and
+`last_emitted_pair` as a tuple of two stable page IDs in sorted order. Pair ordering
+is lexicographic within deterministically ordered blocks; resume exclusively after
+`last_emitted_pair` and do not re-emit completed earlier blocks. This gives no
+duplicate or skipped pair when a block exceeds 500 pairs.
+
+If the 10,000 total cap stops mid-block, emit the same cursor for that exact block
+and pair, then use the identical exclusive resume rule on the next run. If any
+blocking field or stable page ID changes, the recomputed inventory fingerprint
+invalidates the cursor; fail closed and restart candidate generation from a fresh
+inventory. A missing pair, block-key mismatch, malformed cursor, or fingerprint
+mismatch also stops instead of guessing a resume position.
 
 For every candidate pair, tokenize lowercase titles on spaces, hyphens, underscores,
 and punctuation. Compute these deterministic features:

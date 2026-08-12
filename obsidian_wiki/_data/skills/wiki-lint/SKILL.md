@@ -51,16 +51,23 @@ Preserve these material thresholds from the deterministic lint contract:
 
 Determine source-relative staleness independently of page age. For every page, parse
 each `sources` item as a repository-relative Source ID, validate its manifest-v2
-shard and current content hash, and resolve it below the configured source root.
-Parse the page's `updated` as either an ISO date (00:00 UTC, matching the canonical
-validator) or a timezone-aware ISO timestamp; compare it to the safe source file's
-modification time converted to UTC. The page is stale only when at least one source
-modification time is later than the page's parsed `updated`. A very old page backed
-by unchanged older sources is not stale; a recently updated page with a newer source
-is stale. A missing source or shard, hash mismatch, unsafe file, or invalid or
-ambiguous timestamp fails closed as an authority/schema issue rather than being
-silently classified. Age such as 90 days may prioritize a status report, but it is
-not a lint staleness error.
+shard, and resolve it below the configured source root. A corrupt shard, missing
+source or shard, or unsafe read fails closed as a manifest/authority error.
+
+For each ID, safely snapshot the current source bytes with no-follow identity and
+bounded-read checks, then recompute SHA-256 and compare it with the validated shard
+hash. A mismatch is a classified `source-stale` / `hash-drift` finding, not an
+unclassified failure, and is strong page-stale evidence even when file modification
+time was preserved. Parse the page's `updated` as either an ISO date (00:00 UTC,
+matching the canonical validator) or a timezone-aware ISO timestamp; compare it to
+the safe source file's modification time converted to UTC. A later source
+modification time also produces a page-stale finding. When the hash is unchanged,
+label that case a timestamp-only freshness finding so a mere touch is distinguishable
+from content drift. A very old page backed by unchanged older sources is not stale; a recently
+updated page with a newer source is stale. Filesystem clock or timestamp errors and
+invalid or ambiguous page timestamps fail closed rather than being silently
+classified. Age such as 90 days may prioritize a status report, but it is not a lint
+staleness error.
 
 Run `obsidian-wiki lint --json --pretty` and use the real CLI lint/check output for
 schema and trust-ledger findings, then augment it only from the same safe Markdown
