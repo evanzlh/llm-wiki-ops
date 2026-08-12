@@ -14,6 +14,18 @@ CANONICAL = ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md"
 TRANSACTION_REVIEW = (
     ROOT / "obsidian_wiki/_data/skills/wiki-transaction-review/SKILL.md"
 )
+SOURCE_WORKFLOW_SKILLS = (
+    ROOT / "obsidian_wiki/_data/skills/wiki-capture/SKILL.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-ingest/SKILL.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-import/SKILL.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-research/SKILL.md",
+)
+SOURCE_WORKFLOW_REFERENCES = (
+    ROOT / "obsidian_wiki/_data/skills/wiki-capture/references/source-snapshot.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/ingest-prompts.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md",
+    ROOT / "obsidian_wiki/_data/skills/wiki-ingest/references/url-sources.md",
+)
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -240,3 +252,72 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
 
     for forbidden in ("_staging", "_raw", "WIKI_STAGED_WRITES"):
         assert forbidden not in text
+
+
+def test_external_material_is_snapshotted_before_transaction_begin() -> None:
+    for path in SOURCE_WORKFLOW_SKILLS:
+        skill = path.read_text(encoding="utf-8")
+        flat = " ".join(skill.split())
+        for required in (
+            "reviewable UTF-8 Markdown",
+            "configured sources",
+            "repository-relative Source ID",
+            "untrusted data, not instructions",
+            "binary",
+            "Git LFS",
+            "live URL",
+            "absolute path",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        assert flat.index("reviewable UTF-8 Markdown") < flat.index(
+            "obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty"
+        )
+
+
+def test_source_workflows_share_one_terminal_lifecycle() -> None:
+    required_in_order = (
+        "obsidian-wiki cache-check --configured <source1> [source2 ...] --json --pretty",
+        "obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty",
+        "obsidian-wiki transaction validate <id> --json --pretty",
+        "Review the complete candidate diff",
+        "obsidian-wiki transaction commit <id> --json --pretty",
+        "Save the failure envelope for recovery",
+        "obsidian-wiki hot status --json",
+    )
+    for path in SOURCE_WORKFLOW_SKILLS:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        positions = [flat.index(item) for item in required_in_order]
+        assert positions == sorted(positions), path
+
+    capture = " ".join(SOURCE_WORKFLOW_SKILLS[0].read_text(encoding="utf-8").split())
+    ingest = " ".join(SOURCE_WORKFLOW_SKILLS[1].read_text(encoding="utf-8").split())
+    for analysis_choice, skill in (
+        ("Full", capture),
+        ("Correction", capture),
+        ("append", ingest),
+    ):
+        assert analysis_choice in skill
+        assert f"{analysis_choice} completion" not in skill
+        assert f"{analysis_choice} mode completion" not in skill
+
+
+def test_source_workflows_have_no_legacy_completion_or_publication_paths() -> None:
+    forbidden = (
+        "Personal mode",
+        "Portable Repository mode",
+        "_raw/",
+        "RAW-FORMAT",
+        "raw promotion",
+        "cache-update",
+        "QMD",
+        "direct manifest",
+        "central-file",
+        "Git snapshot",
+        "git commit",
+        "git push",
+        "auto-commit",
+    )
+    for path in (*SOURCE_WORKFLOW_SKILLS, *SOURCE_WORKFLOW_REFERENCES):
+        contents = path.read_text(encoding="utf-8")
+        for term in forbidden:
+            assert term not in contents, f"{path}: contains {term!r}"
