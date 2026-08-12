@@ -579,23 +579,21 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     from obsidian_wiki.batch import plan_batches
     from obsidian_wiki.portable_manifest import ManifestError
 
-    source_dir = Path(args.source_dir).expanduser().resolve()
-    vault = Path(args.vault).expanduser().resolve()
-    portable = _resolve_runtime()
-    if portable is None:
+    config = _resolve_runtime()
+    if config is None:
         return 1
+    source_dir = config.sources[0]
     if not source_dir.is_dir():
         print(f"error: source directory not found: {source_dir}", file=sys.stderr)
         return 1
     try:
         result = plan_batches(
             source_dir,
-            vault,
+            config,
             max_batch_mb=args.max_mb,
             max_batch_files=args.max_files,
             skip_unchanged=not args.no_cache,
             include_code=args.include_code,
-            portable=portable,
         )
     except ManifestError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -801,54 +799,18 @@ def _cache_source_path(raw: str) -> Path:
     return Path(os.path.abspath(os.fspath(Path(raw).expanduser())))
 
 
-def _cache_vault_path(raw: str) -> Path:
-    """Return a canonical absolute vault path for runtime ownership checks."""
-    return _cache_source_path(raw).resolve(strict=False)
-
-
 def cmd_cache_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import check_sources
 
-    if not args.configured and not args.paths:
-        print(
-            "error: cache-check requires VAULT SOURCE... or --configured SOURCE...",
-            file=sys.stderr,
-        )
-        return 2
-
-    if not args.configured:
-        vault = _cache_vault_path(args.path)
-    runtime = _resolve_runtime()
-    if runtime is None:
+    config = _resolve_runtime()
+    if config is None:
         return 1
-    if args.configured:
-        vault = runtime.vault
-        sources_raw = [args.path, *args.paths]
-        portable = runtime
-    else:
-        sources_raw = args.paths
-        portable = runtime
-
-    sources = [_cache_source_path(path) for path in sources_raw]
-    result = check_sources(vault, sources, portable=portable)
+    sources = [
+        _cache_source_path(str(config.root / raw))
+        for raw in args.sources
+    ]
+    result = check_sources(config, sources)
     _json_print(result, pretty=args.pretty)
-    return 0
-
-
-def cmd_cache_update(args: argparse.Namespace) -> int:
-    from obsidian_wiki.cache import update_source
-
-    vault = _cache_vault_path(args.vault)
-    source = _cache_source_path(args.source)
-    pages = args.pages or []
-    portable = _resolve_runtime()
-    if portable is None:
-        return 1
-    h = update_source(vault, source, pages_produced=pages, portable=portable)
-    _json_print(
-        {"path": str(source), "content_hash": h},
-        pretty=args.pretty,
-    )
     return 0
 
 
@@ -2194,7 +2156,7 @@ def _normalize_cache_check_argv(argv: list[str]) -> list[str]:
     else:
         before_separator = argv[1:separator]
         after_separator = argv[separator:]
-    option_names = frozenset({"--configured", "--json", "--pretty"})
+    option_names = frozenset({"--json", "--pretty"})
     options = [token for token in before_separator if token in option_names]
     paths = [token for token in before_separator if token not in option_names]
     return [argv[0], *options, *paths, *after_separator]
@@ -2392,8 +2354,6 @@ def build_parser() -> argparse.ArgumentParser:
         "batch-plan",
         help="split a source directory into parallel-ingest batches, skipping unchanged files",
     )
-    bp.add_argument("vault", help="path to the Obsidian vault")
-    bp.add_argument("source_dir", help="directory of source documents to ingest")
     bp.add_argument(
         "--max-mb", type=float, default=2.0, help="max MB per batch (default: 2)"
     )
@@ -2564,30 +2524,9 @@ def build_parser() -> argparse.ArgumentParser:
         "cache-check",
         help="check which sources are new/modified/unchanged vs. .manifest.json",
     )
-    cc.add_argument("path", metavar="PATH")
-    cc.add_argument("paths", nargs="*", metavar="PATH")
-    cc.add_argument(
-        "--configured",
-        action="store_true",
-        help="resolve the vault from config and treat every PATH as a source",
-    )
+    cc.add_argument("sources", nargs="+", metavar="SOURCE")
     _add_json_args(cc)
     cc.set_defaults(func=cmd_cache_check, json=True)
-
-    cu = sub.add_parser(
-        "cache-update",
-        help="record a source's current SHA-256 hash in .manifest.json after ingestion",
-    )
-    cu.add_argument("vault", help="path to the Obsidian vault")
-    cu.add_argument("source", help="source file or directory that was just ingested")
-    cu.add_argument(
-        "--pages",
-        nargs="*",
-        metavar="PAGE",
-        help="vault-relative paths of pages produced",
-    )
-    _add_json_args(cu)
-    cu.set_defaults(func=cmd_cache_update, json=True)
 
     ch = sub.add_parser(
         "cache-hash",
