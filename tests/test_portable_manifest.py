@@ -1039,3 +1039,40 @@ def test_load_rejects_dangling_symlinked_shard_parent(tmp_path: Path) -> None:
 def test_load_missing_ordinary_shard_parent_returns_none(tmp_path: Path) -> None:
     root, config = make_repo(tmp_path)
     assert ShardedManifest(config).load("sources/design/missing.md") is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest locking")
+def test_unlock_failure_is_wrapped_without_undoing_completed_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    real_flock = portable_manifest_module._fcntl.flock
+
+    def fail_unlock(descriptor: int, operation: int) -> None:
+        if operation == portable_manifest_module._fcntl.LOCK_UN:
+            raise OSError("unlock fail")
+        real_flock(descriptor, operation)
+
+    monkeypatch.setattr(portable_manifest_module._fcntl, "flock", fail_unlock)
+    store = ShardedManifest(config)
+    with pytest.raises(ManifestError, match="release|lock"):
+        store.upsert(source)
+    assert store.load("sources/design/a.md") is not None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest locking")
+def test_unlock_failure_does_not_replace_body_exception(tmp_path: Path, monkeypatch) -> None:
+    _, config = make_repo(tmp_path)
+    real_flock = portable_manifest_module._fcntl.flock
+
+    def fail_unlock(descriptor: int, operation: int) -> None:
+        if operation == portable_manifest_module._fcntl.LOCK_UN:
+            raise OSError("unlock fail")
+        real_flock(descriptor, operation)
+
+    monkeypatch.setattr(portable_manifest_module._fcntl, "flock", fail_unlock)
+    with pytest.raises(RuntimeError, match="body wins"):
+        with ShardedManifest(config).mutation_session():
+            raise RuntimeError("body wins")

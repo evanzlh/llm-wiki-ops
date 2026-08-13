@@ -539,6 +539,7 @@ class ShardedManifest:
             wal_fd = directories[-1]
             lock_fd = -1
             entered_body = False
+            primary_error: BaseException | None = None
             try:
                 flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
                 flags |= getattr(os, "O_CLOEXEC", 0)
@@ -552,22 +553,39 @@ class ShardedManifest:
                 self._recover_wal()
                 entered_body = True
                 yield self
-            except ManifestError:
+            except ManifestError as exc:
+                primary_error = exc
                 raise
             except OSError as exc:
                 if entered_body:
+                    primary_error = exc
                     raise
-                raise ManifestError(
+                wrapped = ManifestError(
                     "cannot safely recover or lock manifest mutations"
-                ) from exc
+                )
+                primary_error = wrapped
+                raise wrapped from exc
+            except BaseException as exc:
+                primary_error = exc
+                raise
             finally:
                 self._session = None
+                cleanup_error: OSError | None = None
                 if lock_fd >= 0:
                     try:
                         _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
-                    finally:
+                    except OSError as exc:
+                        cleanup_error = exc
+                    try:
                         os.close(lock_fd)
+                    except OSError as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
                 self._close_fds(directories)
+                if cleanup_error is not None and primary_error is None:
+                    raise ManifestError(
+                        "cannot safely release manifest mutation lock"
+                    ) from cleanup_error
 
     @contextmanager
     def _auto_session(self) -> Iterator[None]:
