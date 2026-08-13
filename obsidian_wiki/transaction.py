@@ -18,7 +18,12 @@ from typing import Callable
 
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
-from obsidian_wiki.operations import OperationChange, write_operation
+from obsidian_wiki.operations import (
+    OperationChange,
+    OperationError,
+    append_operation,
+    parse_operation_log,
+)
 from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.portable_manifest import (
     ManifestError,
@@ -77,7 +82,7 @@ class CommitResult:
     created: tuple[str, ...]
     updated: tuple[str, ...]
     removed: tuple[str, ...]
-    operation_path: str
+    log_path: str
 
 
 @dataclass(frozen=True)
@@ -94,9 +99,6 @@ _METADATA_FIELDS = frozenset(
     {
         "completed_at",
         "created",
-        "operation_guard",
-        "operation_path",
-        "operation_paths",
         "postimages",
         "preimages",
         "residual_postimages",
@@ -211,18 +213,18 @@ class TransactionManager:
         self,
         config: PortableConfig,
         *,
-        operation_writer: Callable[[object], Path] | None = None,
+        log_writer: Callable[[OperationChange], Path] | None = None,
     ) -> None:
         self.config = config
         self.local_state = config.local_state
         self.transactions_root = self.local_state / "transactions"
         self.lock_path = self.local_state / "write.lock"
         self.action_lock_path = self.local_state / "action.lock"
-        self.operation_writer = operation_writer or (
-            lambda change: write_operation(
-                self.config.vault,
+        self.log_writer = log_writer or (
+            lambda change: append_operation(
+                self.config.vault / "log.md",
                 change,
-                cleanup_root=self.local_state,
+                root=self.config.vault,
             )
         )
         self._action_manifest: ShardedManifest | None = None
@@ -275,9 +277,6 @@ class TransactionManager:
             payload = {
                 "completed_at": None,
                 "created": [],
-                "operation_guard": {},
-                "operation_path": None,
-                "operation_paths": [],
                 "postimages": {},
                 "preimages": preimages,
                 "residual_postimages": {},
@@ -714,10 +713,6 @@ class TransactionManager:
         payload = self._read_metadata_payload(record.workspace)
         self._verify_source_preimages(payload, record.source_ids)
         snapshot_index: dict[str, str | None] = {}
-        operation_relative: str | None = None
-        operation_affected: set[str] = set()
-        operation_before: dict[str, str] | None = None
-        operation_before_index: dict[str, str] = {}
         writer_before: dict[str, str] | None = None
         writer_before_index: dict[str, str | None] = {}
         writer_rollback: dict[str, str | None] = {}
@@ -754,9 +749,6 @@ class TransactionManager:
                 {
                     "completed_at": resolved_completed_at,
                     "created": list(created),
-                    "operation_guard": {},
-                    "operation_path": None,
-                    "operation_paths": [],
                     "postimages": {},
                     "residual_postimages": {},
                     "rollback_exclusions": {},
@@ -835,41 +827,17 @@ class TransactionManager:
             writer_before, writer_before_index = self._snapshot_writer_guard(
                 record, snapshot_index
             )
-            operation_before, operation_before_index = self._snapshot_operation_tree(
-                record
-            )
             snapshot_index.update(writer_before_index)
-            snapshot_index.update(operation_before_index)
             payload.update(
                 {
-                    "operation_guard": operation_before,
                     "snapshot_index": dict(sorted(snapshot_index.items())),
                     "writer_guard": writer_before,
                     "writer_prepared": True,
                 }
             )
             self._write_metadata(record.workspace, payload)
-            operation_path = Path(self.operation_writer(change))
-            operation_relative = self._validate_operation_result(operation_path)
-            operation_after = self._operation_tree_state(allow_unsafe=True)
-            operation_rollback = self._operation_tree_diff(
-                operation_before,
-                operation_after,
-                operation_before_index,
-            )
-            added = set(operation_after) - set(operation_before)
-            modified_or_removed = {
-                relative
-                for relative, content_hash in operation_before.items()
-                if operation_after.get(relative) != content_hash
-            }
-            if added != {operation_relative} or modified_or_removed:
-                snapshot_index.update(operation_rollback)
-                operation_affected.update(operation_rollback)
-                raise TransactionError(
-                    "operation writer must create exactly one new operation page "
-                    "without modifying or removing existing operation pages"
-                )
+            log_path = Path(self.log_writer(change))
+            self._validate_log_result(log_path, change)
             writer_after = self._writer_guard_state(allow_unsafe=True)
             writer_rollback = self._writer_guard_diff(
                 writer_before,
@@ -878,14 +846,11 @@ class TransactionManager:
             )
             if writer_rollback:
                 raise TransactionError(
-                    "unauthorized operation writer side effect outside "
-                    "journal/operations"
+                    "unauthorized operation log writer side effect outside log.md"
                 )
             self._verify_source_preimages(payload, record.source_ids)
-            snapshot_index[operation_relative] = None
-            operation_affected.add(operation_relative)
 
-            postimage_paths = sorted(set(affected) | {operation_relative})
+            postimage_paths = sorted(affected)
             postimages = {
                 relative: self._current_vault_hash(relative)
                 for relative in postimage_paths
@@ -893,9 +858,6 @@ class TransactionManager:
             complete_payload = dict(payload)
             complete_payload.update(
                 {
-                    "operation_guard": {},
-                    "operation_path": operation_relative,
-                    "operation_paths": sorted(operation_affected),
                     "postimages": postimages,
                     "residual_postimages": {},
                     "rollback_exclusions": {},
@@ -917,7 +879,7 @@ class TransactionManager:
                 created=created,
                 updated=updated,
                 removed=removed,
-                operation_path=operation_relative,
+                log_path="log.md",
             )
         except Exception as exc:
             if not snapshot_started:
@@ -931,20 +893,6 @@ class TransactionManager:
                     raise
                 raise TransactionError(str(exc)) from exc
             rollback_errors: list[str] = []
-            if operation_before is not None:
-                try:
-                    operation_after = self._operation_tree_state(allow_unsafe=True)
-                    operation_diff = self._operation_tree_diff(
-                        operation_before,
-                        operation_after,
-                        operation_before_index,
-                    )
-                    snapshot_index.update(operation_diff)
-                    operation_affected.update(operation_diff)
-                except (OSError, TransactionError) as rollback_exc:
-                    rollback_errors.append(
-                        f"operation cleanup discovery failed: {rollback_exc}"
-                    )
             if writer_before is not None:
                 try:
                     writer_after = self._writer_guard_state(allow_unsafe=True)
@@ -978,7 +926,6 @@ class TransactionManager:
                 residual_postimages = self._failed_residual_postimages(
                     record,
                     writer_before,
-                    operation_before,
                     base_affected=set(affected),
                     rollback_exclusions=rollback_exclusion_paths,
                 )
@@ -987,8 +934,6 @@ class TransactionManager:
                 rollback_errors.append(f"residual discovery failed: {rollback_exc}")
             payload.update(
                 {
-                    "operation_path": operation_relative,
-                    "operation_paths": sorted(operation_affected),
                     "postimages": {},
                     "residual_postimages": residual_postimages,
                     "rollback_exclusions": rollback_exclusions,
@@ -1364,6 +1309,7 @@ class TransactionManager:
     ) -> tuple[str, ...]:
         manifest = ShardedManifest(self.config)
         affected = {candidate.relative for candidate in candidates}
+        affected.add("log.md")
         affected.update(record.deletions)
         for source_id in record.source_ids:
             shard = manifest.entry_path(source_id)
@@ -1479,9 +1425,6 @@ class TransactionManager:
             {
                 "completed_at": None,
                 "created": [],
-                "operation_guard": {},
-                "operation_path": None,
-                "operation_paths": [],
                 "postimages": {},
                 "residual_postimages": {},
                 "rollback_exclusions": {},
@@ -1605,13 +1548,6 @@ class TransactionManager:
                 ).items()
                 if relative not in excluded
             }
-            operation_before = {
-                relative: content_hash
-                for relative, content_hash in self._load_operation_guard(
-                    payload["operation_guard"]
-                ).items()
-                if relative not in rollback_exclusions
-            }
             writer_after = {
                 relative: content_hash
                 for relative, content_hash in self._writer_guard_state(
@@ -1619,28 +1555,11 @@ class TransactionManager:
                 ).items()
                 if relative not in excluded
             }
-            operation_after = {
-                relative: content_hash
-                for relative, content_hash in self._operation_tree_state(
-                    allow_unsafe=True
-                ).items()
-                if relative not in rollback_exclusions
-            }
             cleanup.update(
                 self._writer_guard_diff(
                     writer_before,
                     writer_after,
                     {relative: snapshot_index[relative] for relative in writer_before},
-                )
-            )
-            cleanup.update(
-                self._operation_tree_diff(
-                    operation_before,
-                    operation_after,
-                    {
-                        relative: snapshot_index[relative]
-                        for relative in operation_before
-                    },
                 )
             )
         for relative in sorted(base_affected - rollback_exclusions):
@@ -1652,7 +1571,6 @@ class TransactionManager:
         self,
         record: TransactionRecord,
         writer_before: dict[str, str] | None,
-        operation_before: dict[str, str] | None,
         *,
         base_affected: set[str],
         rollback_exclusions: set[str],
@@ -1667,16 +1585,6 @@ class TransactionManager:
             }
             changed.update(set(writer_after) - set(writer_before))
             for relative in changed - base_affected:
-                residual[relative] = self._current_vault_hash(relative)
-        if operation_before is not None:
-            operation_after = self._operation_tree_state(allow_unsafe=True)
-            changed = {
-                relative
-                for relative, content_hash in operation_before.items()
-                if operation_after.get(relative) != content_hash
-            }
-            changed.update(set(operation_after) - set(operation_before))
-            for relative in changed:
                 residual[relative] = self._current_vault_hash(relative)
         for relative in sorted(base_affected - rollback_exclusions):
             current = self._current_vault_hash(relative)
@@ -1728,15 +1636,6 @@ class TransactionManager:
                     payload["writer_guard"]
                 ).items()
                 if relative not in base_affected | rollback_exclusions
-            }
-        )
-        baselines.update(
-            {
-                relative: content_hash
-                for relative, content_hash in self._load_operation_guard(
-                    payload["operation_guard"]
-                ).items()
-                if relative not in rollback_exclusions
             }
         )
         for relative in set(residuals) - set(actual):
@@ -1917,46 +1816,36 @@ class TransactionManager:
             for source_id, pages in sorted(relationships.items())
         }
 
-    def _validate_operation_result(self, operation_path: Path) -> str:
-        candidate = operation_path
+    def _validate_log_result(
+        self, log_path: Path, intended: OperationChange
+    ) -> None:
+        candidate = log_path
         if not candidate.is_absolute():
             candidate = self.config.vault / candidate
         self._require_contained(
             candidate,
             self.config.vault,
-            "operation path",
+            "operation log path",
             strict_child=True,
         )
         try:
             relative = candidate.relative_to(self.config.vault).as_posix()
         except ValueError as exc:
-            raise TransactionError("operation path escapes the portable vault") from exc
-        self._validate_relative_path(relative, "operation path")
-        path = PurePosixPath(relative)
-        if path.suffix != ".md" or path.parts[:2] != ("journal", "operations"):
+            raise TransactionError("operation log path escapes the portable vault") from exc
+        if relative != "log.md":
             raise TransactionError(
-                "operation writer must return a markdown page below journal/operations"
+                "operation log writer must return exactly vault/log.md"
             )
-        self._require_ordinary_file(candidate, "operation page")
-        return relative
-
-    def _snapshot_operation_tree(
-        self, record: TransactionRecord
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        raw_state = self._operation_tree_state()
-        state = {relative: content_hash for relative, content_hash in raw_state.items()}
-        originals = record.workspace / "snapshots" / "originals"
-        index: dict[str, str] = {}
-        for relative in sorted(state):
-            snapshot_relative = PurePosixPath("originals") / PurePosixPath(relative)
-            snapshot = record.workspace / "snapshots" / snapshot_relative
-            self._ensure_contained_directory(snapshot.parent, originals)
-            data = self._read_single_link_bytes(
-                self._vault_path(relative), "operation page"
+        data = self._read_single_link_bytes(candidate, "operation log")
+        try:
+            text = data.decode("utf-8")
+            records = parse_operation_log(text)
+        except (UnicodeDecodeError, OperationError) as exc:
+            raise TransactionError("operation log writer installed an invalid log") from exc
+        if not records or records[-1] != intended:
+            raise TransactionError(
+                "operation log writer did not append the intended transaction record"
             )
-            self._write_atomic_bytes(snapshot, data)
-            index[relative] = snapshot_relative.as_posix()
-        return state, index
 
     def _snapshot_writer_guard(
         self,
@@ -2016,10 +1905,6 @@ class TransactionManager:
             kept_directories: list[str] = []
             for name in sorted(dirnames):
                 relative = relative_directory / name
-                if relative.parts and relative.parts[0] == ".obsidian":
-                    continue
-                if relative.parts[:2] == ("journal", "operations"):
-                    continue
                 if excluded_local is not None and (
                     relative == excluded_local or excluded_local in relative.parents
                 ):
@@ -2032,11 +1917,7 @@ class TransactionManager:
             for name in sorted(filenames):
                 relative = relative_directory / name
                 relative_key = relative.as_posix()
-                if relative_key == "hot.md":
-                    continue
-                if relative.parts and relative.parts[0] == ".obsidian":
-                    continue
-                if relative.parts[:2] == ("journal", "operations"):
+                if relative_key == "log.md":
                     continue
                 if excluded_local is not None and (
                     relative == excluded_local or excluded_local in relative.parents
@@ -2051,49 +1932,6 @@ class TransactionManager:
                     if not allow_unsafe:
                         raise
                     result[relative_key] = None
-        return dict(sorted(result.items()))
-
-    @staticmethod
-    def _operation_tree_diff(
-        before: dict[str, str],
-        after: dict[str, str | None],
-        before_index: dict[str, str],
-    ) -> dict[str, str | None]:
-        changed = {
-            relative: before_index[relative]
-            for relative, content_hash in before.items()
-            if after.get(relative) != content_hash
-        }
-        changed.update({relative: None for relative in set(after) - set(before)})
-        return dict(sorted(changed.items()))
-
-    def _operation_tree_state(
-        self, *, allow_unsafe: bool = False
-    ) -> dict[str, str | None]:
-        root = self.config.vault / "journal" / "operations"
-        if not root.exists() and not root.is_symlink():
-            return {}
-        self._require_ordinary_directory(root, "operation directory")
-        result: dict[str, str | None] = {}
-        for directory, dirnames, filenames in os.walk(
-            root, topdown=True, followlinks=False
-        ):
-            current = Path(directory)
-            self._require_ordinary_directory(current, "operation directory")
-            for name in sorted(dirnames):
-                self._require_ordinary_directory(current / name, "operation directory")
-            dirnames[:] = sorted(dirnames)
-            for name in sorted(filenames):
-                page = current / name
-                relative = page.relative_to(self.config.vault).as_posix()
-                try:
-                    result[relative] = self._hash_single_link_file(
-                        page, "operation page"
-                    )
-                except TransactionError:
-                    if not allow_unsafe:
-                        raise
-                    result[relative] = None
         return dict(sorted(result.items()))
 
     def _vault_path(self, relative: str) -> Path:
@@ -2244,8 +2082,6 @@ class TransactionManager:
         self._load_residual_postimages(payload.get("residual_postimages"))
         self._load_rollback_exclusions(payload.get("rollback_exclusions"))
         self._load_snapshot_index(payload.get("snapshot_index"), workspace=workspace)
-        self._load_operation_paths(payload.get("operation_paths"))
-        self._load_operation_guard(payload.get("operation_guard"))
         self._load_writer_guard(payload.get("writer_guard"))
         if not isinstance(payload.get("writer_prepared"), bool):
             raise TransactionError("transaction writer_prepared must be a boolean")
@@ -2260,19 +2096,6 @@ class TransactionManager:
                 raise TransactionError(f"transaction {field} must be unique and sorted")
             for relative in values:
                 self._validate_output_path(relative, f"transaction {field}")
-        operation_path = payload.get("operation_path")
-        if operation_path is not None:
-            if not isinstance(operation_path, str):
-                raise TransactionError("transaction operation_path must be a string")
-            self._validate_relative_path(operation_path, "transaction operation path")
-            operation = PurePosixPath(operation_path)
-            if operation.suffix != ".md" or operation.parts[:2] != (
-                "journal",
-                "operations",
-            ):
-                raise TransactionError(
-                    "transaction operation_path must be below journal/operations"
-                )
 
     def _validate_metadata_semantics(
         self,
@@ -2290,18 +2113,11 @@ class TransactionManager:
             manifest.entry_path(source_id).relative_to(self.config.vault).as_posix()
             for source_id in source_ids
         }
-        base_affected = set(candidate_names) | set(deletions) | shard_paths
-        operation_guard = self._load_operation_guard(payload["operation_guard"])
+        base_affected = set(candidate_names) | set(deletions) | shard_paths | {"log.md"}
         writer_guard = self._load_writer_guard(payload["writer_guard"])
         writer_prepared = payload["writer_prepared"]
-        operation_paths = set(self._load_operation_paths(payload["operation_paths"]))
-        operation_path = payload["operation_path"]
-        if operation_path is not None and operation_path not in operation_paths:
-            raise TransactionError(
-                "transaction operation_path must belong to operation_paths"
-            )
-        allowed = base_affected | operation_paths
-        guard_paths = set(writer_guard) | set(operation_guard)
+        allowed = base_affected
+        guard_paths = set(writer_guard)
         snapshot_allowed = allowed | guard_paths
         snapshots = self._load_snapshot_index(
             payload["snapshot_index"], workspace=workspace
@@ -2343,10 +2159,6 @@ class TransactionManager:
         }
         for relative, content_hash in writer_guard.items():
             expected_snapshot_hashes.setdefault(relative, content_hash)
-        for relative, content_hash in operation_guard.items():
-            expected_snapshot_hashes.setdefault(relative, content_hash)
-        for relative in operation_paths:
-            expected_snapshot_hashes.setdefault(relative, None)
         if not set(snapshots) <= snapshot_allowed:
             raise TransactionError(
                 "transaction snapshot target is outside the affected set"
@@ -2369,7 +2181,7 @@ class TransactionManager:
                 raise TransactionError(
                     "persisted writer guard path is missing its snapshot backing"
                 )
-        elif writer_guard or operation_guard:
+        elif writer_guard:
             raise TransactionError(
                 "unprepared transaction cannot contain persisted writer guards"
             )
@@ -2393,8 +2205,6 @@ class TransactionManager:
                 (
                     completed_at is not None,
                     bool(created or updated or removed),
-                    operation_path is not None,
-                    bool(operation_paths),
                     bool(snapshots),
                     bool(postimages),
                     residual_postimages != {},
@@ -2407,8 +2217,6 @@ class TransactionManager:
         if status == "promoting":
             if (
                 completed_at is None
-                or operation_path is not None
-                or operation_paths
                 or set(snapshots) != snapshot_allowed
                 or postimages
                 or residual_postimages != {}
@@ -2421,8 +2229,6 @@ class TransactionManager:
         if status == "complete":
             if (
                 completed_at is None
-                or operation_path is None
-                or operation_paths != {operation_path}
                 or writer_prepared
                 or residual_postimages != {}
                 or rollback_exclusions != {}
@@ -2438,8 +2244,6 @@ class TransactionManager:
                 if any(
                     (
                         bool(created or updated or removed),
-                        operation_path is not None,
-                        bool(operation_paths),
                         bool(snapshots),
                         bool(postimages),
                         residual_postimages != {},
@@ -2462,36 +2266,10 @@ class TransactionManager:
         ):
             raise TransactionError("restored transaction recovery fields are invalid")
 
-    def _load_operation_paths(self, raw: object) -> tuple[str, ...]:
-        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-            raise TransactionError("transaction operation_paths must be a string list")
-        values = tuple(raw)
-        if values != tuple(sorted(set(values))):
-            raise TransactionError(
-                "transaction operation_paths must be unique and sorted"
-            )
-        for relative in values:
-            self._validate_relative_path(relative, "transaction operation path")
-            path = PurePosixPath(relative)
-            if path.suffix != ".md" or path.parts[:2] != (
-                "journal",
-                "operations",
-            ):
-                raise TransactionError(
-                    "transaction operation path must be below journal/operations"
-                )
-        return values
-
     def _load_writer_guard(self, raw: object) -> dict[str, str]:
         guard = self._load_guard_hashes(raw, "transaction writer guard")
         for relative in guard:
             self._validate_writer_guard_path(relative)
-        return guard
-
-    def _load_operation_guard(self, raw: object) -> dict[str, str]:
-        guard = self._load_guard_hashes(raw, "transaction operation guard")
-        for relative in guard:
-            self._validate_operation_guard_path(relative)
         return guard
 
     def _load_residual_postimages(self, raw: object) -> dict[str, str | None] | None:
@@ -2499,9 +2277,7 @@ class TransactionManager:
             return None
         residuals = self._load_image_map(raw, "transaction residual postimages")
         for relative in residuals:
-            if PurePosixPath(relative).parts[:2] == ("journal", "operations"):
-                self._validate_operation_guard_path(relative)
-            else:
+            if relative != "log.md":
                 self._validate_writer_guard_path(relative)
         return residuals
 
@@ -2523,11 +2299,7 @@ class TransactionManager:
     def _validate_writer_guard_path(self, relative: str) -> None:
         self._validate_relative_path(relative, "transaction writer guard path")
         path = PurePosixPath(relative)
-        if (
-            relative == "hot.md"
-            or path.parts[0] == ".obsidian"
-            or path.parts[:2] == ("journal", "operations")
-        ):
+        if relative == "log.md":
             raise TransactionError(
                 "transaction writer guard path is outside the authoritative vault"
             )
@@ -2540,14 +2312,6 @@ class TransactionManager:
         ):
             raise TransactionError(
                 "transaction writer guard path is outside the authoritative vault"
-            )
-
-    def _validate_operation_guard_path(self, relative: str) -> None:
-        self._validate_relative_path(relative, "transaction operation guard path")
-        path = PurePosixPath(relative)
-        if len(path.parts) < 3 or path.parts[:2] != ("journal", "operations"):
-            raise TransactionError(
-                "transaction operation guard path must be below journal/operations"
             )
 
     def _load_image_map(self, raw: object, label: str) -> dict[str, str | None]:
@@ -2665,7 +2429,9 @@ class TransactionManager:
 
     @staticmethod
     def _utc_now() -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+            "+00:00", "Z"
+        )
 
     @staticmethod
     def _generated_id() -> str:

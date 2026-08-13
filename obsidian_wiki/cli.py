@@ -1007,7 +1007,7 @@ def _commit_payload(result) -> dict[str, object]:
         "created": list(result.created),
         "updated": list(result.updated),
         "removed": list(result.removed),
-        "operation_path": result.operation_path,
+        "log_path": result.log_path,
     }
 
 
@@ -1164,7 +1164,7 @@ def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
         print(
             f"transaction {result.transaction_id}: "
             f"{len(result.created)} created, {len(result.updated)} updated, "
-            f"{len(result.removed)} removed; {result.operation_path}"
+            f"{len(result.removed)} removed; {result.log_path}"
         )
     return 0
 
