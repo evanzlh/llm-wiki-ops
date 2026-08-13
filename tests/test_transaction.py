@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -2803,6 +2804,138 @@ def test_log_writer_vault_root_chmod_is_rolled_back(tmp_path: Path) -> None:
     assert (config.vault / ".manifest.json").read_bytes() == original_manifest
     assert not (config.vault / "concepts/a.md").exists()
     assert ShardedManifest(config).load("sources/a.md") is None
+
+
+def test_log_writer_vault_root_substitution_preserves_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, config = make_config(tmp_path)
+    original_vault = root / "original-wiki"
+    replacement_state = None
+
+    def tree_state(directory: Path):
+        return [
+            (
+                path.relative_to(directory).as_posix(),
+                stat.S_IMODE(path.lstat().st_mode),
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in [directory, *sorted(directory.rglob("*"))]
+        ]
+
+    def writer(change):
+        nonlocal replacement_state
+        config.vault.rename(original_vault)
+        config.vault.mkdir(mode=0o751)
+        (config.vault / "owner").mkdir(mode=0o750)
+        keep = config.vault / "owner" / "keep.txt"
+        keep.write_bytes(b"owner replacement\n")
+        keep.chmod(0o640)
+        replacement_state = tree_state(config.vault)
+        raise RuntimeError("writer failed after replacing vault root")
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-root-replaced")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError) as failure:
+        manager.commit("tx-root-replaced", completed_at="2026-08-07T01:00:00Z")
+
+    assert replacement_state is not None
+    assert tree_state(config.vault) == replacement_state
+    assert "vault root" in str(failure.value)
+    assert "replaced" in str(failure.value)
+    assert "manual recovery" in str(failure.value)
+    assert (original_vault / "concepts" / "a.md").read_text(encoding="utf-8") == PAGE
+    assert (original_vault / "log.md").read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert record.workspace.is_dir()
+    metadata = json.loads(
+        (record.workspace / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["status"] == "failed"
+    assert metadata["residual_postimages"] is None
+    assert (
+        record.workspace / "snapshots" / "originals" / "log.md"
+    ).read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert not manager.lock_path.exists()
+    assert manager.load("tx-root-replaced").status == "failed"
+    assert [item.transaction_id for item in manager.list_transactions()] == [
+        "tx-root-replaced"
+    ]
+
+    monkeypatch.setattr(cli_module, "_transaction_manager", lambda: manager)
+    assert cli_module.cmd_transaction_list(
+        argparse.Namespace(json=True, pretty=False)
+    ) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed[0]["transaction_id"] == "tx-root-replaced"
+    assert listed[0]["status"] == "failed"
+    assert listed[0]["recommended_action"]["command"] == (
+        "obsidian-wiki transaction retry tx-root-replaced"
+    )
+    assert tree_state(config.vault) == replacement_state
+
+
+def test_transaction_metadata_rejects_multiple_source_roots(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    other_sources = root / "other-sources"
+    other_sources.mkdir()
+    manager = TransactionManager(
+        replace(config, sources=(config.sources[0], other_sources))
+    )
+
+    with pytest.raises(TransactionError, match="exactly one source root"):
+        manager._load_source_ids(["sources/a.md"])
+
+
+def test_transaction_metadata_rejects_nul_source_id(tmp_path: Path) -> None:
+    _root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+
+    with pytest.raises(TransactionError, match="Source ID.*unsafe"):
+        manager._load_source_ids(["sources/a\0b.md"])
+
+
+def test_transaction_manifest_shard_matches_nested_unicode_mapping(
+    tmp_path: Path,
+) -> None:
+    _root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    source_id = "sources/资料/组会.md"
+
+    assert manager._manifest_shard_relative(source_id) == (
+        ShardedManifest(config).entry_path(source_id)
+        .relative_to(config.vault)
+        .as_posix()
+    )
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    [
+        "/sources/a.md",
+        "C:/sources/a.md",
+        "sources\\a.md",
+        "sources/../a.md",
+        "sources/./a.md",
+        "sources//a.md",
+        "sources",
+        "outside/a.md",
+    ],
+)
+def test_transaction_manifest_shard_rejects_unsafe_source_ids_like_manifest(
+    tmp_path: Path,
+    source_id: str,
+) -> None:
+    _root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+
+    with pytest.raises(ValueError):
+        ShardedManifest(config).entry_path(source_id)
+    with pytest.raises(TransactionError):
+        manager._manifest_shard_relative(source_id)
 
 
 def test_log_writer_nested_nonempty_directory_side_effect_is_rolled_back(

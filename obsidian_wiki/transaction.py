@@ -730,6 +730,7 @@ class TransactionManager:
         payload = self._read_metadata_payload(record.workspace)
         self._verify_source_preimages(payload, record.source_ids)
         snapshot_index: dict[str, str | None] = {}
+        rollback_root: _WriterEntry | None = None
         writer_before: dict[str, _WriterEntry] | None = None
         writer_before_index: dict[str, str | None] = {}
         writer_rollback: dict[str, str | None] = {}
@@ -759,6 +760,7 @@ class TransactionManager:
                 )
             )
 
+            rollback_root = self._vault_root_entry()
             snapshot_started = True
             snapshot_index = self._snapshot_targets(record, affected)
             self._verify_source_preimages(payload, record.source_ids)
@@ -928,7 +930,26 @@ class TransactionManager:
                     raise
                 raise TransactionError(str(exc)) from exc
             rollback_errors: list[str] = []
-            if writer_before is not None:
+            root_unsafe = False
+
+            def root_is_safe() -> bool:
+                nonlocal root_unsafe
+                if root_unsafe:
+                    return False
+                try:
+                    if rollback_root is None:
+                        raise TransactionError("rollback vault root state is missing")
+                    self._require_vault_root_identity(rollback_root)
+                except (OSError, TransactionError) as rollback_exc:
+                    root_unsafe = True
+                    rollback_errors.append(
+                        "vault root was replaced; manual recovery required: "
+                        + str(rollback_exc)
+                    )
+                    return False
+                return True
+
+            if writer_before is not None and root_is_safe():
                 try:
                     writer_after = self._writer_guard_state(allow_unsafe=True)
                     writer_rollback.update(
@@ -942,37 +963,43 @@ class TransactionManager:
                     rollback_errors.append(
                         f"writer cleanup discovery failed: {rollback_exc}"
                     )
-            try:
-                self._restore_writer_guard_changes(
-                    record,
-                    writer_rollback,
-                    writer_before or {},
-                    writer_after if writer_before is not None else {},
-                )
-            except (OSError, TransactionError) as rollback_exc:
-                rollback_errors.append(f"writer restore failed: {rollback_exc}")
-            try:
-                self._restore_snapshot_index(
-                    record,
-                    {
-                        relative: stored
-                        for relative, stored in snapshot_index.items()
-                        if relative in set(affected)
-                        and relative not in rollback_exclusion_paths
-                    },
-                )
-            except (OSError, TransactionError) as rollback_exc:
-                rollback_errors.append(f"restore failed: {rollback_exc}")
-            try:
-                residual_postimages = self._failed_residual_postimages(
-                    record,
-                    writer_before,
-                    base_affected=set(affected),
-                    rollback_exclusions=rollback_exclusion_paths,
-                )
-            except (OSError, TransactionError) as rollback_exc:
-                residual_postimages = None
-                rollback_errors.append(f"residual discovery failed: {rollback_exc}")
+            residual_postimages = None
+            if root_is_safe():
+                try:
+                    self._restore_writer_guard_changes(
+                        record,
+                        writer_rollback,
+                        writer_before or {},
+                        writer_after if writer_before is not None else {},
+                    )
+                except (OSError, TransactionError) as rollback_exc:
+                    rollback_errors.append(f"writer restore failed: {rollback_exc}")
+            if root_is_safe():
+                try:
+                    self._restore_snapshot_index(
+                        record,
+                        {
+                            relative: stored
+                            for relative, stored in snapshot_index.items()
+                            if relative in set(affected)
+                            and relative not in rollback_exclusion_paths
+                        },
+                    )
+                except (OSError, TransactionError) as rollback_exc:
+                    rollback_errors.append(f"restore failed: {rollback_exc}")
+            if root_is_safe():
+                try:
+                    residual_postimages = self._failed_residual_postimages(
+                        record,
+                        writer_before,
+                        base_affected=set(affected),
+                        rollback_exclusions=rollback_exclusion_paths,
+                    )
+                except (OSError, TransactionError) as rollback_exc:
+                    residual_postimages = None
+                    rollback_errors.append(
+                        f"residual discovery failed: {rollback_exc}"
+                    )
             payload.update(
                 {
                     "postimages": {},
@@ -993,7 +1020,8 @@ class TransactionManager:
                     )
                 except TransactionError as rollback_exc:
                     rollback_errors.append(f"lock release failed: {rollback_exc}")
-            detail = f"transaction {record.transaction_id} rolled back: {exc}"
+            outcome = "failed recovery" if root_unsafe else "rolled back"
+            detail = f"transaction {record.transaction_id} {outcome}: {exc}"
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)
             raise TransactionError(detail) from exc
@@ -1659,17 +1687,7 @@ class TransactionManager:
         expected: _WriterEntry,
         observed: _WriterEntry | None,
     ) -> None:
-        try:
-            metadata = self.config.vault.lstat()
-        except OSError as exc:
-            raise TransactionError("writer rollback vault root is missing") from exc
-        if (
-            expected.kind != "root"
-            or not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or not self._writer_identity_matches(metadata, expected)
-        ):
-            raise TransactionError("writer changed or replaced the portable vault root")
+        self._require_vault_root_identity(expected)
         if observed is None or observed.kind != "root":
             raise TransactionError("writer vault root result is invalid")
         try:
@@ -1677,6 +1695,27 @@ class TransactionManager:
             self._fsync_directory(self.config.vault)
         except OSError as exc:
             raise TransactionError("cannot restore portable vault root mode") from exc
+
+    def _vault_root_entry(self) -> _WriterEntry:
+        try:
+            metadata = self.config.vault.lstat()
+        except OSError as exc:
+            raise TransactionError("portable vault root is missing") from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or self._is_reparse_point(metadata)
+        ):
+            raise TransactionError("portable vault root is not an ordinary directory")
+        return self._writer_entry(metadata, kind="root")
+
+    def _require_vault_root_identity(self, expected: _WriterEntry) -> None:
+        current = self._vault_root_entry()
+        if expected.kind != "root" or (
+            current.device,
+            current.inode,
+        ) != (expected.device, expected.inode):
+            raise TransactionError("writer changed or replaced the portable vault root")
 
     @staticmethod
     def _writer_identity_matches(
@@ -2239,9 +2278,8 @@ class TransactionManager:
         except ValueError:
             pass
 
-        root_metadata = self.config.vault.lstat()
         result: dict[str, _WriterEntry] = {
-            _WRITER_ROOT_KEY: self._writer_entry(root_metadata, kind="root")
+            _WRITER_ROOT_KEY: self._vault_root_entry()
         }
         for directory, dirnames, filenames in os.walk(
             self.config.vault, topdown=True, followlinks=False
@@ -2517,9 +2555,8 @@ class TransactionManager:
         deletions: tuple[str, ...],
         candidate_names: tuple[str, ...],
     ) -> None:
-        manifest = ShardedManifest(self.config)
         shard_paths = {
-            manifest.entry_path(source_id).relative_to(self.config.vault).as_posix()
+            self._manifest_shard_relative(source_id)
             for source_id in source_ids
         }
         base_affected = set(candidate_names) | set(deletions) | shard_paths | {"log.md"}
@@ -3199,13 +3236,40 @@ class TransactionManager:
         values = tuple(raw)
         if values != tuple(sorted(set(values))):
             raise TransactionError("transaction source_ids must be unique and sorted")
-        try:
-            manifest = ShardedManifest(self.config)
-            for source_id in values:
-                manifest.source_path(source_id)
-        except ManifestError as exc:
-            raise TransactionError(f"invalid transaction Source ID: {exc}") from exc
+        for source_id in values:
+            self._manifest_source_relative(source_id)
         return values
+
+    def _manifest_shard_relative(self, source_id: str) -> str:
+        relative = self._manifest_source_relative(source_id)
+        return (
+            PurePosixPath(".manifest/sources")
+            / relative.parent
+            / f"{relative.name}.json"
+        ).as_posix()
+
+    def _manifest_source_relative(self, source_id: str) -> PurePosixPath:
+        if len(self.config.sources) != 1:
+            raise TransactionError(
+                "manifest v2 schema 1 requires exactly one source root"
+            )
+        self._validate_relative_path(source_id, "transaction Source ID")
+        try:
+            source_prefix = PurePosixPath(
+                self.config.sources[0].relative_to(self.config.root).as_posix()
+            )
+            relative = PurePosixPath(source_id).relative_to(source_prefix)
+        except ValueError as exc:
+            raise TransactionError(
+                "transaction Source ID is outside the configured source root: "
+                + source_id
+            ) from exc
+        if not relative.parts:
+            raise TransactionError(
+                "transaction Source ID is outside the configured source root: "
+                + source_id
+            )
+        return relative
 
     def _load_deletions(self, path: Path) -> tuple[str, ...]:
         raw = self._read_json_file(path, "transaction deletions")
@@ -3224,6 +3288,7 @@ class TransactionManager:
         windows_path = PureWindowsPath(raw)
         if (
             not raw
+            or "\x00" in raw
             or "\\" in raw
             or path.is_absolute()
             or windows_path.is_absolute()
