@@ -687,8 +687,7 @@ def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(
         "owner-cache/",
         *PORTABLE_ROOT_IGNORE,
         "notes/brain/hot.md",
-        "notes/brain/.obsidian/workspace.json",
-        "notes/brain/.obsidian/workspace-mobile.json",
+        "notes/brain/.obsidian/",
         "notes/brain/.trash/",
     ]
     assert str(root.resolve()) not in first

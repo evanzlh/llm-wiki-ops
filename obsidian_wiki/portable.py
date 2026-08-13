@@ -2027,8 +2027,7 @@ def render_portable_gitignore(existing: str, vault_relative: str = "wiki") -> st
     required = (
         *PORTABLE_ROOT_IGNORE,
         f"{prefix}hot.md",
-        f"{prefix}.obsidian/workspace.json",
-        f"{prefix}.obsidian/workspace-mobile.json",
+        f"{prefix}.obsidian/",
         f"{prefix}.trash/",
     )
     present = {line.strip() for line in existing.splitlines()}
