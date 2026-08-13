@@ -869,6 +869,7 @@ class TransactionManager:
                     "unauthorized operation writer side effect outside "
                     "journal/operations"
                 )
+            self._verify_source_preimages(payload, record.source_ids)
             snapshot_index[operation_relative] = None
             operation_affected.add(operation_relative)
 

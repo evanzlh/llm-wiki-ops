@@ -1192,6 +1192,32 @@ def test_conflict_resolution_preserves_replaced_wal_evidence(
     assert pre.read_bytes() == b"OWNER EVIDENCE"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+def test_conflict_resolution_preserves_journal_when_wal_evidence_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+
+    def interpose(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(b"owner live\n")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", interpose)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    (wal / "pre.bin").unlink()
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    with pytest.raises(ManifestPreconditionError, match="missing|inspection"):
+        ShardedManifest(config).resolve_conflict_keep_live()
+    assert (wal / "journal.json").exists()
+
+
 def test_manifest_resolve_conflict_cli_json_success(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

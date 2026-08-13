@@ -115,6 +115,28 @@ def test_commit_rejects_source_drift_after_initial_verification(
     assert not (config.vault / "concepts/a.md").exists()
     assert ShardedManifest(config).load("sources/a.md") is None
 
+
+def test_commit_rejects_source_drift_from_operation_writer(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+
+    def writer(change) -> Path:
+        source.write_text("drift in operation writer", encoding="utf-8")
+        path = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# operation\n", encoding="utf-8")
+        return path
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([source], transaction_id="tx-writer-drift")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-writer-drift")
+    assert manager.load("tx-writer-drift").status != "complete"
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert not (config.vault / "journal/operations/tx-writer-drift.md").exists()
+
 PAGE = """---
 title: A
 category: concepts

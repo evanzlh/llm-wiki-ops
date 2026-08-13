@@ -966,18 +966,48 @@ class ShardedManifest:
                 except FileNotFoundError:
                     side_fd = -1
                 if side_fd >= 0:
+                    side_evidence: list[tuple[str, _FileProof]] = []
                     for name, image, identity in (
                         ("reserved", journal["pre"], journal["pre"]["identity"]),
                         ("candidate", journal["post"], journal["candidate_identity"]),
                     ):
                         proof = self._read_proof(side_fd, name, links=frozenset({1, 2}))
                         if proof is None:
+                            if identity is not None:
+                                raise ManifestPreconditionError(
+                                    f"manifest conflict artifact {name} is missing; owner inspection required"
+                                )
                             continue
                         if identity is None or proof.identity != tuple(identity) or proof.content_hash != image["hash"]:
                             raise ManifestPreconditionError(
                                 f"manifest conflict artifact {name} changed; owner inspection required"
                             )
-                        self._unlink_matching(side_fd, name, proof, journal)
+                        side_evidence.append((name, proof))
+                else:
+                    side_evidence = []
+                    if journal["pre"]["identity"] is not None or journal["candidate_identity"] is not None:
+                        raise ManifestPreconditionError(
+                            "manifest conflict sidecar evidence is missing; owner inspection required"
+                        )
+                wal_fd = self._session[1]
+                wal_evidence: list[tuple[str, _FileProof]] = []
+                for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+                    proof = self._read_proof(wal_fd, name)
+                    if proof is None:
+                        raise ManifestPreconditionError(
+                            f"manifest conflict evidence {name} is missing; owner inspection required"
+                        )
+                    expected_hash = image["hash"] if image["present"] else self._digest(b"")
+                    if proof.content_hash != expected_hash:
+                        raise ManifestPreconditionError(
+                            f"manifest conflict evidence {name} changed; owner inspection required"
+                        )
+                    wal_evidence.append((name, proof))
+
+                # Delete only after every recovery artifact has been fully validated.
+                for name, proof in side_evidence:
+                    self._unlink_matching(side_fd, name, proof, journal)
+                if side_fd >= 0:
                     os.fsync(side_fd)
                     try:
                         os.rmdir(_SIDECAR, dir_fd=parent_fd)
@@ -985,16 +1015,7 @@ class ShardedManifest:
                     except OSError as exc:
                         if exc.errno not in (errno.ENOENT, errno.ENOTEMPTY):
                             raise
-                wal_fd = self._session[1]
-                for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
-                    proof = self._read_proof(wal_fd, name)
-                    if proof is None:
-                        continue
-                    expected_hash = image["hash"] if image["present"] else self._digest(b"")
-                    if proof.content_hash != expected_hash:
-                        raise ManifestPreconditionError(
-                            f"manifest conflict evidence {name} changed; owner inspection required"
-                        )
+                for name, proof in wal_evidence:
                     self._unlink_matching(wal_fd, name, proof, journal)
                 os.fsync(wal_fd)
                 journal_proof = self._read_proof(wal_fd, "journal.json")
