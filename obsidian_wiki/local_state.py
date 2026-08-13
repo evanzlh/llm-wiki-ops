@@ -17,7 +17,7 @@ from typing import Any
 from .config import PortableConfig
 from .frontmatter import parse_frontmatter
 from .git_support import discover_git_root, git_branch_id
-from .operations import OperationError, validate_operation_text
+from .operations import OperationError, parse_operation_log
 from .safe_files import stable_directory_identity
 from .transaction_validation import (
     parse_date_or_aware_timestamp,
@@ -509,9 +509,24 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
     """Yield authoritative paths in global repository-relative lexical order."""
 
     vault = config.vault
+    log = vault / "log.md"
+    try:
+        log_metadata = log.lstat()
+    except OSError as exc:
+        raise LocalStateError(f"operation log is unavailable: {log}") from exc
+    if (
+        not stat.S_ISREG(log_metadata.st_mode)
+        or stat.S_ISLNK(log_metadata.st_mode)
+        or _is_reparse(log_metadata)
+        or log_metadata.st_nlink != 1
+    ):
+        raise LocalStateError(
+            f"operation log must be an ordinary single-link file: {log}"
+        )
     local_relative = _relative_if_below(config.local_state, vault)
 
     def selected_file(relative: Path) -> bool:
+        is_operation_log = relative == Path("log.md")
         is_knowledge_page = (
             len(relative.parts) >= 2
             and relative.parts[0] in _KNOWLEDGE_CATEGORIES
@@ -522,7 +537,12 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
             relative.parts[:2] == (".manifest", "sources")
             and relative.suffix == ".json"
         )
-        return is_knowledge_page or is_manifest_marker or is_manifest_shard
+        return (
+            is_operation_log
+            or is_knowledge_page
+            or is_manifest_marker
+            or is_manifest_shard
+        )
 
     def walk(current: Path, current_relative: Path) -> Iterator[Path]:
         _require_ordinary_directory(current, "vault content directory")
@@ -669,44 +689,45 @@ def _authoritative_snapshot(
     )
     for path in _authoritative_files(config):
         relative = path.relative_to(config.vault)
-        if relative.parts[:2] == ("journal", "operations"):
+        if relative == Path("log.md"):
             try:
                 content, text = _read_ordinary_text_bytes(
-                    path, "operation page", root=config.root
+                    path, "operation log", root=config.root
                 )
-                change = validate_operation_text(relative.as_posix(), text)
+                changes = parse_operation_log(text)
             except OperationError as exc:
                 raise LocalStateError(
-                    f"invalid operation page: {relative.as_posix()}: {exc}"
+                    f"invalid operation log: {relative.as_posix()}: {exc}"
                 ) from exc
-            outside_source = next(
-                (
-                    source_id
-                    for source_id in change.source_ids
-                    if not _below_source_roots(source_id, source_roots)
-                ),
-                None,
-            )
-            if outside_source is not None:
-                raise LocalStateError(
-                    f"invalid operation page: {relative.as_posix()}: "
-                    "operation Source ID is outside configured source roots: "
-                    + outside_source
+            for change in changes:
+                outside_source = next(
+                    (
+                        source_id
+                        for source_id in change.source_ids
+                        if not _below_source_roots(source_id, source_roots)
+                    ),
+                    None,
                 )
-            record: dict[str, object] = {
-                "transaction_id": change.transaction_id,
-                "completed_at": change.completed_at,
-                "source_ids": list(change.source_ids),
-                "created": list(change.created),
-                "updated": list(change.updated),
-                "removed": list(change.removed),
-            }
-            item = (change.completed_at, relative.as_posix(), record)
-            if operation_limit != 0:
-                if len(records) < operation_limit:
-                    heapq.heappush(records, item)
-                elif item[:2] > records[0][:2]:
-                    heapq.heapreplace(records, item)
+                if outside_source is not None:
+                    raise LocalStateError(
+                        f"invalid operation log: {relative.as_posix()}: "
+                        "operation Source ID is outside configured source roots: "
+                        + outside_source
+                    )
+                record: dict[str, object] = {
+                    "transaction_id": change.transaction_id,
+                    "completed_at": change.completed_at,
+                    "source_ids": list(change.source_ids),
+                    "created": list(change.created),
+                    "updated": list(change.updated),
+                    "removed": list(change.removed),
+                }
+                item = (change.completed_at, change.transaction_id, record)
+                if operation_limit != 0:
+                    if len(records) < operation_limit:
+                        heapq.heappush(records, item)
+                    elif item[:2] > records[0][:2]:
+                        heapq.heapreplace(records, item)
         elif relative.suffix == ".md":
             content, text = _read_ordinary_text_bytes(
                 path, "knowledge page", root=config.root

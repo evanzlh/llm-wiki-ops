@@ -17,11 +17,10 @@ from .config import ConfigError, PortableConfig, load_portable_config
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .git_support import discover_git_root, tracked_paths
 from .lint import lint_vault
-from .operations import OperationError, validate_operation
+from .operations import OperationError, parse_operation_log
 from .portable import (
     _BOOTSTRAP_REFERENCES,
     _INDEX,
-    _LOG,
     MANAGED_END,
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
@@ -99,6 +98,7 @@ def _ordinary_file(path: Path) -> bool:
     return (
         stat.S_ISREG(metadata.st_mode)
         and not stat.S_ISLNK(metadata.st_mode)
+        and not bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
         and metadata.st_nlink == 1
     )
 
@@ -109,6 +109,63 @@ def _ordinary_directory(path: Path) -> bool:
     except OSError:
         return False
     return stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+
+
+def _stable_utf8_file(path: Path, *, root: Path) -> str:
+    """Read one contained single-link ordinary file without accepting drift."""
+
+    if _has_symlink_component(root, path):
+        raise OSError("file has an unsafe link component")
+    descriptor: int | None = None
+    try:
+        lexical = path.lstat()
+        if not _ordinary_file(path):
+            raise OSError("file is not single-link and ordinary")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+            before.st_nlink,
+        )
+        if identity != (
+            lexical.st_dev,
+            lexical.st_ino,
+            lexical.st_mode,
+            lexical.st_size,
+            lexical.st_mtime_ns,
+            lexical.st_ctime_ns,
+            lexical.st_nlink,
+        ):
+            raise OSError("file changed while opening")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        final = path.lstat()
+        for metadata in (after, final):
+            if identity != (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+                metadata.st_nlink,
+            ):
+                raise OSError("file changed while reading")
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _has_symlink_component(root: Path, path: Path) -> bool:
@@ -378,8 +435,6 @@ def _knowledge_pages(config: PortableConfig) -> list[Path]:
             continue
         for page in sorted(category_root.rglob("*.md")):
             relative = page.relative_to(config.vault)
-            if relative.parts[:2] == ("journal", "operations"):
-                continue
             pages.append(page)
     return sorted(set(pages))
 
@@ -532,97 +587,46 @@ def _check_pages(
                 )
 
 
-def _check_operations(
+def _check_operation_log(
     config: PortableConfig,
     store: ShardedManifest | None,
+    entries: list[ManifestEntry],
     issues: list[CheckIssue],
 ) -> None:
-    root = config.vault / "journal" / "operations"
-    if not root.exists() and not root.is_symlink():
-        return
-    if not _ordinary_directory(root) or _has_symlink_component(config.vault, root):
+    log = config.vault / "log.md"
+    issue_path = _rel(config.root, log)
+    if not _ordinary_file(log) or _has_symlink_component(config.vault, log):
         issues.append(
             CheckIssue(
-                "operation-invalid",
-                _rel(config.root, root),
-                "operation journal must be an ordinary contained directory",
+                "operation-log-invalid",
+                issue_path,
+                "operation log must be a UTF-8 Markdown single-link ordinary file",
             )
         )
         return
-
-    transactions: dict[str, str] = {}
-    for directory, dirnames, filenames in os.walk(
-        root, topdown=True, followlinks=False
-    ):
-        current = Path(directory)
-        safe_directories: list[str] = []
-        for name in sorted(dirnames):
-            child = current / name
-            if _ordinary_directory(child) and not _has_symlink_component(root, child):
-                safe_directories.append(name)
-            else:
-                issues.append(
-                    CheckIssue(
-                        "operation-invalid",
-                        _rel(config.root, child),
-                        "operation directory must be ordinary and contained",
-                    )
-                )
-        dirnames[:] = safe_directories
-        for name in sorted(filenames):
-            operation = current / name
-            issue_path = _rel(config.root, operation)
-            if (
-                operation.suffix != ".md"
-                or not _ordinary_file(operation)
-                or _has_symlink_component(root, operation)
-            ):
-                issues.append(
-                    CheckIssue(
-                        "operation-invalid",
-                        issue_path,
-                        "operation page must be a Markdown single-link ordinary file",
-                    )
-                )
-                continue
-            try:
-                change = validate_operation(operation, vault=config.vault)
-                if store is not None:
-                    for source_id in change.source_ids:
-                        store.source_path(source_id)
-            except (ManifestError, OperationError) as exc:
-                issues.append(
-                    CheckIssue(
-                        "operation-invalid",
-                        issue_path,
-                        _scrub(config.root, exc),
-                    )
-                )
-                continue
-            previous = transactions.get(change.transaction_id)
-            if previous is not None:
-                issues.append(
-                    CheckIssue(
-                        "operation-duplicate-transaction",
-                        issue_path,
-                        "duplicate transaction ID also used by " + previous,
-                    )
-                )
-            else:
-                transactions[change.transaction_id] = issue_path
+    try:
+        changes = parse_operation_log(_stable_utf8_file(log, root=config.vault))
+        if store is not None:
+            known = {entry.source_id for entry in entries}
+            for change in changes:
+                for source_id in change.source_ids:
+                    store.source_path(source_id)
+                    if source_id not in known:
+                        raise ManifestError(
+                            f"operation Source ID has no manifest entry: {source_id}"
+                        )
+    except (OSError, UnicodeDecodeError, ManifestError, OperationError) as exc:
+        issues.append(
+            CheckIssue(
+                "operation-log-invalid",
+                issue_path,
+                _scrub(config.root, exc),
+            )
+        )
 
 
 def _lint_path(config: PortableConfig, page: str) -> str:
     return _rel(config.root, config.vault / PurePosixPath(page))
-
-
-def _operation_finding(finding: object) -> bool:
-    if not isinstance(finding, dict):
-        return False
-    page = finding.get("page")
-    return isinstance(page, str) and (
-        page == "journal/operations" or page.startswith("journal/operations/")
-    )
 
 
 def _lint_page_topology_is_safe(config: PortableConfig) -> bool:
@@ -665,7 +669,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
         issues.append(CheckIssue("lint-invalid", ".", "lint returned invalid findings"))
         return
     for finding in findings.get("broken_links", []):
-        if _operation_finding(finding) or not isinstance(finding, dict):
+        if not isinstance(finding, dict):
             continue
         page = finding.get("page", ".")
         target = finding.get("target", "")
@@ -674,7 +678,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
             CheckIssue("lint-broken-link", path, f"broken link target: {target}")
         )
     for finding in findings.get("missing_frontmatter", []):
-        if _operation_finding(finding) or not isinstance(finding, dict):
+        if not isinstance(finding, dict):
             continue
         page = finding.get("page", ".")
         missing = finding.get("missing", [])
@@ -684,7 +688,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
             CheckIssue("lint-missing-frontmatter", path, f"missing: {detail}")
         )
     for finding in findings.get("trust_metadata_errors", []):
-        if _operation_finding(finding) or not isinstance(finding, dict):
+        if not isinstance(finding, dict):
             continue
         page = finding.get("page", ".")
         detail = finding.get("issue", "invalid trust metadata")
@@ -1061,10 +1065,10 @@ def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
 
 
 def _check_stable_views(config: PortableConfig, issues: list[CheckIssue]) -> None:
-    for name, expected in (("index.md", _INDEX), ("log.md", _LOG)):
+    for name, expected in (("index.md", _INDEX),):
         path = config.vault / name
         try:
-            actual = path.read_text(encoding="utf-8") if _ordinary_file(path) else None
+            actual = _stable_utf8_file(path, root=config.vault)
         except (OSError, UnicodeDecodeError):
             actual = None
         if actual != expected or _has_symlink_component(config.vault, path):
@@ -1075,6 +1079,24 @@ def _check_stable_views(config: PortableConfig, issues: list[CheckIssue]) -> Non
                     "portable stable view differs from its canonical template",
                 )
             )
+
+
+def _check_hot_view(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    path = config.vault / "hot.md"
+    valid = _ordinary_file(path) and not _has_symlink_component(config.vault, path)
+    if valid:
+        try:
+            _stable_utf8_file(path, root=config.vault)
+        except (OSError, UnicodeDecodeError):
+            valid = False
+    if not valid:
+        issues.append(
+            CheckIssue(
+                "hot-view-invalid",
+                _rel(config.root, path),
+                "hot view must be a UTF-8 Markdown single-link ordinary file",
+            )
+        )
 
 
 def check_portable_repo(config: PortableConfig) -> dict[str, object]:
@@ -1089,10 +1111,11 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     if store is not None:
         _check_sources(store, entries, issues)
     _check_pages(loaded, store, entries, issues)
-    _check_operations(loaded, store, issues)
+    _check_operation_log(loaded, store, entries, issues)
     _check_lint(loaded, issues)
     _check_git(loaded, issues)
     _check_managed_skills(loaded, issues)
     _check_bootstrap(loaded, issues)
     _check_stable_views(loaded, issues)
+    _check_hot_view(loaded, issues)
     return _report(issues)

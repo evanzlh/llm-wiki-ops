@@ -11,7 +11,6 @@ import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki import local_state as local_state_module
-from obsidian_wiki import operations as operations_module
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.local_state import (
     LocalStateError,
@@ -20,7 +19,12 @@ from obsidian_wiki.local_state import (
     hot_status,
     mark_hot_current,
 )
-from obsidian_wiki.operations import OperationChange, operation_path, render_operation
+from obsidian_wiki.operations import (
+    EMPTY_OPERATION_LOG,
+    OperationChange,
+    parse_operation_log,
+    render_operation_log,
+)
 
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -57,7 +61,7 @@ local_state = ".obsidian-wiki/local"
         encoding="utf-8",
     )
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / "wiki" / "log.md").write_text("# Log\n", encoding="utf-8")
+    (root / "wiki" / "log.md").write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     (root / "wiki" / ".manifest.json").write_text(
         '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n',
         encoding="utf-8",
@@ -114,9 +118,9 @@ def _write_operation(
         updated=updated,
         removed=removed,
     )
-    path = operation_path(config.vault, change, suffix=suffix)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_operation(change), encoding="utf-8")
+    path = config.vault / "log.md"
+    changes = parse_operation_log(path.read_text(encoding="utf-8"))
+    path.write_text(render_operation_log(changes + (change,)), encoding="utf-8")
     return path
 
 
@@ -184,16 +188,12 @@ def test_manifest_operation_and_branch_changes_are_authoritative(
     assert hot_status(config)["stale"] is True
 
     mark_hot_current(config)
-    operation = (
-        config.vault
-        / "journal"
-        / "operations"
-        / "2026"
-        / "08"
-        / "20260808T000000Z-abcd.md"
+    _write_operation(
+        config,
+        transaction_id="tx-authoritative",
+        completed_at="2026-08-08T00:00:00Z",
+        suffix="abcd",
     )
-    operation.parent.mkdir(parents=True)
-    operation.write_text("# operation\n", encoding="utf-8")
     assert hot_status(config)["stale"] is True
 
     subprocess.run(["git", "init", "-q", str(config.root)], check=True)
@@ -578,7 +578,7 @@ def test_hot_inputs_bounds_and_sorts_pages_and_operations_deterministically(
         summary="Reference tie.",
         updated="2026-08-12",
     )
-    for name in ("index.md", "log.md", "hot.md"):
+    for name in ("index.md", "hot.md"):
         control = config.vault / name
         control.write_text(tied_reference.read_text(encoding="utf-8"), encoding="utf-8")
     dynamic = config.vault / "_raw" / "dynamic.md"
@@ -798,14 +798,7 @@ def test_hot_inputs_fails_closed_for_malformed_authoritative_files_at_zero_limit
     if kind == "page":
         malformed = config.vault / "concepts" / "malformed.md"
     else:
-        malformed = (
-            config.vault
-            / "journal"
-            / "operations"
-            / "2026"
-            / "08"
-            / "20260811T010000Z-abcd.md"
-        )
+        malformed = config.vault / "log.md"
     malformed.parent.mkdir(parents=True, exist_ok=True)
     malformed.write_text("# Missing frontmatter\n", encoding="utf-8")
 
@@ -828,14 +821,8 @@ def test_hot_inputs_rejects_symlinked_authoritative_files(
     if kind == "page":
         link = config.vault / "concepts" / "linked.md"
     else:
-        link = (
-            config.vault
-            / "journal"
-            / "operations"
-            / "2026"
-            / "08"
-            / "20260811T010000Z-abcd.md"
-        )
+        link = config.vault / "log.md"
+        link.unlink()
     link.parent.mkdir(parents=True, exist_ok=True)
     try:
         link.symlink_to(external)
@@ -844,6 +831,53 @@ def test_hot_inputs_rejects_symlinked_authoritative_files(
 
     with pytest.raises(LocalStateError, match="ordinary|unsafe"):
         hot_inputs(config)
+
+
+def test_hot_inputs_rejects_hardlinked_operation_log(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    log = config_fixture.vault / "log.md"
+    external = tmp_path / "external-log.md"
+    external.write_bytes(log.read_bytes())
+    log.unlink()
+    os.link(external, log)
+
+    with pytest.raises(LocalStateError, match="single-link"):
+        hot_inputs(config_fixture)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable")
+def test_hot_inputs_rejects_special_operation_log(
+    config_fixture: PortableConfig,
+) -> None:
+    log = config_fixture.vault / "log.md"
+    log.unlink()
+    os.mkfifo(log)
+
+    with pytest.raises(LocalStateError, match="ordinary"):
+        hot_inputs(config_fixture)
+
+
+def test_hot_inputs_rejects_operation_log_change_during_read(
+    config_fixture: PortableConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = config_fixture.vault / "log.md"
+    original_read = local_state_module.os.read
+    changed = False
+
+    def mutate_after_log_read(descriptor: int, size: int) -> bytes:
+        nonlocal changed
+        data = original_read(descriptor, size)
+        if data == EMPTY_OPERATION_LOG.encode("utf-8") and not changed:
+            changed = True
+            log.write_text(EMPTY_OPERATION_LOG + "\n", encoding="utf-8")
+        return data
+
+    monkeypatch.setattr(local_state_module.os, "read", mutate_after_log_read)
+
+    with pytest.raises(LocalStateError, match="changed while it was being read"):
+        hot_inputs(config_fixture)
 
 
 def test_hot_inputs_and_cli_preserve_exact_tree_and_mtimes(
@@ -1082,81 +1116,6 @@ def test_hot_inputs_reuses_full_portable_page_metadata_validation(
 
     with pytest.raises(LocalStateError, match=issue_code):
         hot_inputs(config_fixture)
-
-
-def test_recent_operations_never_accepts_external_file_after_ancestor_replacement(
-    config_fixture: PortableConfig,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = config_fixture
-    internal = _write_operation(
-        config,
-        transaction_id="tx-internal",
-        completed_at="2026-08-11T01:00:00Z",
-        suffix="abcd",
-    )
-    relative = internal.relative_to(config.vault)
-    external_vault = tmp_path / "external-vault"
-    external = external_vault / relative
-    external.parent.mkdir(parents=True)
-    external_change = OperationChange(
-        transaction_id="tx-external",
-        completed_at="2026-08-11T01:00:00Z",
-        source_ids=("sources/external.md",),
-        created=(),
-        updated=(),
-        removed=(),
-    )
-    external.write_text(render_operation(external_change), encoding="utf-8")
-    month = internal.parent
-    displaced = config.root / "displaced-operation-month"
-    swapped = False
-
-    def swap_month() -> None:
-        nonlocal swapped
-        if swapped:
-            return
-        month.rename(displaced)
-        month.symlink_to(external.parent, target_is_directory=True)
-        swapped = True
-
-    real_ordinary_directory = operations_module._ordinary_directory
-
-    def swap_after_path_check(path: Path) -> bool:
-        result = real_ordinary_directory(path)
-        if path == month and result:
-            swap_month()
-        return result
-
-    real_open_bound_directory = local_state_module._open_bound_directory
-
-    def swap_after_bound_open(
-        root: Path, path: Path, *, create: bool = False
-    ) -> int:
-        descriptor = real_open_bound_directory(root, path, create=create)
-        if path == month:
-            swap_month()
-        return descriptor
-
-    monkeypatch.setattr(
-        operations_module,
-        "_ordinary_directory",
-        swap_after_path_check,
-    )
-    monkeypatch.setattr(
-        local_state_module,
-        "_open_bound_directory",
-        swap_after_bound_open,
-    )
-
-    _fingerprint, _pages, records = local_state_module._authoritative_snapshot(
-        config,
-        page_limit=0,
-        operation_limit=10,
-    )
-
-    assert [record["transaction_id"] for record in records] == ["tx-internal"]
 
 
 def test_hot_inputs_rejects_aba_summary_bytes_restored_before_verification(

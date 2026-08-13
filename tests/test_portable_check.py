@@ -22,7 +22,11 @@ from obsidian_wiki.frontmatter import (
     parse_frontmatter,
     parse_relationships,
 )
-from obsidian_wiki.operations import OperationChange, write_operation
+from obsidian_wiki.operations import (
+    EMPTY_OPERATION_LOG,
+    OperationChange,
+    render_operation_log,
+)
 from obsidian_wiki.portable import (
     MANAGED_END,
     MANAGED_START,
@@ -1160,6 +1164,8 @@ def valid_repo(tmp_path: Path, name: str = "knowledge"):
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
+    (config.vault / "log.md").write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    (config.vault / "hot.md").write_text("# Hot\n", encoding="utf-8")
     source = root / "sources/a.md"
     source.write_text("authoritative source", encoding="utf-8")
     page = root / "wiki/concepts/a.md"
@@ -1438,53 +1444,35 @@ def test_valid_operation_is_checked_without_manifest_page_membership(
     tmp_path: Path,
 ) -> None:
     _root, config, _, _, _ = valid_repo(tmp_path)
-    write_operation(
-        config.vault,
-        OperationChange(
+    (config.vault / "log.md").write_text(
+        render_operation_log((OperationChange(
             transaction_id="tx-1",
             completed_at="2026-08-07T07:30:00Z",
             source_ids=("sources/a.md",),
             created=("concepts/a.md",),
             updated=(),
             removed=(),
-        ),
-        suffix="a81f",
+        ),)),
+        encoding="utf-8",
     )
 
     assert check_portable_repo(config)["status"] == "pass"
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    ["filename", "frontmatter", "tag", "source", "listed-path"],
-)
-def test_invalid_operations_are_errors(tmp_path: Path, mutation: str) -> None:
+@pytest.mark.parametrize("mutation", ["malformed", "source", "noncanonical"])
+def test_invalid_operation_log_is_an_error(tmp_path: Path, mutation: str) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    operation = write_operation(
-        config.vault,
-        OperationChange(
+    operation = config.vault / "log.md"
+    operation.write_text(render_operation_log((OperationChange(
             transaction_id="tx-1",
             completed_at="2026-08-07T07:30:00Z",
             source_ids=("sources/a.md",),
             created=("concepts/a.md",),
             updated=(),
             removed=(),
-        ),
-        suffix="a81f",
-    )
-    if mutation == "filename":
-        renamed = operation.with_name("not-an-operation.md")
-        operation.rename(renamed)
-        operation = renamed
-    elif mutation == "frontmatter":
+        ),)), encoding="utf-8")
+    if mutation == "malformed":
         operation.write_text("# Missing frontmatter\n", encoding="utf-8")
-    elif mutation == "tag":
-        operation.write_text(
-            operation.read_text(encoding="utf-8").replace(
-                "  - operation", "  - example"
-            ),
-            encoding="utf-8",
-        )
     elif mutation == "source":
         operation.write_text(
             operation.read_text(encoding="utf-8").replace(
@@ -1495,16 +1483,16 @@ def test_invalid_operations_are_errors(tmp_path: Path, mutation: str) -> None:
     else:
         operation.write_text(
             operation.read_text(encoding="utf-8").replace(
-                "[[concepts/a]]", "[[../outside]]"
+                "- `sources/a.md`", "- `sources/a.md`  "
             ),
             encoding="utf-8",
         )
 
     report = check_portable_repo(config)
 
-    assert "operation-invalid" in issue_codes(report)
+    assert "operation-log-invalid" in issue_codes(report)
     assert (
-        issues_with_code(report, "operation-invalid")[0]["path"]
+        issues_with_code(report, "operation-log-invalid")[0]["path"]
         == operation.relative_to(root).as_posix()
     )
 
@@ -1519,10 +1507,48 @@ def test_duplicate_operation_transaction_ids_are_errors(tmp_path: Path) -> None:
         updated=(),
         removed=(),
     )
-    write_operation(config.vault, change, suffix="a81f")
-    write_operation(config.vault, change, suffix="b92e")
+    log = config.vault / "log.md"
+    block = render_operation_log((change,))[len(EMPTY_OPERATION_LOG):]
+    log.write_text(EMPTY_OPERATION_LOG + block + block, encoding="utf-8")
 
-    assert "operation-duplicate-transaction" in issue_codes(check_portable_repo(config))
+    assert "operation-log-invalid" in issue_codes(check_portable_repo(config))
+
+
+def test_operation_log_source_requires_manifest_entry(tmp_path: Path) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    (config.vault / "log.md").write_text(
+        render_operation_log((OperationChange(
+            transaction_id="tx-unknown",
+            completed_at="2026-08-07T07:30:00Z",
+            source_ids=("sources/unknown.md",),
+            created=(),
+            updated=(),
+            removed=(),
+        ),)),
+        encoding="utf-8",
+    )
+
+    assert "operation-log-invalid" in issue_codes(check_portable_repo(config))
+
+
+@pytest.mark.parametrize("mutation", ["missing", "non-utf8", "symlink"])
+def test_hot_view_must_be_safe_utf8_markdown(
+    tmp_path: Path, mutation: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    hot = config.vault / "hot.md"
+    hot.unlink()
+    if mutation == "non-utf8":
+        hot.write_bytes(b"\xff")
+    elif mutation == "symlink":
+        external = tmp_path / "external-hot.md"
+        external.write_text("# External\n", encoding="utf-8")
+        hot.symlink_to(external)
+
+    report = check_portable_repo(config)
+
+    assert "hot-view-invalid" in issue_codes(report)
+    assert issues_with_code(report, "hot-view-invalid")[0]["path"] == "wiki/hot.md"
 
 
 def test_fail_level_lint_findings_become_errors(tmp_path: Path) -> None:
@@ -1916,7 +1942,7 @@ def test_bootstrap_managed_region_must_be_well_formed_and_current(
     assert "managed-bootstrap-invalid" in issue_codes(check_portable_repo(config))
 
 
-@pytest.mark.parametrize("name", ["index.md", "log.md"])
+@pytest.mark.parametrize("name", ["index.md"])
 def test_stable_views_must_match_portable_templates(tmp_path: Path, name: str) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
     (root / "wiki" / name).write_text("# Hand-maintained list\n", encoding="utf-8")
@@ -2023,6 +2049,8 @@ def _replace_with_external_hardlink(tmp_path: Path, target: Path) -> None:
         ("mirror", "skill-mirror-unsafe"),
         ("bootstrap", "managed-bootstrap-invalid"),
         ("stable-view", "stable-view-modified"),
+        ("operation-log", "operation-log-invalid"),
+        ("hot-view", "hot-view-invalid"),
     ],
 )
 def test_checker_rejects_hardlinked_managed_files(
@@ -2039,6 +2067,8 @@ def test_checker_rejects_hardlinked_managed_files(
         "mirror": root / ".claude/skills/wiki-ingest/SKILL.md",
         "bootstrap": root / "CLAUDE.md",
         "stable-view": root / "wiki/index.md",
+        "operation-log": root / "wiki/log.md",
+        "hot-view": root / "wiki/hot.md",
     }
     _replace_with_external_hardlink(tmp_path, targets[target_name])
 
