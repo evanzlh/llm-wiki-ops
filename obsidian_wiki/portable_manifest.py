@@ -56,6 +56,10 @@ class ManifestPreconditionError(ManifestError):
     pass
 
 
+class _MissingManifestDirectory(ManifestError):
+    pass
+
+
 _UNSET_PREIMAGE = object()
 
 
@@ -180,6 +184,15 @@ class ShardedManifest:
                         raise ManifestError("configured vault changed during manifest mutation")
             self._validate_root_attachment(root_fd)
             return descriptors
+        except FileNotFoundError as exc:
+            self._close_fds(descriptors)
+            if create:
+                raise ManifestError(
+                    "cannot durably create manifest directory"
+                ) from exc
+            raise _MissingManifestDirectory(
+                "manifest directory is absent"
+            ) from exc
         except OSError as exc:
             self._close_fds(descriptors)
             raise ManifestError(
@@ -525,6 +538,7 @@ class ShardedManifest:
             directories = self._open_directory(root_fd, self.wal_root, create=True)
             wal_fd = directories[-1]
             lock_fd = -1
+            entered_body = False
             try:
                 flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
                 flags |= getattr(os, "O_CLOEXEC", 0)
@@ -536,13 +550,16 @@ class ShardedManifest:
                 self._session = (root_fd, wal_fd, directories)
                 self._validate_wal_directory()
                 self._recover_wal()
+                entered_body = True
                 yield self
             except ManifestError:
                 raise
             except OSError as exc:
-                if self._session is not None:
+                if entered_body:
                     raise
-                raise ManifestError("cannot safely lock manifest mutations") from exc
+                raise ManifestError(
+                    "cannot safely recover or lock manifest mutations"
+                ) from exc
             finally:
                 self._session = None
                 if lock_fd >= 0:
@@ -1113,11 +1130,9 @@ class ShardedManifest:
                 directories = self._open_directory(
                     root_fd, path.parent, create=False
                 )
-            except ManifestError:
+            except _MissingManifestDirectory:
                 self._validate_root_attachment(root_fd)
-                if not path.parent.exists():
-                    return None
-                raise
+                return None
             try:
                 parent_fd = directories[-1]
                 proof = self._read_proof(parent_fd, path.name, links=frozenset({1, 2}))

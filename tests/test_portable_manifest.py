@@ -991,3 +991,51 @@ def test_wal_scan_oserror_is_wrapped_as_manifest_error(
     monkeypatch.setattr(portable_manifest_module.os, "stat", fail_lock_stat)
     with pytest.raises(ManifestError, match="WAL entry"):
         ShardedManifest(config).upsert(source)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
+def test_recovery_syscall_oserror_is_wrapped_as_manifest_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+
+    def crash(step: str) -> None:
+        if step == "prepared":
+            raise SystemExit("prepared")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit):
+        ShardedManifest(config).upsert(source)
+    real_mkdir = portable_manifest_module.os.mkdir
+
+    def fail_sidecar(name, *args, **kwargs):
+        if name == portable_manifest_module._SIDECAR:
+            raise PermissionError("injected")
+        return real_mkdir(name, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "mkdir", fail_sidecar)
+    with pytest.raises(ManifestError, match="recover|session|mutation"):
+        with ShardedManifest(config).mutation_session():
+            pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest path safety")
+def test_load_rejects_dangling_symlinked_shard_parent(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    parent = store.entry_path("sources/design/a.md").parent
+    parent.rename(parent.with_name("saved-design"))
+    parent.symlink_to(parent.parent / "missing", target_is_directory=True)
+    with pytest.raises(ManifestError, match="directory|unsafe|symlink"):
+        store.load("sources/design/a.md")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest path safety")
+def test_load_missing_ordinary_shard_parent_returns_none(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    assert ShardedManifest(config).load("sources/design/missing.md") is None
