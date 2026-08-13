@@ -104,7 +104,6 @@ def _append_log_record(
     *,
     transaction_id: str,
     completed_at: str,
-    suffix: str,
     source_ids: tuple[str, ...] = ("sources/input.md",),
     created: tuple[str, ...] = (),
     updated: tuple[str, ...] = (),
@@ -196,7 +195,6 @@ def test_manifest_operation_and_branch_changes_are_authoritative(
         config,
         transaction_id="tx-authoritative",
         completed_at="2026-08-08T00:00:00Z",
-        suffix="abcd",
     )
     assert hot_status(config)["stale"] is True
 
@@ -570,7 +568,6 @@ def test_hot_inputs_returns_cjk_page_summary_and_serialized_operation(
         config,
         transaction_id="tx-hot",
         completed_at="2026-08-11T01:00:00Z",
-        suffix="abcd",
         source_ids=("sources/组会.md",),
         created=("concepts/缓存.md",),
         updated=("references/缓存策略.md",),
@@ -638,19 +635,16 @@ def test_hot_inputs_bounds_and_sorts_pages_and_operations_deterministically(
         config,
         transaction_id="tx-old",
         completed_at="2026-08-10T01:00:00Z",
-        suffix="cccc",
     )
     _append_log_record(
         config,
         transaction_id="tx-tie-a",
         completed_at="2026-08-12T01:00:00Z",
-        suffix="aaaa",
     )
     _append_log_record(
         config,
         transaction_id="tx-tie-b",
         completed_at="2026-08-12T01:00:00Z",
-        suffix="bbbb",
     )
 
     first = hot_inputs(config, page_limit=2, operation_limit=2)
@@ -809,7 +803,6 @@ def test_hot_inputs_accepts_zero_limits(config_fixture: PortableConfig) -> None:
         config,
         transaction_id="tx-ignored",
         completed_at="2026-08-11T01:00:00Z",
-        suffix="abcd",
     )
 
     payload = hot_inputs(config, page_limit=0, operation_limit=0)
@@ -945,7 +938,6 @@ def test_hot_inputs_and_cli_preserve_exact_tree_and_mtimes(
         config,
         transaction_id="tx-read-only",
         completed_at="2026-08-11T01:00:00Z",
-        suffix="abcd",
     )
     before = _tree_snapshot(config.root)
 
@@ -1296,7 +1288,6 @@ def test_hot_inputs_rejects_operation_source_id_outside_configured_roots(
         config_fixture,
         transaction_id="tx-outside-source-root",
         completed_at="2026-08-11T01:00:00Z",
-        suffix="abcd",
         source_ids=("outside/组会.md",),
     )
 
