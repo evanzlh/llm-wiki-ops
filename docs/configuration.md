@@ -67,7 +67,11 @@ Manifest mutations are serialized for cooperating writers by a repository-local 
 and a fixed, bounded write-ahead log under `.obsidian-wiki/local/`. Recovery completes
 or cleans an interrupted shard update before a later transaction reads rollback state.
 Writers that bypass the lock are outside the cooperation contract: detected conflicts
-are preserved and block further manifest mutations instead of being overwritten.
+are preserved and block further manifest mutations instead of being overwritten. All
+writers in one working tree must therefore use the transaction interface. A same-user
+process that bypasses the lock can race a final path proof and a POSIX cleanup syscall;
+portable POSIX has no inode-conditional unlink, so this unsupported last-instruction
+race is not promised kernel-level compare-and-swap protection.
 
 ## Skill mirrors
 
