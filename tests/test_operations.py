@@ -237,13 +237,21 @@ def test_append_rejects_unsafe_target_without_changing_external_inode(
     external = tmp_path / "external.md"
     external.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     if kind == "symlink":
-        target.symlink_to(external)
+        try:
+            target.symlink_to(external)
+        except (NotImplementedError, OSError):
+            pytest.skip("symlinks are unavailable")
     elif kind == "hardlink":
-        os.link(external, target)
+        try:
+            os.link(external, target)
+        except (NotImplementedError, OSError):
+            pytest.skip("hard links are unavailable")
     else:
         if kind == "directory":
             target.mkdir()
         else:
+            if not hasattr(os, "mkfifo"):
+                pytest.skip("FIFOs are unavailable")
             os.mkfifo(target)
     original = external.read_bytes()
 
@@ -251,6 +259,61 @@ def test_append_rejects_unsafe_target_without_changing_external_inode(
         append_operation(target, change(), root=tmp_path)
 
     assert external.read_bytes() == original
+
+
+def test_parent_reparse_point_attribute_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_lstat = Path.lstat
+
+    def reparse_lstat(path: Path):
+        metadata = original_lstat(path)
+        if path == tmp_path:
+            return SimpleNamespace(
+                **{
+                    name: getattr(metadata, name)
+                    for name in dir(metadata)
+                    if name.startswith("st_") and name != "st_file_attributes"
+                },
+                st_file_attributes=0x400,
+            )
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", reparse_lstat)
+    with pytest.raises(OperationError, match="parent"):
+        operations._open_parent(tmp_path)
+
+
+def test_initial_temp_fstat_failure_closes_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original_fstat = operations.os.fstat
+    original_close = operations.os.close
+    temp_descriptor = None
+    closed = []
+
+    def fail_temp_fstat(descriptor: int):
+        nonlocal temp_descriptor
+        names = list(tmp_path.glob(".log.md.tmp-*"))
+        if names and temp_descriptor is None:
+            temp_descriptor = descriptor
+            raise OSError("simulated")
+        return original_fstat(descriptor)
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(operations.os, "fstat", fail_temp_fstat)
+    monkeypatch.setattr(operations.os, "close", record_close)
+    with pytest.raises(OperationError, match="temporary"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert temp_descriptor in closed
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
 def test_append_rejects_noncanonical_target_path(tmp_path: Path) -> None:

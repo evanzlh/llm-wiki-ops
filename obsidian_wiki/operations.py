@@ -299,6 +299,14 @@ def _ordinary_single_file(metadata: os.stat_result) -> bool:
     )
 
 
+def _ordinary_directory(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and not bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+    )
+
+
 def _read_all(descriptor: int) -> bytes:
     chunks = []
     while True:
@@ -313,7 +321,7 @@ def _open_parent(root: Path) -> tuple[Optional[int], _FileIdentity]:
         lexical = root.lstat()
     except OSError as exc:
         raise OperationError("operation log parent is unsafe or unreadable") from exc
-    if not stat.S_ISDIR(lexical.st_mode) or stat.S_ISLNK(lexical.st_mode):
+    if not _ordinary_directory(lexical):
         raise OperationError("operation log parent must be an ordinary directory")
     identity = (lexical.st_dev, lexical.st_ino)
     if os.name == "nt":
@@ -328,7 +336,7 @@ def _open_parent(root: Path) -> tuple[Optional[int], _FileIdentity]:
         if descriptor is not None:
             os.close(descriptor)
         raise OperationError("operation log parent is unsafe or unreadable") from exc
-    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity:
+    if not _ordinary_directory(opened) or (opened.st_dev, opened.st_ino) != identity:
         os.close(descriptor)
         raise OperationError("operation log parent changed while opening")
     return descriptor, identity
@@ -343,9 +351,8 @@ def _verify_parent(
     except OSError as exc:
         raise OperationError("operation log parent changed during append") from exc
     if (
-        not stat.S_ISDIR(lexical.st_mode)
-        or stat.S_ISLNK(lexical.st_mode)
-        or not stat.S_ISDIR(opened.st_mode)
+        not _ordinary_directory(lexical)
+        or not _ordinary_directory(opened)
         or (lexical.st_dev, lexical.st_ino) != identity
         or (opened.st_dev, opened.st_ino) != identity
     ):
@@ -445,7 +452,19 @@ def _open_temp(
             continue
         except OSError as exc:
             raise OperationError("cannot create operation log temporary file") from exc
-        created_identity = _stable_identity(os.fstat(descriptor))
+        try:
+            created_identity = _stable_identity(os.fstat(descriptor))
+        except OSError as exc:
+            retry_identity = None
+            try:
+                retry_identity = _stable_identity(os.fstat(descriptor))
+            except OSError:
+                pass
+            _cleanup_owned_temp(path, name, parent_descriptor, retry_identity)
+            os.close(descriptor)
+            raise OperationError(
+                "cannot inspect operation log temporary file"
+            ) from exc
         try:
             if hasattr(os, "fchmod"):
                 os.fchmod(descriptor, mode)
