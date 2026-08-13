@@ -10,6 +10,7 @@ import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Tuple
 
 
 class OperationError(ValueError):
@@ -48,8 +49,8 @@ _BLOCK_RE = re.compile(
     r"### Updated\n\n(?P<updated>(?:- \[\[[^\]\n]+\]\]\n)+|- None\n)\n"
     r"### Removed\n\n(?P<removed>(?:- \[\[[^\]\n]+\]\]\n)+|- None\n)"
 )
-_FileIdentity = tuple[int, int]
-_StableIdentity = tuple[int, int, int, int, int, int, int]
+_FileIdentity = Tuple[int, int]
+_StableIdentity = Tuple[int, int, int, int, int, int, int]
 
 
 def _timestamp(value: str) -> datetime:
