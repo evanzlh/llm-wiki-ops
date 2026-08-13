@@ -421,6 +421,38 @@ def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
         raise OSError(error, os.strerror(error), destination)
 
 
+def _link_descriptor_noreplace(
+    parent_fd: int, descriptor: int, destination: str
+) -> None:
+    """Install the exact open inode at an absent name in a bound directory."""
+
+    if os.name != "posix":
+        raise OperationError("safe operation log replacement is unsupported")
+    try:
+        linkat = ctypes.CDLL(None, use_errno=True).linkat
+    except AttributeError as exc:
+        raise OperationError("safe operation log replacement is unsupported") from exc
+    linkat.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    )
+    linkat.restype = ctypes.c_int
+    descriptor_path = os.fsencode(f"/proc/self/fd/{descriptor}")
+    result = linkat(
+        -100,  # AT_FDCWD
+        descriptor_path,
+        parent_fd,
+        os.fsencode(destination),
+        0x400,  # AT_SYMLINK_FOLLOW
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination)
+
+
 def _restore_noreplace(parent_fd: int, source: str, destination: str) -> bool:
     try:
         _rename_noreplace(parent_fd, source, destination)
@@ -590,8 +622,9 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
             try:
                 _verify_parent(root, parent_fd, parent_identity)
                 _verify_temp(parent_fd, temp_name, temp_fd, temp_identity, updated)
-                _rename_noreplace(parent_fd, temp_name, "log.md")
+                _link_descriptor_noreplace(parent_fd, temp_fd, "log.md")
                 promoted = True
+                _cleanup_owned(parent_fd, temp_name, temp_identity)
                 os.close(temp_fd)
                 temp_fd = -1
                 os.fsync(parent_fd)

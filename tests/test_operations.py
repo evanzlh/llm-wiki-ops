@@ -361,6 +361,34 @@ def test_temp_substitution_is_rejected_before_target_mutation(
     assert external.read_bytes() == b"external\n"
 
 
+def test_temp_substitution_at_promotion_cannot_install_external_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external.md"
+    external.write_bytes(b"external\n")
+    original_link = operations._link_descriptor_noreplace
+    substituted = False
+
+    def substitute(parent_fd: int, descriptor: int, destination: str) -> None:
+        nonlocal substituted
+        if not substituted:
+            substituted = True
+            names = os.listdir(parent_fd)
+            temp_name = next(name for name in names if name.startswith(".log.md.tmp-"))
+            os.rename(temp_name, "attacker-moved", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.link(external, temp_name, dst_dir_fd=parent_fd)
+        original_link(parent_fd, descriptor, destination)
+
+    monkeypatch.setattr(operations, "_link_descriptor_noreplace", substitute)
+    with pytest.raises(OperationError):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert external.read_bytes() == b"external\n"
+
+
 def test_cleanup_substitution_never_unlinks_collision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -405,14 +433,12 @@ def test_pipeline_failure_never_overwrites_external_content(
 
         monkeypatch.setattr(operations.os, "fsync", fail_sync)
     elif failure == "promotion":
-        original = operations._rename_noreplace
+        def fail_promotion(parent_fd: int, descriptor: int, destination: str) -> None:
+            raise OSError("fail")
 
-        def fail_promotion(parent_fd: int, source: str, destination: str) -> None:
-            if source.startswith(".log.md.tmp-") and destination == "log.md":
-                raise OSError("fail")
-            original(parent_fd, source, destination)
-
-        monkeypatch.setattr(operations, "_rename_noreplace", fail_promotion)
+        monkeypatch.setattr(
+            operations, "_link_descriptor_noreplace", fail_promotion
+        )
     else:
         original_fsync = operations.os.fsync
         calls = 0
