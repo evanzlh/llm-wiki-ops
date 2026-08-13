@@ -808,7 +808,11 @@ class ShardedManifest:
                 side_fd, _ = self._ensure_sidecar(parent_fd)
             except FileNotFoundError:
                 side_fd = -1
-            reserved = self._read_proof(side_fd, "reserved") if side_fd >= 0 else None
+            reserved = (
+                self._read_proof(side_fd, "reserved", links=frozenset({1, 2}))
+                if side_fd >= 0
+                else None
+            )
             candidate = self._read_proof(side_fd, "candidate", links=frozenset({1, 2})) if side_fd >= 0 else None
             if self._matches(live, journal["post"]):
                 if live is not None and live.links == 2:
@@ -833,6 +837,16 @@ class ShardedManifest:
                             self._conflict(journal, "manifest concurrent owner conflict")
                         raise ManifestPreconditionError("manifest shard changed concurrently and was restored")
                     self._conflict(journal, "manifest reserved bytes conflict with WAL")
+                if live is not None and (
+                    live.links == 2
+                    and reserved.links == 2
+                    and live.identity == reserved.identity
+                    and live.content_hash == reserved.content_hash
+                ):
+                    self._validate_root_attachment(self._session[0])
+                    os.unlink(target.name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                    live = None
                 if live is not None:
                     self._conflict(journal, "manifest target was created concurrently")
             elif not self._matches(live, journal["pre"]):
@@ -892,6 +906,7 @@ class ShardedManifest:
                     or not self._matches(linked, pre)
                 ):
                     self._conflict(journal, "manifest shard changed while being reserved")
+                _manifest_fault_point("reserved_linked")
                 self._validate_root_attachment(self._session[0])
                 os.unlink(target_name, dir_fd=parent_fd)
                 os.fsync(parent_fd)

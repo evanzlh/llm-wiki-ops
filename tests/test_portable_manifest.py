@@ -906,3 +906,26 @@ def test_root_detach_after_prepared_is_not_reported_as_success(
     with pytest.raises(ManifestError, match="changed|unsafe"):
         ShardedManifest(config).upsert(source)
     assert not (root / "wiki/.manifest/sources/design/a.md.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
+def test_recovery_handles_crash_between_reservation_link_and_target_unlink(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
+
+    def crash(step: str) -> None:
+        if step == "reserved_linked":
+            raise SystemExit("reservation link crash")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match="reservation link crash"):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    with ShardedManifest(config).mutation_session():
+        pass
+    assert ShardedManifest(config).load("sources/design/a.md").compiled_at == "2026-08-08T00:00:01Z"
