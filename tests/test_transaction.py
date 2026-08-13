@@ -260,6 +260,19 @@ def add_source(root: Path, name: str = "a.md") -> Path:
     return source
 
 
+def require_symlink_support(
+    link: Path,
+    target: Path,
+    *,
+    target_is_directory: bool = False,
+) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    link.unlink()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
 def test_begin_rejects_ordinary_repository_rebound(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
@@ -2758,6 +2771,7 @@ def test_log_writer_empty_directory_side_effect_is_rolled_back(
     assert (config.vault / "log.md").read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
+@pytest.mark.skipif(os.name != "posix", reason="exact chmod modes require POSIX")
 def test_log_writer_chmod_side_effect_is_rolled_back(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     unrelated = config.vault / "references/unrelated.md"
@@ -2781,6 +2795,7 @@ def test_log_writer_chmod_side_effect_is_rolled_back(tmp_path: Path) -> None:
     assert unrelated.read_text(encoding="utf-8") == PAGE
 
 
+@pytest.mark.skipif(os.name != "posix", reason="exact chmod modes require POSIX")
 def test_log_writer_vault_root_chmod_is_rolled_back(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     config.vault.chmod(0o750)
@@ -2960,6 +2975,7 @@ def test_log_writer_nested_nonempty_directory_side_effect_is_rolled_back(
     assert not (config.vault / "writer-tree").exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="exact chmod modes require POSIX")
 @pytest.mark.parametrize("replace", [False, True], ids=["removed", "replaced"])
 def test_log_writer_restores_preexisting_empty_directory(
     tmp_path: Path,
@@ -3431,6 +3447,8 @@ def test_writer_added_symlink_is_identity_checked_and_rolled_back(
     external = tmp_path / "external"
     external.mkdir()
     unsafe = config.vault / "references" / "unsafe"
+    unsafe.parent.mkdir(parents=True)
+    require_symlink_support(unsafe, external, target_is_directory=True)
 
     def writer(change):
         append_operation(config.vault / "log.md", change, root=config.vault)
@@ -3465,6 +3483,9 @@ def test_writer_addition_substitution_is_preserved_during_rollback(
     owner_target = tmp_path / "owner-target"
     original_target.write_text("writer target\n", encoding="utf-8")
     owner_target.write_text("owner target\n", encoding="utf-8")
+    if kind == "symlink":
+        addition.parent.mkdir(parents=True)
+        require_symlink_support(addition, original_target)
 
     def writer(change):
         append_operation(config.vault / "log.md", change, root=config.vault)
