@@ -53,6 +53,10 @@ _FileIdentity = Tuple[int, int]
 _StableIdentity = Tuple[int, int, int, int, int, int, int]
 
 
+def _contains_line_break(value: str) -> bool:
+    return any(character in value for character in "\r\n\u0085\u2028\u2029")
+
+
 def _timestamp(value: str) -> datetime:
     if not isinstance(value, str) or _TIMESTAMP_RE.fullmatch(value) is None:
         raise OperationError(
@@ -73,6 +77,7 @@ def _safe_relative(raw: str, label: str, *, source: bool = False) -> str:
         or not raw
         or "\\" in raw
         or "\x00" in raw
+        or _contains_line_break(raw)
         or any(ord(character) < 32 for character in raw)
     ):
         raise OperationError(f"operation {label} is invalid")
@@ -347,7 +352,7 @@ def _verify_parent(
         raise OperationError("operation log parent changed during append")
 
 
-def _open_preimage(path: Path) -> tuple[int, _StableIdentity, int, str]:
+def _open_preimage(path: Path) -> tuple[int, _StableIdentity, int, bytes, str]:
     descriptor = None
     try:
         lexical = path.lstat()
@@ -378,20 +383,38 @@ def _open_preimage(path: Path) -> tuple[int, _StableIdentity, int, str]:
     except UnicodeDecodeError as exc:
         os.close(descriptor)
         raise OperationError("operation log is not UTF-8") from exc
-    return descriptor, _stable_identity(before), stat.S_IMODE(before.st_mode), text
+    return (
+        descriptor,
+        _stable_identity(before),
+        stat.S_IMODE(before.st_mode),
+        data,
+        text,
+    )
 
 
-def _verify_preimage(path: Path, descriptor: int, expected: _StableIdentity) -> None:
+def _verify_preimage(
+    path: Path,
+    descriptor: int,
+    expected_identity: _StableIdentity,
+    expected_data: bytes,
+    expected_mode: int,
+) -> None:
     try:
         lexical = path.lstat()
-        opened = os.fstat(descriptor)
+        before = os.fstat(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        data = _read_all(descriptor)
+        after = os.fstat(descriptor)
     except OSError as exc:
         raise OperationError("operation log changed during append") from exc
     if (
         not _ordinary_single_file(lexical)
-        or not _ordinary_single_file(opened)
-        or _stable_identity(lexical) != expected
-        or _stable_identity(opened) != expected
+        or not _ordinary_single_file(before)
+        or _stable_identity(lexical) != expected_identity
+        or _stable_identity(before) != expected_identity
+        or _stable_identity(after) != expected_identity
+        or stat.S_IMODE(before.st_mode) != expected_mode
+        or data != expected_data
     ):
         raise OperationError("operation log changed during append")
 
@@ -422,18 +445,13 @@ def _open_temp(
             continue
         except OSError as exc:
             raise OperationError("cannot create operation log temporary file") from exc
+        created_identity = _stable_identity(os.fstat(descriptor))
         try:
             if hasattr(os, "fchmod"):
                 os.fchmod(descriptor, mode)
         except OSError as exc:
+            _cleanup_owned_temp(path, name, parent_descriptor, created_identity)
             os.close(descriptor)
-            try:
-                if parent_descriptor is None:
-                    path.unlink()
-                else:
-                    os.unlink(name, dir_fd=parent_descriptor)
-            except OSError:
-                pass
             raise OperationError("cannot prepare operation log temporary file") from exc
         return name, path, descriptor
     raise OperationError("cannot allocate operation log temporary file")
@@ -588,7 +606,13 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
     replaced = False
     try:
         parent_descriptor, parent_identity = _open_parent(root)
-        preimage_descriptor, preimage_identity, mode, text = _open_preimage(path)
+        (
+            preimage_descriptor,
+            preimage_identity,
+            mode,
+            preimage_data,
+            text,
+        ) = _open_preimage(path)
         updated_text = append_operation_text(text, change)
         updated = updated_text.encode("utf-8")
 
@@ -609,7 +633,13 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
             mode,
         )
         _verify_parent(root, parent_descriptor, parent_identity)
-        _verify_preimage(path, preimage_descriptor, preimage_identity)
+        _verify_preimage(
+            path,
+            preimage_descriptor,
+            preimage_identity,
+            preimage_data,
+            mode,
+        )
         _verify_temp(
             temp_path,
             temp_name,

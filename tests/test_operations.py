@@ -157,6 +157,20 @@ def test_change_validation_wraps_invalid_scalar_types() -> None:
         render_operation_block(invalid)
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+@pytest.mark.parametrize("field", ["source", "page"])
+def test_change_validation_rejects_unicode_line_separators(
+    separator: str, field: str
+) -> None:
+    item = (
+        change(source_ids=("sources/a" + separator + "b.md",))
+        if field == "source"
+        else change(created=("concepts/a" + separator + "b.md",))
+    )
+    with pytest.raises(OperationError):
+        render_operation_block(item)
+
+
 @pytest.mark.parametrize(
     "completed_at",
     [
@@ -255,9 +269,9 @@ def test_concurrent_target_change_is_not_overwritten_and_temp_is_cleaned(
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     original_check = operations._verify_preimage
 
-    def replace_before_check(path: Path, descriptor: int, identity) -> None:
+    def replace_before_check(path: Path, descriptor: int, identity, data, mode) -> None:
         target.write_text("concurrent\n", encoding="utf-8")
-        original_check(path, descriptor, identity)
+        original_check(path, descriptor, identity, data, mode)
 
     monkeypatch.setattr(operations, "_verify_preimage", replace_before_check)
     with pytest.raises(OperationError, match="changed"):
@@ -265,6 +279,60 @@ def test_concurrent_target_change_is_not_overwritten_and_temp_is_cleaned(
 
     assert target.read_text(encoding="utf-8") == "concurrent\n"
     assert not list(tmp_path.glob(".log.md.tmp-*"))
+
+
+def test_preimage_byte_drift_is_rejected_even_if_metadata_looks_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original = target.read_bytes()
+    original_check = operations._verify_preimage
+    original_identity = operations._stable_identity
+
+    def ignore_change_times(metadata):
+        identity = original_identity(metadata)
+        return identity[:4] + (0, 0) + identity[6:]
+
+    def drift_before_check(path, descriptor, identity, expected, mode) -> None:
+        metadata = target.stat()
+        changed = bytearray(original)
+        changed[0] = ord("!")
+        target.write_bytes(changed)
+        os.utime(target, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        original_check(path, descriptor, identity, expected, mode)
+
+    monkeypatch.setattr(operations, "_stable_identity", ignore_change_times)
+    monkeypatch.setattr(operations, "_verify_preimage", drift_before_check)
+    with pytest.raises(OperationError, match="changed"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_bytes() != render_operation_log((change(),)).encode("utf-8")
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+
+
+def test_fchmod_failure_cleanup_does_not_unlink_substituted_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+
+    def substitute_then_fail(descriptor: int, mode: int) -> None:
+        temp = next(tmp_path.glob(".log.md.tmp-*"))
+        temp.rename(tmp_path / "owned-temp-preserved")
+        external.rename(temp)
+        raise OSError("simulated")
+
+    monkeypatch.setattr(operations.os, "fchmod", substitute_then_fail)
+    with pytest.raises(OperationError, match="prepare"):
+        append_operation(target, change(), root=tmp_path)
+
+    substituted = next(tmp_path.glob(".log.md.tmp-*"))
+    assert substituted.read_bytes() == b"external"
+    assert (tmp_path / "owned-temp-preserved").exists()
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
 def test_concurrent_parent_swap_does_not_touch_replacement_directory(
