@@ -2200,7 +2200,8 @@ def test_cli_check_wrong_implementation_never_falls_back_to_global(
     proc = _run_cli(home, root / "sources", "check", "--json")
 
     assert proc.returncode == 1
-    assert "implementation" in proc.stderr
+    assert proc.stderr == ""
+    assert "implementation" in json.loads(proc.stdout)["error"]["message"]
     assert str(global_vault) not in proc.stdout + proc.stderr
 
 
@@ -2212,8 +2213,8 @@ def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> Non
     proc = _run_cli(home, project, "check", "--json")
 
     assert proc.returncode == 1
-    assert proc.stdout == ""
-    assert proc.stderr.strip() == "error: check requires a portable repository"
+    assert proc.stderr == ""
+    assert json.loads(proc.stdout)["status"] == "error"
 
 
 def test_cmd_check_uses_shared_portable_config_discovery(

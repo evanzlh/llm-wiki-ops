@@ -91,7 +91,8 @@ def test_query_cli_requires_portable_repository(tmp_path: Path) -> None:
     proc = _run(home, "query", "anything", "--json")
 
     assert proc.returncode == 1
-    assert "repository not configured" in proc.stderr
+    assert proc.stderr == ""
+    assert "repository not configured" in json.loads(proc.stdout)["error"]["message"]
 
 
 def test_query_cli_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> None:
@@ -155,7 +156,8 @@ def test_query_cli_invalid_portable_config_never_falls_back_global(
     proc = _run(home, "query", "runtime resolver", "--json", cwd=nested)
 
     assert proc.returncode == 1
-    assert "implementation" in proc.stderr
+    assert proc.stderr == ""
+    assert "implementation" in json.loads(proc.stdout)["error"]["message"]
     assert str(global_vault) not in proc.stdout
     assert not any(portable_vault.iterdir())
 

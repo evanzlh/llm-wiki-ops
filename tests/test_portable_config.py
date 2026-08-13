@@ -70,6 +70,29 @@ local_state = ".obsidian-wiki/local"
         )
 
 
+@pytest.mark.parametrize("value", ["./wiki", "wiki/../other", "wiki//nested", "wiki/"])
+def test_non_normalized_repository_path_is_rejected(
+    tmp_path: Path, value: str
+) -> None:
+    path = write_portable(
+        tmp_path,
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "{value}"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+    )
+
+    with pytest.raises(ConfigError, match="normalized repository-relative"):
+        load_portable_config(
+            path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+        )
+
+
 def test_backslash_config_path_is_rejected_on_every_platform(tmp_path: Path) -> None:
     path = write_portable(
         tmp_path,
@@ -377,6 +400,39 @@ def test_load_config_rejects_repository_rebound_during_parse(
         load_portable_config(
             path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ABA link race")
+def test_configured_paths_never_bind_to_aba_replacement_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    path = write_portable(repository)
+    replacement = tmp_path / "replacement"
+    write_portable(replacement)
+    original_parse = config_module._parse_portable_config
+
+    def parse_during_aba(*args, **kwargs):
+        original = tmp_path / "original"
+        repository.rename(original)
+        repository.symlink_to(replacement, target_is_directory=True)
+        try:
+            return original_parse(*args, **kwargs)
+        finally:
+            repository.unlink()
+            original.rename(repository)
+
+    monkeypatch.setattr(config_module, "_parse_portable_config", parse_during_aba)
+
+    config = load_portable_config(
+        path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+    )
+
+    assert config.root == repository
+    assert config.vault == repository / "wiki"
+    assert config.sources == (repository / "sources",)
+    assert config.skills == repository / ".skills"
+    assert config.local_state == repository / ".obsidian-wiki/local"
 
 
 def test_repository_discovery_error_is_a_path_qualified_config_error(

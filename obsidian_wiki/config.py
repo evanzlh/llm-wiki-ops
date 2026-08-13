@@ -59,18 +59,20 @@ def _contained_path(root: Path, raw: str, label: str) -> Path:
     windows_value = PureWindowsPath(raw)
     if value.is_absolute() or windows_value.is_absolute() or windows_value.drive:
         raise ConfigError(f"{label} must be repository-relative")
+    parts = raw.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ConfigError(
+            f"{label} must be a normalized repository-relative path"
+        )
+    return root.joinpath(*parts)
+
+
+def _validate_configured_path(path: Path, *, root: Path, label: str) -> None:
+    """Reject unresolvable topology without using its result as configuration."""
     try:
-        resolved_root = root.resolve()
-        resolved = (resolved_root / value).resolve(strict=False)
+        path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise ConfigError(f"{label} cannot be resolved safely: {exc}") from exc
-    try:
-        resolved.relative_to(resolved_root)
-    except ValueError as exc:
-        raise ConfigError(
-            f"{label} must be repository-relative and remain inside {resolved_root}"
-        ) from exc
-    return resolved
 
 
 def _overlaps(left: Path, right: Path) -> bool:
@@ -196,6 +198,16 @@ def load_portable_config(
             implementation=implementation,
         )
         verify_safe_file_snapshot(snapshot)
+        for label, configured_path in (
+            ("paths.vault", parsed.vault),
+            *(
+                (f"paths.sources[{index}]", source)
+                for index, source in enumerate(parsed.sources)
+            ),
+            ("paths.skills", parsed.skills),
+            ("paths.local_state", parsed.local_state),
+        ):
+            _validate_configured_path(configured_path, root=parsed.root, label=label)
         return parsed
     except ConfigError as exc:
         raise ConfigError(f"{config_path}: {exc}") from exc

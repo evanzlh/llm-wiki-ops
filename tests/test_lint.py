@@ -670,12 +670,15 @@ def test_empty_configured_schema_values_fail_closed_for_all_cli_paths(tmp_path: 
         for command in commands:
             invalid = _run_at(home, nested, *command)
             assert invalid.returncode == 1, (key, command, invalid.stdout, invalid.stderr)
-            assert invalid.stdout == ""
             if key == "OBSIDIAN_SCHEMA_SOURCE":
-                assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in invalid.stderr
+                assert invalid.stderr == ""
+                message = json.loads(invalid.stdout)["error"]["message"]
+                assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in message
+                assert "Traceback" not in invalid.stdout
             else:
-                assert f"error: invalid {key} value: entries must not be empty" in invalid.stderr
-            assert "Traceback" not in invalid.stderr
+                assert invalid.stdout == ""
+                assert f"invalid {key} value: entries must not be empty" in invalid.stderr
+                assert "Traceback" not in invalid.stderr
 
     assert not (vault / "_meta" / "trust-ledger.json").exists()
 
@@ -711,9 +714,11 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
     for command in commands:
         invalid = _run_at(home, nested, *command)
         assert invalid.returncode == 1, (command, invalid.stdout, invalid.stderr)
-        assert invalid.stdout == ""
-        assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in invalid.stderr
-        assert "Traceback" not in invalid.stderr
+        assert invalid.stderr == ""
+        assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in json.loads(
+            invalid.stdout
+        )["error"]["message"]
+        assert "Traceback" not in invalid.stdout
         after = {
             path.relative_to(vault): path.read_bytes()
             for path in vault.rglob("*")

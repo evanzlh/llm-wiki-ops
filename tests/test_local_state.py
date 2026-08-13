@@ -497,8 +497,13 @@ def test_hot_cli_fails_outside_portable_mode(
     result = run_cli(tmp_path / "home", cwd, *arguments)
 
     assert result.returncode == 1
-    assert "portable repository" in result.stderr
-    assert "Traceback" not in result.stderr
+    if "--json" in arguments or arguments[-1] == "inputs":
+        assert result.stderr == ""
+        assert "portable repository" in json.loads(result.stdout)["error"]["message"]
+        assert "Traceback" not in result.stdout
+    else:
+        assert "portable repository" in result.stderr
+        assert "Traceback" not in result.stderr
 
 
 def test_hot_inputs_returns_cjk_page_summary_and_serialized_operation(
@@ -925,9 +930,11 @@ def test_hot_inputs_cli_reports_negative_limit_errors(
     )
 
     assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr == "error: hot input limits must be non-negative\n"
-    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    assert "hot input limits must be non-negative" in json.loads(result.stdout)[
+        "error"
+    ]["message"]
+    assert "Traceback" not in result.stdout
 
 
 def test_hot_inputs_cli_reports_invalid_authoritative_input_cleanly(
@@ -946,9 +953,11 @@ def test_hot_inputs_cli_reports_invalid_authoritative_input_cleanly(
     )
 
     assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr.startswith("error: invalid knowledge page")
-    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["error"]["message"].startswith(
+        "invalid knowledge page"
+    )
+    assert "Traceback" not in result.stdout
 
 
 @pytest.mark.parametrize("relative", ["concepts", "concepts/nested"])

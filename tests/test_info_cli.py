@@ -50,6 +50,58 @@ def payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink behavior")
+@pytest.mark.parametrize(
+    "command",
+    (
+        ("repo", "sync-skills", "--json"),
+        ("hot", "status", "--json"),
+        ("hot", "mark-current", "--json"),
+        ("hot", "inputs", "--json"),
+        ("cache-check", "sources/example.md", "--json"),
+        ("check", "--json"),
+        ("doctor", "--json"),
+        ("lint", "--json"),
+        (
+            "trust-record",
+            "--all",
+            "--reviewed-at",
+            "2026-08-13T00:00:00Z",
+            "--approved",
+            "--json",
+        ),
+        ("trust-check", "--json"),
+        ("query", "question", "--json"),
+        ("context-pack", "topic", "--json"),
+        ("transaction", "list", "--json"),
+    ),
+)
+def test_repository_json_commands_structure_config_resolution_errors(
+    tmp_path: Path, command: tuple[str, ...]
+) -> None:
+    home = tmp_path / "home"
+    repository = tmp_path / "repository"
+    write_portable(repository)
+    (repository / "wiki").symlink_to("wiki")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki.cli", *command],
+        cwd=repository,
+        env={**os.environ, "HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (command, result.stdout, result.stderr)
+    assert result.stderr == "", command
+    document = json.loads(result.stdout)
+    assert document["status"] in {"error", "fail"}, (command, document)
+    rendered = json.dumps(document)
+    assert "paths.vault" in rendered, (command, document)
+    assert "Traceback" not in result.stdout
+
+
 def test_info_json_reports_repository_local_runtime(tmp_path: Path) -> None:
     home = tmp_path / "home"
     repository = tmp_path / "repository"

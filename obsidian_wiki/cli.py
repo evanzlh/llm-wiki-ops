@@ -122,9 +122,8 @@ def _resolve_runtime(
 
     if error_sink is not None:
         error_sink.append(error)
-    else:
-        print(f"error: {error}", file=sys.stderr)
-    return None
+        return None
+    raise error
 
 
 def _config_values(config: PortableConfig) -> dict[str, str]:
@@ -792,13 +791,12 @@ def cmd_check(args: argparse.Namespace) -> int:
     resolution_errors: list[ConfigError] = []
     runtime = _resolve_runtime(error_sink=resolution_errors)
     if runtime is None:
-        if resolution_errors and str(resolution_errors[0]) != "repository not configured":
-            print(
-                f"error: {_runtime_error_detail(resolution_errors[0])}",
-                file=sys.stderr,
-            )
-        else:
-            print("error: check requires a portable repository", file=sys.stderr)
+        error = resolution_errors[0] if resolution_errors else ConfigError(
+            "check requires a portable repository"
+        )
+        if getattr(args, "json", False):
+            raise error
+        print(f"error: {_runtime_error_detail(error)}", file=sys.stderr)
         return 1
     from obsidian_wiki.portable_check import check_portable_repo
 
@@ -2552,9 +2550,37 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (ConfigError, ManifestError, TransactionError) as exc:
+        if getattr(args, "json", False):
+            code = (
+                "config-error"
+                if isinstance(exc, ConfigError)
+                else "manifest-error"
+                if isinstance(exc, ManifestError)
+                else "transaction-error"
+            )
+            _json_print(
+                {
+                    "status": "error",
+                    "error": {
+                        "code": code,
+                        "message": _repository_error_message(exc),
+                    },
+                },
+                pretty=getattr(args, "pretty", False),
+            )
+            return 1
         print(f"error: {_repository_error_message(exc)}", file=sys.stderr)
         return 1
     except (FileNotFoundError, RuntimeError) as exc:
+        if getattr(args, "json", False):
+            _json_print(
+                {
+                    "status": "error",
+                    "error": {"code": "runtime-error", "message": str(exc)},
+                },
+                pretty=getattr(args, "pretty", False),
+            )
+            return 1
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
