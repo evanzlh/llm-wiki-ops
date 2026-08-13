@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -154,6 +156,21 @@ def test_change_validation_wraps_invalid_scalar_types() -> None:
         render_operation_block(invalid)
 
 
+@pytest.mark.parametrize(
+    "completed_at",
+    [
+        "2026-08-07 07:30:00Z",
+        "2026-08-07T07:30Z",
+        "2026-08-07T07:30:00.000Z",
+        "2026-08-07T07:30:00+00:00",
+        "2026-08-07Z",
+    ],
+)
+def test_timestamp_requires_canonical_utc_spelling(completed_at: str) -> None:
+    with pytest.raises(OperationError, match="completed_at"):
+        render_operation_block(change(completed_at=completed_at))
+
+
 def test_append_operation_atomically_replaces_log(tmp_path: Path) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
@@ -168,7 +185,7 @@ def test_append_operation_atomically_replaces_log(tmp_path: Path) -> None:
     assert not list(tmp_path.glob(".log.md.tmp-*"))
 
 
-@pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory"])
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory", "fifo"])
 def test_append_rejects_unsafe_target_without_changing_external_inode(
     tmp_path: Path, kind: str
 ) -> None:
@@ -180,7 +197,10 @@ def test_append_rejects_unsafe_target_without_changing_external_inode(
     elif kind == "hardlink":
         os.link(external, target)
     else:
-        target.mkdir()
+        if kind == "directory":
+            target.mkdir()
+        else:
+            os.mkfifo(target)
     original = external.read_bytes()
 
     with pytest.raises(OperationError):
@@ -262,3 +282,199 @@ def test_write_failure_preserves_log_and_cleans_temp(
 
     assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
     assert not list(tmp_path.glob(".log.md.tmp-*"))
+
+
+def test_postcheck_target_swap_is_preserved_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    concurrent = b"concurrent owner content\n"
+    original_rename = operations._rename_noreplace
+    swapped = False
+
+    def swap_at_boundary(parent_fd: int, source: str, destination: str) -> None:
+        nonlocal swapped
+        if source == "log.md" and not swapped:
+            swapped = True
+            target.write_bytes(concurrent)
+        original_rename(parent_fd, source, destination)
+
+    monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
+    with pytest.raises(OperationError, match="changed"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_bytes() == concurrent
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+
+
+def test_postcheck_parent_swap_does_not_touch_replacement_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "log.md").write_bytes(b"external\n")
+    original_rename = operations._rename_noreplace
+    swapped = False
+
+    def swap_at_boundary(parent_fd: int, source: str, destination: str) -> None:
+        nonlocal swapped
+        if source == "log.md" and not swapped:
+            swapped = True
+            root.rename(tmp_path / "moved-vault")
+            replacement.rename(root)
+        original_rename(parent_fd, source, destination)
+
+    monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
+    with pytest.raises(OperationError, match="parent changed"):
+        append_operation(target, change(), root=root)
+
+    assert (root / "log.md").read_bytes() == b"external\n"
+    assert (tmp_path / "moved-vault/log.md").read_text(
+        encoding="utf-8"
+    ) == EMPTY_OPERATION_LOG
+
+
+def test_temp_substitution_is_rejected_before_target_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external.md"
+    external.write_bytes(b"external\n")
+    original_verify = operations._verify_temp
+
+    def substitute(parent_fd: int, name: str, descriptor: int, identity, data) -> None:
+        os.unlink(name, dir_fd=parent_fd)
+        os.link(external, name, dst_dir_fd=parent_fd)
+        original_verify(parent_fd, name, descriptor, identity, data)
+
+    monkeypatch.setattr(operations, "_verify_temp", substitute)
+    with pytest.raises(OperationError, match="temporary"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert external.read_bytes() == b"external\n"
+
+
+def test_cleanup_substitution_never_unlinks_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = tmp_path / ".log.md.tmp-owned"
+    owned.write_bytes(b"owned")
+    metadata = owned.stat()
+    identity = (metadata.st_dev, metadata.st_ino)
+    collision = b"collision"
+    original_rename = operations._rename_noreplace
+    swapped = False
+
+    def substitute(parent_fd: int, source: str, destination: str) -> None:
+        nonlocal swapped
+        if source == owned.name and not swapped:
+            swapped = True
+            owned.rename(tmp_path / "owned-moved")
+            owned.write_bytes(collision)
+        original_rename(parent_fd, source, destination)
+
+    monkeypatch.setattr(operations, "_rename_noreplace", substitute)
+    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        operations._cleanup_owned(parent_fd, owned.name, identity)
+    finally:
+        os.close(parent_fd)
+
+    assert owned.read_bytes() == collision
+    assert (tmp_path / "owned-moved").read_bytes() == b"owned"
+
+
+@pytest.mark.parametrize("failure", ["file_fsync", "promotion", "parent_fsync"])
+def test_pipeline_failure_never_overwrites_external_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external.md"
+    external.write_bytes(b"external\n")
+    if failure == "file_fsync":
+        def fail_sync(descriptor: int) -> None:
+            raise OSError("fail")
+
+        monkeypatch.setattr(operations.os, "fsync", fail_sync)
+    elif failure == "promotion":
+        original = operations._rename_noreplace
+
+        def fail_promotion(parent_fd: int, source: str, destination: str) -> None:
+            if source.startswith(".log.md.tmp-") and destination == "log.md":
+                raise OSError("fail")
+            original(parent_fd, source, destination)
+
+        monkeypatch.setattr(operations, "_rename_noreplace", fail_promotion)
+    else:
+        original_fsync = operations.os.fsync
+        calls = 0
+
+        def fail_parent_sync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("fail")
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(operations.os, "fsync", fail_parent_sync)
+
+    with pytest.raises(OperationError, match="write"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert external.read_bytes() == b"external\n"
+    if target.exists():
+        parse_operation_log(target.read_text(encoding="utf-8"))
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+    assert not list(tmp_path.glob(".log.md.backup-*"))
+    assert not list(tmp_path.glob(".log.md.rollback-*"))
+
+
+def test_installed_verification_failure_rolls_back_preimage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+
+    def fail_verification(parent_fd: int, identity) -> None:
+        raise OperationError("simulated installed verification failure")
+
+    monkeypatch.setattr(operations, "_verify_installed", fail_verification)
+    with pytest.raises(OperationError, match="installed verification"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+    assert not list(tmp_path.glob(".log.md.backup-*"))
+    assert not list(tmp_path.glob(".log.md.rollback-*"))
+
+
+def test_stable_identity_includes_ctime() -> None:
+    fields = dict(
+        st_dev=1,
+        st_ino=2,
+        st_mode=3,
+        st_size=4,
+        st_mtime_ns=5,
+        st_ctime_ns=6,
+        st_nlink=7,
+    )
+    before = operations._stable_identity(SimpleNamespace(**fields))
+    fields["st_ctime_ns"] = 8
+    after = operations._stable_identity(SimpleNamespace(**fields))
+    assert before != after
+    assert before == (1, 2, 3, 4, 5, 6, 7)
+
+
+def test_changed_files_parse_with_python_38_grammar() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    for relative in ("obsidian_wiki/operations.py", "tests/test_operations.py"):
+        source = (repository / relative).read_text(encoding="utf-8")
+        ast.parse(source, filename=relative, feature_version=(3, 8))
