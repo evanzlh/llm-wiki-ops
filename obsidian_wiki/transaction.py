@@ -1586,15 +1586,19 @@ class TransactionManager:
             expected = before[relative]
             if target.exists() or target.is_symlink():
                 metadata = target.lstat()
-                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                if not (
+                    stat.S_ISDIR(metadata.st_mode)
+                    and not stat.S_ISLNK(metadata.st_mode)
+                    and self._writer_identity_matches(metadata, expected)
+                ):
                     observed = after.get(relative)
-                    if observed is None or not self._writer_identity_matches(
-                        metadata, observed
-                    ):
+                    if observed is None:
                         raise TransactionError(
                             f"writer rollback target changed: {relative}"
                         )
-                    target.unlink()
+                    self._quarantine_added_path(
+                        record, relative, target, observed
+                    )
             if not target.exists():
                 self._ensure_contained_directory(target.parent, self.config.vault)
                 target.mkdir(mode=expected.mode)
@@ -1618,21 +1622,10 @@ class TransactionManager:
             target = self._writer_lexical_path(relative)
             if not target.exists() and not target.is_symlink():
                 continue
-            metadata = target.lstat()
             expected = after.get(relative)
-            if (
-                expected is None
-                or expected.kind != "directory"
-                or not self._writer_identity_matches(metadata, expected)
-            ):
+            if expected is None or expected.kind != "directory":
                 raise TransactionError(f"writer rollback directory changed: {relative}")
-            try:
-                target.rmdir()
-                self._fsync_directory(target.parent)
-            except OSError as exc:
-                raise TransactionError(
-                    f"writer rollback directory is not empty: {relative}"
-                ) from exc
+            self._quarantine_added_path(record, relative, target, expected)
 
     @staticmethod
     def _writer_identity_matches(
@@ -1708,6 +1701,9 @@ class TransactionManager:
         if not self._writer_identity_matches(moved, expected) or (
             expected.kind == "file"
             and (not stat.S_ISREG(moved.st_mode) or moved.st_nlink != 1)
+        ) or (
+            expected.kind == "directory"
+            and (not stat.S_ISDIR(moved.st_mode) or stat.S_ISLNK(moved.st_mode))
         ):
             raise TransactionError(
                 "writer rollback substitution preserved in quarantine: " + relative

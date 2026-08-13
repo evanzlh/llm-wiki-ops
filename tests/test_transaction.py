@@ -3278,6 +3278,102 @@ def test_writer_addition_substitution_is_preserved_during_rollback(
         )
 
 
+def test_writer_added_directory_substitution_is_preserved_during_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    addition = config.vault / "references/writer-directory"
+    displaced = tmp_path / "displaced-writer-directory"
+    original_replace = os.replace
+    substituted = False
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        addition.mkdir(parents=True)
+        return result
+
+    def substitute_before_rename(source, destination, *args, **kwargs):
+        nonlocal substituted
+        targets_addition = Path(source) == addition or (
+            source == addition.name and kwargs.get("src_dir_fd") is not None
+        )
+        if targets_addition and not substituted:
+            substituted = True
+            if kwargs.get("src_dir_fd") is None:
+                original_replace(source, displaced)
+            else:
+                original_replace(
+                    source, displaced, src_dir_fd=kwargs["src_dir_fd"]
+                )
+            addition.mkdir()
+        return original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", substitute_before_rename)
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="writer restore failed.*preserved"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert substituted
+    assert not addition.exists()
+    assert any(
+        path.is_dir() for path in (record.workspace / "quarantine").iterdir()
+    )
+
+
+def test_preexisting_directory_replacement_substitution_is_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    directory = config.vault / "references/owner-directory"
+    directory.mkdir(parents=True)
+    displaced = tmp_path / "displaced-writer-replacement"
+    original_replace = os.replace
+    substituted = False
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        directory.rmdir()
+        directory.write_text("writer replacement\n", encoding="utf-8")
+        return result
+
+    def substitute_before_rename(source, destination, *args, **kwargs):
+        nonlocal substituted
+        targets_directory = Path(source) == directory or (
+            source == directory.name and kwargs.get("src_dir_fd") is not None
+        )
+        if targets_directory and not substituted:
+            substituted = True
+            if kwargs.get("src_dir_fd") is None:
+                original_replace(source, displaced)
+            else:
+                original_replace(
+                    source, displaced, src_dir_fd=kwargs["src_dir_fd"]
+                )
+            directory.write_text("owner replacement\n", encoding="utf-8")
+        return original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", substitute_before_rename)
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="writer restore failed.*preserved"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert substituted
+    assert not directory.exists()
+    assert any(
+        path.is_file()
+        and path.read_text(encoding="utf-8") == "owner replacement\n"
+        for path in (record.workspace / "quarantine").iterdir()
+    )
+
+
 @pytest.mark.parametrize("snapshot_kind", ["base", "writer", "log"])
 def test_load_rejects_snapshot_backing_with_wrong_content_hash(
     tmp_path: Path,
