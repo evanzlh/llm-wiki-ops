@@ -130,6 +130,72 @@ def test_scan_markdown_files_reads_an_ordinary_nested_tree(tmp_path: Path) -> No
     assert snapshots[0].text() == "# Page\n"
 
 
+@pytest.mark.parametrize("kind", ["ordinary", "symlink", "fifo"])
+def test_scan_markdown_files_prunes_exact_relative_subtree_before_inspection(
+    tmp_path: Path, kind: str
+) -> None:
+    if kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO unavailable")
+    vault = tmp_path / "wiki"
+    sibling = vault / "archive" / "operations" / "page.md"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("# Sibling\n", encoding="utf-8")
+    legacy = vault / "journal" / "operations"
+    legacy.parent.mkdir()
+    if kind == "ordinary":
+        legacy.mkdir()
+        (legacy / "malformed.md").write_text("# Legacy\n", encoding="utf-8")
+    elif kind == "symlink":
+        external = tmp_path / "external"
+        external.mkdir()
+        legacy.symlink_to(external, target_is_directory=True)
+    else:
+        os.mkfifo(legacy)
+
+    snapshots = safe_files.scan_markdown_files(
+        vault, skip_relative_subtrees={"journal/operations"}
+    )
+
+    assert [snapshot.relative for snapshot in snapshots] == [
+        "archive/operations/page.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "",
+        "/journal/operations",
+        "journal/./operations",
+        "../operations",
+        "journal\\operations",
+        "journal/\x00operations",
+    ],
+)
+def test_scan_markdown_files_rejects_invalid_relative_subtree(
+    tmp_path: Path, relative: str
+) -> None:
+    vault = tmp_path / "wiki"
+    vault.mkdir()
+
+    with pytest.raises(ValueError, match="skip subtree"):
+        safe_files.scan_markdown_files(vault, skip_relative_subtrees={relative})
+
+
+def test_scan_markdown_files_default_rejects_unsafe_unskipped_subtree(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "wiki"
+    legacy = vault / "journal" / "operations"
+    legacy.parent.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    legacy.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        safe_files.scan_markdown_files(vault)
+
+
 def test_scan_markdown_files_rejects_symlink_in_vault_root_ancestry(
     tmp_path: Path,
 ) -> None:

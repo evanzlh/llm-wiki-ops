@@ -1551,9 +1551,17 @@ def test_legacy_operation_subtree_is_ignored(
             "# External legacy operation\n", encoding="utf-8"
         )
         legacy.symlink_to(external, target_is_directory=True)
+    page = config.vault / "concepts/a.md"
+    page.write_text(
+        page.read_text(encoding="utf-8") + "\n[[unrelated missing target]]\n",
+        encoding="utf-8",
+    )
 
     report = check_portable_repo(config)
-    assert report["status"] == "pass", report
+    assert "lint-broken-link" in issue_codes(report)
+    assert all(
+        "journal/operations" not in issue["path"] for issue in report["issues"]
+    )
 
 
 @pytest.mark.parametrize("mutation", ["missing", "non-utf8", "symlink"])

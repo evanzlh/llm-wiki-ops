@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 from typing import Collection
 
@@ -91,6 +91,34 @@ def stable_directory_identity(metadata: os.stat_result) -> tuple[int, int]:
 
 def _unsafe(relative: str, reason: str) -> UnsafeVaultError:
     return UnsafeVaultError(f"unsafe vault entry {relative or '.'}: {reason}")
+
+
+def _canonical_skip_subtrees(values: Collection[str]) -> frozenset[str]:
+    canonical: set[str] = set()
+    for value in values:
+        if (
+            not isinstance(value, str)
+            or not value
+            or "\\" in value
+            or "\x00" in value
+        ):
+            raise ValueError("Markdown scan skip subtree must be a safe relative path")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or any(part in {".", ".."} for part in value.split("/"))
+            or path.as_posix() != value
+        ):
+            raise ValueError("Markdown scan skip subtree must be a safe relative path")
+        canonical.add(value)
+    return frozenset(canonical)
+
+
+def _skipped_subtree(relative: str, skip_relative_subtrees: Collection[str]) -> bool:
+    return any(
+        relative == skipped or relative.startswith(skipped + "/")
+        for skipped in skip_relative_subtrees
+    )
 
 
 def _stat_at(
@@ -300,6 +328,7 @@ def _scan_bound_directory(
     *,
     skip_dirs: Collection[str],
     skip_files: Collection[str],
+    skip_relative_subtrees: Collection[str],
 ) -> None:
     before = _fstat(descriptor, relative)
     try:
@@ -308,6 +337,8 @@ def _scan_bound_directory(
         raise _unsafe(relative, f"listdir failed: {exc}") from exc
     for name in names:
         child_relative = f"{relative}/{name}" if relative else name
+        if _skipped_subtree(child_relative, skip_relative_subtrees):
+            continue
         observed = _stat_at(descriptor, name, child_relative)
         assert observed is not None
         mode = observed.st_mode
@@ -334,6 +365,7 @@ def _scan_bound_directory(
                     snapshots,
                     skip_dirs=skip_dirs,
                     skip_files=skip_files,
+                    skip_relative_subtrees=skip_relative_subtrees,
                 )
                 attached = _stat_at(descriptor, name, child_relative)
                 assert attached is not None
@@ -373,6 +405,7 @@ def _scan_bound_headers(
     *,
     skip_dirs: Collection[str],
     skip_files: Collection[str],
+    skip_relative_subtrees: Collection[str],
     max_header_bytes: int,
 ) -> None:
     before = _fstat(descriptor, relative)
@@ -382,6 +415,8 @@ def _scan_bound_headers(
         raise _unsafe(relative, f"listdir failed: {exc}") from exc
     for name in names:
         child_relative = f"{relative}/{name}" if relative else name
+        if _skipped_subtree(child_relative, skip_relative_subtrees):
+            continue
         observed = _stat_at(descriptor, name, child_relative)
         assert observed is not None
         mode = observed.st_mode
@@ -404,6 +439,7 @@ def _scan_bound_headers(
                     snapshots,
                     skip_dirs=skip_dirs,
                     skip_files=skip_files,
+                    skip_relative_subtrees=skip_relative_subtrees,
                     max_header_bytes=max_header_bytes,
                 )
                 attached = _stat_at(descriptor, name, child_relative)
@@ -458,6 +494,7 @@ def scan_markdown_files(
     *,
     skip_dirs: Collection[str] = (),
     skip_files: Collection[str] = (),
+    skip_relative_subtrees: Collection[str] = (),
 ) -> tuple[MarkdownFile, ...]:
     """Snapshot validated Markdown files without following any filesystem links."""
     root = Path(os.path.abspath(os.fspath(root)))
@@ -473,6 +510,7 @@ def scan_markdown_files(
 
     if not _SUPPORTS_BOUND_SCAN:
         raise _unsafe(".", "safe vault scanning is not supported on this platform")
+    canonical_skips = _canonical_skip_subtrees(skip_relative_subtrees)
     snapshots: list[MarkdownFile] = []
     descriptor = _open_bound_root(root)
     try:
@@ -488,6 +526,7 @@ def scan_markdown_files(
             snapshots,
             skip_dirs=skip_dirs,
             skip_files=skip_files,
+            skip_relative_subtrees=canonical_skips,
         )
     finally:
         _close(descriptor, ".")
@@ -499,6 +538,7 @@ def scan_markdown_headers(
     *,
     skip_dirs: Collection[str] = (),
     skip_files: Collection[str] = (),
+    skip_relative_subtrees: Collection[str] = (),
     max_header_bytes: int = 64 * 1024,
 ) -> tuple[MarkdownHeader, ...]:
     """Snapshot bounded metadata without reading Markdown page bodies."""
@@ -516,6 +556,7 @@ def scan_markdown_headers(
         raise _unsafe(".", "vault root must be an ordinary directory")
     if not _SUPPORTS_BOUND_SCAN:
         raise _unsafe(".", "safe vault scanning is not supported on this platform")
+    canonical_skips = _canonical_skip_subtrees(skip_relative_subtrees)
     snapshots: list[MarkdownHeader] = []
     descriptor = _open_bound_root(root)
     try:
@@ -529,6 +570,7 @@ def scan_markdown_headers(
             snapshots,
             skip_dirs=skip_dirs,
             skip_files=skip_files,
+            skip_relative_subtrees=canonical_skips,
             max_header_bytes=max_header_bytes,
         )
     finally:

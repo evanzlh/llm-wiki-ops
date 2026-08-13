@@ -433,11 +433,16 @@ def _knowledge_pages(config: PortableConfig) -> list[Path]:
         category_root = config.vault / category
         if not _ordinary_directory(category_root):
             continue
-        for page in sorted(category_root.rglob("*.md")):
-            relative = page.relative_to(config.vault)
-            if relative.parts[:2] == ("journal", "operations"):
-                continue
-            pages.append(page)
+        for directory, dirnames, filenames in os.walk(
+            category_root, topdown=True, followlinks=False
+        ):
+            current = Path(directory)
+            relative = current.relative_to(config.vault)
+            if relative == Path("journal"):
+                dirnames[:] = [name for name in dirnames if name != "operations"]
+            pages.extend(
+                current / name for name in filenames if name.endswith(".md")
+            )
     return sorted(set(pages))
 
 
@@ -631,55 +636,13 @@ def _lint_path(config: PortableConfig, page: str) -> str:
     return _rel(config.root, config.vault / PurePosixPath(page))
 
 
-def _lint_page_topology_is_safe(config: PortableConfig) -> bool:
-    """Return whether legacy lint can inspect the vault without following links."""
-    if not _ordinary_directory(config.vault) or _has_symlink_component(
-        config.root, config.vault
-    ):
-        return False
-    try:
-        pages = config.vault.rglob("*.md")
-        return all(
-            _ordinary_file(page) and not _has_symlink_component(config.vault, page)
-            for page in pages
-        )
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
 def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
-    legacy_operations = config.vault / "journal" / "operations"
-    try:
-        legacy_metadata = legacy_operations.lstat()
-    except FileNotFoundError:
-        legacy_metadata = None
-    except OSError:
-        return
-    if legacy_metadata is not None:
-        if not stat.S_ISDIR(legacy_metadata.st_mode) or stat.S_ISLNK(
-            legacy_metadata.st_mode
-        ):
-            return
-        try:
-            with os.scandir(legacy_operations) as entries:
-                if next(entries, None) is not None:
-                    return
-        except OSError:
-            return
-    if not _lint_page_topology_is_safe(config):
-        issues.append(
-            CheckIssue(
-                "lint-invalid",
-                ".",
-                "lint skipped because the vault Markdown topology is unsafe",
-            )
-        )
-        return
     try:
         report = lint_vault(
             config.vault,
             require_trust_ledger=False,
             strict_trust=False,
+            skip_relative_subtrees={("journal", "operations")},
         )
     except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         issues.append(CheckIssue("lint-invalid", ".", _scrub(config.root, exc)))

@@ -273,10 +273,18 @@ def _parse_confidence(
     return float(value)
 
 
-def _trust_snapshots(vault: Path) -> dict[str, MarkdownFile]:
+def _trust_snapshots(
+    vault: Path,
+    *,
+    skip_relative_subtrees: Collection[str] = (),
+) -> dict[str, MarkdownFile]:
     return {
         snapshot.relative: snapshot
-        for snapshot in scan_markdown_files(vault, skip_dirs=TRUST_SKIP_DIRS)
+        for snapshot in scan_markdown_files(
+            vault,
+            skip_dirs=TRUST_SKIP_DIRS,
+            skip_relative_subtrees=skip_relative_subtrees,
+        )
         if snapshot.path.stem not in TRUST_RESERVED_STEMS
     }
 
@@ -701,6 +709,7 @@ def check_trust_ledger(
     *,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
+    skip_relative_subtrees: Collection[str] = (),
     schema_source: str = "framework-defaults",
 ) -> dict[str, Any]:
     """Validate current pages against an approved manual review ledger."""
@@ -708,7 +717,10 @@ def check_trust_ledger(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
-    snapshots = _trust_snapshots(vault)
+    snapshots = _trust_snapshots(
+        vault,
+        skip_relative_subtrees=skip_relative_subtrees,
+    )
     path = ledger_path or vault / TRUST_LEDGER_RELATIVE_PATH
     report = _empty_report(
         path,

@@ -156,6 +156,43 @@ def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path
     assert report["findings"]["typed_relationship_issues"] == []
 
 
+@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+def test_lint_vault_prunes_relative_subtree_without_hiding_other_findings(
+    tmp_path: Path, kind: str
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md", links=["ghost"])
+    legacy = vault / "journal" / "operations"
+    legacy.parent.mkdir()
+    if kind == "ordinary":
+        legacy.mkdir()
+        (legacy / "malformed.md").write_text(
+            "# Missing frontmatter with [[legacy ghost]]\n", encoding="utf-8"
+        )
+    else:
+        external = tmp_path / "external-legacy"
+        external.mkdir()
+        (external / "malformed.md").write_text("# External\n", encoding="utf-8")
+        legacy.symlink_to(external, target_is_directory=True)
+
+    report = lint_vault(
+        vault,
+        require_trust_ledger=False,
+        skip_relative_subtrees={("journal", "operations")},
+    )
+
+    assert report["findings"]["broken_links"] == [
+        {"page": "concepts/alpha.md", "target": "ghost"}
+    ]
+    assert all(
+        not item.get("page", "").startswith("journal/operations/")
+        for finding in report["findings"].values()
+        if isinstance(finding, list)
+        for item in finding
+        if isinstance(item, dict)
+    )
+
+
 def test_lint_does_not_hide_unsupported_personal_artifact_paths(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     for name in ("_archives", "_raw", "_readouts", "_staging"):

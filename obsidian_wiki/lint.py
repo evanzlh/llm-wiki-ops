@@ -40,8 +40,25 @@ ALLOWED_RELATIONSHIP_TYPES = frozenset(
     {"extends", "implements", "contradicts", "derived_from", "uses", "replaces", "related_to"}
 )
 
-def _iter_pages(vault: Path) -> tuple[MarkdownFile, ...]:
-    return scan_markdown_files(vault, skip_dirs=SKIP_DIRS)
+def _relative_subtree_strings(
+    skip_relative_subtrees: Collection[tuple[str, ...]],
+) -> set[str]:
+    try:
+        return {"/".join(parts) for parts in skip_relative_subtrees}
+    except TypeError as exc:
+        raise ValueError("lint skip subtree must be a relative path tuple") from exc
+
+
+def _iter_pages(
+    vault: Path,
+    *,
+    skip_relative_subtrees: Collection[tuple[str, ...]] = (),
+) -> tuple[MarkdownFile, ...]:
+    return scan_markdown_files(
+        vault,
+        skip_dirs=SKIP_DIRS,
+        skip_relative_subtrees=_relative_subtree_strings(skip_relative_subtrees),
+    )
 
 
 def _typed_relationships(text: str) -> list[dict[str, str]]:
@@ -85,8 +102,10 @@ def lint_vault(
     allowed_relationship_types: Collection[str] | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_fields: Collection[str] | None = None,
+    skip_relative_subtrees: Collection[tuple[str, ...]] = (),
     schema_source: str = "framework-defaults",
 ) -> dict[str, Any]:
+    excluded_paths = _relative_subtree_strings(skip_relative_subtrees)
     relationship_types = frozenset(
         ALLOWED_RELATIONSHIP_TYPES
         if allowed_relationship_types is None
@@ -100,7 +119,13 @@ def lint_vault(
         if required_trust_fields is not None
         else TRUST_REQUIRED_FRONTMATTER
     )
-    pages = [_parse_page(snapshot) for snapshot in _iter_pages(vault)]
+    pages = [
+        _parse_page(snapshot)
+        for snapshot in _iter_pages(
+            vault,
+            skip_relative_subtrees=skip_relative_subtrees,
+        )
+    ]
     slug_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
     node_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for page in pages:
@@ -228,6 +253,7 @@ def lint_vault(
         ledger_path,
         allowed_lifecycles=lifecycles,
         required_trust_keys=trust_fields,
+        skip_relative_subtrees=excluded_paths,
         schema_source=schema_source,
     )
     ledger_is_missing = candidate_trust_report["errors"] == [

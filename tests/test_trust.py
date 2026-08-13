@@ -61,6 +61,28 @@ def _write_ledger(vault: Path) -> Path:
     return path
 
 
+def test_check_trust_ledger_prunes_exact_relative_subtree(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = _write_ledger(vault)
+    external = tmp_path / "external-legacy"
+    external.mkdir()
+    legacy = vault / "journal" / "operations"
+    legacy.parent.mkdir()
+    legacy.symlink_to(external, target_is_directory=True)
+
+    report = check_trust_ledger(
+        vault,
+        ledger_path,
+        skip_relative_subtrees={"journal/operations"},
+    )
+
+    assert report["status"] == "pass"
+    assert report["counts"]["reviewed"] == 1
+
+
 def _portable_cli_context(
     vault: Path, settings: dict[str, str] | None = None
 ) -> Path:
