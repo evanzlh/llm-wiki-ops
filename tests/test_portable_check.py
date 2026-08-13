@@ -2056,7 +2056,6 @@ def test_stable_views_must_match_portable_templates(tmp_path: Path, name: str) -
 @pytest.mark.parametrize(
     "relative",
     [
-        "wiki/hot.md",
         ".obsidian-wiki/local/cache.json",
         "wiki/.locks/write.lock",
         "wiki/.snapshots/one.json",
@@ -2075,6 +2074,21 @@ def test_mutable_local_state_must_not_be_tracked(tmp_path: Path, relative: str) 
     )
 
     assert "tracked-local-state" in issue_codes(check_portable_repo(config))
+
+
+def test_tracked_hot_view_is_valid_portable_state(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+
+    assert "wiki/hot.md" in subprocess.run(
+        ["git", "-C", str(root), "ls-files"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    report = check_portable_repo(config)
+
+    assert "tracked-local-state" not in issue_codes(report)
+    assert report["status"] == "pass"
 
 
 def test_fixed_local_state_is_rejected_when_configured_local_path_changes(
@@ -2106,8 +2120,9 @@ def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
     root, config, _, _, _ = valid_repo(tmp_path)
     bad_name = os.fsdecode(b"bad-\xff")
     (root / bad_name).write_text("bad filename", encoding="utf-8")
-    hot = root / "wiki/hot.md"
-    hot.write_text("local", encoding="utf-8")
+    local = root / ".obsidian-wiki/local/cache.json"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text("local", encoding="utf-8")
     subprocess.run(
         [
             b"git",
@@ -2116,7 +2131,7 @@ def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
             b"add",
             b"-f",
             b"bad-\xff",
-            b"wiki/hot.md",
+            b".obsidian-wiki/local/cache.json",
         ],
         check=True,
         capture_output=True,

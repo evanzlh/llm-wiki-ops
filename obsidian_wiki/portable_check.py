@@ -734,14 +734,12 @@ def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
         )
         return
     tracked = tracked_paths(git_root)
-    hot = _rel(config.root, config.vault / "hot.md")
     local = _rel(config.root, config.local_state)
     canonical_local = ".obsidian-wiki/local"
     for path in tracked:
         parts = PurePosixPath(path).parts
         if (
-            path == hot
-            or path == local
+            path == local
             or path.startswith(local + "/")
             or path == canonical_local
             or path.startswith(canonical_local + "/")
