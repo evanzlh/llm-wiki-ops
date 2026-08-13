@@ -1001,7 +1001,8 @@ def test_read_only_knowledge_workflows_have_no_write_protocol_or_mutations() -> 
         text = _special_skill(name)
         assert "does not change authoritative knowledge" in text
         assert "`stale` boolean" in text and "`reason` string" in text
-        assert "may remove stale ignored local `hot.md`" in text
+        assert "read-only and must not remove" in text
+        assert "tracked" in text
         assert "hot mark-current" in text
         assert "transaction begin" not in text
 

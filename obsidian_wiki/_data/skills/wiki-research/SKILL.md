@@ -74,11 +74,11 @@ requires explicit owner authorization.
    reported recovery, save the envelope, inspect
    `obsidian-wiki transaction list --json --pretty`, require one exact record,
    satisfy `requires`, and stop on ambiguity.
-8. **Refresh bounded context after success.** Only after a successful knowledge
-   commit, including a successfully resolved terminal knowledge commit, run
+8. **Refresh bounded context after success.** Only after a successful
+   `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, use
-   `obsidian-wiki hot inputs --json --pretty` and finish the bounded local update
-   with `obsidian-wiki hot mark-current --json`.
+   `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked
+   `hot.md` working-tree diff, and run `obsidian-wiki hot mark-current --json`.
 
-Do not edit manifest shards or stable index/log files. Do not commit, push, or
-open a pull request.
+Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
+owns the canonical log append. Do not commit, push, or open a pull request.

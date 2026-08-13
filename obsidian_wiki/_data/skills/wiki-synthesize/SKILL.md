@@ -90,11 +90,11 @@ after the report.
    `transaction commit` or `transaction retry` is a knowledge commit.
 7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
-   `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
-   candidate as a local derived artifact, then run
+   `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked
+   `hot.md` working-tree diff, then run
    `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 
-Do not edit manifest shards, operation records, stable `index.md`, or stable
-`log.md`; do not run Git publication commands or write unsupported control paths.
+Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
+owns the canonical log append. Do not run Git publication commands or write unsupported control paths.
 Do not commit, push, or open a pull request.

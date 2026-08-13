@@ -36,7 +36,7 @@ obsidian-wiki transaction commit <transaction-id> --json --pretty
 obsidian-wiki transaction list --json --pretty
 ```
 
-代理程式只在 `begin` 回傳的 `candidate_vault` 中寫候選頁。`validate` 在提升前檢查預期知識庫；交易審查確認候選、刪除與報告後，才執行 `transaction commit`。若保留復原狀態，依回報使用 `retry`、`restore`、`discard` 或 `abort`。
+代理程式只在 `begin` 回傳的 `candidate_vault` 中寫候選頁。`validate` 在提升前檢查預期知識庫；交易審查確認候選、刪除與報告後，才執行 `transaction commit`。成功提交會提升頁面、更新 manifest 分片，並在最後附加一個規範區塊到受版本管理的權威操作日誌 `wiki/log.md`；JSON commit 與 retry 輸出會回傳 `log_path`。若保留復原狀態，依回報使用 `retry`、`restore`、`discard` 或 `abort`。
 
 缺少凍結來源雜湊的舊版保留交易仍可列出、還原、中止或捨棄，但不可 commit 或 retry；請重新開始交易以綁定目前來源內容。
 
@@ -48,7 +48,7 @@ obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
 
 所有者檢查 live 分片與復原證據後，可以明確保留 live 版本。清理在中斷後可重入，且只移除記錄身份與內容仍相符的固定工件。若兩次嘗試之間 live 分片發生變更，自動復原會停止，直到所有者重新執行命令確認目前的 live 版本。
 
-## 本機近期狀態
+## 受版本管理的近期檢視
 
 ```bash
 obsidian-wiki hot status --json --pretty
@@ -56,7 +56,7 @@ obsidian-wiki hot inputs --pages 50 --operations 10 --json --pretty
 obsidian-wiki hot mark-current --json --pretty
 ```
 
-`wiki/hot.md` 是被忽略的衍生檢視；`wiki/index.md` 與 `wiki/log.md` 保持穩定。CLI 不執行 Git 發布，所有者在外部審查並發布變更。
+`wiki/hot.md` 是受版本管理的衍生語義檢視。`hot status` 僅回報新鮮度，不得移除這個檔案；成功 commit 或 retry 後的語義刷新會成為可審查的工作樹差異。CLI 不執行 Git 發布；所有者在外部審查變更、解決 `log.md` 與 `hot.md` 中的一般 Git 衝突，並決定是否發布。
 
 ## 查詢、圖形與品質
 

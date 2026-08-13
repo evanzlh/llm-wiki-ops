@@ -24,9 +24,10 @@ transaction record rather than guessing.
 ## Tracking layer
 
 The repository uses manifest v2 with sharded entries and exactly one configured
-source root. The transaction commit command owns the immutable operation record
-and all manifest mutation. Agents never edit manifest shards directly. Stable
-`index.md` and `log.md` are not rewritten during ordinary compilation.
+source root. The transaction commit command owns all manifest mutation and appends
+one canonical operation block to the tracked authoritative `log.md` last. Agents
+never edit manifest shards directly and never edit `log.md` directly; commit output
+returns `log_path`.
 
 This separation keeps provenance reviewable: sources explain why knowledge
 exists, transactions explain how it changed, and compiled pages explain what the

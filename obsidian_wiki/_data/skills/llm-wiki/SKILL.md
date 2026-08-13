@@ -124,8 +124,8 @@ repository root as the command working directory throughout.
 8. **Refresh bounded tracked context after success.** Only after a successful
    knowledge commit, run `obsidian-wiki hot status --json`.
    If stale, obtain bounded inputs with `obsidian-wiki hot inputs --json --pretty`,
-   let the agent write only the requested tracked derived semantic `hot.md`
-   view, and finish with `obsidian-wiki hot mark-current --json`. `hot status`
+   let the agent write only the requested tracked `hot.md` working-tree diff,
+   and finish with `obsidian-wiki hot mark-current --json`. `hot status`
    is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.

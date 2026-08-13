@@ -161,6 +161,27 @@ def test_each_authoritative_page_documents_its_role() -> None:
             assert phrase in text, (relative, phrase)
 
 
+def test_traditional_chinese_cli_documents_tracked_log_and_hot_contract() -> None:
+    text = _text("docs/cli.zh-TW.md")
+    for required in (
+        "受版本管理的權威操作日誌 `wiki/log.md`",
+        "最後附加一個規範區塊",
+        "`log_path`",
+        "受版本管理的衍生語義檢視",
+        "不得移除",
+        "一般 Git 衝突",
+    ):
+        assert required in text, required
+    assert "被忽略的衍生檢視" not in text
+    assert "`wiki/log.md` 保持穩定" not in text
+
+
+def test_agent_docs_define_the_only_live_hot_write_exception() -> None:
+    text = _text("docs/agents.md")
+    assert "sole live-vault write exception" in text
+    assert "successful `transaction commit` or `transaction retry`" in text
+
+
 def test_configuration_example_uses_the_runtime_implementation_id() -> None:
     configuration = _text("docs/configuration.md")
     rendered = render_portable_config(version="2026.8")

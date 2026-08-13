@@ -762,6 +762,32 @@ def test_active_operation_runtime_contract_has_no_operation_pages() -> None:
     assert "operation_path" not in combined
 
 
+def test_all_active_runtime_markdown_uses_tracked_hot_and_log_contract() -> None:
+    runtime_files = sorted((ROOT / "obsidian_wiki/_data/skills").rglob("*.md"))
+    forbidden = (
+        "local derived artifact",
+        "bounded hot candidate",
+        "stable index/log files",
+        "stable `log.md`",
+        "immutable operation record",
+    )
+    for path in runtime_files:
+        contents = path.read_text(encoding="utf-8")
+        for phrase in forbidden:
+            assert phrase not in contents, (path, phrase)
+        if (
+            "obsidian-wiki hot inputs --json --pretty" in contents
+            and "obsidian-wiki hot mark-current --json" in contents
+            and "Never directly modify" not in contents
+        ):
+            flat = " ".join(contents.split())
+            assert re.search(
+                r"successful `transaction commit` or `transaction retry`",
+                flat,
+            ), path
+            assert "tracked `hot.md` working-tree diff" in flat, path
+
+
 def test_dedup_bounds_candidate_generation_before_similarity_scoring() -> None:
     flat = " ".join(skill_text("wiki-dedup").split())
     for required in (

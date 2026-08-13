@@ -483,7 +483,11 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             assert required in steps[5], f"{path}: step 6 missing {required!r}"
         for required in ("transaction validate", "Review", "transaction commit", "recovery"):
             assert required in steps[6], f"{path}: step 7 missing {required!r}"
-        for required in ("successful", "knowledge commit", "hot status"):
+        for required in (
+            "successful `transaction commit` or `transaction retry`",
+            "hot status",
+            "requested tracked `hot.md` working-tree diff",
+        ):
             assert required in steps[7], f"{path}: step 8 missing {required!r}"
 
     capture = " ".join(SOURCE_WORKFLOW_SKILLS[0].read_text(encoding="utf-8").split())
@@ -1419,8 +1423,7 @@ def test_history_hot_sequence_is_complete_and_parser_valid() -> None:
         assert positions == sorted(positions), path
         for required in (
             "successful `transaction commit` or `transaction retry`",
-            "requested bounded hot candidate",
-            "derived artifact",
+            "requested tracked `hot.md` working-tree diff",
             "must not mark stale inputs current directly",
         ):
             assert required in flat, f"{path}: missing {required!r}"
@@ -1608,7 +1611,7 @@ def test_maintenance_noop_and_hot_gates_match_canonical_protocol() -> None:
             "empty transaction",
             "operation record",
             "successful `transaction commit` or `transaction retry`",
-            "requested bounded hot candidate",
+            "requested tracked `hot.md` working-tree diff",
             "must not mark stale inputs current directly",
         ):
             assert required in flat, f"{path}: missing {required!r}"

@@ -35,7 +35,7 @@ Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical 
 
 Save the failed command envelope. Its `error` and `recovery` supply a trusted transaction ID/status; absent ID means inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when chosen, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
 
-Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; if stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot candidate or derived artifact, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
+Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; if stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
 
 ## Discovery and parsing
 
