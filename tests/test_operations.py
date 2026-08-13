@@ -349,8 +349,8 @@ def test_temp_substitution_is_rejected_before_target_mutation(
     original_verify = operations._verify_temp
 
     def substitute(parent_fd: int, name: str, descriptor: int, identity, data) -> None:
-        os.unlink(name, dir_fd=parent_fd)
-        os.link(external, name, dst_dir_fd=parent_fd)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, external.read_bytes())
         original_verify(parent_fd, name, descriptor, identity, data)
 
     monkeypatch.setattr(operations, "_verify_temp", substitute)
@@ -375,17 +375,13 @@ def test_temp_substitution_at_promotion_cannot_install_external_inode(
         nonlocal substituted
         if not substituted:
             substituted = True
-            names = os.listdir(parent_fd)
-            temp_name = next(name for name in names if name.startswith(".log.md.tmp-"))
-            os.rename(temp_name, "attacker-moved", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            os.link(external, temp_name, dst_dir_fd=parent_fd)
+            os.link(external, ".log.md.tmp-attacker", dst_dir_fd=parent_fd)
         original_link(parent_fd, descriptor, destination)
 
     monkeypatch.setattr(operations, "_link_descriptor_noreplace", substitute)
-    with pytest.raises(OperationError):
-        append_operation(target, change(), root=tmp_path)
+    append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert external.read_bytes() == b"external\n"
 
 
@@ -417,6 +413,45 @@ def test_cleanup_substitution_never_unlinks_collision(
 
     assert owned.read_bytes() == collision
     assert (tmp_path / "owned-moved").read_bytes() == b"owned"
+
+
+def test_cleanup_substitution_after_identity_check_preserves_external(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = tmp_path / ".log.md.tmp-owned"
+    owned.write_bytes(b"owned")
+    metadata = owned.stat()
+    identity = (metadata.st_dev, metadata.st_ino)
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+    original_stat = operations.os.stat
+    substituted = False
+
+    def substitute_after_stat(path, *args, **kwargs):
+        nonlocal substituted
+        result = original_stat(path, *args, **kwargs)
+        if isinstance(path, str) and path.startswith(".log.md.cleanup-"):
+            if not substituted:
+                substituted = True
+                parent_fd = kwargs["dir_fd"]
+                os.rename(
+                    path,
+                    "owned-preserved",
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.rename(external, path, dst_dir_fd=parent_fd)
+        return result
+
+    monkeypatch.setattr(operations.os, "stat", substitute_after_stat)
+    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        operations._cleanup_owned(parent_fd, owned.name, identity)
+    finally:
+        os.close(parent_fd)
+
+    assert any(path.read_bytes() == b"external" for path in tmp_path.iterdir())
+    assert (tmp_path / "owned-preserved").read_bytes() == b"owned"
 
 
 @pytest.mark.parametrize("failure", ["file_fsync", "promotion", "parent_fsync"])
@@ -480,6 +515,56 @@ def test_installed_verification_failure_rolls_back_preimage(
     assert not list(tmp_path.glob(".log.md.tmp-*"))
     assert not list(tmp_path.glob(".log.md.backup-*"))
     assert not list(tmp_path.glob(".log.md.rollback-*"))
+
+
+def test_rollback_rejects_substituted_backup_without_installing_external(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+
+    def substitute_backup(parent_fd: int, identity) -> None:
+        backup = next(
+            name for name in os.listdir(parent_fd) if name.startswith(".log.md.backup-")
+        )
+        os.rename(
+            backup,
+            "owner-backup-preserved",
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.link(external, backup, dst_dir_fd=parent_fd)
+        raise OperationError("simulated verification failure")
+
+    monkeypatch.setattr(operations, "_verify_installed", substitute_backup)
+    with pytest.raises(OperationError, match="verification failure"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_bytes() != b"external"
+    assert external.read_bytes() == b"external"
+    assert (tmp_path / "owner-backup-preserved").read_text(
+        encoding="utf-8"
+    ) == EMPTY_OPERATION_LOG
+
+
+def test_moved_preimage_requires_full_stable_identity(tmp_path: Path) -> None:
+    target = tmp_path / "guard"
+    expected = EMPTY_OPERATION_LOG.encode("utf-8")
+    target.write_bytes(expected)
+    descriptor = os.open(target, os.O_RDONLY)
+    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        actual = operations._stable_identity(os.fstat(descriptor))
+        changed = actual[:5] + (actual[5] - 1,) + actual[6:]
+        with pytest.raises(OperationError, match="changed"):
+            operations._verify_moved_preimage(
+                parent_fd, target.name, descriptor, changed, expected
+            )
+    finally:
+        os.close(descriptor)
+        os.close(parent_fd)
 
 
 def test_stable_identity_includes_ctime() -> None:
