@@ -12,7 +12,7 @@ import pytest
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
 from obsidian_wiki.frontmatter import parse_frontmatter
-from obsidian_wiki.operations import validate_operation, write_operation
+from obsidian_wiki.operations import parse_operation_log, render_operation_log
 from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -283,7 +283,20 @@ def test_cjk_custom_skill_sync_check_and_transaction_survive_clone_move(
         assert new_root not in data, relative
 
 
-def _page(*, title: str, source_id: str, created: str) -> str:
+def _page(
+    *,
+    title: str,
+    source_id: str,
+    created: str,
+    relationship_target: str | None = None,
+) -> str:
+    relationships = (
+        "relationships:\n"
+        f'  - target: "[[{relationship_target}]]"\n'
+        "    type: related_to\n"
+        if relationship_target is not None
+        else ""
+    )
     return f"""---
 title: {title}
 category: concepts
@@ -294,10 +307,7 @@ sources:
 created: {created}
 updated: {created}
 summary: Knowledge compiled from {source_id}.
-relationships:
-  - target: "[[index]]"
-    type: related_to
-provenance:
+{relationships}provenance:
   extracted: 1.0
   inferred: 0.0
   ambiguous: 0.0
@@ -321,9 +331,6 @@ sources:
 created: {started_at}
 updated: {started_at}
 summary: 版本管理决策的组会纪要。
-relationships:
-  - target: "[[index]]"
-    type: related_to
 provenance:
   extracted: 1.0
   inferred: 0.0
@@ -331,18 +338,6 @@ provenance:
 ---
 # 组会纪要
 """
-
-
-def _operation_writer(config: PortableConfig, suffix: str):
-    def writer(change):
-        return write_operation(
-            config.vault,
-            change,
-            suffix=suffix,
-            cleanup_root=config.local_state,
-        )
-
-    return writer
 
 
 def _ingest(
@@ -354,24 +349,26 @@ def _ingest(
     transaction_id: str,
     started_at: str,
     completed_at: str,
-    operation_suffix: str,
     source_bytes: bytes,
+    relationship_target: str | None = None,
 ) -> tuple[PortableConfig, Path]:
     config = _config(root)
     source = root / source_id
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(source_bytes)
-    manager = TransactionManager(
-        config,
-        operation_writer=_operation_writer(config, operation_suffix),
-    )
+    manager = TransactionManager(config)
     record = manager.begin(
         [source], transaction_id=transaction_id, started_at=started_at
     )
     candidate = record.candidate_vault / page
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text(
-        _page(title=title, source_id=source_id, created=completed_at[:10]),
+        _page(
+            title=title,
+            source_id=source_id,
+            created=completed_at[:10],
+            relationship_target=relationship_target,
+        ),
         encoding="utf-8",
     )
     manager.commit(transaction_id, completed_at=completed_at)
@@ -401,7 +398,6 @@ def test_clone_location_does_not_change_manifest_or_page_provenance(
         "transaction_id": "portable-fixed",
         "started_at": "2026-08-08T00:00:00Z",
         "completed_at": "2026-08-08T00:05:00Z",
-        "operation_suffix": "c33e",
         "source_bytes": b"same design source\n",
     }
 
@@ -424,7 +420,9 @@ def test_clone_location_does_not_change_manifest_or_page_provenance(
     assert manifest_relative_path_a == manifest_relative_path_b
 
 
-def test_unrelated_source_transactions_merge_without_conflicts(tmp_path: Path) -> None:
+def test_unrelated_source_transactions_only_need_owner_resolution_for_log(
+    tmp_path: Path,
+) -> None:
     seed = _portable_seed(tmp_path)
     _git(seed, "init", "-q")
     _git(seed, "config", "user.email", "seed@example.invalid")
@@ -447,7 +445,6 @@ def test_unrelated_source_transactions_merge_without_conflicts(tmp_path: Path) -
         transaction_id="alice-transaction",
         started_at="2026-08-08T01:00:00Z",
         completed_at="2026-08-08T01:05:00Z",
-        operation_suffix="a11c",
         source_bytes=b"alice source\n",
     )
     _git(alice, "add", "-A")
@@ -461,7 +458,6 @@ def test_unrelated_source_transactions_merge_without_conflicts(tmp_path: Path) -
         transaction_id="bob-transaction",
         started_at="2026-08-08T02:00:00Z",
         completed_at="2026-08-08T02:05:00Z",
-        operation_suffix="b22d",
         source_bytes=b"bob source\n",
     )
     _git(bob, "add", "-A")
@@ -473,17 +469,29 @@ def test_unrelated_source_transactions_merge_without_conflicts(tmp_path: Path) -
     merge = _git(alice, "merge", "--no-edit", f"bob/{bob_branch}", check=False)
     unmerged = _git(alice, "diff", "--name-only", "--diff-filter=U")
 
-    assert merge.returncode == 0, merge.stdout + merge.stderr
-    assert unmerged.stdout == ""
+    assert merge.returncode == 1, merge.stdout + merge.stderr
+    assert unmerged.stdout.splitlines() == ["wiki/log.md"]
     assert (alice / "wiki/concepts/alice.md").is_file()
     assert (alice / "wiki/concepts/bob.md").is_file()
     bob_source = b"bob source\n"
     assert (alice / "sources/bob.md").read_bytes() == bob_source
+    alice_log = parse_operation_log(
+        _git_bytes(alice, "show", "HEAD:wiki/log.md").stdout.decode("utf-8")
+    )
+    bob_log = parse_operation_log(
+        _git_bytes(alice, "show", "MERGE_HEAD:wiki/log.md").stdout.decode("utf-8")
+    )
+    merged_records = tuple(
+        sorted(alice_log + bob_log, key=lambda record: record.completed_at)
+    )
+    (alice / "wiki/log.md").write_text(
+        render_operation_log(merged_records), encoding="utf-8"
+    )
+    _git(alice, "add", "wiki/log.md")
+    _git(alice, "commit", "--no-edit")
     assert _git_bytes(alice, "show", "HEAD:sources/bob.md").stdout == bob_source
-    for relative_path in (
-        "wiki/concepts/bob.md",
-        "wiki/journal/operations/2026/08/20260808T020500Z-b22d.md",
-    ):
+
+    for relative_path in ("wiki/concepts/bob.md", "wiki/log.md"):
         working_tree_bytes = (alice / relative_path).read_bytes()
         assert b"\r\n" not in working_tree_bytes
         assert (
@@ -518,8 +526,8 @@ def test_framework_nested_frontmatter_survives_transaction_and_clone(
         transaction_id="framework-nested",
         started_at="2026-08-10T01:00:00Z",
         completed_at="2026-08-10T01:05:00Z",
-        operation_suffix="f12a",
         source_bytes=b"framework nested frontmatter\n",
+        relationship_target="concepts/framework-page",
     )
     _git(seed, "add", "-A")
     _git(seed, "commit", "-qm", "ingest framework page")
@@ -678,13 +686,18 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     assert promoted_metadata.scalars["created"] == transaction["started_at"]
     assert promoted_metadata.scalars["updated"] == transaction["started_at"]
     assert promoted_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
-    operation = root / "wiki" / commit_payload["operation_path"]
-    operation_change = validate_operation(operation, vault=root / "wiki")
+    assert commit_payload["log_path"] == "log.md"
+    operation = root / "wiki" / commit_payload["log_path"]
+    operation_changes = parse_operation_log(operation.read_text(encoding="utf-8"))
+    operation_change = next(
+        change
+        for change in operation_changes
+        if change.transaction_id == transaction["transaction_id"]
+    )
     assert operation_change.transaction_id == transaction["transaction_id"]
     assert operation_change.source_ids == (_CJK_SOURCE_ID,)
     operation_text = operation.read_text(encoding="utf-8")
-    operation_metadata = parse_frontmatter(operation_text)
-    assert operation_metadata.lists["sources"] == (_CJK_SOURCE_ID,)
+    assert f"- `{_CJK_SOURCE_ID}`" in operation_text
     assert f"[[{Path(_CJK_PAGE).with_suffix('').as_posix()}]]" in operation_text
     assert str(root.resolve()) not in operation_text
 
@@ -692,9 +705,12 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         _CJK_SOURCE_ID,
         f"wiki/{_CJK_PAGE}",
         "wiki/.manifest/sources/meetings/2026-08-06-组会纪要.md.json",
-        f"wiki/{commit_payload['operation_path']}",
+        f"wiki/{commit_payload['log_path']}",
     }
-    framework_outputs = durable_paths - {_CJK_SOURCE_ID}
+    framework_outputs = durable_paths - {
+        _CJK_SOURCE_ID,
+        f"wiki/{commit_payload['log_path']}",
+    }
     untracked = set(
         _git(root, "ls-files", "--others", "--exclude-standard", "-z")
         .stdout.rstrip("\0")
@@ -702,7 +718,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
     )
     assert untracked == framework_outputs
     assert not any(path.startswith(".obsidian-wiki/local/") for path in untracked)
-    assert _git(root, "diff", "--quiet", check=False).returncode == 0
+    assert _git(root, "diff", "--name-only").stdout.splitlines() == ["wiki/log.md"]
     assert _git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
     assert _git(root, "rev-parse", "HEAD").stdout.strip() == owner_head
     local_transaction = (
@@ -727,7 +743,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         _CJK_SOURCE_ID: source,
         f"wiki/{_CJK_PAGE}": promoted,
         "wiki/.manifest/sources/meetings/2026-08-06-组会纪要.md.json": shard,
-        f"wiki/{commit_payload['operation_path']}": operation,
+        f"wiki/{commit_payload['log_path']}": operation,
     }
     for relative, path in durable_files.items():
         assert _git_bytes(root, "show", f"HEAD:{relative}").stdout == path.read_bytes()

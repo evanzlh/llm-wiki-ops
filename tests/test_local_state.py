@@ -99,7 +99,7 @@ def _write_page(
     return page
 
 
-def _write_operation(
+def _append_log_record(
     config: PortableConfig,
     *,
     transaction_id: str,
@@ -192,7 +192,7 @@ def test_manifest_operation_and_branch_changes_are_authoritative(
     assert hot_status(config)["stale"] is True
 
     mark_hot_current(config)
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-authoritative",
         completed_at="2026-08-08T00:00:00Z",
@@ -566,7 +566,7 @@ def test_hot_inputs_returns_cjk_page_summary_and_serialized_operation(
         summary="本地派生缓存。",
         updated="2026-08-11",
     )
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-hot",
         completed_at="2026-08-11T01:00:00Z",
@@ -634,19 +634,19 @@ def test_hot_inputs_bounds_and_sorts_pages_and_operations_deterministically(
     dynamic.parent.mkdir()
     dynamic.write_text(tied_concept.read_text(encoding="utf-8"), encoding="utf-8")
 
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-old",
         completed_at="2026-08-10T01:00:00Z",
         suffix="cccc",
     )
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-tie-a",
         completed_at="2026-08-12T01:00:00Z",
         suffix="aaaa",
     )
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-tie-b",
         completed_at="2026-08-12T01:00:00Z",
@@ -805,7 +805,7 @@ def test_hot_inputs_accepts_zero_limits(config_fixture: PortableConfig) -> None:
         summary="Bounded out.",
         updated="2026-08-11",
     )
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-ignored",
         completed_at="2026-08-11T01:00:00Z",
@@ -941,7 +941,7 @@ def test_hot_inputs_and_cli_preserve_exact_tree_and_mtimes(
         summary="No writes.",
         updated="2026-08-11",
     )
-    _write_operation(
+    _append_log_record(
         config,
         transaction_id="tx-read-only",
         completed_at="2026-08-11T01:00:00Z",
@@ -1292,7 +1292,7 @@ def test_hot_inputs_rejects_cjk_source_id_outside_configured_roots(
 def test_hot_inputs_rejects_operation_source_id_outside_configured_roots(
     config_fixture: PortableConfig,
 ) -> None:
-    _write_operation(
+    _append_log_record(
         config_fixture,
         transaction_id="tx-outside-source-root",
         completed_at="2026-08-11T01:00:00Z",
