@@ -42,6 +42,8 @@ Setup does not initialize Git. Before collaboration, the owner initializes the k
 
 Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and writes an operation record while keeping stable `wiki/index.md` and `wiki/log.md`. A transaction never modifies tracked source snapshots. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
 
+Manifest shard updates use a repository-local lock and bounded recovery journal for cooperating writers. A writer that bypasses that lock is not overwritten when its conflicting change is detected; the conflict remains for owner resolution.
+
 Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.obsidian-wiki/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
 
 ```bash

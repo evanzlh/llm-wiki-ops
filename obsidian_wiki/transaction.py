@@ -447,18 +447,32 @@ class TransactionManager:
     ) -> CommitResult:
         self._verify_repository_identity()
         with self._action_lock():
-            record = self.load(transaction_id)
-            if record.status != "active":
-                raise TransactionError(
-                    f"only an active transaction can commit, not {record.status}"
-                )
-            lock_identity = self._require_owned_lock(transaction_id)
-            return self._commit_record(
-                record,
-                completed_at=completed_at,
-                lock_identity=lock_identity,
-                release_pre_snapshot_failure=False,
-            )
+            manifest = ShardedManifest(self.config)
+            try:
+                with manifest.mutation_session():
+                    record = self.load(transaction_id)
+                    if record.status != "active":
+                        raise TransactionError(
+                            f"only an active transaction can commit, not {record.status}"
+                        )
+                    lock_identity = self._require_owned_lock(transaction_id)
+                    return self._commit_record(
+                        record,
+                        completed_at=completed_at,
+                        lock_identity=lock_identity,
+                        release_pre_snapshot_failure=False,
+                        manifest=manifest,
+                    )
+            except ManifestError as exc:
+                record = self.load(transaction_id)
+                payload = self._read_metadata_payload(record.workspace)
+                payload["status"] = "failed"
+                payload["residual_postimages"] = {}
+                payload["rollback_exclusions"] = {}
+                self._write_metadata(record.workspace, payload)
+                if self.lock_path.exists() or self.lock_path.is_symlink():
+                    self._unlink_owned_lock(transaction_id)
+                raise TransactionError(str(exc)) from exc
 
     def retry(
         self,
@@ -468,6 +482,8 @@ class TransactionManager:
     ) -> CommitResult:
         self._verify_repository_identity()
         with self._action_lock():
+            with ShardedManifest(self.config).mutation_session():
+                pass
             record = self.load(transaction_id)
             if record.status != "failed":
                 raise TransactionError(
@@ -549,6 +565,8 @@ class TransactionManager:
     def restore(self, transaction_id: str) -> None:
         self._verify_repository_identity()
         with self._action_lock():
+            with ShardedManifest(self.config).mutation_session():
+                pass
             record = self.load(transaction_id)
             if record.status not in {"promoting", "failed", "complete", "restored"}:
                 raise TransactionError(
@@ -669,6 +687,7 @@ class TransactionManager:
         lock_identity: _FileIdentity,
         release_pre_snapshot_failure: bool,
         preflight_candidates: tuple[_Candidate, ...] | None = None,
+        manifest: ShardedManifest | None = None,
     ) -> CommitResult:
         resolved_completed_at = completed_at or self._utc_now()
         self._validate_started_at(resolved_completed_at)
@@ -754,7 +773,7 @@ class TransactionManager:
                     raise
 
             pages_by_source = self._scan_page_relationships(record.source_ids)
-            manifest = ShardedManifest(self.config)
+            manifest = manifest or ShardedManifest(self.config)
             for source_id in record.source_ids:
                 shard_relative = (
                     manifest.entry_path(source_id)

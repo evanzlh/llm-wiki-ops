@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,48 @@ from obsidian_wiki.transaction_validation import (
     validate_page_metadata,
     validate_prospective_pages,
 )
+
+
+def test_commit_holds_manifest_session_before_snapshot_and_through_manifest_updates(
+    tmp_path: Path, operation_writer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-manifest-session")
+    candidate_page(record, "concepts/a.md")
+    active = False
+    observed_upsert = False
+    original_session = ShardedManifest.mutation_session
+    original_snapshot = manager._snapshot_targets
+    original_upsert = ShardedManifest.upsert
+
+    @contextmanager
+    def tracked_session(store):
+        nonlocal active
+        with original_session(store):
+            active = True
+            try:
+                yield store
+            finally:
+                active = False
+
+    def checked_snapshot(*args, **kwargs):
+        assert active
+        return original_snapshot(*args, **kwargs)
+
+    def checked_upsert(store, *args, **kwargs):
+        nonlocal observed_upsert
+        assert active
+        observed_upsert = True
+        return original_upsert(store, *args, **kwargs)
+
+    monkeypatch.setattr(ShardedManifest, "mutation_session", tracked_session)
+    monkeypatch.setattr(manager, "_snapshot_targets", checked_snapshot)
+    monkeypatch.setattr(ShardedManifest, "upsert", checked_upsert)
+
+    manager.commit("tx-manifest-session")
+    assert observed_upsert
+    assert not active
 
 PAGE = """---
 title: A

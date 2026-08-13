@@ -63,6 +63,12 @@ A transaction commit owns affected manifest shards but never modifies tracked so
 
 Manifest v2 consists of the tracked `wiki/.manifest.json` marker and shards below `wiki/.manifest/sources/`.
 
+Manifest mutations are serialized for cooperating writers by a repository-local lock
+and a fixed, bounded write-ahead log under `.obsidian-wiki/local/`. Recovery completes
+or cleans an interrupted shard update before a later transaction reads rollback state.
+Writers that bypass the lock are outside the cooperation contract: detected conflicts
+are preserved and block further manifest mutations instead of being overwritten.
+
 ## Skill mirrors
 
 `.skills/` is canonical. The `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` directories are complete derived ordinary-file mirrors. Check drift with `obsidian-wiki repo sync-skills`; add `--apply` to rebuild them, then run `obsidian-wiki check` and review the tracked diff.
