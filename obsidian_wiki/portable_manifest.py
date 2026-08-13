@@ -717,7 +717,12 @@ class ShardedManifest:
         if names - allowed:
             raise ManifestError("manifest WAL directory contains unexpected entries")
         for name in names:
-            metadata = os.stat(name, dir_fd=self._session[1], follow_symlinks=False)
+            try:
+                metadata = os.stat(
+                    name, dir_fd=self._session[1], follow_symlinks=False
+                )
+            except OSError as exc:
+                raise ManifestError("manifest WAL entry is unreadable") from exc
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise ManifestError("manifest WAL entries must be single-link ordinary files")
 
@@ -906,6 +911,7 @@ class ShardedManifest:
                     or not self._matches(linked, pre)
                 ):
                     self._conflict(journal, "manifest shard changed while being reserved")
+                os.fsync(side_fd)
                 _manifest_fault_point("reserved_linked")
                 self._validate_root_attachment(self._session[0])
                 os.unlink(target_name, dir_fd=parent_fd)
@@ -1035,6 +1041,7 @@ class ShardedManifest:
         os.fsync(side_fd)
         try:
             os.rmdir(_SIDECAR, dir_fd=parent_fd)
+            os.fsync(parent_fd)
         except OSError as exc:
             if exc.errno not in (errno.ENOTEMPTY, errno.ENOENT):
                 raise
@@ -1101,10 +1108,16 @@ class ShardedManifest:
             except OSError as exc:
                 raise ManifestError("manifest shard is unreadable") from exc
             return _FileProof(self._digest(data), (metadata.st_dev, metadata.st_ino), 1, data)
-        if not path.parent.exists():
-            return None
         with self._bound_repository_root() as root_fd:
-            directories = self._open_directory(root_fd, path.parent, create=False)
+            try:
+                directories = self._open_directory(
+                    root_fd, path.parent, create=False
+                )
+            except ManifestError:
+                self._validate_root_attachment(root_fd)
+                if not path.parent.exists():
+                    return None
+                raise
             try:
                 parent_fd = directories[-1]
                 proof = self._read_proof(parent_fd, path.name, links=frozenset({1, 2}))

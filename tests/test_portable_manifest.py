@@ -929,3 +929,65 @@ def test_recovery_handles_crash_between_reservation_link_and_target_unlink(
     with ShardedManifest(config).mutation_session():
         pass
     assert ShardedManifest(config).load("sources/design/a.md").compiled_at == "2026-08-08T00:00:01Z"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX durability ordering")
+def test_reservation_directory_is_synced_before_live_target_unlink(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+    events: list[str] = []
+    real_fsync = portable_manifest_module.os.fsync
+    real_unlink = portable_manifest_module.os.unlink
+
+    def observe_sync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            events.append(f"sync:{os.fstat(descriptor).st_ino}")
+        real_fsync(descriptor)
+
+    def observe_unlink(name, *args, **kwargs):
+        if name == target.name:
+            events.append("unlink:target")
+        return real_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "fsync", observe_sync)
+    monkeypatch.setattr(portable_manifest_module.os, "unlink", observe_unlink)
+    store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    unlink_index = events.index("unlink:target")
+    assert any(event.startswith("sync:") for event in events[:unlink_index])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root binding")
+def test_load_rejects_detached_repository_root(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    root.rename(tmp_path / "detached")
+    with pytest.raises(ManifestError, match="changed|unsafe"):
+        store.load("sources/design/a.md")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
+def test_wal_scan_oserror_is_wrapped_as_manifest_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    real_stat = portable_manifest_module.os.stat
+
+    def fail_lock_stat(name, *args, **kwargs):
+        if name == "manifest.lock" and kwargs.get("dir_fd") is not None:
+            raise OSError("vanished")
+        return real_stat(name, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "stat", fail_lock_stat)
+    with pytest.raises(ManifestError, match="WAL entry"):
+        ShardedManifest(config).upsert(source)
