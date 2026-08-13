@@ -435,6 +435,31 @@ def test_configured_paths_never_bind_to_aba_replacement_repository(
     assert config.local_state == repository / ".obsidian-wiki/local"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX bound path validation")
+@pytest.mark.parametrize("configured", ["vault", "source", "skills", "local_state"])
+def test_load_config_rejects_configured_directory_symlink_escape(
+    tmp_path: Path, configured: str
+) -> None:
+    repository = tmp_path / "repository"
+    path = write_portable(repository)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    targets = {
+        "vault": repository / "wiki",
+        "source": repository / "sources",
+        "skills": repository / ".skills",
+        "local_state": repository / ".obsidian-wiki/local",
+    }
+    target = targets[configured]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="symlinks are not allowed"):
+        load_portable_config(
+            path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+        )
+
+
 def test_repository_discovery_error_is_a_path_qualified_config_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

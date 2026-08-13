@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki.config import ConfigError, load_portable_config
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.trust import (
     build_trust_ledger,
@@ -793,6 +794,82 @@ def test_trust_writer_rejects_symlinked_meta_directory(tmp_path: Path) -> None:
         raise AssertionError("symlinked _meta directory was accepted")
 
     assert not (outside / "trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository path safety")
+def test_configured_vault_symlink_cannot_write_trust_ledger_outside_repository(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "escape/wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repository / "escape").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="symlinks are not allowed"):
+        config = load_portable_config(
+            config_path,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+        )
+
+    assert not (outside / "wiki/_meta/trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_trust_writer_rejects_repository_rebound_after_config_load(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (repository / "wiki").mkdir()
+    config = load_portable_config(
+        config_path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+    )
+    repository.rename(tmp_path / "original-repository")
+    replacement = tmp_path / "replacement"
+    (replacement / "wiki").mkdir(parents=True)
+    repository.symlink_to(replacement, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+        )
+
+    assert not (replacement / "wiki/_meta/trust-ledger.json").exists()
 
 
 def test_trust_writer_never_follows_predictable_temp_symlink(tmp_path: Path) -> None:

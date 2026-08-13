@@ -662,6 +662,50 @@ def verify_safe_file_snapshot(snapshot: SafeFileSnapshot) -> None:
     )
 
 
+def validate_safe_relative_directory_path(root: Path, path: Path) -> None:
+    """Validate existing directory components below *root* without following links.
+
+    A missing suffix is valid because setup/local-state paths may be created later.
+    """
+    root = Path(os.path.abspath(os.fspath(root)))
+    path = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise _unsafe(str(path), "directory is outside the bound root") from exc
+    descriptor = _open_bound_root(root)
+    try:
+        for index, part in enumerate(relative.parts):
+            child_relative = "/".join(relative.parts[: index + 1])
+            observed = _stat_at(
+                descriptor, part, child_relative, missing_ok=True
+            )
+            if observed is None:
+                return
+            if stat.S_ISLNK(observed.st_mode) or _reparse(observed):
+                raise _unsafe(child_relative, "symlinks are not allowed")
+            if not stat.S_ISDIR(observed.st_mode):
+                raise _unsafe(child_relative, "path component is not a directory")
+            child = _open_at(descriptor, part, _directory_flags(), child_relative)
+            try:
+                opened = _fstat(child, child_relative)
+                if _identity(opened, directory=True) != _identity(
+                    observed, directory=True
+                ):
+                    raise _unsafe(child_relative, "directory changed while being opened")
+            except BaseException:
+                _close(child, child_relative)
+                raise
+            descriptor = _handoff_descriptor(
+                descriptor,
+                child,
+                parent_relative="/".join(relative.parts[:index]),
+                child_relative=child_relative,
+            )
+    finally:
+        _close(descriptor, relative.as_posix() or ".")
+
+
 def read_safe_file(
     root: Path,
     path: Path,

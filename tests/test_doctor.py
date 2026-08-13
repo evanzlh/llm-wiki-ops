@@ -109,7 +109,15 @@ def _replace_portable_path(
 
 def _portable_check(proc: subprocess.CompletedProcess[str], name: str) -> dict[str, str]:
     report = json.loads(proc.stdout)
-    return next(check for check in report["checks"] if check["name"] == name)
+    checks = {check["name"]: check for check in report["checks"]}
+    if name in checks:
+        return checks[name]
+    # Unsafe configured topology is now rejected by the shared resolver before
+    # doctor reaches its redundant portable-paths inspection.
+    config = checks.get("portable-config")
+    if config is not None and config["status"] == "fail":
+        return config
+    raise KeyError(name)
 
 
 @pytest.mark.parametrize("legacy_option", ["--vault", "--project"])

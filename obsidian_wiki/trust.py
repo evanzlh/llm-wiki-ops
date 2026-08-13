@@ -483,7 +483,131 @@ def write_trust_ledger(
     vault: Path | None = None,
 ) -> None:
     """Write a ledger atomically without following vault-internal symlinks."""
-    vault_root = (vault or path.parent.parent).expanduser().resolve(strict=True)
+    vault_root = (vault or path.parent.parent).expanduser().absolute()
+    expected = vault_root / TRUST_LEDGER_RELATIVE_PATH
+    requested = path.expanduser().absolute()
+    if requested != expected:
+        raise RuntimeError("trust ledger destination resolves outside the resolved vault")
+
+    try:
+        payload = json.dumps(ledger, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"trust ledger is not valid JSON data: {exc}") from exc
+
+    if os.name == "posix":
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            directory_fd = os.open(vault_root.anchor, directory_flags)
+        except OSError as exc:
+            raise RuntimeError(f"cannot securely open trust ledger anchor: {exc}") from exc
+        component = Path(vault_root.anchor)
+        components = (*vault_root.parts[1:], TRUST_LEDGER_RELATIVE_PATH.parent.name)
+        try:
+            for index, part in enumerate(components):
+                component = component / part
+                try:
+                    observed = os.stat(part, dir_fd=directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    if index != len(components) - 1:
+                        raise RuntimeError(
+                            f"trust ledger path component is missing: {component}"
+                        )
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"cannot securely create trust ledger directory: {exc}"
+                        ) from exc
+                    observed = os.stat(part, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+                    raise RuntimeError(
+                        "trust ledger path component must not be a symlink or special "
+                        f"file: {component}"
+                    )
+                try:
+                    child = os.open(part, directory_flags, dir_fd=directory_fd)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"cannot securely open trust ledger directory: {exc}"
+                    ) from exc
+                opened = os.fstat(child)
+                if (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_mode,
+                ) != (
+                    observed.st_dev,
+                    observed.st_ino,
+                    observed.st_mode,
+                ):
+                    os.close(child)
+                    raise RuntimeError(
+                        f"trust ledger path component changed while opening: {component}"
+                    )
+                os.close(directory_fd)
+                directory_fd = child
+
+            temporary_name = f".trust-ledger-{secrets.token_hex(16)}.tmp"
+            temporary_created = False
+            try:
+                try:
+                    destination_stat = os.stat(
+                        expected.name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    destination_stat = None
+                if destination_stat is not None and (
+                    stat.S_ISLNK(destination_stat.st_mode)
+                    or not stat.S_ISREG(destination_stat.st_mode)
+                    or destination_stat.st_nlink != 1
+                ):
+                    raise RuntimeError(
+                        "trust ledger destination must not be a symlink, hard link, "
+                        "or special file"
+                    )
+
+                descriptor = os.open(
+                    temporary_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                temporary_created = True
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(
+                    temporary_name,
+                    expected.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                temporary_created = False
+                os.fsync(directory_fd)
+            except OSError as exc:
+                raise RuntimeError(f"cannot securely write trust ledger: {exc}") from exc
+            finally:
+                if temporary_created:
+                    try:
+                        os.unlink(temporary_name, dir_fd=directory_fd)
+                    except FileNotFoundError:
+                        pass
+        finally:
+            os.close(directory_fd)
+        return
+
+    vault_root = vault_root.resolve(strict=True)
     expected = vault_root / TRUST_LEDGER_RELATIVE_PATH
     requested = path.expanduser().absolute()
     if requested.resolve(strict=False) != expected:
@@ -497,64 +621,6 @@ def write_trust_ledger(
         raise RuntimeError("trust ledger parent resolves outside the resolved vault")
     if expected.is_symlink():
         raise RuntimeError("trust ledger destination must not be a symlink")
-
-    try:
-        payload = json.dumps(ledger, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"trust ledger is not valid JSON data: {exc}") from exc
-
-    if os.name == "posix":
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            directory_fd = os.open(parent, directory_flags)
-        except OSError as exc:
-            raise RuntimeError(f"cannot securely open trust ledger directory: {exc}") from exc
-        temporary_name = f".trust-ledger-{secrets.token_hex(16)}.tmp"
-        temporary_created = False
-        try:
-            try:
-                destination_stat = os.stat(
-                    expected.name,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                destination_stat = None
-            if destination_stat is not None and stat.S_ISLNK(destination_stat.st_mode):
-                raise RuntimeError("trust ledger destination must not be a symlink")
-
-            descriptor = os.open(
-                temporary_name,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-                dir_fd=directory_fd,
-            )
-            temporary_created = True
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(
-                temporary_name,
-                expected.name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            temporary_created = False
-            os.fsync(directory_fd)
-        except OSError as exc:
-            raise RuntimeError(f"cannot securely write trust ledger: {exc}") from exc
-        finally:
-            if temporary_created:
-                try:
-                    os.unlink(temporary_name, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-            os.close(directory_fd)
-        return
 
     try:
         descriptor, temporary_name = tempfile.mkstemp(

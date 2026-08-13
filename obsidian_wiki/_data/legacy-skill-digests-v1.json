@@ -12,7 +12,6 @@
         "hermes-history-ingest": "sha256:b409780f61a88ad7922b6b01488b40ef0cf47c6e28052274f6ef783dc8137348",
         "impl-validator": "sha256:f7115dfad46579a7c30ad81dd8db5dccdf69c75350f6f5b743e6edf3320dfed2",
         "llm-wiki": "sha256:155731ddf0eee4972a505f569eeb1a63a13bb88d3b1d99370a44dbe84b12a5d4",
-        "memory-bridge": "sha256:d78a4cd6b919e6ba4bcac2e8b8fcc54101fa7090e413bd839dcfa9bab395685e",
         "obsidian-layout-adjustment": "sha256:5ebb3adb213dfacb561fd4a7034bf548a621cda0fccbfe5da4dbeb4ac1bc8b6e",
         "openclaw-history-ingest": "sha256:387a2137a635a8f45e8497dd6b6966e871e44f26e51ecb639df14353f1aedaa3",
         "pi-history-ingest": "sha256:2071508aa30c4c46098d767e4e97a5583c41c9380913b5aad0cd91651d8dcbcf",
@@ -24,7 +23,6 @@
         "wiki-agent": "sha256:bd5b140a7a6f3be0e222c8e16ced53103b277b033d5704839cb4a0e6d7d01dbd",
         "wiki-capture": "sha256:1f3ce7f06b0ad4de7a5ca527bda8fd8f220487e6e358d8f2ac32d9986906b9d0",
         "wiki-context-pack": "sha256:4369a51efdc3648959411edcad9a362b36128fb573841e6decb5a957666d0053",
-        "wiki-dashboard": "sha256:53f603b0575326277bcdddbd2385e64e21af2632bf86222ad7a0ccb701e868ee",
         "wiki-dedup": "sha256:d1363b64f5b4b0ff3e045899856772181b0512eeacfd2d805cc798acaf9e2708",
         "wiki-digest": "sha256:6dc8d746ac7e40b993df1d139991ba902da17dbd1bae9381f48c3e30dfd72782",
         "wiki-export": "sha256:5d51d11b495f61947e6b7c067be63b29fba4cce78346816f4f7405068de60765",
@@ -37,9 +35,7 @@
         "wiki-rebuild": "sha256:24fca4044ac2b15ca8bd107bb41322ed1bc9bf18f313595a31e534a7c1bd10a1",
         "wiki-research": "sha256:ed6e6fc0fc06f557875d525e4dcff5f13a47fb659a67e7c505b7303500d76c35",
         "wiki-setup": "sha256:b4bd3972870a68fc8eddf133ae2f344c34e9ead559551a4bc23e5bcf9cdee8cc",
-        "wiki-stage-commit": "sha256:d536ad49063cb7723d3304ebc594ee0f89058cfadf27c40e013802fb14c8ef6e",
         "wiki-status": "sha256:28141cc1487d7cf39a45ccefcd432ae90dbdd9ead800949a66fb728110b367c6",
-        "wiki-switch": "sha256:a36f71cb45d66235981f8ca3c5f475dd036d3c3e95cb9ab9755675814984cee5",
         "wiki-synthesize": "sha256:0bf4d33433d52eb71a765c1437cbe5e4e9f0acadadfabe882c1c1215c9920578",
         "wiki-update": "sha256:dcbed1feecc75d4552309d65003a5f4ae2fb71b46ac7558a358a4016bffcfb5a"
       }

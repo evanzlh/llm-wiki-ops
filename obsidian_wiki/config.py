@@ -17,6 +17,7 @@ from packaging.version import InvalidVersion, Version
 from obsidian_wiki.safe_files import (
     UnsafeVaultError,
     read_safe_file_snapshot,
+    validate_safe_relative_directory_path,
     verify_safe_file_snapshot,
 )
 
@@ -68,11 +69,15 @@ def _contained_path(root: Path, raw: str, label: str) -> Path:
 
 
 def _validate_configured_path(path: Path, *, root: Path, label: str) -> None:
-    """Reject unresolvable topology without using its result as configuration."""
+    """Reject unsafe existing topology without adopting resolved descendants."""
     try:
         path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise ConfigError(f"{label} cannot be resolved safely: {exc}") from exc
+    try:
+        validate_safe_relative_directory_path(root, path)
+    except UnsafeVaultError as exc:
+        raise ConfigError(f"{label} is unsafe: {exc}") from exc
 
 
 def _overlaps(left: Path, right: Path) -> bool:

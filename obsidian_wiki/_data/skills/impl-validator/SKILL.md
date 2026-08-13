@@ -4,7 +4,7 @@ description: >
   Validate whether an implementation matches its stated goal. Use this skill when a skill or agent wants
   a second opinion on its own output, when the user says "check this implementation", "validate what you did",
   "is this correct?", "review the output", or "did you do this right?". Also spawned automatically as a
-  subagent by other skills (memory-bridge, daily-update) to self-check their outputs before presenting to
+  subagent by other skills to self-check their outputs before presenting to
   the user. Returns a structured pass/warn/fail verdict with specific actionable issues.
 ---
 
