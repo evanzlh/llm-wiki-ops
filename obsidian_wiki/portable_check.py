@@ -435,6 +435,8 @@ def _knowledge_pages(config: PortableConfig) -> list[Path]:
             continue
         for page in sorted(category_root.rglob("*.md")):
             relative = page.relative_to(config.vault)
+            if relative.parts[:2] == ("journal", "operations"):
+                continue
             pages.append(page)
     return sorted(set(pages))
 
@@ -646,6 +648,24 @@ def _lint_page_topology_is_safe(config: PortableConfig) -> bool:
 
 
 def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
+    legacy_operations = config.vault / "journal" / "operations"
+    try:
+        legacy_metadata = legacy_operations.lstat()
+    except FileNotFoundError:
+        legacy_metadata = None
+    except OSError:
+        return
+    if legacy_metadata is not None:
+        if not stat.S_ISDIR(legacy_metadata.st_mode) or stat.S_ISLNK(
+            legacy_metadata.st_mode
+        ):
+            return
+        try:
+            with os.scandir(legacy_operations) as entries:
+                if next(entries, None) is not None:
+                    return
+        except OSError:
+            return
     if not _lint_page_topology_is_safe(config):
         issues.append(
             CheckIssue(

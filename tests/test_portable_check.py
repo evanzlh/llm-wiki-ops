@@ -1531,6 +1531,31 @@ def test_operation_log_source_requires_manifest_entry(tmp_path: Path) -> None:
     assert "operation-log-invalid" in issue_codes(check_portable_repo(config))
 
 
+@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+def test_legacy_operation_subtree_is_ignored(
+    tmp_path: Path, kind: str
+) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    legacy = config.vault / "journal" / "operations"
+    legacy.parent.mkdir(exist_ok=True)
+    legacy.rmdir()
+    if kind == "ordinary":
+        legacy.mkdir()
+        (legacy / "malformed.md").write_text(
+            "# Missing metadata with [[missing target]]\n", encoding="utf-8"
+        )
+    else:
+        external = tmp_path / "external-legacy-operations"
+        external.mkdir()
+        (external / "malformed.md").write_text(
+            "# External legacy operation\n", encoding="utf-8"
+        )
+        legacy.symlink_to(external, target_is_directory=True)
+
+    report = check_portable_repo(config)
+    assert report["status"] == "pass", report
+
+
 @pytest.mark.parametrize("mutation", ["missing", "non-utf8", "symlink"])
 def test_hot_view_must_be_safe_utf8_markdown(
     tmp_path: Path, mutation: str

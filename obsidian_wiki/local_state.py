@@ -498,6 +498,8 @@ def _relative_if_below(path: Path, parent: Path) -> Path | None:
 def _authoritative_directory(relative: Path) -> bool:
     if not relative.parts:
         return True
+    if relative.parts[:2] == ("journal", "operations"):
+        return False
     if relative.parts[0] in _KNOWLEDGE_CATEGORIES:
         return True
     return relative.parts[:2] == (".manifest", "sources") or relative == Path(
@@ -558,6 +560,8 @@ def _authoritative_files(config: PortableConfig) -> Iterator[Path]:
         for entry in entries:
             relative = current_relative / entry.name
             path = current / entry.name
+            if relative.parts[:2] == ("journal", "operations"):
+                continue
             if local_relative is not None and (
                 relative == local_relative or local_relative in relative.parents
             ):

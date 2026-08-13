@@ -247,6 +247,31 @@ def test_raw_readouts_and_non_shard_files_are_not_authoritative(
     assert authoritative_fingerprint(config) == before
 
 
+@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+def test_legacy_operation_subtree_is_not_authoritative(
+    config_fixture: PortableConfig, tmp_path: Path, kind: str
+) -> None:
+    before_fingerprint = authoritative_fingerprint(config_fixture)
+    before_inputs = hot_inputs(config_fixture)
+    legacy = config_fixture.vault / "journal" / "operations"
+    legacy.parent.mkdir()
+    if kind == "ordinary":
+        legacy.mkdir()
+        (legacy / "malformed.md").write_text(
+            "# Not a knowledge page\n", encoding="utf-8"
+        )
+    else:
+        external = tmp_path / "external-legacy-operations"
+        external.mkdir()
+        (external / "malformed.md").write_text(
+            "# External legacy operation\n", encoding="utf-8"
+        )
+        legacy.symlink_to(external, target_is_directory=True)
+
+    assert authoritative_fingerprint(config_fixture) == before_fingerprint
+    assert hot_inputs(config_fixture) == before_inputs
+
+
 def test_changed_hot_hash_is_stale_and_invalidated(
     config_fixture: PortableConfig,
 ) -> None:
