@@ -22,6 +22,7 @@ from obsidian_wiki.operations import (
     OperationChange,
     OperationError,
     append_operation,
+    append_operation_text,
     parse_operation_log,
 )
 from obsidian_wiki.safe_files import stable_directory_identity
@@ -839,6 +840,19 @@ class TransactionManager:
                 updated=updated,
                 removed=removed,
             )
+            log_preimage = self._snapshot_bytes(
+                record, snapshot_index["log.md"], "operation log preimage"
+            )
+            try:
+                expected_log_text = append_operation_text(
+                    log_preimage.decode("utf-8"), change
+                )
+            except (UnicodeDecodeError, OperationError) as exc:
+                raise TransactionError(
+                    "operation log preimage cannot accept the transaction: "
+                    + str(exc)
+                ) from exc
+            expected_log_data = expected_log_text.encode("utf-8")
             writer_before, writer_before_index = self._snapshot_writer_guard(
                 record, snapshot_index
             )
@@ -852,7 +866,7 @@ class TransactionManager:
             )
             self._write_metadata(record.workspace, payload)
             log_path = Path(self.log_writer(change))
-            self._validate_log_result(log_path, change)
+            self._validate_log_result(log_path, change, expected_log_data)
             writer_after = self._writer_guard_state(allow_unsafe=True)
             writer_rollback = self._writer_guard_diff(
                 writer_before,
@@ -869,7 +883,12 @@ class TransactionManager:
             postimages = {
                 relative: self._current_vault_hash(relative)
                 for relative in postimage_paths
+                if relative != "log.md"
             }
+            postimages["log.md"] = self._validate_installed_log_data(
+                expected_log_data
+            )
+            postimages = dict(sorted(postimages.items()))
             complete_payload = dict(payload)
             complete_payload.update(
                 {
@@ -2029,7 +2048,10 @@ class TransactionManager:
         }
 
     def _validate_log_result(
-        self, log_path: Path, intended: OperationChange
+        self,
+        log_path: Path,
+        intended: OperationChange,
+        expected_data: bytes,
     ) -> None:
         candidate = log_path
         if not candidate.is_absolute():
@@ -2058,6 +2080,34 @@ class TransactionManager:
             raise TransactionError(
                 "operation log writer did not append the intended transaction record"
             )
+        if data != expected_data:
+            raise TransactionError(
+                "operation log writer did not install the exact expected log"
+            )
+
+    def _validate_installed_log_data(self, expected_data: bytes) -> str:
+        actual = self._read_single_link_bytes(
+            self.config.vault / "log.md", "operation log"
+        )
+        if actual != expected_data:
+            raise TransactionError("operation log changed from the exact expected log")
+        return self._hash_bytes(actual)
+
+    def _snapshot_bytes(
+        self,
+        record: TransactionRecord,
+        stored: str | None,
+        label: str,
+    ) -> bytes:
+        if stored is None:
+            raise TransactionError(f"{label} is missing")
+        self._validate_relative_path(stored, "snapshot path")
+        snapshots = record.workspace / "snapshots"
+        snapshot = snapshots.joinpath(*PurePosixPath(stored).parts)
+        self._require_contained(
+            snapshot, snapshots, "snapshot path", strict_child=True
+        )
+        return self._read_single_link_bytes(snapshot, label)
 
     def _snapshot_writer_guard(
         self,

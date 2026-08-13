@@ -26,6 +26,7 @@ from obsidian_wiki.operations import (
     EMPTY_OPERATION_LOG,
     OperationChange,
     append_operation,
+    append_operation_text,
     parse_operation_log,
 )
 from obsidian_wiki.portable_manifest import ShardedManifest
@@ -1826,6 +1827,90 @@ def test_log_writer_wrong_last_record_rolls_back(tmp_path: Path) -> None:
         manager.commit("tx-wrong-tail", completed_at="2026-08-07T01:00:00Z")
 
     assert log.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
+def test_log_writer_cannot_replace_valid_history_before_intended_tail(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    log = config.vault / "log.md"
+    original_record = OperationChange(
+        "original-history",
+        "2026-08-07T00:00:00Z",
+        ("sources/a.md",),
+        (),
+        (),
+        (),
+    )
+    append_operation(log, original_record, root=config.vault)
+    original = log.read_bytes()
+
+    def writer(change):
+        replacement = OperationChange(
+            "replacement-history",
+            "2026-08-07T00:00:00Z",
+            change.source_ids,
+            (),
+            (),
+            (),
+        )
+        installed = append_operation_text(
+            append_operation_text(EMPTY_OPERATION_LOG, replacement), change
+        )
+        log.write_text(installed, encoding="utf-8")
+        return log
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-history")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*exact expected log"):
+        manager.commit("tx-history", completed_at="2026-08-07T01:00:00Z")
+
+    assert log.read_bytes() == original
+    assert not (config.vault / "concepts/a.md").exists()
+
+
+def test_log_drift_after_initial_writer_validation_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    log = config.vault / "log.md"
+    original = log.read_bytes()
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-final-log-check")
+    candidate_page(record, "concepts/a.md")
+    original_validate = manager._validate_log_result
+    drifted = False
+
+    def validate_then_drift(*args, **kwargs):
+        nonlocal drifted
+        result = original_validate(*args, **kwargs)
+        if not drifted:
+            drifted = True
+            append_operation(
+                log,
+                OperationChange(
+                    "owner-drift",
+                    "2026-08-07T02:00:00Z",
+                    ("sources/a.md",),
+                    (),
+                    (),
+                    (),
+                ),
+                root=config.vault,
+            )
+        return result
+
+    monkeypatch.setattr(manager, "_validate_log_result", validate_then_drift)
+
+    with pytest.raises(TransactionError, match="rolled back.*exact expected log"):
+        manager.commit("tx-final-log-check", completed_at="2026-08-07T01:00:00Z")
+
+    assert drifted
+    assert log.read_bytes() == original
+    assert not (config.vault / "concepts/a.md").exists()
 
 
 def test_duplicate_transaction_in_log_is_rejected_and_preserved(
