@@ -494,7 +494,10 @@ def test_pipeline_failure_never_overwrites_external_content(
     if target.exists():
         parse_operation_log(target.read_text(encoding="utf-8"))
     assert not list(tmp_path.glob(".log.md.tmp-*"))
-    assert not list(tmp_path.glob(".log.md.backup-*"))
+    if failure == "parent_fsync":
+        assert list(tmp_path.glob(".log.md.backup-*"))
+    else:
+        assert not list(tmp_path.glob(".log.md.backup-*"))
     assert not list(tmp_path.glob(".log.md.rollback-*"))
 
 
@@ -513,9 +516,9 @@ def test_installed_verification_failure_rolls_back_preimage(
     with pytest.raises(OperationError, match="installed verification"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") != b"external".decode()
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert not list(tmp_path.glob(".log.md.tmp-*"))
-    assert not list(tmp_path.glob(".log.md.backup-*"))
+    assert list(tmp_path.glob(".log.md.backup-*"))
     assert not list(tmp_path.glob(".log.md.rollback-*"))
 
 
@@ -553,35 +556,14 @@ def test_rollback_rejects_substituted_backup_without_installing_external(
     ) == EMPTY_OPERATION_LOG
 
 
-def test_backup_substitution_immediately_before_descriptor_restore_is_safe(
+def test_postinstall_failure_never_selects_backup_path_for_restore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     external = tmp_path / "external"
     external.write_bytes(b"external")
-    original_exchange = operations._exchange_names
-    substituted = False
-
-    def substitute_then_restore(parent_fd, source, destination, *bound):
-        nonlocal substituted
-        if not substituted:
-            substituted = True
-            backup = next(
-                name
-                for name in os.listdir(parent_fd)
-                if name.startswith(".log.md.backup-")
-            )
-            os.rename(
-                backup,
-                "owner-backup-preserved",
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            os.link(external, backup, dst_dir_fd=parent_fd)
-        return original_exchange(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_exchange_names", substitute_then_restore)
+    assert not hasattr(operations, "_exchange_names")
     monkeypatch.setattr(
         operations,
         "_verify_installed",
@@ -592,11 +574,8 @@ def test_backup_substitution_immediately_before_descriptor_restore_is_safe(
     with pytest.raises(OperationError, match="verification failed"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert external.read_bytes() == b"external"
-    assert (tmp_path / "owner-backup-preserved").read_text(
-        encoding="utf-8"
-    ) == EMPTY_OPERATION_LOG
 
 
 def test_postpromotion_different_canonical_bytes_roll_back(
@@ -619,7 +598,9 @@ def test_postpromotion_different_canonical_bytes_roll_back(
     with pytest.raises(OperationError, match="installed"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (
+        change(transaction_id="tx-other", completed_at="2026-08-07T08:00:00Z"),
+    )
 
 
 def test_promotion_rejects_metadata_mutation_at_link_boundary(
@@ -637,7 +618,7 @@ def test_promotion_rejects_metadata_mutation_at_link_boundary(
     with pytest.raises(OperationError, match="installed"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
 
 
 def test_failed_moved_verification_restores_original_log(
@@ -662,38 +643,25 @@ def test_failed_moved_verification_restores_original_log(
     assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
-def test_rollback_boundary_substitution_preserves_concurrent_log(
+def test_postinstall_concurrent_log_is_preserved_without_rollback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     concurrent = b"concurrent\n"
-    original_exchange = operations._exchange_names
+    def substitute(*args, **kwargs):
+        target.write_bytes(concurrent)
+        raise OperationError("verification failed")
 
-    def substitute(parent_fd: int, source: str, destination: str, *bound) -> None:
-        if destination == "log.md":
-            os.rename(
-                destination,
-                "installed-preserved",
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            target.write_bytes(concurrent)
-        original_exchange(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_exchange_names", substitute)
     monkeypatch.setattr(
         operations,
         "_verify_installed",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OperationError("verification failed")
-        ),
+        substitute,
     )
     with pytest.raises(OperationError, match="verification"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-    assert any(path.read_bytes() == concurrent for path in tmp_path.iterdir())
+    assert target.read_bytes() == concurrent
 
 
 def test_preimage_metadata_change_at_move_boundary_is_rejected(
@@ -726,28 +694,14 @@ def test_preimage_metadata_change_at_move_boundary_is_rejected(
     assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
-def test_rollback_restore_source_substitution_is_rejected(
+def test_no_mutation_uses_a_restore_source_path_after_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     external = tmp_path / "external"
     external.write_bytes(b"external")
-    original_exchange = operations._exchange_names
-
-    def substitute_source(
-        parent_fd: int, source: str, destination: str, *bound
-    ) -> None:
-        os.rename(
-            source,
-            "restore-owned-preserved",
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        os.link(external, source, dst_dir_fd=parent_fd)
-        original_exchange(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_exchange_names", substitute_source)
+    assert not hasattr(operations, "_exchange_names")
     monkeypatch.setattr(
         operations,
         "_verify_installed",
@@ -758,7 +712,7 @@ def test_rollback_restore_source_substitution_is_rejected(
     with pytest.raises(OperationError, match="verification"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_bytes() != b"external"
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert external.read_bytes() == b"external"
 
 
@@ -790,7 +744,7 @@ def test_rollback_copy_metadata_mutation_is_rejected(
     with pytest.raises(OperationError, match="verification"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_text(encoding="utf-8") != b"external".decode()
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
 
 
 def test_moved_recovery_short_reads_restore_complete_preimage(
@@ -872,9 +826,9 @@ def test_late_root_swap_fails_and_rolls_back_displaced_vault(
         append_operation(target, change(), root=root)
 
     assert (root / "log.md").read_bytes() == b"external\n"
-    assert (tmp_path / "moved-vault/log.md").read_text(
-        encoding="utf-8"
-    ) == EMPTY_OPERATION_LOG
+    assert parse_operation_log(
+        (tmp_path / "moved-vault/log.md").read_text(encoding="utf-8")
+    ) == (change(),)
 
 
 def test_moved_preimage_requires_full_stable_identity(tmp_path: Path) -> None:

@@ -470,52 +470,6 @@ def _link_descriptor_noreplace(
     _link_descriptor_noreplace_exact(parent_fd, descriptor, destination)
 
 
-def _exchange_names(
-    parent_fd: int,
-    first: str,
-    second: str,
-    bound_descriptor: int | None = None,
-    expected_stable: _StableIdentity | None = None,
-) -> None:
-    if os.name != "posix":
-        raise OperationError("safe operation log replacement is unsupported")
-    if bound_descriptor is not None:
-        if expected_stable is None:
-            raise OperationError("operation restore source changed")
-        try:
-            named = os.stat(first, dir_fd=parent_fd, follow_symlinks=False)
-            opened = os.fstat(bound_descriptor)
-        except OSError as exc:
-            raise OperationError("operation restore source changed") from exc
-        if (
-            _stable_identity(opened) != expected_stable
-            or _stable_identity(named) != expected_stable
-        ):
-            raise OperationError("operation restore source changed")
-    try:
-        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
-    except AttributeError as exc:
-        raise OperationError("safe operation log replacement is unsupported") from exc
-    renameat2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    renameat2.restype = ctypes.c_int
-    result = renameat2(
-        parent_fd,
-        os.fsencode(first),
-        parent_fd,
-        os.fsencode(second),
-        2,  # RENAME_EXCHANGE
-    )
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), second)
-
-
 def _restore_noreplace(parent_fd: int, source: str, destination: str) -> bool:
     try:
         _rename_noreplace(parent_fd, source, destination)
@@ -808,76 +762,6 @@ def _restore_from_initial_preimage(
     return _restore_preimage_copy(parent_fd, descriptor, current, expected)
 
 
-def _rollback_install(
-    parent_fd: int,
-    backup_name: str,
-    backup_descriptor: int,
-    backup_stable_identity: _StableIdentity,
-    backup_expected: bytes,
-    installed_descriptor: int,
-    installed_stable_identity: _StableIdentity,
-    installed_expected: bytes,
-) -> bool:
-    try:
-        backup_data, backup_current = _read_exact_open_stable(
-            backup_descriptor, len(backup_expected)
-        )
-        if (
-            backup_data != backup_expected
-            or backup_current != backup_stable_identity
-        ):
-            return False
-        temporary_flag = getattr(os, "O_TMPFILE", 0)
-        if not temporary_flag:
-            return False
-        restored_fd = os.open(
-            ".",
-            os.O_RDWR | temporary_flag | getattr(os, "O_CLOEXEC", 0),
-            0o644,
-            dir_fd=parent_fd,
-        )
-        try:
-            _write_all(restored_fd, backup_expected)
-            os.fsync(restored_fd)
-            restored = _verify_temp(
-                parent_fd,
-                "",
-                restored_fd,
-                (os.fstat(restored_fd).st_dev, os.fstat(restored_fd).st_ino),
-                backup_expected,
-            )
-            restore_name = ".log.md.restore-" + secrets.token_hex(16)
-            _link_descriptor_noreplace_exact(
-                parent_fd, restored_fd, restore_name
-            )
-            linked_restore = _stable_identity(os.fstat(restored_fd))
-            valid_link = (
-                linked_restore[:5] == restored[:5]
-                and restored[6] == 0
-                and linked_restore[6] == 1
-            )
-            if not valid_link:
-                return False
-            _exchange_names(
-                parent_fd,
-                restore_name,
-                "log.md",
-                restored_fd,
-                linked_restore,
-            )
-            _verify_installed_exact(
-                parent_fd,
-                restored_fd,
-                linked_restore,
-                backup_expected,
-            )
-        finally:
-            os.close(restored_fd)
-    except (OSError, OperationError):
-        return False
-    return True
-
-
 def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path:
     """Atomically append one record to exactly ``root/log.md``."""
 
@@ -972,30 +856,7 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
                 os.close(temp_fd)
                 temp_fd = -1
             except BaseException:
-                if promoted and backup_identity is not None:
-                    try:
-                        installed_bytes, current_installed_identity = (
-                            _read_open_stable(temp_fd)
-                        )
-                    except (OSError, OperationError):
-                        installed_bytes = b""
-                        current_installed_identity = None
-                    if current_installed_identity is not None and _rollback_install(
-                        parent_fd,
-                        backup_name,
-                        preimage_fd,
-                        backup_stable_identity,
-                        preimage_bytes,
-                        temp_fd,
-                        current_installed_identity,
-                        installed_bytes,
-                    ):
-                        promoted = False
-                        _cleanup_owned(
-                            parent_fd, backup_name, backup_identity
-                        )
-                        backup_identity = None
-                elif backup_identity is not None:
+                if not promoted and backup_identity is not None:
                     if _restore_preimage_copy(
                         parent_fd,
                         preimage_fd,
