@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import os
+import stat
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,6 +186,35 @@ def test_append_operation_atomically_replaces_log(tmp_path: Path) -> None:
     assert not list(tmp_path.glob(".log.md.tmp-*"))
 
 
+def test_append_preserves_existing_permission_bits(tmp_path: Path) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    target.chmod(0o600)
+
+    append_operation(target, change(), root=tmp_path)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_success_leaves_only_log_file(tmp_path: Path) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    append_operation(target, change(), root=tmp_path)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
+
+
+def test_append_does_not_require_linux_only_primitives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    monkeypatch.delattr(os, "O_TMPFILE", raising=False)
+
+    append_operation(target, change(), root=tmp_path)
+
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
+
+
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory", "fifo"])
 def test_append_rejects_unsafe_target_without_changing_external_inode(
     tmp_path: Path, kind: str
@@ -216,6 +246,8 @@ def test_append_rejects_noncanonical_target_path(tmp_path: Path) -> None:
         append_operation(target, change(), root=tmp_path)
 
 
+
+
 def test_concurrent_target_change_is_not_overwritten_and_temp_is_cleaned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,9 +255,9 @@ def test_concurrent_target_change_is_not_overwritten_and_temp_is_cleaned(
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     original_check = operations._verify_preimage
 
-    def replace_before_check(parent_fd: int, descriptor: int, identity) -> None:
+    def replace_before_check(path: Path, descriptor: int, identity) -> None:
         target.write_text("concurrent\n", encoding="utf-8")
-        original_check(parent_fd, descriptor, identity)
+        original_check(path, descriptor, identity)
 
     monkeypatch.setattr(operations, "_verify_preimage", replace_before_check)
     with pytest.raises(OperationError, match="changed"):
@@ -246,16 +278,9 @@ def test_concurrent_parent_swap_does_not_touch_replacement_directory(
     replacement.mkdir()
     (replacement / "log.md").write_text("external\n", encoding="utf-8")
     original_check = operations._verify_parent
-    checks = 0
 
-    def swap_before_check(path: Path, descriptor: int, identity) -> None:
-        nonlocal checks
-        checks += 1
-        if checks == 1:
-            original_check(path, descriptor, identity)
-            return
-        moved = tmp_path / "moved-vault"
-        root.rename(moved)
+    def swap_before_check(path: Path, descriptor, identity) -> None:
+        root.rename(tmp_path / "moved-vault")
         replacement.rename(root)
         original_check(path, descriptor, identity)
 
@@ -267,586 +292,111 @@ def test_concurrent_parent_swap_does_not_touch_replacement_directory(
     assert not list((tmp_path / "moved-vault").glob(".log.md.tmp-*"))
 
 
-def test_write_failure_preserves_log_and_cleans_temp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-
-    def fail_write(descriptor: int, data) -> int:
-        raise OSError("simulated")
-
-    monkeypatch.setattr(operations.os, "write", fail_write)
-    with pytest.raises(OperationError, match="write"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_text(encoding="utf-8") != b"external".decode()
-    assert not list(tmp_path.glob(".log.md.tmp-*"))
-
-
-def test_postcheck_target_swap_is_preserved_without_overwrite(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    concurrent = b"concurrent owner content\n"
-    original_rename = operations._rename_noreplace
-    swapped = False
-
-    def swap_at_boundary(parent_fd: int, source: str, destination: str, *bound) -> None:
-        nonlocal swapped
-        if source == "log.md" and not swapped:
-            swapped = True
-            target.write_bytes(concurrent)
-        original_rename(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
-    with pytest.raises(OperationError, match="changed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_bytes() == concurrent
-    assert not list(tmp_path.glob(".log.md.tmp-*"))
-
-
-def test_postcheck_parent_swap_does_not_touch_replacement_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "vault"
-    root.mkdir()
-    target = root / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    (replacement / "log.md").write_bytes(b"external\n")
-    original_rename = operations._rename_noreplace
-    swapped = False
-
-    def swap_at_boundary(parent_fd: int, source: str, destination: str, *bound) -> None:
-        nonlocal swapped
-        if source == "log.md" and not swapped:
-            swapped = True
-            root.rename(tmp_path / "moved-vault")
-            replacement.rename(root)
-        original_rename(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
-    with pytest.raises(OperationError, match="parent changed"):
-        append_operation(target, change(), root=root)
-
-    assert (root / "log.md").read_bytes() == b"external\n"
-    assert (tmp_path / "moved-vault/log.md").read_text(
-        encoding="utf-8"
-    ) == EMPTY_OPERATION_LOG
-
-
-def test_temp_substitution_is_rejected_before_target_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external.md"
-    external.write_bytes(b"external\n")
-    original_verify = operations._verify_temp
-
-    def substitute(parent_fd: int, name: str, descriptor: int, identity, data) -> None:
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        os.write(descriptor, external.read_bytes())
-        original_verify(parent_fd, name, descriptor, identity, data)
-
-    monkeypatch.setattr(operations, "_verify_temp", substitute)
-    with pytest.raises(OperationError, match="temporary"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_text(encoding="utf-8") != b"external".decode()
-    assert external.read_bytes() == b"external\n"
-
-
-def test_temp_substitution_at_promotion_cannot_install_external_inode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external.md"
-    external.write_bytes(b"external\n")
-    original_link = operations._link_descriptor_noreplace
-    substituted = False
-
-    def substitute(parent_fd: int, descriptor: int, destination: str) -> None:
-        nonlocal substituted
-        if not substituted:
-            substituted = True
-            os.link(external, ".log.md.tmp-attacker", dst_dir_fd=parent_fd)
-        original_link(parent_fd, descriptor, destination)
-
-    monkeypatch.setattr(operations, "_link_descriptor_noreplace", substitute)
-    append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-    assert external.read_bytes() == b"external\n"
-
-
-def test_cleanup_substitution_never_unlinks_collision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owned = tmp_path / ".log.md.tmp-owned"
-    owned.write_bytes(b"owned")
-    metadata = owned.stat()
-    identity = (metadata.st_dev, metadata.st_ino)
-    collision = b"collision"
-    original_rename = operations._rename_noreplace
-    swapped = False
-
-    def substitute(parent_fd: int, source: str, destination: str, *bound) -> None:
-        nonlocal swapped
-        if source == owned.name and not swapped:
-            swapped = True
-            owned.rename(tmp_path / "owned-moved")
-            owned.write_bytes(collision)
-        original_rename(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_rename_noreplace", substitute)
-    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        operations._cleanup_owned(parent_fd, owned.name, identity)
-    finally:
-        os.close(parent_fd)
-
-    assert owned.read_bytes() == collision
-    assert (tmp_path / "owned-moved").read_bytes() == b"owned"
-
-
-def test_cleanup_substitution_after_identity_check_preserves_external(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owned = tmp_path / ".log.md.tmp-owned"
-    owned.write_bytes(b"owned")
-    metadata = owned.stat()
-    identity = (metadata.st_dev, metadata.st_ino)
-    external = tmp_path / "external"
-    external.write_bytes(b"external")
-    original_stat = operations.os.stat
-    substituted = False
-
-    def substitute_after_stat(path, *args, **kwargs):
-        nonlocal substituted
-        result = original_stat(path, *args, **kwargs)
-        if isinstance(path, str) and path.startswith(".log.md.cleanup-"):
-            if not substituted:
-                substituted = True
-                parent_fd = kwargs["dir_fd"]
-                os.rename(
-                    path,
-                    "owned-preserved",
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                os.rename(external, path, dst_dir_fd=parent_fd)
-        return result
-
-    monkeypatch.setattr(operations.os, "stat", substitute_after_stat)
-    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        operations._cleanup_owned(parent_fd, owned.name, identity)
-    finally:
-        os.close(parent_fd)
-
-    assert any(path.read_bytes() == b"external" for path in tmp_path.iterdir())
-    assert (tmp_path / "owned-preserved").read_bytes() == b"owned"
-
-
-@pytest.mark.parametrize("failure", ["file_fsync", "promotion", "parent_fsync"])
-def test_pipeline_failure_never_overwrites_external_content(
+@pytest.mark.parametrize("failure", ["write", "file_fsync", "replace"])
+def test_prereplace_pipeline_failure_preserves_log_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external.md"
-    external.write_bytes(b"external\n")
-    if failure == "file_fsync":
-        def fail_sync(descriptor: int) -> None:
-            raise OSError("fail")
+    original = target.read_bytes()
 
-        monkeypatch.setattr(operations.os, "fsync", fail_sync)
-    elif failure == "promotion":
-        def fail_promotion(parent_fd: int, descriptor: int, destination: str) -> None:
-            raise OSError("fail")
-
+    if failure == "write":
         monkeypatch.setattr(
-            operations, "_link_descriptor_noreplace", fail_promotion
+            operations.os,
+            "write",
+            lambda descriptor, data: (_ for _ in ()).throw(OSError("simulated")),
+        )
+    elif failure == "file_fsync":
+        monkeypatch.setattr(
+            operations.os,
+            "fsync",
+            lambda descriptor: (_ for _ in ()).throw(OSError("simulated")),
         )
     else:
-        original_fsync = operations.os.fsync
-        calls = 0
+        monkeypatch.setattr(
+            operations.os,
+            "replace",
+            lambda source, destination: (_ for _ in ()).throw(OSError("simulated")),
+        )
 
-        def fail_parent_sync(descriptor: int) -> None:
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise OSError("fail")
-            original_fsync(descriptor)
-
-        monkeypatch.setattr(operations.os, "fsync", fail_parent_sync)
-
-    with pytest.raises(OperationError, match="write"):
+    with pytest.raises(OperationError, match="append"):
         append_operation(target, change(), root=tmp_path)
 
-    assert external.read_bytes() == b"external\n"
-    if target.exists():
-        parse_operation_log(target.read_text(encoding="utf-8"))
+    assert target.read_bytes() == original
     assert not list(tmp_path.glob(".log.md.tmp-*"))
-    if failure == "parent_fsync":
-        assert list(tmp_path.glob(".log.md.backup-*"))
-    else:
-        assert not list(tmp_path.glob(".log.md.backup-*"))
-    assert not list(tmp_path.glob(".log.md.rollback-*"))
 
 
-def test_installed_verification_failure_rolls_back_preimage(
+def test_temp_mutation_is_rejected_before_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original = target.read_bytes()
+    original_verify = operations._verify_temp
+    calls = 0
+
+    def mutate_before_second_verify(*args) -> None:
+        nonlocal calls
+        calls += 1
+        descriptor = args[3]
+        if calls == 2:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            os.write(descriptor, b"different canonical-looking bytes")
+            os.ftruncate(descriptor, len(b"different canonical-looking bytes"))
+        original_verify(*args)
+
+    monkeypatch.setattr(operations, "_verify_temp", mutate_before_second_verify)
+    with pytest.raises(OperationError, match="temporary"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_bytes() == original
+    assert not list(tmp_path.glob(".log.md.tmp-*"))
+
+
+def test_parent_fsync_failure_leaves_exact_installed_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original_fsync = operations.os.fsync
+    calls = 0
+
+    def fail_parent_sync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(operations.os, "fsync", fail_parent_sync)
+    with pytest.raises(OperationError, match="append"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
+
+
+def test_installed_verification_failure_leaves_exact_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
 
-    def fail_verification(
-        parent_fd: int, descriptor: int, identity, expected, **kwargs
-    ) -> None:
+    def fail_verification(*args, **kwargs) -> None:
         raise OperationError("simulated installed verification failure")
 
     monkeypatch.setattr(operations, "_verify_installed", fail_verification)
-    with pytest.raises(OperationError, match="installed verification"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-    assert not list(tmp_path.glob(".log.md.tmp-*"))
-    assert list(tmp_path.glob(".log.md.backup-*"))
-    assert not list(tmp_path.glob(".log.md.rollback-*"))
-
-
-def test_rollback_rejects_substituted_backup_without_installing_external(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external"
-    external.write_bytes(b"external")
-
-    def substitute_backup(
-        parent_fd: int, descriptor: int, identity, expected, **kwargs
-    ) -> None:
-        backup = next(
-            name for name in os.listdir(parent_fd) if name.startswith(".log.md.backup-")
-        )
-        os.rename(
-            backup,
-            "owner-backup-preserved",
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        os.link(external, backup, dst_dir_fd=parent_fd)
-        raise OperationError("simulated verification failure")
-
-    monkeypatch.setattr(operations, "_verify_installed", substitute_backup)
     with pytest.raises(OperationError, match="verification failure"):
         append_operation(target, change(), root=tmp_path)
 
-    assert target.read_bytes() != b"external"
-    assert external.read_bytes() == b"external"
-    assert (tmp_path / "owner-backup-preserved").read_text(
-        encoding="utf-8"
-    ) == EMPTY_OPERATION_LOG
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
 
 
-def test_postinstall_failure_never_selects_backup_path_for_restore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external"
-    external.write_bytes(b"external")
+def test_linux_specific_protocol_helpers_are_absent() -> None:
+    assert not hasattr(operations, "_link_descriptor_noreplace")
+    assert not hasattr(operations, "_rename_noreplace")
     assert not hasattr(operations, "_exchange_names")
-    monkeypatch.setattr(
-        operations,
-        "_verify_installed",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OperationError("verification failed")
-        ),
-    )
-    with pytest.raises(OperationError, match="verification failed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-    assert external.read_bytes() == b"external"
-
-
-def test_postpromotion_different_canonical_bytes_roll_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_link = operations._link_descriptor_noreplace
-
-    def mutate_after_link(parent_fd: int, descriptor: int, destination: str) -> None:
-        original_link(parent_fd, descriptor, destination)
-        replacement = render_operation_log(
-            (change(transaction_id="tx-other", completed_at="2026-08-07T08:00:00Z"),)
-        ).encode("utf-8")
-        os.ftruncate(descriptor, 0)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        os.write(descriptor, replacement)
-
-    monkeypatch.setattr(operations, "_link_descriptor_noreplace", mutate_after_link)
-    with pytest.raises(OperationError, match="installed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (
-        change(transaction_id="tx-other", completed_at="2026-08-07T08:00:00Z"),
-    )
-
-
-def test_promotion_rejects_metadata_mutation_at_link_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_link = operations._link_descriptor_noreplace
-
-    def mutate_before_link(parent_fd: int, descriptor: int, destination: str) -> None:
-        os.fchmod(descriptor, 0o600)
-        original_link(parent_fd, descriptor, destination)
-
-    monkeypatch.setattr(operations, "_link_descriptor_noreplace", mutate_before_link)
-    with pytest.raises(OperationError, match="installed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-
-
-def test_failed_moved_verification_restores_original_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_verify = operations._verify_moved_preimage
-    failed = False
-
-    def fail_once(*args, **kwargs):
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OperationError("injected moved verification failure")
-        return original_verify(*args, **kwargs)
-
-    monkeypatch.setattr(operations, "_verify_moved_preimage", fail_once)
-    with pytest.raises(OperationError, match="injected|recovery failed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-
-
-def test_postinstall_concurrent_log_is_preserved_without_rollback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    concurrent = b"concurrent\n"
-    def substitute(*args, **kwargs):
-        target.write_bytes(concurrent)
-        raise OperationError("verification failed")
-
-    monkeypatch.setattr(
-        operations,
-        "_verify_installed",
-        substitute,
-    )
-    with pytest.raises(OperationError, match="verification"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_bytes() == concurrent
-
-
-def test_preimage_metadata_change_at_move_boundary_is_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_rename = operations._rename_noreplace
-    changed = False
-
-    def rewrite_before_move(
-        parent_fd: int, source: str, destination: str, *bound
-    ) -> None:
-        nonlocal changed
-        if source == "log.md" and not changed:
-            changed = True
-            data = target.read_bytes()
-            target.write_bytes(data)
-            metadata = target.stat()
-            os.utime(
-                target,
-                ns=(metadata.st_atime_ns, metadata.st_mtime_ns - 1),
-            )
-        original_rename(parent_fd, source, destination, *bound)
-
-    monkeypatch.setattr(operations, "_rename_noreplace", rewrite_before_move)
-    with pytest.raises(OperationError, match="changed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-
-
-def test_no_mutation_uses_a_restore_source_path_after_install(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    external = tmp_path / "external"
-    external.write_bytes(b"external")
-    assert not hasattr(operations, "_exchange_names")
-    monkeypatch.setattr(
-        operations,
-        "_verify_installed",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OperationError("verification failed")
-        ),
-    )
-    with pytest.raises(OperationError, match="verification"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-    assert external.read_bytes() == b"external"
-
-
-def test_rollback_copy_metadata_mutation_is_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_link = operations._link_descriptor_noreplace_exact
-    calls = 0
-
-    def mutate_restore(parent_fd: int, descriptor: int, destination: str) -> None:
-        nonlocal calls
-        calls += 1
-        if destination.startswith(".log.md.restore-"):
-            os.fchmod(descriptor, 0o600)
-        original_link(parent_fd, descriptor, destination)
-
-    monkeypatch.setattr(
-        operations, "_link_descriptor_noreplace_exact", mutate_restore
-    )
-    monkeypatch.setattr(
-        operations,
-        "_verify_installed",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OperationError("verification failed")
-        ),
-    )
-    with pytest.raises(OperationError, match="verification"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
-
-
-def test_moved_recovery_short_reads_restore_complete_preimage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    original_read = operations.os.read
-    original_verify = operations._verify_moved_preimage
-    failed = False
-
-    def short_read(descriptor: int, size: int) -> bytes:
-        return original_read(descriptor, min(size, 7))
-
-    def fail_once(*args, **kwargs):
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OperationError("injected moved verification failure")
-        return original_verify(*args, **kwargs)
-
-    monkeypatch.setattr(operations.os, "read", short_read)
-    monkeypatch.setattr(operations, "_verify_moved_preimage", fail_once)
-    with pytest.raises(OperationError, match="injected|recovery failed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-
-
-def test_moved_recovery_failure_is_reported_distinctly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    monkeypatch.setattr(
-        operations,
-        "_verify_moved_preimage",
-        lambda *args, **kwargs: (_ for _ in ()).throw(OperationError("injected")),
-    )
-    monkeypatch.setattr(operations, "_restore_preimage_copy", lambda *args: False)
-    with pytest.raises(OperationError, match="recovery failed"):
-        append_operation(target, change(), root=tmp_path)
-
-    assert any(
-        path.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-        for path in tmp_path.iterdir()
-        if path.is_file()
-    )
-
-
-def test_late_root_swap_fails_and_rolls_back_displaced_vault(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "vault"
-    root.mkdir()
-    target = root / "log.md"
-    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    (replacement / "log.md").write_bytes(b"external\n")
-    original_verify = operations._verify_installed
-    swapped = False
-
-    def verify_then_swap(
-        parent_fd: int, descriptor: int, identity, expected, **kwargs
-    ) -> None:
-        nonlocal swapped
-        result = original_verify(
-            parent_fd, descriptor, identity, expected, **kwargs
-        )
-        if not swapped:
-            swapped = True
-            root.rename(tmp_path / "moved-vault")
-            replacement.rename(root)
-        return result
-
-    monkeypatch.setattr(operations, "_verify_installed", verify_then_swap)
-    with pytest.raises(OperationError, match="parent changed"):
-        append_operation(target, change(), root=root)
-
-    assert (root / "log.md").read_bytes() == b"external\n"
-    assert parse_operation_log(
-        (tmp_path / "moved-vault/log.md").read_text(encoding="utf-8")
-    ) == (change(),)
-
-
-def test_moved_preimage_requires_full_stable_identity(tmp_path: Path) -> None:
-    target = tmp_path / "guard"
-    expected = EMPTY_OPERATION_LOG.encode("utf-8")
-    target.write_bytes(expected)
-    descriptor = os.open(target, os.O_RDONLY)
-    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        actual = operations._stable_identity(os.fstat(descriptor))
-        changed = actual[:5] + (actual[5] - 1,) + actual[6:]
-        with pytest.raises(OperationError, match="changed"):
-            operations._verify_moved_preimage(
-                parent_fd, target.name, descriptor, changed, expected
-            )
-    finally:
-        os.close(descriptor)
-        os.close(parent_fd)
 
 
 def test_stable_identity_includes_ctime() -> None:

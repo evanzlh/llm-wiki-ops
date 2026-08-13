@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ctypes
+import errno
 import os
 import re
 import secrets
@@ -10,7 +10,7 @@ import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 class OperationError(ValueError):
@@ -294,30 +294,47 @@ def _ordinary_single_file(metadata: os.stat_result) -> bool:
     )
 
 
-def _open_parent(root: Path) -> tuple[int, _FileIdentity]:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+def _read_all(descriptor: int) -> bytes:
+    chunks = []
+    while True:
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _open_parent(root: Path) -> tuple[Optional[int], _FileIdentity]:
     try:
         lexical = root.lstat()
-        descriptor = os.open(root, flags)
     except OSError as exc:
         raise OperationError("operation log parent is unsafe or unreadable") from exc
-    opened = os.fstat(descriptor)
-    identity = (opened.st_dev, opened.st_ino)
-    if (
-        not stat.S_ISDIR(lexical.st_mode)
-        or stat.S_ISLNK(lexical.st_mode)
-        or not stat.S_ISDIR(opened.st_mode)
-        or (lexical.st_dev, lexical.st_ino) != identity
-    ):
-        os.close(descriptor)
+    if not stat.S_ISDIR(lexical.st_mode) or stat.S_ISLNK(lexical.st_mode):
         raise OperationError("operation log parent must be an ordinary directory")
+    identity = (lexical.st_dev, lexical.st_ino)
+    if os.name == "nt":
+        return None, identity
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(root, flags)
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise OperationError("operation log parent is unsafe or unreadable") from exc
+    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity:
+        os.close(descriptor)
+        raise OperationError("operation log parent changed while opening")
     return descriptor, identity
 
 
-def _verify_parent(root: Path, descriptor: int, identity: _FileIdentity) -> None:
+def _verify_parent(
+    root: Path, descriptor: Optional[int], identity: _FileIdentity
+) -> None:
     try:
         lexical = root.lstat()
-        opened = os.fstat(descriptor)
+        opened = os.fstat(descriptor) if descriptor is not None else lexical
     except OSError as exc:
         raise OperationError("operation log parent changed during append") from exc
     if (
@@ -330,558 +347,308 @@ def _verify_parent(root: Path, descriptor: int, identity: _FileIdentity) -> None
         raise OperationError("operation log parent changed during append")
 
 
-def _read_preimage(parent_fd: int) -> tuple[str, int, _StableIdentity]:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+def _open_preimage(path: Path) -> tuple[int, _StableIdentity, int, str]:
+    descriptor = None
     try:
-        lexical = os.stat("log.md", dir_fd=parent_fd, follow_symlinks=False)
+        lexical = path.lstat()
         if not _ordinary_single_file(lexical):
-            raise OperationError("operation log must be a single-link ordinary file")
-        descriptor = os.open("log.md", flags, dir_fd=parent_fd)
+            raise OperationError("operation log must be an ordinary single-link file")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if not _ordinary_single_file(before) or _stable_identity(before) != _stable_identity(
+            lexical
+        ):
+            raise OperationError("operation log changed while opening")
+        data = _read_all(descriptor)
+        after = os.fstat(descriptor)
     except OperationError:
+        if descriptor is not None:
+            os.close(descriptor)
         raise
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
         raise OperationError("operation log is unsafe or unreadable") from exc
-    try:
-        before = os.fstat(descriptor)
-        if not _ordinary_single_file(before) or _stable_identity(
-            before
-        ) != _stable_identity(lexical):
-            raise OperationError("operation log changed while being opened")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after = os.fstat(descriptor)
-        if _stable_identity(after) != _stable_identity(before):
-            raise OperationError("operation log changed while being read")
-        try:
-            text = b"".join(chunks).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise OperationError("operation log must be UTF-8") from exc
-        return text, descriptor, _stable_identity(before)
-    except BaseException:
+    if _stable_identity(after) != _stable_identity(before):
         os.close(descriptor)
-        raise
-
-
-def _verify_preimage(
-    parent_fd: int, descriptor: int, identity: _StableIdentity
-) -> None:
+        raise OperationError("operation log changed while reading")
     try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        os.close(descriptor)
+        raise OperationError("operation log is not UTF-8") from exc
+    return descriptor, _stable_identity(before), stat.S_IMODE(before.st_mode), text
+
+
+def _verify_preimage(path: Path, descriptor: int, expected: _StableIdentity) -> None:
+    try:
+        lexical = path.lstat()
         opened = os.fstat(descriptor)
-        named = os.stat("log.md", dir_fd=parent_fd, follow_symlinks=False)
     except OSError as exc:
         raise OperationError("operation log changed during append") from exc
     if (
-        not _ordinary_single_file(opened)
-        or not _ordinary_single_file(named)
-        or _stable_identity(opened) != identity
-        or _stable_identity(named) != identity
+        not _ordinary_single_file(lexical)
+        or not _ordinary_single_file(opened)
+        or _stable_identity(lexical) != expected
+        or _stable_identity(opened) != expected
     ):
         raise OperationError("operation log changed during append")
 
 
-def _write_all(descriptor: int, data: bytes) -> None:
-    view = memoryview(data)
-    while view:
-        written = os.write(descriptor, view)
-        if written <= 0:
-            raise OSError("short operation log write")
-        view = view[written:]
+def _temp_name() -> str:
+    return ".log.md.tmp-" + secrets.token_hex(16)
 
 
-def _rename_noreplace(
-    parent_fd: int,
-    source: str,
-    destination: str,
-    bound_descriptor: int | None = None,
-    expected_stable: _StableIdentity | None = None,
-) -> None:
-    """Rename within a bound directory without replacing an existing name."""
-
-    if os.name != "posix":
-        raise OperationError("safe operation log replacement is unsupported")
-    if bound_descriptor is not None:
-        if expected_stable is None or _stable_identity(
-            os.fstat(bound_descriptor)
-        ) != expected_stable:
-            raise OperationError("operation log changed during append")
-    try:
-        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
-    except AttributeError as exc:
-        raise OperationError("safe operation log replacement is unsupported") from exc
-    renameat2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
+def _open_temp(
+    root: Path, parent_descriptor: Optional[int], mode: int
+) -> tuple[str, Path, int]:
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
     )
-    renameat2.restype = ctypes.c_int
-    result = renameat2(
-        parent_fd,
-        os.fsencode(source),
-        parent_fd,
-        os.fsencode(destination),
-        1,  # RENAME_NOREPLACE
-    )
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), destination)
+    for _ in range(32):
+        name = _temp_name()
+        path = root / name
+        try:
+            if parent_descriptor is None:
+                descriptor = os.open(path, flags, mode)
+            else:
+                descriptor = os.open(name, flags, mode, dir_fd=parent_descriptor)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise OperationError("cannot create operation log temporary file") from exc
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, mode)
+        except OSError as exc:
+            os.close(descriptor)
+            try:
+                if parent_descriptor is None:
+                    path.unlink()
+                else:
+                    os.unlink(name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+            raise OperationError("cannot prepare operation log temporary file") from exc
+        return name, path, descriptor
+    raise OperationError("cannot allocate operation log temporary file")
 
 
-def _link_descriptor_noreplace_exact(
-    parent_fd: int, descriptor: int, destination: str
-) -> None:
-    """Install the exact open inode at an absent name in a bound directory."""
-
-    if os.name != "posix":
-        raise OperationError("safe operation log replacement is unsupported")
-    try:
-        linkat = ctypes.CDLL(None, use_errno=True).linkat
-    except AttributeError as exc:
-        raise OperationError("safe operation log replacement is unsupported") from exc
-    linkat.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-    )
-    linkat.restype = ctypes.c_int
-    descriptor_path = os.fsencode(f"/proc/self/fd/{descriptor}")
-    result = linkat(
-        -100,  # AT_FDCWD
-        descriptor_path,
-        parent_fd,
-        os.fsencode(destination),
-        0x400,  # AT_SYMLINK_FOLLOW
-    )
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), destination)
-
-
-def _link_descriptor_noreplace(
-    parent_fd: int, descriptor: int, destination: str
-) -> None:
-    _link_descriptor_noreplace_exact(parent_fd, descriptor, destination)
-
-
-def _restore_noreplace(parent_fd: int, source: str, destination: str) -> bool:
-    try:
-        _rename_noreplace(parent_fd, source, destination)
-    except (OSError, OperationError):
-        return False
-    return True
-
-
-def _cleanup_owned(parent_fd: int, name: str, identity: _FileIdentity | None) -> None:
-    if identity is None:
-        return
-    quarantine = ".log.md.cleanup-" + secrets.token_hex(16)
-    try:
-        _rename_noreplace(parent_fd, name, quarantine)
-    except (OSError, OperationError):
-        return
-    try:
-        moved = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
-        return
-    if (moved.st_dev, moved.st_ino) != identity:
-        _restore_noreplace(parent_fd, quarantine, name)
-        return
-    # POSIX has no portable conditional unlink-by-inode operation.  Keep the
-    # identity-verified quarantine rather than risk unlinking a substituted
-    # external file after a separable pathname check.
+def _stat_temp(
+    path: Path, name: str, parent_descriptor: Optional[int]
+) -> os.stat_result:
+    if parent_descriptor is None:
+        return path.lstat()
+    return os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
 
 
 def _verify_temp(
-    parent_fd: int,
+    path: Path,
     name: str,
-    descriptor: int,
-    identity: _FileIdentity,
-    expected: bytes,
-    expected_stable: _StableIdentity | None = None,
-) -> _StableIdentity:
-    try:
-        before = os.fstat(descriptor)
-        named = (
-            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if name
-            else None
-        )
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after = os.fstat(descriptor)
-    except OSError as exc:
-        raise OperationError("operation log temporary file changed") from exc
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != (1 if name else 0)
-        or (before.st_dev, before.st_ino) != identity
-        or _stable_identity(after) != _stable_identity(before)
-        or (
-            expected_stable is not None
-            and _stable_identity(before) != expected_stable
-        )
-        or (
-            named is not None
-            and (
-                not _ordinary_single_file(named)
-                or (named.st_dev, named.st_ino) != identity
-            )
-        )
-        or b"".join(chunks) != expected
-    ):
-        raise OperationError("operation log temporary file changed")
-    return _stable_identity(after)
-
-
-def _verify_moved_preimage(
-    parent_fd: int,
-    name: str,
+    parent_descriptor: Optional[int],
     descriptor: int,
     expected_identity: _StableIdentity,
-    expected: bytes,
-    *,
-    allow_rename_ctime: bool = False,
-) -> _StableIdentity:
+    expected_data: bytes,
+    expected_mode: int,
+) -> None:
     try:
+        lexical = _stat_temp(path, name, parent_descriptor)
         before = os.fstat(descriptor)
-        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not _ordinary_single_file(lexical)
+            or not _ordinary_single_file(before)
+            or _stable_identity(lexical) != expected_identity
+            or _stable_identity(before) != expected_identity
+            or stat.S_IMODE(before.st_mode) != expected_mode
+        ):
+            raise OperationError("operation log temporary file changed")
         os.lseek(descriptor, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
+        data = _read_all(descriptor)
         after = os.fstat(descriptor)
+    except OperationError:
+        raise
     except OSError as exc:
-        raise OperationError("operation log changed during append") from exc
-    opened_identity = _stable_identity(after)
-    unchanged_across_rename = (
-        opened_identity[:5] + opened_identity[6:]
-        == expected_identity[:5] + expected_identity[6:]
-    )
-    if (
-        not _ordinary_single_file(before)
-        or not _ordinary_single_file(named)
-        or _stable_identity(before) != opened_identity
-        or opened_identity != _stable_identity(named)
-        or (
-            opened_identity != expected_identity
-            and not (allow_rename_ctime and unchanged_across_rename)
-        )
-        or b"".join(chunks) != expected
-    ):
-        raise OperationError("operation log changed during append")
-    return opened_identity
+        raise OperationError("operation log temporary file changed") from exc
+    if data != expected_data or _stable_identity(after) != expected_identity:
+        raise OperationError("operation log temporary file changed")
 
 
-def _read_open_stable(descriptor: int) -> tuple[bytes, _StableIdentity]:
-    before = os.fstat(descriptor)
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    while True:
-        chunk = os.read(descriptor, 1024 * 1024)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    after = os.fstat(descriptor)
-    if _stable_identity(after) != _stable_identity(before):
-        raise OperationError("operation file changed while being read")
-    return b"".join(chunks), _stable_identity(after)
-
-
-def _read_exact_open_stable(
-    descriptor: int, size: int
-) -> tuple[bytes, _StableIdentity]:
-    before = os.fstat(descriptor)
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    remaining = size + 1
-    while remaining:
-        chunk = os.read(descriptor, remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    after = os.fstat(descriptor)
-    if _stable_identity(after) != _stable_identity(before):
-        raise OperationError("operation file changed while being read")
-    return b"".join(chunks), _stable_identity(after)
-
-
-def _verify_installed_exact(
-    parent_fd: int,
-    descriptor: int,
-    expected_stable: _StableIdentity | None,
-    expected: bytes,
-    *,
-    allow_link_transition: bool = False,
-) -> _StableIdentity:
+def _cleanup_owned_temp(
+    path: Path,
+    name: str,
+    parent_descriptor: Optional[int],
+    expected_identity: Optional[_StableIdentity],
+) -> None:
+    if expected_identity is None:
+        return
     try:
-        before = os.fstat(descriptor)
-        named = os.stat("log.md", dir_fd=parent_fd, follow_symlinks=False)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after = os.fstat(descriptor)
+        lexical = _stat_temp(path, name, parent_descriptor)
+        if _stable_identity(lexical) != expected_identity:
+            return
+        if parent_descriptor is None:
+            path.unlink()
+        else:
+            os.unlink(name, dir_fd=parent_descriptor)
+    except OSError:
+        return
+
+
+def _write_fully(descriptor: int, data: bytes) -> None:
+    position = 0
+    while position < len(data):
+        written = os.write(descriptor, data[position:])
+        if written <= 0:
+            raise OSError("short write")
+        position += written
+
+
+def _sync_parent(descriptor: Optional[int]) -> None:
+    if descriptor is None:
+        return
+    try:
+        os.fsync(descriptor)
     except OSError as exc:
-        raise OperationError("installed operation log changed") from exc
-    installed = _stable_identity(after)
-    valid_link_transition = (
-        expected_stable is not None
-        and installed[:5] == expected_stable[:5]
-        and expected_stable[6] == 0
-        and installed[6] == 1
-    )
-    if (
-        not _ordinary_single_file(before)
-        or not _ordinary_single_file(named)
-        or _stable_identity(before) != installed
-        or _stable_identity(named) != installed
-        or (
-            expected_stable is not None
-            and installed != expected_stable
-            and not (allow_link_transition and valid_link_transition)
-        )
-        or b"".join(chunks) != expected
-    ):
-        raise OperationError("installed operation log changed")
-    return installed
+        unsupported = {
+            errno.EINVAL,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }
+        if exc.errno in unsupported:
+            return
+        raise
 
 
 def _verify_installed(
-    parent_fd: int,
-    descriptor: int,
-    expected_stable: _StableIdentity | None,
-    expected: bytes,
-    *,
-    allow_link_transition: bool = False,
-) -> _StableIdentity:
-    return _verify_installed_exact(
-        parent_fd,
-        descriptor,
-        expected_stable,
-        expected,
-        allow_link_transition=allow_link_transition,
-    )
-
-
-def _restore_preimage_copy(
-    parent_fd: int,
-    backup_descriptor: int,
-    backup_stable_identity: _StableIdentity,
-    backup_expected: bytes,
-) -> bool:
+    path: Path,
+    descriptor: Optional[int],
+    expected_data: bytes,
+    expected_mode: int,
+) -> None:
+    opened_here = False
     try:
-        data, current = _read_exact_open_stable(
-            backup_descriptor, len(backup_expected)
-        )
+        lexical = path.lstat()
+        if descriptor is None:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            descriptor = os.open(path, flags)
+            opened_here = True
+        before = os.fstat(descriptor)
         if (
-            current != backup_stable_identity
-            or data != backup_expected
+            not _ordinary_single_file(lexical)
+            or not _ordinary_single_file(before)
+            or (lexical.st_dev, lexical.st_ino) != (before.st_dev, before.st_ino)
+            or stat.S_IMODE(before.st_mode) != expected_mode
         ):
-            return False
-        temporary_flag = getattr(os, "O_TMPFILE", 0)
-        if not temporary_flag:
-            return False
-        descriptor = os.open(
-            ".",
-            os.O_RDWR | temporary_flag | getattr(os, "O_CLOEXEC", 0),
-            0o644,
-            dir_fd=parent_fd,
-        )
-        try:
-            _write_all(descriptor, backup_expected)
-            os.fsync(descriptor)
-            metadata = os.fstat(descriptor)
-            identity = (metadata.st_dev, metadata.st_ino)
-            stable = _verify_temp(
-                parent_fd, "", descriptor, identity, backup_expected
-            )
-            _link_descriptor_noreplace_exact(parent_fd, descriptor, "log.md")
-            _verify_installed_exact(
-                parent_fd,
-                descriptor,
-                stable,
-                backup_expected,
-                allow_link_transition=True,
-            )
-        finally:
+            raise OperationError("installed operation log changed")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        data = _read_all(descriptor)
+        after = os.fstat(descriptor)
+    except OperationError:
+        raise
+    except OSError as exc:
+        raise OperationError("cannot verify installed operation log") from exc
+    finally:
+        if opened_here and descriptor is not None:
             os.close(descriptor)
-    except (OSError, OperationError):
-        return False
-    return True
-
-
-def _verified_renamed_identity(
-    descriptor: int,
-    original: _StableIdentity,
-    expected: bytes,
-) -> _StableIdentity | None:
+    if _stable_identity(after) != _stable_identity(before) or data != expected_data:
+        raise OperationError("installed operation log changed")
     try:
-        data, current = _read_exact_open_stable(descriptor, len(expected))
-    except (OSError, OperationError):
-        return None
-    if (
-        data != expected
-        or current[:5] + current[6:] != original[:5] + original[6:]
-    ):
-        return None
-    return current
-
-
-def _restore_from_initial_preimage(
-    parent_fd: int,
-    descriptor: int,
-    original: _StableIdentity,
-    expected: bytes,
-) -> bool:
-    try:
-        data, current = _read_open_stable(descriptor)
-    except (OSError, OperationError):
-        return False
-    unchanged = current[:5] + current[6:] == original[:5] + original[6:]
-    if data != expected or not unchanged:
-        return False
-    return _restore_preimage_copy(parent_fd, descriptor, current, expected)
+        parsed = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OperationError("installed operation log is not UTF-8") from exc
+    parse_operation_log(parsed)
 
 
 def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path:
-    """Atomically append one record to exactly ``root/log.md``."""
+    """Atomically append one canonical record to root/log.md.
+
+    Cooperative writers are serialized by the repository transaction lock. This
+    function still detects target and parent changes before the atomic replacement.
+    """
 
     path = Path(path)
     root = Path(root)
     if path != root / "log.md":
         raise OperationError("operation log path must be exactly root/log.md")
-    parent_fd, parent_identity = _open_parent(root)
-    preimage_fd = -1
-    temp_fd = -1
+
+    parent_descriptor: Optional[int] = None
+    preimage_descriptor: Optional[int] = None
+    temp_descriptor: Optional[int] = None
     temp_name = ""
-    temp_identity: _FileIdentity | None = None
-    backup_name = ".log.md.backup-" + secrets.token_hex(16)
-    backup_identity: _FileIdentity | None = None
-    installed_stable_identity: _StableIdentity | None = None
-    backup_stable_identity: _StableIdentity | None = None
-    promoted = False
+    temp_path = root / ".log.md.tmp-unallocated"
+    temp_identity: Optional[_StableIdentity] = None
+    replaced = False
     try:
-        _verify_parent(root, parent_fd, parent_identity)
-        text, preimage_fd, preimage_identity = _read_preimage(parent_fd)
-        preimage_bytes = text.encode("utf-8")
-        updated = append_operation_text(text, change).encode("utf-8")
-        temporary_flag = getattr(os, "O_TMPFILE", 0)
-        if not temporary_flag:
-            raise OperationError("safe operation log replacement is unsupported")
-        flags = os.O_RDWR | temporary_flag | getattr(os, "O_CLOEXEC", 0)
-        try:
-            temp_fd = os.open(".", flags, 0o644, dir_fd=parent_fd)
-            temp_metadata = os.fstat(temp_fd)
-            temp_identity = (temp_metadata.st_dev, temp_metadata.st_ino)
-            _write_all(temp_fd, updated)
-            os.fsync(temp_fd)
-            temp_stable_identity = _verify_temp(
-                parent_fd, temp_name, temp_fd, temp_identity, updated
-            )
-            _verify_parent(root, parent_fd, parent_identity)
-            _verify_preimage(parent_fd, preimage_fd, preimage_identity)
-            _rename_noreplace(
-                parent_fd,
-                "log.md",
-                backup_name,
-                preimage_fd,
-                preimage_identity,
-            )
-            try:
-                backup_stable_identity = _verify_moved_preimage(
-                    parent_fd,
-                    backup_name,
-                    preimage_fd,
-                    preimage_identity,
-                    preimage_bytes,
-                    allow_rename_ctime=True,
-                )
-                backup_identity = backup_stable_identity[:2]
-            except OperationError:
-                recovered = _restore_from_initial_preimage(
-                    parent_fd, preimage_fd, preimage_identity, preimage_bytes
-                )
-                backup_identity = None
-                if not recovered:
-                    raise OperationError(
-                        "operation log recovery failed after moved verification"
-                    )
-                raise
-            try:
-                _verify_parent(root, parent_fd, parent_identity)
-                _verify_temp(
-                    parent_fd,
-                    temp_name,
-                    temp_fd,
-                    temp_identity,
-                    updated,
-                    temp_stable_identity,
-                )
-                _link_descriptor_noreplace(parent_fd, temp_fd, "log.md")
-                promoted = True
-                installed_stable_identity = _verify_installed(
-                    parent_fd,
-                    temp_fd,
-                    temp_stable_identity,
-                    updated,
-                    allow_link_transition=True,
-                )
-                os.fsync(parent_fd)
-                _verify_installed(
-                    parent_fd,
-                    temp_fd,
-                    installed_stable_identity,
-                    updated,
-                )
-                _verify_parent(root, parent_fd, parent_identity)
-                os.close(temp_fd)
-                temp_fd = -1
-            except BaseException:
-                if not promoted and backup_identity is not None:
-                    if _restore_preimage_copy(
-                        parent_fd,
-                        preimage_fd,
-                        backup_stable_identity,
-                        preimage_bytes,
-                    ):
-                        _cleanup_owned(
-                            parent_fd, backup_name, backup_identity
-                        )
-                        backup_identity = None
-                raise
-            if backup_identity is not None:
-                _cleanup_owned(parent_fd, backup_name, backup_identity)
-                backup_identity = None
-        except OperationError:
-            raise
-        except OSError as exc:
-            raise OperationError("cannot write operation log") from exc
+        parent_descriptor, parent_identity = _open_parent(root)
+        preimage_descriptor, preimage_identity, mode, text = _open_preimage(path)
+        updated_text = append_operation_text(text, change)
+        updated = updated_text.encode("utf-8")
+
+        temp_name, temp_path, temp_descriptor = _open_temp(
+            root, parent_descriptor, mode
+        )
+        _write_fully(temp_descriptor, updated)
+        os.fsync(temp_descriptor)
+        temp_identity = _stable_identity(os.fstat(temp_descriptor))
+
+        _verify_temp(
+            temp_path,
+            temp_name,
+            parent_descriptor,
+            temp_descriptor,
+            temp_identity,
+            updated,
+            mode,
+        )
+        _verify_parent(root, parent_descriptor, parent_identity)
+        _verify_preimage(path, preimage_descriptor, preimage_identity)
+        _verify_temp(
+            temp_path,
+            temp_name,
+            parent_descriptor,
+            temp_descriptor,
+            temp_identity,
+            updated,
+            mode,
+        )
+
+        # Windows generally prevents replacing an open file. Both exact identities
+        # were checked immediately above, so close only for the replacement syscall.
+        if os.name == "nt":
+            os.close(preimage_descriptor)
+            preimage_descriptor = None
+            os.close(temp_descriptor)
+            temp_descriptor = None
+        os.replace(temp_path, path)
+        replaced = True
+        _sync_parent(parent_descriptor)
+        _verify_installed(path, temp_descriptor, updated, mode)
+        return path
+    except OperationError:
+        raise
+    except OSError as exc:
+        raise OperationError("cannot append operation log") from exc
     finally:
-        if temp_fd >= 0:
-            try:
-                os.close(temp_fd)
-            except OSError:
-                pass
-        if preimage_fd >= 0:
-            os.close(preimage_fd)
-        os.close(parent_fd)
-    return path
+        if not replaced and temp_name:
+            if temp_descriptor is not None:
+                try:
+                    temp_identity = _stable_identity(os.fstat(temp_descriptor))
+                except OSError:
+                    pass
+            _cleanup_owned_temp(
+                temp_path, temp_name, parent_descriptor, temp_identity
+            )
+        for descriptor in (temp_descriptor, preimage_descriptor, parent_descriptor):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
