@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover - exercised on POSIX
 _SUPPORTS_DIR_FD = all(
     function in os.supports_dir_fd for function in (os.open, os.stat, os.unlink)
 )
+_SUPPORTS_REPLACE_DIR_FD = os.rename in os.supports_dir_fd
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
 _SUPPORTS_SAFE_RMTREE = bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
 _TOMBSTONE_PREFIX = ".tombstone-"
@@ -1483,7 +1484,7 @@ class TransactionManager:
         snapshots = record.workspace / "snapshots"
         for relative in sorted(snapshot_index):
             stored = snapshot_index[relative]
-            target = self._vault_path(relative)
+            target = self._writer_lexical_path(relative)
             if stored is None:
                 if target.exists() or target.is_symlink():
                     try:
@@ -1496,8 +1497,20 @@ class TransactionManager:
                         raise TransactionError(
                             f"rollback target became a directory: {relative}"
                         )
-                    target.unlink()
-                    self._fsync_directory(target.parent)
+                    expected = getattr(
+                        self, "_writer_cleanup_identities", {}
+                    ).get(relative)
+                    if expected is None:
+                        kind = (
+                            "file"
+                            if stat.S_ISREG(metadata.st_mode)
+                            and metadata.st_nlink == 1
+                            else "unsafe"
+                        )
+                        expected = self._writer_entry(metadata, kind=kind)
+                    self._quarantine_added_path(
+                        record, relative, target, expected
+                    )
                 continue
             self._validate_relative_path(stored, "snapshot path")
             snapshot = snapshots.joinpath(*PurePosixPath(stored).parts)
@@ -1539,39 +1552,32 @@ class TransactionManager:
         before: dict[str, _WriterEntry],
         after: dict[str, _WriterEntry],
     ) -> None:
-        unsafe_additions = {
-            relative
-            for relative in cleanup
-            if relative not in before
-            and after.get(relative) is not None
-            and after[relative].kind == "unsafe"
-        }
-        for relative in sorted(unsafe_additions):
-            target = self._writer_lexical_path(relative)
-            if not target.exists() and not target.is_symlink():
-                continue
-            metadata = target.lstat()
-            if not self._writer_identity_matches(metadata, after[relative]):
-                raise TransactionError(f"writer rollback target changed: {relative}")
-            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-                target.rmdir()
-            else:
-                target.unlink()
-            self._fsync_directory(target.parent)
         directory_paths = {
             relative
             for relative in cleanup
             if (before.get(relative) or after.get(relative)) is not None
             and (before.get(relative) or after.get(relative)).kind == "directory"
         }
-        self._restore_snapshot_index(
-            record,
-            {
-                relative: stored
-                for relative, stored in cleanup.items()
-                if relative not in directory_paths | unsafe_additions
-            },
-        )
+        previous_identities = getattr(self, "_writer_cleanup_identities", None)
+        self._writer_cleanup_identities = {
+            relative: after[relative]
+            for relative in cleanup
+            if relative not in before and relative in after
+        }
+        try:
+            self._restore_snapshot_index(
+                record,
+                {
+                    relative: stored
+                    for relative, stored in cleanup.items()
+                    if relative not in directory_paths
+                },
+            )
+        finally:
+            if previous_identities is None:
+                del self._writer_cleanup_identities
+            else:
+                self._writer_cleanup_identities = previous_identities
         for relative in sorted(
             set(before) & directory_paths,
             key=lambda value: (len(PurePosixPath(value).parts), value),
@@ -1646,6 +1652,66 @@ class TransactionManager:
             "writer rollback parent",
         )
         return target
+
+    def _quarantine_added_path(
+        self,
+        record: TransactionRecord,
+        relative: str,
+        target: Path,
+        expected: _WriterEntry,
+    ) -> None:
+        quarantine_root = record.workspace / "quarantine"
+        self._ensure_contained_directory(quarantine_root, record.workspace)
+        self._require_ordinary_directory(target.parent, "writer rollback parent")
+        self._require_ordinary_directory(
+            quarantine_root, "writer rollback quarantine"
+        )
+        while True:
+            quarantine = quarantine_root / secrets.token_hex(16)
+            if not quarantine.exists() and not quarantine.is_symlink():
+                break
+        source_fd: int | None = None
+        quarantine_fd: int | None = None
+        try:
+            if _SUPPORTS_REPLACE_DIR_FD:
+                source_fd = self._open_directory(
+                    target.parent, "writer rollback parent"
+                )
+                quarantine_fd = self._open_directory(
+                    quarantine_root, "writer rollback quarantine"
+                )
+                os.replace(
+                    target.name,
+                    quarantine.name,
+                    src_dir_fd=source_fd,
+                    dst_dir_fd=quarantine_fd,
+                )
+                moved = os.stat(
+                    quarantine.name,
+                    dir_fd=quarantine_fd,
+                    follow_symlinks=False,
+                )
+            else:
+                os.replace(target, quarantine)
+                moved = quarantine.lstat()
+            self._fsync_directory(target.parent)
+            self._fsync_directory(quarantine_root)
+        except OSError as exc:
+            raise TransactionError(
+                f"cannot quarantine writer rollback target: {relative}"
+            ) from exc
+        finally:
+            if source_fd is not None:
+                os.close(source_fd)
+            if quarantine_fd is not None:
+                os.close(quarantine_fd)
+        if not self._writer_identity_matches(moved, expected) or (
+            expected.kind == "file"
+            and (not stat.S_ISREG(moved.st_mode) or moved.st_nlink != 1)
+        ):
+            raise TransactionError(
+                "writer rollback substitution preserved in quarantine: " + relative
+            )
 
     def _virtual_recovered_files(
         self,

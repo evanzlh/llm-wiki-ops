@@ -3209,6 +3209,75 @@ def test_writer_added_symlink_is_identity_checked_and_rolled_back(
     assert not unsafe.exists() and not unsafe.is_symlink()
 
 
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_writer_addition_substitution_is_preserved_during_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    addition = config.vault / "references/writer-added"
+    displaced = tmp_path / "displaced-writer-object"
+    original_target = tmp_path / "writer-target"
+    owner_target = tmp_path / "owner-target"
+    original_target.write_text("writer target\n", encoding="utf-8")
+    owner_target.write_text("owner target\n", encoding="utf-8")
+
+    def writer(change):
+        append_operation(config.vault / "log.md", change, root=config.vault)
+        addition.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "file":
+            addition.write_text("writer file\n", encoding="utf-8")
+        else:
+            addition.symlink_to(original_target)
+        raise OSError("writer failed")
+
+    original_replace = os.replace
+    substituted = False
+
+    def substitute_before_rename(source, destination, *args, **kwargs):
+        nonlocal substituted
+        targets_addition = Path(source) == addition or (
+            source == addition.name and kwargs.get("src_dir_fd") is not None
+        )
+        if targets_addition and not substituted:
+            substituted = True
+            if kwargs.get("src_dir_fd") is None:
+                original_replace(source, displaced)
+            else:
+                original_replace(
+                    source, displaced, src_dir_fd=kwargs["src_dir_fd"]
+                )
+            if kind == "file":
+                addition.write_text("owner replacement\n", encoding="utf-8")
+            else:
+                addition.symlink_to(owner_target)
+        return original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", substitute_before_rename)
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="writer restore failed.*preserved"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert substituted
+    assert not addition.exists() and not addition.is_symlink()
+    quarantined = list((record.workspace / "quarantine").iterdir())
+    if kind == "file":
+        assert any(
+            path.is_file()
+            and path.read_text(encoding="utf-8") == "owner replacement\n"
+            for path in quarantined
+        )
+    else:
+        assert any(
+            path.is_symlink() and path.readlink() == owner_target
+            for path in quarantined
+        )
+
+
 @pytest.mark.parametrize("snapshot_kind", ["base", "writer", "log"])
 def test_load_rejects_snapshot_backing_with_wrong_content_hash(
     tmp_path: Path,
