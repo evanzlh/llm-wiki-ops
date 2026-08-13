@@ -13,6 +13,7 @@ import pytest
 
 import obsidian_wiki.cli as cli
 from obsidian_wiki import IMPLEMENTATION_ID, __version__
+from obsidian_wiki import portable_check as portable_check_module
 from obsidian_wiki.cli import skills_dir
 from obsidian_wiki.config import ConfigError, load_portable_config
 from obsidian_wiki.frontmatter import (
@@ -1409,6 +1410,61 @@ def test_manifest_to_page_edge_must_be_declared_by_page(tmp_path: Path) -> None:
     )
 
     assert "manifest-page-source-missing" in issue_codes(check_portable_repo(config))
+
+
+def test_manifest_legacy_operation_page_is_invalid_without_inspection(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, entry_path = valid_repo(tmp_path)
+    payload = json.loads(entry_path.read_text(encoding="utf-8"))
+    payload["pages"] = ["journal/operations/legacy.md"]
+    entry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    legacy = config.vault / "journal" / "operations"
+    legacy.rmdir()
+    external = tmp_path / "external-legacy"
+    external.mkdir()
+    legacy.symlink_to(external, target_is_directory=True)
+
+    report = check_portable_repo(config)
+
+    assert issues_with_code(report, "manifest-page-invalid") == [
+        {
+            "code": "manifest-page-invalid",
+            "path": "wiki/journal/operations/legacy.md",
+            "message": "manifest page is not a knowledge page",
+            "severity": "error",
+        }
+    ]
+    assert str(root) not in json.dumps(report)
+
+
+def test_knowledge_scan_prunes_legacy_subtree_before_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    legacy = config.vault / "journal" / "operations"
+    legacy.rmdir()
+    external = tmp_path / "external-legacy"
+    external.mkdir()
+    legacy.symlink_to(external, target_is_directory=True)
+    real_scan = portable_check_module.scan_markdown_files
+    seen: list[frozenset[str]] = []
+
+    def recording_scan(
+        root: Path, *, skip_relative_subtrees: set[str]
+    ):
+        seen.append(frozenset(skip_relative_subtrees))
+        return real_scan(root, skip_relative_subtrees=skip_relative_subtrees)
+
+    monkeypatch.setattr(
+        portable_check_module,
+        "scan_markdown_files",
+        recording_scan,
+    )
+
+    check_portable_repo(config)
+
+    assert seen == [frozenset({"journal/operations"})]
 
 
 def test_page_to_manifest_edge_must_be_declared_by_shard(tmp_path: Path) -> None:

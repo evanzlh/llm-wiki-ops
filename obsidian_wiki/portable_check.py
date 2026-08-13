@@ -30,6 +30,7 @@ from .portable import (
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
+from .safe_files import MarkdownFile, scan_markdown_files
 from .skill_inventory import (
     LegacyManagedSkillsInventory,
     ManagedSkillsInventory,
@@ -427,23 +428,26 @@ def _check_sources(
         )
 
 
-def _knowledge_pages(config: PortableConfig) -> list[Path]:
-    pages: list[Path] = []
-    for category in _KNOWLEDGE_CATEGORIES:
-        category_root = config.vault / category
-        if not _ordinary_directory(category_root):
-            continue
-        for directory, dirnames, filenames in os.walk(
-            category_root, topdown=True, followlinks=False
-        ):
-            current = Path(directory)
-            relative = current.relative_to(config.vault)
-            if relative == Path("journal"):
-                dirnames[:] = [name for name in dirnames if name != "operations"]
-            pages.extend(
-                current / name for name in filenames if name.endswith(".md")
-            )
-    return sorted(set(pages))
+def _is_knowledge_page_name(page_name: str) -> bool:
+    relative = PurePosixPath(page_name)
+    return (
+        len(relative.parts) >= 2
+        and relative.parts[0] in _KNOWLEDGE_CATEGORIES
+        and relative.parts[:2] != ("journal", "operations")
+        and relative.suffix == ".md"
+    )
+
+
+def _knowledge_pages(config: PortableConfig) -> list[MarkdownFile]:
+    snapshots = scan_markdown_files(
+        config.vault,
+        skip_relative_subtrees={"journal/operations"},
+    )
+    return [
+        snapshot
+        for snapshot in snapshots
+        if _is_knowledge_page_name(snapshot.relative)
+    ]
 
 
 def _source_is_absolute(source_id: str) -> bool:
@@ -461,21 +465,24 @@ def _check_pages(
     entries_by_id = {entry.source_id: entry for entry in entries}
     page_sources: dict[str, tuple[str, ...]] = {}
 
-    for page in _knowledge_pages(config):
-        repo_path = _rel(config.root, page)
-        vault_path = page.relative_to(config.vault).as_posix()
-        if not _ordinary_file(page) or _has_symlink_component(config.vault, page):
-            issues.append(
-                CheckIssue(
-                    "knowledge-page-invalid",
-                    repo_path,
-                    "knowledge page must be an ordinary contained file",
-                )
+    try:
+        pages = _knowledge_pages(config)
+    except (OSError, RuntimeError, ValueError) as exc:
+        issues.append(
+            CheckIssue(
+                "knowledge-page-invalid",
+                _rel(config.root, config.vault),
+                _scrub(config.root, exc),
             )
-            continue
+        )
+        pages = []
+
+    for page in pages:
+        repo_path = _rel(config.root, page.path)
+        vault_path = page.relative
         try:
-            parsed = parse_frontmatter(page.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, FrontmatterError) as exc:
+            parsed = parse_frontmatter(page.text())
+        except (UnicodeDecodeError, ValueError, FrontmatterError) as exc:
             issues.append(
                 CheckIssue("frontmatter-invalid", repo_path, _scrub(config.root, exc))
             )
@@ -551,6 +558,21 @@ def _check_pages(
 
     for entry in entries:
         for page_name in entry.pages:
+            relative_name = PurePosixPath(page_name)
+            if (
+                isinstance(page_name, str)
+                and "\\" not in page_name
+                and relative_name.as_posix() == page_name
+                and relative_name.parts[:2] == ("journal", "operations")
+            ):
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-invalid",
+                        _rel(config.root, config.vault / relative_name),
+                        "manifest page is not a knowledge page",
+                    )
+                )
+                continue
             page = _safe_page_path(config, page_name)
             repo_path = (
                 _rel(config.root, config.vault / page_name)
@@ -563,6 +585,15 @@ def _check_pages(
                         "manifest-page-invalid",
                         repo_path,
                         f"unsafe manifest page path: {page_name}",
+                    )
+                )
+                continue
+            if not _is_knowledge_page_name(page_name):
+                issues.append(
+                    CheckIssue(
+                        "manifest-page-invalid",
+                        repo_path,
+                        "manifest page is not a knowledge page",
                     )
                 )
                 continue
