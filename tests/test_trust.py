@@ -8,7 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki.config import ConfigError, load_portable_config
 from obsidian_wiki.lint import lint_vault
 from obsidian_wiki.trust import (
     build_trust_ledger,
@@ -58,8 +61,37 @@ def _write_ledger(vault: Path) -> Path:
     return path
 
 
+def _portable_cli_context(
+    vault: Path, settings: dict[str, str] | None = None
+) -> Path:
+    root = vault.parent
+    vault.mkdir(parents=True, exist_ok=True)
+    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / "sources").mkdir(exist_ok=True)
+    (root / ".skills").mkdir(exist_ok=True)
+    nested = root / "work/nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    setting_lines = "".join(
+        f'{key} = "{value}"\n' for key, value in (settings or {}).items()
+    )
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "{vault.name}"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+{setting_lines}''',
+        encoding="utf-8",
+    )
+    return nested
+
+
 def _run_cli(
-    home: Path, *args: str, cwd: Path | None = None
+    home: Path, *args: str, cwd: Path
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -94,6 +126,51 @@ def test_reviewed_ledger_is_authoritative_instead_of_reclassifying_sources(tmp_p
         "concepts/alpha.md",
         "skills/beta.md",
     }
+
+
+def test_trust_ledger_does_not_hide_personal_artifact_names(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    expected = set()
+    for name in ("_archives", "_raw", "_readouts", "_staging"):
+        relative = f"{name}/legacy.md"
+        _page(vault, relative)
+        expected.add(relative)
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert set(ledger["pages"]) == expected
+
+
+def test_trust_ledger_rejects_external_symlink_without_leaking_content(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = _page(tmp_path, "secret.md", body="SECRET-MARKER")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        build_trust_ledger(vault, reviewed_at="2026-07-12T17:38:39+07:00")
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
+def test_trust_scanner_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    secret = tmp_path / "secret.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "unrelated.json").symlink_to(secret)
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert list(ledger["pages"]) == ["concepts/alpha.md"]
+    assert "SECRET-MARKER" not in json.dumps(ledger)
 
 
 def test_claim_change_invalidates_review_but_updated_timestamp_does_not(tmp_path: Path) -> None:
@@ -329,6 +406,7 @@ def test_owner_lifecycle_cli_record_then_check(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("lifecycle: reviewed", "lifecycle: active"))
+    nested = _portable_cli_context(vault)
     schema_args = (
         "--allow-lifecycle",
         "active",
@@ -339,18 +417,18 @@ def test_owner_lifecycle_cli_record_then_check(tmp_path: Path) -> None:
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T12:00:00+09:00",
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["schema"]["source"] == "wiki/AGENTS.md"
 
-    check = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    check = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert check.returncode == 0, check.stderr
     assert json.loads(check.stdout)["status"] == "pass"
 
@@ -533,20 +611,151 @@ def test_invalid_utf8_ledger_returns_structured_failure(tmp_path: Path) -> None:
     assert report["errors"][0]["issue"] == "ledger_unreadable"
 
 
+def test_hardlinked_ledger_returns_structured_failure_without_reading_target(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    external = tmp_path / "secret.json"
+    external.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "manual-lineage-and-claim-coverage-v1",
+                "reviewed_at": "2026-07-12T17:38:39+07:00",
+                "pages": {},
+                "secret": "SECRET-MARKER",
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        os.link(external, ledger_path)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable: {exc}")
+
+    report = check_trust_ledger(vault, ledger_path)
+
+    assert report["status"] == "fail"
+    assert report["errors"][0]["issue"] == "ledger_unreadable"
+    assert "SECRET-MARKER" not in json.dumps(report)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+def test_fifo_ledger_returns_structured_failure_without_opening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    os.mkfifo(ledger_path)
+    real_open = os.open
+
+    def guarded_open(path: object, *args: object, **kwargs: object) -> int:
+        if path == ledger_path.name:
+            raise AssertionError("FIFO was opened")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    report = check_trust_ledger(vault, ledger_path)
+
+    assert report["status"] == "fail"
+    assert report["errors"][0]["issue"] == "ledger_unreadable"
+
+
+@pytest.mark.parametrize("kind", ["terminal_symlink", "intermediate_symlink"])
+def test_linked_ledger_path_fails_cleanly_without_reading_target(
+    tmp_path: Path, kind: str
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "trust-ledger.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    meta = vault / "_meta"
+    if kind == "intermediate_symlink":
+        meta.symlink_to(outside, target_is_directory=True)
+        ledger_path = meta / "trust-ledger.json"
+    else:
+        meta.mkdir()
+        ledger_path = meta / "trust-ledger.json"
+        ledger_path.symlink_to(secret)
+
+    if kind == "intermediate_symlink":
+        with pytest.raises(RuntimeError, match="symlink") as raised:
+            check_trust_ledger(vault, ledger_path)
+        assert "SECRET-MARKER" not in str(raised.value)
+    else:
+        report = check_trust_ledger(vault, ledger_path)
+        assert report["status"] == "fail"
+        assert report["errors"][0]["issue"] == "ledger_unreadable"
+        assert "symlink" in report["errors"][0]["detail"]
+        assert "SECRET-MARKER" not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "command", [("trust-check", "--json"), ("lint", "--json", "--strict-trust")]
+)
+@pytest.mark.parametrize("kind", ["hardlink", "fifo"])
+def test_unsafe_trust_ledger_cli_failure_has_no_traceback(
+    tmp_path: Path, command: tuple[str, ...], kind: str
+) -> None:
+    home = tmp_path / "home"
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    external = tmp_path / "secret.json"
+    external.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "manual-lineage-and-claim-coverage-v1",
+                "reviewed_at": "2026-07-12T17:38:39+07:00",
+                "pages": {},
+                "secret": "SECRET-MARKER",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if kind == "hardlink":
+        try:
+            os.link(external, ledger_path)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable: {exc}")
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(ledger_path)
+    nested = _portable_cli_context(vault)
+
+    result = _run_cli(home, *command, cwd=nested)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "SECRET-MARKER" not in result.stdout + result.stderr
+    assert "single-link ordinary file" in result.stdout + result.stderr
+
+
 def test_invalid_review_timestamp_is_rejected_by_record_cli(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "not-an-iso-timestamp",
         "--approved",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 1
@@ -585,6 +794,163 @@ def test_trust_writer_rejects_symlinked_meta_directory(tmp_path: Path) -> None:
         raise AssertionError("symlinked _meta directory was accepted")
 
     assert not (outside / "trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository path safety")
+def test_configured_vault_symlink_cannot_write_trust_ledger_outside_repository(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "escape/wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repository / "escape").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="symlinks are not allowed"):
+        config = load_portable_config(
+            config_path,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+        )
+
+    assert not (outside / "wiki/_meta/trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_trust_writer_rejects_repository_rebound_after_config_load(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (repository / "wiki").mkdir()
+    config = load_portable_config(
+        config_path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+    )
+    repository.rename(tmp_path / "original-repository")
+    replacement = tmp_path / "replacement"
+    (replacement / "wiki").mkdir(parents=True)
+    repository.symlink_to(replacement, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+        )
+
+    assert not (replacement / "wiki/_meta/trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_trust_writer_rejects_ordinary_repository_rebound_after_config_load(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (repository / "wiki").mkdir()
+    config = load_portable_config(
+        config_path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+    )
+    repository.rename(tmp_path / "original-repository")
+    (repository / "wiki").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="repository root changed"):
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+            repository_root=config.root,
+            root_identity=config.root_identity,
+        )
+
+    assert not (repository / "wiki/_meta/trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor accounting")
+def test_trust_writer_closes_child_descriptor_when_fstat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    opened: set[int] = set()
+
+    def tracking_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)
+        opened.add(descriptor)
+        return descriptor
+
+    def tracking_close(descriptor: int) -> None:
+        opened.discard(descriptor)
+        real_close(descriptor)
+
+    calls = 0
+
+    def failing_fstat(descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "close", tracking_close)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+
+    with pytest.raises(OSError, match="injected fstat failure"):
+        write_trust_ledger(
+            vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=vault,
+        )
+
+    assert opened == set()
 
 
 def test_trust_writer_never_follows_predictable_temp_symlink(tmp_path: Path) -> None:
@@ -902,15 +1268,16 @@ def test_trust_record_cli_requires_explicit_approval(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     proc = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-07-12T17:38:39+07:00",
         "--json",
+        cwd=nested,
     )
 
     assert proc.returncode == 2
@@ -922,18 +1289,19 @@ def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", confidence=0.53)
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-07-12T17:38:39+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
-    check = _run_cli(home, "trust-check", str(vault), "--json")
+    check = _run_cli(home, "trust-check", "--json", cwd=nested)
 
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["recorded_pages"] == 1
@@ -943,7 +1311,7 @@ def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
     assert payload["counts"]["reviewed"] == 1
 
 
-def test_trust_cli_context_warnings_are_transient_and_additive(tmp_path: Path) -> None:
+def test_trust_cli_uses_portable_context_without_context_warning_fields(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
@@ -988,12 +1356,9 @@ local_state = ".obsidian-wiki/local"
     record = _run_cli(home, *record_args, cwd=nested)
 
     assert no_override_record.returncode == 0, no_override_record.stderr
-    assert json.loads(no_override_record.stdout)["context_warnings"] == []
-    assert record.returncode == 0, record.stderr
-    record_payload = json.loads(record.stdout)
-    assert len(record_payload["context_warnings"]) == 1
-    assert record_payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert record_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert "context_warnings" not in json.loads(no_override_record.stdout)
+    assert record.returncode == 2
+    assert "unrecognized arguments" in record.stderr
     ledger_path = portable_vault / "_meta" / "trust-ledger.json"
     assert "context_warnings" not in json.loads(ledger_path.read_text(encoding="utf-8"))
 
@@ -1008,12 +1373,9 @@ local_state = ".obsidian-wiki/local"
     )
 
     assert no_override.returncode == 0, no_override.stderr
-    assert json.loads(no_override.stdout)["context_warnings"] == []
-    assert overridden.returncode == 0, overridden.stderr
-    overridden_payload = json.loads(overridden.stdout)
-    assert len(overridden_payload["context_warnings"]) == 1
-    assert overridden_payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert overridden_payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert "context_warnings" not in json.loads(no_override.stdout)
+    assert overridden.returncode == 2
+    assert "unrecognized arguments" in overridden.stderr
     assert ledger_path.read_bytes() == before
 
 
@@ -1024,8 +1386,9 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
     schema_args = ("--required-trust-field", "updated")
+    nested = _portable_cli_context(vault)
 
-    stale = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    stale = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert stale.returncode == 0, stale.stderr
     stale_payload = json.loads(stale.stdout)
     assert stale_payload["status"] == "warn"
@@ -1039,7 +1402,6 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1047,6 +1409,7 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert record.returncode == 0, record.stderr
     record_payload = json.loads(record.stdout)
@@ -1054,7 +1417,7 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     assert record_payload["not_applicable_pages"] == ["concepts/alpha.md"]
     assert record_payload["removed_not_applicable"] == ["concepts/alpha.md"]
 
-    clean = _run_cli(home, "trust-check", str(vault), "--json", *schema_args)
+    clean = _run_cli(home, "trust-check", "--json", *schema_args, cwd=nested)
     assert clean.returncode == 0, clean.stderr
     clean_payload = json.loads(clean.stdout)
     assert clean_payload["status"] == "pass"
@@ -1064,13 +1427,13 @@ def test_owner_schema_cli_excludes_then_removes_no_confidence_ledger_entry(tmp_p
     rebuilt = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--json",
         *schema_args,
+        cwd=nested,
     )
     assert rebuilt.returncode == 0, rebuilt.stderr
     rebuilt_payload = json.loads(rebuilt.stdout)
@@ -1083,17 +1446,18 @@ def test_trust_record_all_human_output_lists_no_confidence_without_removal(tmp_p
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1114,17 +1478,18 @@ def test_trust_record_all_human_output_warns_when_rebuild_removes_stale_entry(
     page = _page(vault, "concepts/alpha.md")
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1146,11 +1511,11 @@ def test_trust_record_page_human_output_warns_when_stale_entry_is_removed(tmp_pa
     page = _page(vault, "concepts/alpha.md")
     _write_ledger(vault)
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1158,6 +1523,7 @@ def test_trust_record_page_human_output_warns_when_stale_entry_is_removed(tmp_pa
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1174,11 +1540,11 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
@@ -1186,6 +1552,7 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
         "--approved",
         "--required-trust-field",
         "updated",
+        cwd=nested,
     )
 
     assert record.returncode == 0
@@ -1194,16 +1561,16 @@ def test_trust_record_page_human_output_reports_zero_removals_without_warning(
     assert "removed obsolete trust ledger entries" not in record.stderr
 
 
-def test_explicit_vault_cli_override_reports_cli_schema_source(tmp_path: Path) -> None:
+def test_portable_config_path_is_used_as_cli_schema_source(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "explicit-vault"
     page = _page(vault, "concepts/alpha.md")
     page.write_text(page.read_text().replace("base_confidence: 0.80\n", ""))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--all",
         "--reviewed-at",
         "2026-08-05T14:00:00+09:00",
@@ -1211,11 +1578,14 @@ def test_explicit_vault_cli_override_reports_cli_schema_source(tmp_path: Path) -
         "--required-trust-field",
         "updated",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 0, record.stderr
     assert "removed obsolete trust ledger entries" not in record.stderr
-    assert json.loads(record.stdout)["schema"]["source"] == "cli:explicit-vault"
+    assert json.loads(record.stdout)["schema"]["source"] == (
+        f"cli:{tmp_path / '.obsidian-wiki/config.toml'}"
+    )
 
 
 def test_partial_trust_record_does_not_approve_other_stale_pages(tmp_path: Path) -> None:
@@ -1226,19 +1596,20 @@ def test_partial_trust_record_does_not_approve_other_stale_pages(tmp_path: Path)
     _write_ledger(vault)
     alpha.write_text(alpha.read_text().replace("Reviewed material claim.", "Reviewed alpha change."))
     beta.write_text(beta.read_text().replace("Reviewed material claim.", "Unreviewed beta change."))
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
         "2026-07-13T09:00:00+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
-    check = _run_cli(home, "trust-check", str(vault), "--json")
+    check = _run_cli(home, "trust-check", "--json", cwd=nested)
 
     assert record.returncode == 0, record.stderr
     assert json.loads(record.stdout)["recorded_pages"] == 1
@@ -1256,17 +1627,18 @@ def test_partial_trust_record_reports_malformed_ledger_without_traceback(tmp_pat
     ledger_path = vault / "_meta" / "trust-ledger.json"
     ledger_path.parent.mkdir(parents=True)
     ledger_path.write_text("[]\n")
+    nested = _portable_cli_context(vault)
 
     record = _run_cli(
         home,
         "trust-record",
-        str(vault),
         "--page",
         "concepts/alpha.md",
         "--reviewed-at",
         "2026-07-13T09:00:00+07:00",
         "--approved",
         "--json",
+        cwd=nested,
     )
 
     assert record.returncode == 1

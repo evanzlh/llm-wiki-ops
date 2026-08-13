@@ -18,7 +18,6 @@ except ModuleNotFoundError:  # Python < 3.11
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "obsidian_wiki" / "_data" / "skills"
-AGENTS_MD = ROOT / "obsidian_wiki" / "_data" / "bootstrap" / "AGENTS.md"
 
 
 class SkillFilesTest(unittest.TestCase):
@@ -32,17 +31,26 @@ class SkillFilesTest(unittest.TestCase):
             self.assertIn(f"name: {name}", head)
             self.assertIn("description:", head)
 
-    def test_routing_rows_are_registered(self) -> None:
-        text = AGENTS_MD.read_text(encoding="utf-8")
-        self.assertIn("`session-brain`", text)
-        self.assertIn("`session-search`", text)
-        self.assertIn("/wiki-sessions", text)
+    def test_task_frontmatter_registers_build_and_search_triggers(self) -> None:
+        brain = (SKILLS / "session-brain" / "SKILL.md").read_text(encoding="utf-8")
+        search = (SKILLS / "session-search" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn('Use when the user says "/session-brain"', brain)
+        self.assertIn('Use when the user says "/wiki-sessions <topic>"', search)
+        self.assertIn("sessions-build", brain)
+        self.assertIn("sessions-query", search)
 
     def test_ingest_versus_retrieve_is_disambiguated(self) -> None:
         """Three skills read the same caches for different reasons; without an
         explicit note the router picks between them by coin flip."""
-        text = AGENTS_MD.read_text(encoding="utf-8")
-        self.assertIn("Session history: ingest vs. retrieve", text)
+        brain = (SKILLS / "session-brain" / "SKILL.md").read_text(encoding="utf-8")
+        search = (SKILLS / "session-search" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("## When to use which skill", brain)
+        self.assertIn("Build or refresh the graph", brain)
+        self.assertIn("Find and load a specific past session", brain)
+        self.assertIn("Distil sessions into permanent vault pages", brain)
+        self.assertIn("## Related", search)
+        self.assertIn("wiki-query", search)
+        self.assertIn("wiki-agent", search)
 
     def test_search_skill_degrades_without_the_external_loader(self) -> None:
         """claude-session-load lives in the user's personal skills dir, not this

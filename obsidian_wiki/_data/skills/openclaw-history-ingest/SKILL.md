@@ -1,362 +1,78 @@
 ---
 name: openclaw-history-ingest
-description: >
-  Ingest OpenClaw agent history into the Obsidian wiki. Use this skill when the user wants to mine
-  their past OpenClaw sessions for knowledge, import their ~/.openclaw folder, extract insights from
-  previous OpenClaw conversations, or says things like "process my OpenClaw history", "add my OpenClaw
-  sessions to the wiki", "ingest ~/.openclaw", or "what have I worked on in OpenClaw". Also triggers
-  when the user mentions OpenClaw session logs, MEMORY.md, daily notes, or ~/.openclaw/workspace.
+description: Use when mining selected OpenClaw memory or session history for durable repository knowledge.
 ---
 
-# OpenClaw History Ingest — Session & Memory Mining
+# OpenClaw History Ingest
 
-You are extracting knowledge from the user's OpenClaw agent history and distilling it into the Obsidian wiki. OpenClaw stores both a structured long-term MEMORY.md and per-session JSONL transcripts — focus on durable knowledge, not operational telemetry.
+Use [OpenClaw data format](references/openclaw-data-format.md) for exact formats and [source snapshot rules](../wiki-capture/references/source-snapshot.md) for evidence.
 
-This skill can be invoked directly or via the `wiki-history-ingest` router (`/wiki-history-ingest openclaw`).
+## Mandatory authority preflight
 
-## Before You Start
+Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `obsidian-wiki setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
 
-1. **Resolve config and ownership** — follow the Config Resolution Protocol in
-   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
-   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
-   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
-   parent agent resolves config and mode, records concrete vault and OpenClaw
-   history paths, and reads the owner `AGENTS.md` at the resolved vault.
-2. Select one terminal workflow after the shared analysis and page-preparation steps:
-   **Portable Repository completion** or **Personal mode completion**. Never
-   mix writes or tracking. The Portable branch implements the canonical
-   Portable Write Protocol locally. Shared inventory, filtering, extraction, clustering,
-   and drafting are read-only. If work is divided, use analysis-only workers:
-   they return evidence and page proposals but do not resolve mode, snapshot
-   sources, begin transactions, or mutate files. The parent agent owns completion.
-3. **Read mode-appropriate state.** Personal mode reads manifest v1 and
-   `index.md` from the concrete vault. Portable Repository mode may inspect
-   knowledge pages read-only, but OpenClaw MEMORY/daily/session files remain
-   transient until the parent creates reviewed snapshots; never parse manifest
-   v2 as a Personal source map. Personal append mode uses manifest v1.
-   Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
+Resolve OpenClaw paths in documented precedence. `OPENCLAW_HOME` overrides the OS home used for defaults; an explicit absolute `OPENCLAW_STATE_DIR` overrides derived state, and explicit absolute `OPENCLAW_CONFIG_PATH` overrides `<state>/openclaw.json`. `OPENCLAW_PROFILE` isolates default state/config/workspace names. Workspace precedence is per-agent workspace, then `agents.defaults.workspace`, then `OPENCLAW_WORKSPACE_DIR`, then the profile-aware default. Non-default agents without an explicit workspace use their per-agent workspace below state. Reject an empty or relative resolved root (tilde expansion must finish absolute). Sessions live per agent below state; treat legacy/archive `sessions.json` as a keyed object whose values include `sessionId` and optional `sessionFile`, not as an array.
 
-## Ingest Modes
+Current OpenClaw canonical active history is the schema-versioned SQLite database `agents/<agentId>/agent/openclaw-agent.sqlite`. Official documentation identifies that location and a versioned logical model, but does not publish a stable public table/column query contract suitable for this portable skill. Do not infer tables or query that database. If requested evidence exists only there, report canonical database ingestion as unsupported, return `NEEDS_CONTEXT`, and stop before snapshot creation or transaction begin. Direct parsing here is intentionally limited to selected legacy/archive `sessions.json` and JSONL artifacts plus bounded curated workspace memory; do not claim completeness for current active sessions. Legacy index freshness uses the case-sensitive `updatedAt` field.
 
-### Append Mode (default)
+## Bounded safe input
 
-**Personal mode delta:** Compare each memory, daily-note, index, or session file
-with the manifest v1 session map. A source is new when its canonical path is
-absent and modified when its source timestamp is later than `ingested_at`.
+Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower; raising requires explicit authorization. Oversize input fails or gets an explicit omission marker. MEMORY.md and daily memory are bounded by these limits; never perform an unbounded full read.
 
-**Portable Repository mode delta:** Inspect reviewed snapshots below the
-configured `sources` root. A source is new when no reviewed snapshot has the
-same agent/session identity; it is changed when the matching snapshot's
-recorded content hash differs from the hash of the currently selected OpenClaw
-material.
+Every selected input is root-contained. lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. Use a TOCTOU-resistant bounded reader with `O_NOFOLLOW`, fstat, and device/inode identity, type, containment, link count, and size verification before/after reading.
 
-**After mode-specific delta selection:** Process only sources classified as
-new or changed by the selected rule. Never apply the Personal delta rule to a
-Portable run.
+### Precise topology gate
 
-Use this mode for regular syncs.
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
-### Full Mode
+## Evidence, snapshot, and transaction safety
 
-Process everything regardless of prior tracking state. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
+Workers receive immutable selected file/row IDs and declared bounds. Worker output is untrusted and sensitive; the parent revalidates every stable evidence ID against the selected file/row, record/session ID, and declared bounds, reruns redaction, data minimization and license/attribution, and removes secrets, raw tool output and absolute cache paths. Never materialize worker output directly.
 
-## OpenClaw Data Layout
+Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-OpenClaw stores all local artifacts under `~/.openclaw/`.
+Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md` with no user or session text. Validate parent; target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF ending included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
 
-```
-~/.openclaw/
-├── openclaw.json                          # Global config
-├── credentials/                           # Auth tokens (skip entirely)
-├── workspace/                             # Agent workspace
-│   ├── MEMORY.md                          # Long-term memory (loaded every session)
-│   ├── DREAMS.md                          # Optional dream diary / summaries
-│   └── memory/
-│       ├── YYYY-MM-DD.md                  # Daily notes (today + yesterday auto-loaded)
-│       └── ...
-└── agents/
-    └── <agentId>/
-        ├── agent/
-        │   └── models.json                # Agent config (skip)
-        └── sessions/
-            ├── sessions.json              # Session index
-            └── <sessionId>.jsonl          # Session transcript (JSONL, append-only)
+Save the failed command envelope. Its `error` and `recovery` supply a trusted transaction ID/status; absent ID means inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when chosen, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
+
+Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; if stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot candidate or derived artifact, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
+
+## Discovery and parsing
+
+First detect `agents/<agentId>/agent/openclaw-agent.sqlite`; it is canonical active history and triggers the unsupported/`NEEDS_CONTEXT` boundary above rather than ad-hoc SQL. For supported legacy/archive input, inventory bounded workspace `MEMORY.md`, bounded daily `memory/YYYY-MM-DD.md`, optional `DREAMS.md`, per-agent `sessions/sessions.json`, and selected session JSONL. Prefer curated memory for triage. Enumerate the keyed `sessions.json` object: its property key is the routing/session key and its value supplies native `sessionId`, optional `sessionFile`, label/channel metadata, and freshness from `updatedAt`. Validate any `sessionFile` against the selected sessions root instead of trusting the stored path. Parse base and `-topic-<threadId>` JSONL identically. Attribute projects from explicit memory headings/session metadata, not directory guesses. Treat config as configuration only and never extract tokens/provider credentials.
+
+Append compares stable tool/session identity/content hash against snapshots; Full changes bounded selection only. Declare session/day/byte/line/time limits and omissions. Redact secrets, private material, irrelevant content, channel identifiers, and credentials; preserve Unicode.
+
+## Parent and worker boundary
+
+The parent owns selection, snapshots, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence/proposals only and never discover, write, list, or mutate.
+
+### Existing snapshot preservation and identity
+
+Persist these history-extension frontmatter fields:
+
+```yaml
+slice_identity: sha256:<64-lowercase-hex>
+slice_descriptor: <bounded-redacted-human-description>
 ```
 
-### Key data sources ranked by value
+The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
 
-1. `workspace/MEMORY.md` — highest signal; long-term durable facts the agent accumulated
-2. `workspace/memory/YYYY-MM-DD.md` — daily notes; recent entries often contain active project context
-3. `agents/*/sessions/<id>.jsonl` — session transcripts; rich but noisy
-4. `agents/*/sessions/sessions.json` — session index for inventory and timestamps
-5. `workspace/DREAMS.md` — optional summaries; ingest if present
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
-Skip `credentials/` entirely. Skip `agents/*/agent/models.json` (runtime config, not user knowledge).
+## Repository-native completion
 
-## Step 1: Survey and Compute Delta
+Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
-Scan `OPENCLAW_HISTORY_PATH` to build the source inventory:
+After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
-- `~/.openclaw/workspace/MEMORY.md`
-- `~/.openclaw/workspace/DREAMS.md` (if present)
-- `~/.openclaw/workspace/memory/*.md`
-- `~/.openclaw/agents/*/sessions/sessions.json`
-- `~/.openclaw/agents/*/sessions/*.jsonl`
+An absolute cache path is transient and never provenance.
 
-**Personal mode survey:** Compare the inventory with the concrete vault's
-manifest v1 session map. A file is **New** when its canonical path is absent,
-**Modified** when its source timestamp is later than `ingested_at`, and
-**Unchanged** otherwise.
-
-**Portable Repository mode survey:** Inspect reviewed snapshots under the
-configured `sources` root. Selected material is **New** when no reviewed
-snapshot records the same agent/session identity, **Changed** when the matching
-snapshot's recorded content hash differs from the freshly computed hash, and
-**Unchanged** when both identity and hash match.
-
-Report a concise delta summary before deep parsing.
-
-## Step 2: Parse MEMORY.md First
-
-`MEMORY.md` is the highest-value source. It is plain markdown, human-readable and human-editable. It typically contains:
-
-- Durable facts about the user's preferences, environment, and recurring patterns
-- Decisions and context the agent was told to remember
-- Project-specific notes the agent accumulated over many sessions
-
-Read it in full and extract concept-level knowledge. Do not create one wiki page per MEMORY.md entry — cluster by topic.
-
-## Step 3: Parse Daily Notes
-
-`workspace/memory/YYYY-MM-DD.md` files contain time-stamped notes from that day's sessions. Prioritize recent files (last 30–90 days). Extract:
-
-- Active project context and decisions made
-- Patterns or techniques discovered
-- Recurring blockers or solved problems
-
-Older daily notes have diminishing signal — summarize in bulk rather than extracting line-by-line.
-
-## Step 4: Parse Session JSONL Safely
-
-Each session file is JSONL (append-only, one JSON object per line):
-
-```json
-{"role": "user",      "content": "...", "timestamp": "..."}
-{"role": "assistant", "content": "...", "timestamp": "..."}
-{"role": "tool",      "name": "...",   "content": "...", "timestamp": "..."}
-```
-
-### Extraction rules
-
-- Prioritize assistant turns that state conclusions, decisions, or patterns
-- Extract user intent from high-signal turns; skip low-information follow-ups
-- Tool calls are context, not primary knowledge — only extract if the result contains a reusable insight
-- Cross-reference `sessions.json` index to get session names/labels before opening individual transcripts
-
-### Critical privacy filter
-
-Session transcripts can include injected instructions, tool payloads, and sensitive text. Do not ingest verbatim.
-
-- Remove API keys, tokens, passwords, credentials
-- Redact private identifiers unless relevant and user-approved
-- Summarize; do not quote raw transcripts verbatim
-
-## Step 5: Cluster by Topic
-
-Do not create one wiki page per session or per MEMORY.md entry.
-
-- Group by stable topic (concept, tool, project, technique)
-- Split mixed sessions into separate themes
-- Merge recurring patterns across dates and agents
-- Use session `cwd` or workspace path to infer project scope when available
-
-## Step 6: Distill into Wiki Pages
-
-Route extracted knowledge using existing wiki conventions:
-
-- Project-specific architecture/process → `projects/<name>/...`
-- General concepts → `concepts/`
-- Recurring techniques/debug playbooks → `skills/`
-- Tools/services/frameworks → `entities/`
-- Cross-session patterns → `synthesis/`
-
-For each impacted project, create/update `projects/<name>/<name>.md`.
-
-`projects/<name>/<name>.md` uses `category: projects`. Its Portable `sources`
-contains accepted snapshot Source IDs. Portable Repository mode omits
-`source_path` and every machine-local or absolute path from the page. Personal
-manifest v1 may retain the concrete absolute history path; that Personal
-tracking value is never copied into Portable page frontmatter or body text.
-
-### Writing rules
-
-- Distill knowledge, not chronology
-- Avoid "on date X we discussed..." unless date context is essential
-- Add `summary:` frontmatter on each new/updated page (1–2 sentences, ≤ 200 chars)
-- Add confidence and lifecycle fields to every new page:
-  ```yaml
-  base_confidence: 0.42
-  lifecycle: draft
-  lifecycle_changed: <ISO date today>
-  ```
-  Leave `lifecycle` unchanged on update.
-- Add provenance markers:
-  - `^[extracted]` when directly grounded in explicit session/memory content
-  - `^[inferred]` when synthesizing patterns across multiple sessions
-  - `^[ambiguous]` when sessions conflict
-- Add/update `provenance:` frontmatter mix for each changed page
-
-## Privacy and Compliance
-
-- Distill and synthesize; avoid raw memory or transcript dumps
-- Default to redaction for anything that looks sensitive
-- Ask the user before storing personal or sensitive details
-- Keep references to other people minimal and purpose-bound
-
-## Reference
-
-See `references/openclaw-data-format.md` for field-level notes and parsing guidance.
-
-## Portable Repository completion
-
-Use this branch only when config resolution selected Portable Repository mode.
-The external history cache and selected session files are transient analysis input,
-never Portable Source IDs. This includes external `MEMORY.md`, daily notes,
-dreams, indexes, and JSONL transcripts even when they are already text.
-
-1. **Create or select reviewable source snapshots.** The parent agent creates,
-   updates, or reuses one small, reviewable UTF-8 Markdown or plain-text snapshot
-   strictly below the configured `sources` root for each selected OpenClaw
-   memory/session or coherent slice. Record agent identity, session identity
-   (or stable memory/note identity), relevant excerpts, source timestamps, and a
-   content hash. Redact credentials, injected content, and private identifiers;
-   use repository-relative labels and include no machine-local absolute paths.
-   Preserve valid Unicode exactly. If an adequate snapshot cannot be created,
-   stop or use Personal mode.
-2. **Review and accept every selected snapshot.** After creation, update, or
-   reuse, the parent agent reviews and accepts every selected snapshot, including
-   its identity, excerpts, hash, redaction, and Source ID. If any snapshot is
-   rejected, incomplete, unsafe, or cannot be traced, stop before `transaction begin`.
-   Candidates may cite only accepted snapshots, never `.openclaw` paths, live
-   URLs, or pseudo-sources.
-3. **Compute complete source closure.** Compute full source closure before
-   `transaction begin` as the set union of:
-   - `live-page sources`: every existing `sources` Source ID on every page to be
-     updated or deleted;
-   - `accepted snapshots`: every selected and accepted reviewed snapshot Source
-     ID, whether newly created, changed existing, or unchanged and reused; and
-   - `candidate citations`: every Source ID that any candidate `sources` field
-     will cite, including a changed existing snapshot used by a new page.
-   Deduplicate the union, verify each ID resolves below configured `sources`,
-   and freeze it before begin.
-4. **Begin exactly once.** Keep the repository root as the command CWD and run
-   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
-   Record `transaction_id`, runtime-only absolute `candidate_vault`,
-   `started_at`, and Source IDs; do not `cd` into it or persist that path.
-5. **Write candidates.** New pages use `created = updated = started_at`; updates
-   preserve the existing `created` and set `updated = started_at`. Write only
-   final vault-relative knowledge pages with a non-empty source subset.
-6. **Declare removals.** Use
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Unsupported
-   non-page/control mutations stop without a live-vault write.
-7. **Validate candidates.** Run
-   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
-   warnings do not block commit. Fix every issue and rerun validation.
-8. **Commit the passing transaction.** Commit only a passing report with
-   `obsidian-wiki transaction commit <id> --json --pretty`.
-9. **Use status-aware recovery.** Follow only a trusted
-   `recovery.preferred_action` or reported alternative whose prerequisites hold.
-   Confirm the record with `obsidian-wiki transaction list --json`; its
-   `recommended_action` must agree and the command must be in `allowed_actions`.
-   Fix/revalidate an active preflight failure or run
-   `obsidian-wiki transaction abort <id> --json`. A `promoting` record permits
-   only its reported `obsidian-wiki transaction restore <id> --json`. For a
-   `failed` record, prefer `obsidian-wiki transaction retry <id> --json`; use
-   `obsidian-wiki transaction restore <id> --json` or
-   `obsidian-wiki transaction discard <id> --json` only when allowed and its
-   prerequisites hold. A configuration or begin failure with no trusted
-   transaction ID, or an empty list, has no recovery action. Never replace a
-   transaction while its outcome is ambiguous.
-10. **Refresh local hot context after the terminal gate.** Only after commit
-   succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`; if stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
-   the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-11. **Report and stop.** Report selected memories/sessions, snapshots, page changes, warnings,
-   recovery, and hot status.
-
-Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
-
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Keep the
-concrete vault, OpenClaw history, QMD CLI, and QMD collection values in agent
-memory: config resolution does not export these values into the parent shell.
-Write the prepared pages directly below `<resolved-vault-path>`, using current
-ISO timestamps and preserving `created` on updates.
-
-### Personal direct writes and Git safety
-
-Apply any owner-required Personal Git snapshot to the concrete resolved vault
-before direct writes. Write or merge prepared pages at final paths below
-`<resolved-vault-path>`; stop before tracking on failure.
-
-### Personal manifest v1 and cache
-
-For every processed memory, daily note, session, or dreams file, update
-`<resolved-vault-path>/.manifest.json` as manifest v1 with `ingested_at`,
-`size_bytes`, `modified_at`, source type, `agent_id`, and page lists. Preserve
-canonical expanded absolute Personal source keys and unrelated entries. Retain:
-
-```json
-{
-  "openclaw": {
-    "source_path": "<resolved-openclaw-history-path>",
-    "last_ingested": "TIMESTAMP",
-    "memory_updated_at": "TIMESTAMP",
-    "daily_notes_ingested": 14,
-    "sessions_ingested": 23,
-    "pages_created": 6,
-    "pages_updated": 18
-  }
-}
-```
-
-Record each source mapping with concrete values:
-
-```bash
-obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
-```
-
-### Personal central files
-
-Update `<resolved-vault-path>/index.md`. Append to
-`<resolved-vault-path>/log.md`:
-
-```text
-- [TIMESTAMP] OPENCLAW_HISTORY_INGEST memory=updated daily_notes=N sessions=M pages_updated=X pages_created=Y mode=append|full
-```
-
-Read `<resolved-vault-path>/hot.md`, create the `wiki-ingest` template if
-missing, summarize the conceptual OpenClaw ingest in **Recent Activity**, keep
-three operations, and bump `updated`.
-
-### Personal QMD refresh
-
-When the concrete QMD collection is configured, refresh only after all
-Personal writes. Failure does not roll back the vault.
-
-```bash
-<resolved-qmd-cli> update
-<resolved-qmd-cli> embed
-<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
-```
-
-Use `embed` only for stale/missing vectors and report refreshed, skipped,
-unavailable, or failed status.
-
-Do not fall through into Portable Repository completion. Report the Personal
-page, manifest v1, cache, central-file, Personal Git snapshot, and QMD results,
-then stop.
+1. Parent writes bounded reviewable UTF-8 Markdown snapshot files under `sources/history/<tool>/` (`sources/history/openclaw/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant data.
+2. Validate every Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty status. Stop for owner review, stage, and commit externally, then rerun when new/dirty; tracked is not reviewed.
+3. Parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure.
+4. Parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
+5. Parent alone writes final candidates under the runtime candidate vault with non-empty sources and declares deletions through CLI.
+6. Parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews diff/warnings, and runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
+7. Parent refreshes `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only the bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report selections, snapshots, omissions, changes, and recovery. Do not commit, push, or open a pull request.

@@ -1,3 +1,6 @@
+> **Superseded (2026-08-12):** Current behavior is defined by the
+> [Portable-Only Repository Design](../specs/2026-08-12-portable-only-design.md).
+
 # Portable Setup Installation Compatibility Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

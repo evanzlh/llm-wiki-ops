@@ -1,18 +1,51 @@
 from __future__ import annotations
 
+import errno
 import json
+import hashlib
 import os
 import re
+import secrets
 import stat
-import tempfile
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from obsidian_wiki.cache import compute_hash
 from obsidian_wiki.config import PortableConfig
+from obsidian_wiki.safe_files import stable_directory_identity
 
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
+_SUPPORTS_MANIFEST_DIRFD = all(
+    function in os.supports_dir_fd
+    for function in (os.open, os.stat, os.mkdir, os.rename, os.link, os.unlink)
+) and os.stat in os.supports_follow_symlinks
+_SIDECAR = ".obsidian-wiki-manifest-mutation"
+_WAL_FILES = frozenset(
+    {"journal.json", ".journal.tmp", "pre.bin", ".pre.tmp", "post.bin", ".post.tmp"}
+)
+_MAX_SHARD_BYTES = 16 * 1024 * 1024
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+
+
+def _manifest_fault_point(_step: str) -> None:
+    """Test-only crash boundary; deliberately a no-op in production."""
+
+
+def _manifest_mutation_supported() -> bool:
+    return (
+        os.name == "posix"
+        and _fcntl is not None
+        and _SUPPORTS_DIRECTORY_FSYNC
+        and _SUPPORTS_MANIFEST_DIRFD
+    )
 
 
 class ManifestError(ValueError):
@@ -20,6 +53,10 @@ class ManifestError(ValueError):
 
 
 class ManifestPreconditionError(ManifestError):
+    pass
+
+
+class _MissingManifestDirectory(ManifestError):
     pass
 
 
@@ -34,6 +71,14 @@ class ManifestEntry:
     compiled_at: str
 
 
+@dataclass(frozen=True)
+class _FileProof:
+    content_hash: str
+    identity: tuple[int, int]
+    links: int
+    data: bytes
+
+
 class ShardedManifest:
     def __init__(self, config: PortableConfig) -> None:
         if len(config.sources) != 1:
@@ -42,7 +87,244 @@ class ShardedManifest:
         self.source_root = config.sources[0]
         self.marker_path = config.vault / ".manifest.json"
         self.entries_root = config.vault / ".manifest" / "sources"
+        self.wal_root = config.local_state / "manifest-mutation"
+        self.lock_path = self.wal_root / "manifest.lock"
+        self._session: tuple[int, int, list[int]] | None = None
+        self._verify_repository_identity()
+        self._vault_identity = self._capture_vault_identity()
         self._validate_marker()
+
+    def _verify_repository_identity(self) -> None:
+        with self._bound_repository_root():
+            pass
+
+    @contextmanager
+    def _bound_repository_root(self) -> Iterator[int]:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor: int | None = None
+        primary_error: BaseException | None = None
+        try:
+            descriptor = os.open(self.config.root, flags)
+            if (
+                stable_directory_identity(os.fstat(descriptor))
+                != self.config.root_identity
+            ):
+                raise ManifestError("configured repository root changed since configuration was read")
+        except ManifestError:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                descriptor = None
+            raise
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+            raise ManifestError("configured repository root is unsafe") from exc
+        try:
+            yield descriptor
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if primary_error is None:
+                        raise ManifestError("cannot close configured repository root") from exc
+
+    @staticmethod
+    def _same_directory(left: os.stat_result, right: os.stat_result) -> bool:
+        return stat.S_ISDIR(left.st_mode) and stat.S_ISDIR(right.st_mode) and (
+            stable_directory_identity(left) == stable_directory_identity(right)
+        )
+
+    def _capture_vault_identity(self) -> tuple[int, int]:
+        if not _manifest_mutation_supported():
+            try:
+                metadata = self.config.vault.lstat()
+            except OSError as exc:
+                raise ManifestError("configured vault is unsafe") from exc
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise ManifestError("configured vault is unsafe")
+            return stable_directory_identity(metadata)
+        with self._bound_repository_root() as root_fd:
+            descriptors = self._open_directory(root_fd, self.config.vault, create=False)
+            try:
+                return stable_directory_identity(os.fstat(descriptors[-1]))
+            finally:
+                self._close_fds(descriptors)
+
+    def _validate_root_attachment(self, root_fd: int) -> None:
+        try:
+            attached = self.config.root.lstat()
+            opened = os.fstat(root_fd)
+        except OSError as exc:
+            raise ManifestError("configured repository root is unsafe") from exc
+        if stable_directory_identity(attached) != stable_directory_identity(opened):
+            raise ManifestError("configured repository root changed during manifest mutation")
+
+    def _validate_directory_chain(self, descriptors: list[int], path: Path) -> None:
+        assert self._session is not None
+        relative = path.relative_to(self.config.root)
+        if len(descriptors) != len(relative.parts) + 1:
+            raise ManifestError("manifest directory binding is incomplete")
+        for index, part in enumerate(relative.parts, start=1):
+            try:
+                attached = os.stat(
+                    part, dir_fd=descriptors[index - 1], follow_symlinks=False
+                )
+                opened = os.fstat(descriptors[index])
+            except OSError as exc:
+                raise ManifestError("manifest directory changed during mutation") from exc
+            if not self._same_directory(attached, opened):
+                raise ManifestError("manifest directory changed during mutation")
+        vault_parts = self.config.vault.relative_to(self.config.root).parts
+        if relative.parts[: len(vault_parts)] == vault_parts:
+            vault_fd = descriptors[len(vault_parts)]
+            if stable_directory_identity(os.fstat(vault_fd)) != self._vault_identity:
+                raise ManifestError("configured vault changed during manifest mutation")
+        self._validate_root_attachment(self._session[0])
+
+    def _validate_target_parent(self, parent_fd: int) -> None:
+        assert self._session is not None
+        descriptors = self._session[2]
+        del descriptors
+        # Validate by reopening the configured chain and matching the bound endpoint.
+        journal = self._journal()
+        if journal is None:
+            raise ManifestError("manifest mutation journal is missing")
+        target = self.config.root / PurePosixPath(journal["target"])
+        reopened = self._open_directory(self._session[0], target.parent, create=False)
+        try:
+            if stable_directory_identity(os.fstat(reopened[-1])) != stable_directory_identity(os.fstat(parent_fd)):
+                raise ManifestError("manifest target parent changed during mutation")
+            self._validate_directory_chain(reopened, target.parent)
+        finally:
+            self._close_fds(reopened)
+
+    def _probe_target_filesystem(self, parent_fd: int) -> None:
+        source = "probe-source"
+        linked = "probe-link"
+        marker = b"obsidian-wiki manifest capability probe\n"
+        descriptor = -1
+        side_fd = -1
+        try:
+            side_fd, _ = self._ensure_sidecar(parent_fd)
+            for name in (source, linked):
+                proof = self._read_proof(
+                    side_fd, name, links=frozenset({1, 2})
+                )
+                if proof is None:
+                    continue
+                if proof.data != marker:
+                    raise ManifestError(
+                        "manifest capability probe debris changed; owner inspection required"
+                    )
+                os.unlink(name, dir_fd=side_fd)
+            os.fsync(side_fd)
+            descriptor = os.open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=side_fd,
+            )
+            view = memoryview(marker)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short write during manifest capability probe")
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.link(source, linked, src_dir_fd=side_fd, dst_dir_fd=side_fd, follow_symlinks=False)
+            os.fsync(side_fd)
+            _manifest_fault_point("capability_linked")
+            os.unlink(linked, dir_fd=side_fd)
+            os.unlink(source, dir_fd=side_fd)
+            os.fsync(side_fd)
+            os.close(side_fd)
+            side_fd = -1
+            os.rmdir(_SIDECAR, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise ManifestError(
+                "cannot sync or verify target filesystem manifest capability"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if side_fd >= 0:
+                try:
+                    os.close(side_fd)
+                except OSError:
+                    pass
+
+    def _open_directory(self, root_fd: int, path: Path, *, create: bool) -> list[int]:
+        try:
+            relative = path.relative_to(self.config.root)
+        except ValueError as exc:
+            raise ManifestError("manifest control path escapes repository") from exc
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptors = [os.dup(root_fd)]
+        try:
+            for part in relative.parts:
+                parent_fd = descriptors[-1]
+                self._validate_root_attachment(root_fd)
+                if create:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
+                    except FileExistsError:
+                        pass
+                before = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                child = os.open(part, flags, dir_fd=parent_fd)
+                descriptors.append(child)
+                after = os.fstat(child)
+                attached = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                if not self._same_directory(before, after) or not self._same_directory(after, attached):
+                    raise ManifestError("manifest directory changed while being bound")
+                opened_relative = Path(*relative.parts[: len(descriptors) - 1])
+                vault_relative = self.config.vault.relative_to(self.config.root)
+                if opened_relative == vault_relative and hasattr(self, "_vault_identity"):
+                    if stable_directory_identity(after) != self._vault_identity:
+                        raise ManifestError("configured vault changed during manifest mutation")
+            self._validate_root_attachment(root_fd)
+            return descriptors
+        except FileNotFoundError as exc:
+            self._close_fds(descriptors)
+            if create:
+                raise ManifestError(
+                    "cannot durably create manifest directory"
+                ) from exc
+            raise _MissingManifestDirectory(
+                "manifest directory is absent"
+            ) from exc
+        except OSError as exc:
+            self._close_fds(descriptors)
+            raise ManifestError(
+                "cannot sync or durably create manifest directory"
+            ) from exc
+        except BaseException:
+            self._close_fds(descriptors)
+            raise
+
+    @staticmethod
+    def _close_fds(descriptors: list[int]) -> None:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
     def _validate_marker(self) -> None:
         try:
@@ -92,6 +374,13 @@ class ShardedManifest:
             )
         return f"{self._repo_relative(self.source_root, 'source root')}/{relative.as_posix()}"
 
+    def validated_source_id(self, source: Path) -> str:
+        """Return the Source ID after physical containment and file validation."""
+        source_path = Path(source)
+        source_id = self.source_id(source_path)
+        self._validate_source_file(source_path)
+        return source_id
+
     def source_path(self, source_id: str) -> Path:
         self._validate_source_id(source_id)
         return self.config.root / PurePosixPath(source_id)
@@ -134,21 +423,12 @@ class ShardedManifest:
 
     def load(self, source_id: str) -> ManifestEntry | None:
         path = self.entry_path(source_id)
-        if not path.exists() and not path.is_symlink():
+        proof = self._read_live_shard(source_id, path)
+        if proof is None:
             return None
         try:
-            metadata = path.lstat()
-        except OSError as exc:
-            raise ManifestError("manifest shard is unreadable") from exc
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_nlink != 1
-        ):
-            raise ManifestError("manifest shard must be a single-link ordinary file")
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            payload = json.loads(proof.data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ManifestError(f"invalid manifest shard: {exc}") from exc
         if not isinstance(payload, dict):
             raise ManifestError("manifest shard must be an object")
@@ -203,6 +483,17 @@ class ShardedManifest:
             self.entries_root, followlinks=False
         ):
             current = Path(directory)
+            if _SIDECAR in dirnames:
+                sidecar = current / _SIDECAR
+                try:
+                    sidecar_metadata = sidecar.lstat()
+                except OSError as exc:
+                    raise ManifestError("manifest sidecar is unreadable") from exc
+                if not stat.S_ISDIR(sidecar_metadata.st_mode) or stat.S_ISLNK(
+                    sidecar_metadata.st_mode
+                ):
+                    raise ManifestError("manifest sidecar must be an ordinary directory")
+                dirnames.remove(_SIDECAR)
             for name in sorted(dirnames):
                 child = current / name
                 try:
@@ -217,6 +508,8 @@ class ShardedManifest:
                     )
                 if name.endswith(".json"):
                     raise ManifestError("manifest shard must be an ordinary file")
+                if name.startswith("."):
+                    raise ManifestError("unexpected manifest shard directory")
             for name in sorted(filenames):
                 path = current / name
                 try:
@@ -226,10 +519,9 @@ class ShardedManifest:
                 if (
                     not stat.S_ISREG(metadata.st_mode)
                     or stat.S_ISLNK(metadata.st_mode)
-                    or metadata.st_nlink != 1
                 ):
                     raise ManifestError(
-                        "manifest shard must be a single-link ordinary file"
+                        "manifest shard must be an ordinary file"
                     )
                 if not name.endswith(".json"):
                     raise ManifestError("manifest shard file must use the .json suffix")
@@ -274,13 +566,18 @@ class ShardedManifest:
         pages: list[str] | None = None,
         compiled_at: str | None = None,
         expected_preimage: str | None | object = _UNSET_PREIMAGE,
+        expected_source_hash: str | None = None,
     ) -> ManifestEntry:
         source_path = Path(source)
-        self._validate_source_file(source_path)
-        source_id = self.source_id(source_path)
+        source_id = self.validated_source_id(source_path)
+        source_hash = f"sha256:{compute_hash(source_path)}"
+        if expected_source_hash is not None and source_hash != expected_source_hash:
+            raise ManifestPreconditionError(
+                "transaction source changed after begin; restart required"
+            )
         entry = ManifestEntry(
             source_id=source_id,
-            content_hash=f"sha256:{compute_hash(source_path)}",
+            content_hash=source_hash,
             pages=self._normalize_pages(pages, self.config.vault),
             compiled_at=compiled_at
             or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -291,31 +588,11 @@ class ShardedManifest:
             "pages": list(entry.pages),
             "source_id": entry.source_id,
         }
-        target = self.entry_path(source_id)
-        try:
-            self._ensure_directory_tree(target.parent)
-        except OSError as exc:
-            raise ManifestError(
-                "cannot sync or durably create manifest shard directory"
-            ) from exc
-        fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-        temporary_path = Path(temporary)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(
-                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-                    + "\n"
-                )
-                handle.flush()
-                os.fsync(handle.fileno())
-            if expected_preimage is not _UNSET_PREIMAGE:
-                self._require_preimage(target, expected_preimage)
-            temporary_path.replace(target)
-            self._fsync_directory(target.parent)
-        except OSError as exc:
-            raise ManifestError("cannot durably write manifest shard") from exc
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        data = (
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with self._auto_session():
+            self._mutate(source_id, "upsert", data, expected_preimage)
         return entry
 
     @staticmethod
@@ -353,27 +630,6 @@ class ShardedManifest:
                 "manifest shard changed after transaction began"
             )
 
-    def _ensure_directory_tree(self, target: Path) -> None:
-        try:
-            relative = target.relative_to(self.config.vault)
-        except ValueError as exc:
-            raise ManifestError("manifest shard directory escapes vault") from exc
-        current = self.config.vault
-        self._require_directory(current)
-        for part in relative.parts:
-            child = current / part
-            if not child.exists() and not child.is_symlink():
-                child.mkdir()
-                self._fsync_directory(current)
-            self._require_directory(child)
-            current = child
-
-    @staticmethod
-    def _require_directory(path: Path) -> None:
-        metadata = path.lstat()
-        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise ManifestError("manifest shard directory must be ordinary")
-
     @staticmethod
     def _fsync_directory(path: Path) -> None:
         if not _SUPPORTS_DIRECTORY_FSYNC:
@@ -390,6 +646,956 @@ class ShardedManifest:
             if descriptor is not None:
                 os.close(descriptor)
 
+    @contextmanager
+    def mutation_session(self, *, recover: bool = True) -> Iterator[ShardedManifest]:
+        """Serialize cooperating manifest writers and recover the fixed WAL."""
+        if self._session is not None:
+            yield self
+            return
+        if not _manifest_mutation_supported():
+            raise ManifestError(
+                "safe manifest mutation requires POSIX descriptor-relative filesystem support"
+            )
+        with self._bound_repository_root() as root_fd:
+            directories = self._open_directory(root_fd, self.wal_root, create=True)
+            wal_fd = directories[-1]
+            lock_fd = -1
+            entered_body = False
+            primary_error: BaseException | None = None
+            try:
+                flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                flags |= getattr(os, "O_CLOEXEC", 0)
+                lock_fd = os.open("manifest.lock", flags, 0o600, dir_fd=wal_fd)
+                lock_metadata = os.fstat(lock_fd)
+                if not stat.S_ISREG(lock_metadata.st_mode) or lock_metadata.st_nlink != 1:
+                    raise ManifestError("manifest mutation lock must be a single-link ordinary file")
+                _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+                self._session = (root_fd, wal_fd, directories)
+                self._validate_wal_directory()
+                if recover:
+                    self._recover_wal()
+                entered_body = True
+                yield self
+            except ManifestError as exc:
+                primary_error = exc
+                raise
+            except OSError as exc:
+                if entered_body:
+                    primary_error = exc
+                    raise
+                wrapped = ManifestError(
+                    "cannot safely recover or lock manifest mutations"
+                )
+                primary_error = wrapped
+                raise wrapped from exc
+            except BaseException as exc:
+                primary_error = exc
+                raise
+            finally:
+                self._session = None
+                cleanup_error: OSError | None = None
+                if lock_fd >= 0:
+                    try:
+                        _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                    except OSError as exc:
+                        cleanup_error = exc
+                    try:
+                        os.close(lock_fd)
+                    except OSError as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
+                self._close_fds(directories)
+                if cleanup_error is not None and primary_error is None:
+                    raise ManifestError(
+                        "cannot safely release manifest mutation lock"
+                    ) from cleanup_error
+
+    @contextmanager
+    def _auto_session(self) -> Iterator[None]:
+        if self._session is not None:
+            yield
+        else:
+            with self.mutation_session():
+                yield
+
+    @staticmethod
+    def _digest(data: bytes) -> str:
+        return "sha256:" + hashlib.sha256(data).hexdigest()
+
+    @staticmethod
+    def _read_proof(
+        parent_fd: int,
+        name: str,
+        *,
+        links: frozenset[int] = frozenset({1}),
+        size_limit: int = _MAX_SHARD_BYTES,
+    ) -> _FileProof | None:
+        descriptor = -1
+        try:
+            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ManifestError("manifest artifact is unreadable") from exc
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink not in links:
+            raise ManifestError("manifest artifact must be an ordinary file with safe links")
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink not in links
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                or opened.st_size > size_limit
+            ):
+                raise ManifestError("manifest artifact changed while being read")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, min(65536, size_limit + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > size_limit:
+                    raise ManifestError("manifest artifact exceeds the size limit")
+            final = os.fstat(descriptor)
+            stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(opened, field) != getattr(final, field) for field in stable_fields):
+                raise ManifestError("manifest artifact changed while being read")
+            data = b"".join(chunks)
+            return _FileProof(
+                content_hash=ShardedManifest._digest(data),
+                identity=(opened.st_dev, opened.st_ino),
+                links=opened.st_nlink,
+                data=data,
+            )
+        except OSError as exc:
+            raise ManifestError("manifest artifact is unreadable") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    @staticmethod
+    def _write_fixed(parent_fd: int, name: str, data: bytes) -> None:
+        temporary = f".{name.rsplit('.', 1)[0]}.tmp"
+        existing = ShardedManifest._read_proof(parent_fd, temporary)
+        if existing is not None:
+            os.unlink(temporary, dir_fd=parent_fd)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        current = ShardedManifest._read_proof(parent_fd, name)
+        os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+
+    def _write_journal(self, payload: dict[str, object]) -> None:
+        assert self._session is not None
+        data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        self._write_fixed(self._session[1], "journal.json", data)
+
+    def _journal(self) -> dict[str, object] | None:
+        assert self._session is not None
+        proof = self._read_proof(
+            self._session[1], "journal.json", size_limit=64 * 1024
+        )
+        if proof is None:
+            self._clean_idle_wal()
+            return None
+        try:
+            payload = json.loads(proof.data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ManifestError("manifest mutation journal is invalid") from exc
+        keys = {
+            "schema_version", "state", "op_id", "action", "source_id", "target",
+            "sidecar", "pre", "post", "candidate_identity", "resolution",
+            "cleanup_index",
+            "selected_live",
+        }
+        legacy_keys = keys - {"resolution", "cleanup_index", "selected_live"}
+        unbound_resolution_keys = keys - {"selected_live"}
+        if not isinstance(payload, dict) or (
+            set(payload) != keys
+            and set(payload) != legacy_keys
+            and set(payload) != unbound_resolution_keys
+        ):
+            raise ManifestError("manifest mutation journal has invalid fields")
+        if set(payload) == legacy_keys:
+            payload["resolution"] = None
+            payload["cleanup_index"] = None
+            payload["selected_live"] = None
+        elif set(payload) == unbound_resolution_keys:
+            payload["selected_live"] = None
+        if payload["schema_version"] != 1 or payload["state"] not in {"PREPARED", "APPLIED", "CONFLICT", "RESOLVING"}:
+            raise ManifestError("manifest mutation journal has invalid schema or state")
+        if payload["action"] not in {"upsert", "remove"} or (
+            not isinstance(payload["op_id"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", payload["op_id"]) is None
+        ):
+            raise ManifestError("manifest mutation journal has invalid operation")
+        source_id = payload["source_id"]
+        if not isinstance(source_id, str):
+            raise ManifestError("manifest mutation journal has invalid source_id")
+        target = self.entry_path(source_id).relative_to(self.config.root).as_posix()
+        sidecar = (self.entry_path(source_id).parent / _SIDECAR).relative_to(self.config.root).as_posix()
+        if payload["target"] != target or payload["sidecar"] != sidecar:
+            raise ManifestError("manifest mutation journal has unsafe paths")
+        for key in ("pre", "post"):
+            image = payload[key]
+            if not isinstance(image, dict) or set(image) != {"present", "hash", "identity"}:
+                raise ManifestError("manifest mutation journal has invalid image proof")
+            if not isinstance(image["present"], bool):
+                raise ManifestError("manifest mutation journal has invalid image presence")
+            if image["present"]:
+                if not isinstance(image["hash"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image["hash"]) is None:
+                    raise ManifestError("manifest mutation journal has invalid image hash")
+            elif image["hash"] is not None:
+                raise ManifestError("manifest mutation journal has invalid absent image")
+            identity = image["identity"]
+            if identity is not None and (
+                not isinstance(identity, list)
+                or len(identity) != 2
+                or any(type(value) is not int or value < 0 for value in identity)
+            ):
+                raise ManifestError("manifest mutation journal has invalid image identity")
+        candidate_identity = payload["candidate_identity"]
+        if candidate_identity is not None and (
+            not isinstance(candidate_identity, list)
+            or len(candidate_identity) != 2
+            or any(type(value) is not int or value < 0 for value in candidate_identity)
+        ):
+            raise ManifestError("manifest mutation journal has invalid candidate identity")
+        if (payload["action"] == "upsert") != bool(payload["post"]["present"]):
+            raise ManifestError("manifest mutation journal action disagrees with postimage")
+        if payload["state"] == "PREPARED" and payload["action"] == "remove" and candidate_identity is not None:
+            raise ManifestError("remove journal cannot name a candidate")
+        if payload["state"] == "RESOLVING":
+            if payload["resolution"] != "keep-live" or type(payload["cleanup_index"]) is not int or payload["cleanup_index"] < 0:
+                raise ManifestError("manifest resolution journal is invalid")
+            selected = payload["selected_live"]
+            if selected is None:
+                return payload
+            if not isinstance(selected, dict) or set(selected) != {"present", "hash", "identity"}:
+                raise ManifestError("manifest selected live proof is invalid")
+            if not isinstance(selected["present"], bool):
+                raise ManifestError("manifest selected live presence is invalid")
+            if selected["present"]:
+                if not isinstance(selected["hash"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", selected["hash"]) is None:
+                    raise ManifestError("manifest selected live hash is invalid")
+                identity = selected["identity"]
+                if not isinstance(identity, list) or len(identity) != 2 or any(type(value) is not int or value < 0 for value in identity):
+                    raise ManifestError("manifest selected live identity is invalid")
+            elif selected["hash"] is not None or selected["identity"] is not None:
+                raise ManifestError("manifest absent selected live proof is invalid")
+        elif payload["resolution"] is not None or payload["cleanup_index"] is not None or payload["selected_live"] is not None:
+            raise ManifestError("manifest journal has unexpected resolution state")
+        return payload
+
+    def _validate_wal_directory(self) -> None:
+        assert self._session is not None
+        try:
+            names = set(os.listdir(self._session[1]))
+        except OSError as exc:
+            raise ManifestError("manifest WAL directory is unreadable") from exc
+        allowed = _WAL_FILES | {"manifest.lock"}
+        if names - allowed:
+            raise ManifestError("manifest WAL directory contains unexpected entries")
+        for name in names:
+            try:
+                metadata = os.stat(
+                    name, dir_fd=self._session[1], follow_symlinks=False
+                )
+            except OSError as exc:
+                raise ManifestError("manifest WAL entry is unreadable") from exc
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ManifestError("manifest WAL entries must be single-link ordinary files")
+
+    def _clean_idle_wal(self) -> None:
+        assert self._session is not None
+        wal_fd = self._session[1]
+        for name in _WAL_FILES - {"journal.json"}:
+            proof = self._read_proof(wal_fd, name)
+            if proof is not None:
+                os.unlink(name, dir_fd=wal_fd)
+        os.fsync(wal_fd)
+
+    def _target_directories(self, *, create: bool) -> tuple[Path, list[int]]:
+        assert self._session is not None
+        journal = self._journal()
+        if journal is None:
+            raise ManifestError("manifest mutation journal is missing")
+        target = self.config.root / PurePosixPath(journal["target"])
+        return target, self._open_directory(self._session[0], target.parent, create=create)
+
+    @staticmethod
+    def _matches(proof: _FileProof | None, image: dict[str, object]) -> bool:
+        if not image["present"]:
+            return proof is None
+        if proof is None or proof.content_hash != image["hash"]:
+            return False
+        identity = image["identity"]
+        return identity is None or tuple(identity) == proof.identity
+
+    def _ensure_sidecar(self, parent_fd: int) -> tuple[int, bool]:
+        created = False
+        try:
+            os.mkdir(_SIDECAR, 0o700, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            created = True
+        except FileExistsError:
+            pass
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            side_fd = os.open(_SIDECAR, flags, dir_fd=parent_fd)
+            metadata = os.fstat(side_fd)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ManifestError("manifest sidecar must be an ordinary directory")
+            unknown = set(os.listdir(side_fd)) - {
+                "candidate", "reserved", "probe-source", "probe-link"
+            }
+            if unknown:
+                raise ManifestError("manifest sidecar contains unexpected entries")
+            return side_fd, created
+        except ManifestError:
+            if 'side_fd' in locals():
+                os.close(side_fd)
+            raise
+        except OSError as exc:
+            if 'side_fd' in locals():
+                try:
+                    os.close(side_fd)
+                except OSError:
+                    pass
+            raise ManifestError("manifest sidecar is unreadable") from exc
+
+    def _conflict(self, journal: dict[str, object], message: str) -> None:
+        journal["state"] = "CONFLICT"
+        self._write_journal(journal)
+        raise ManifestPreconditionError(message)
+
+    def _recover_wal(self) -> None:
+        journal = self._journal()
+        if journal is None:
+            return
+        if journal["state"] == "CONFLICT":
+            raise ManifestPreconditionError("manifest mutation conflict requires owner resolution")
+        if journal["state"] == "RESOLVING":
+            self._resume_conflict_resolution(journal)
+            return
+        if journal["state"] == "APPLIED":
+            self._cleanup_applied(journal)
+            return
+        self._validate_wal_blobs(journal)
+        self._resume_prepared(journal)
+
+    def _validate_wal_blobs(self, journal: dict[str, object]) -> None:
+        assert self._session is not None
+        for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+            try:
+                proof = self._read_proof(self._session[1], name)
+            except ManifestError:
+                self._conflict(journal, "manifest mutation WAL blob exceeds limits or is unsafe")
+            if proof is None:
+                raise ManifestError("manifest mutation WAL blob is missing")
+            expected = image["hash"] if image["present"] else self._digest(b"")
+            if proof.content_hash != expected:
+                raise ManifestError("manifest mutation WAL blob is corrupt")
+
+    def resolve_conflict_keep_live(self) -> dict[str, str]:
+        """Keep the current live shard and remove only identity-bound WAL artifacts."""
+        with self.mutation_session(recover=False):
+            journal = self._journal()
+            if journal is None or journal["state"] not in {"CONFLICT", "RESOLVING"}:
+                raise ManifestError("no manifest conflict is awaiting reconciliation")
+            target, directories = self._target_directories(create=False)
+            parent_fd = directories[-1]
+            side_fd = -1
+            try:
+                self._validate_directory_chain(directories, target.parent)
+                live = self._read_proof(parent_fd, target.name)
+                live_hash = live.content_hash if live else "absent"
+                selected_live = {
+                    "present": live is not None,
+                    "hash": live.content_hash if live else None,
+                    "identity": list(live.identity) if live else None,
+                }
+                if journal["state"] == "RESOLVING":
+                    journal["selected_live"] = selected_live
+                    self._write_journal(journal)
+                    return self._resume_conflict_resolution(
+                        journal, live_hash=live_hash
+                    )
+                try:
+                    side_fd, _ = self._ensure_sidecar(parent_fd)
+                except FileNotFoundError:
+                    side_fd = -1
+                if side_fd >= 0:
+                    side_evidence: list[tuple[str, _FileProof]] = []
+                    for name, image, identity in (
+                        ("reserved", journal["pre"], journal["pre"]["identity"]),
+                        ("candidate", journal["post"], journal["candidate_identity"]),
+                    ):
+                        proof = self._read_proof(side_fd, name, links=frozenset({1, 2}))
+                        if proof is None:
+                            if identity is not None:
+                                raise ManifestPreconditionError(
+                                    f"manifest conflict artifact {name} is missing; owner inspection required"
+                                )
+                            continue
+                        if identity is None or proof.identity != tuple(identity) or proof.content_hash != image["hash"]:
+                            raise ManifestPreconditionError(
+                                f"manifest conflict artifact {name} changed; owner inspection required"
+                            )
+                        side_evidence.append((name, proof))
+                else:
+                    side_evidence = []
+                    if journal["pre"]["identity"] is not None or journal["candidate_identity"] is not None:
+                        raise ManifestPreconditionError(
+                            "manifest conflict sidecar evidence is missing; owner inspection required"
+                        )
+                wal_fd = self._session[1]
+                wal_evidence: list[tuple[str, _FileProof]] = []
+                for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+                    proof = self._read_proof(wal_fd, name)
+                    if proof is None:
+                        raise ManifestPreconditionError(
+                            f"manifest conflict evidence {name} is missing; owner inspection required"
+                        )
+                    expected_hash = image["hash"] if image["present"] else self._digest(b"")
+                    if proof.content_hash != expected_hash:
+                        raise ManifestPreconditionError(
+                            f"manifest conflict evidence {name} changed; owner inspection required"
+                        )
+                    wal_evidence.append((name, proof))
+
+                del side_evidence, wal_evidence
+                journal["state"] = "RESOLVING"
+                journal["resolution"] = "keep-live"
+                journal["cleanup_index"] = 0
+                journal["selected_live"] = selected_live
+                self._write_journal(journal)
+                return self._resume_conflict_resolution(journal, live_hash=live_hash)
+            finally:
+                if side_fd >= 0:
+                    os.close(side_fd)
+                self._close_fds(directories)
+
+    def _resolution_items(
+        self, journal: dict[str, object]
+    ) -> list[tuple[str, str, str | None, tuple[int, int] | None]]:
+        items: list[tuple[str, str, str | None, tuple[int, int] | None]] = []
+        pre_identity = journal["pre"]["identity"]
+        if pre_identity is not None:
+            items.append(("side", "reserved", journal["pre"]["hash"], tuple(pre_identity)))
+        candidate_identity = journal["candidate_identity"]
+        if candidate_identity is not None:
+            items.append(("side", "candidate", journal["post"]["hash"], tuple(candidate_identity)))
+        items.append(("sidecar", _SIDECAR, None, None))
+        for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+            expected = image["hash"] if image["present"] else self._digest(b"")
+            items.append(("wal", name, expected, None))
+        return items
+
+    def _resume_conflict_resolution(
+        self, journal: dict[str, object], *, live_hash: str | None = None
+    ) -> dict[str, str]:
+        assert self._session is not None
+        target, directories = self._target_directories(create=False)
+        parent_fd = directories[-1]
+        side_fd = -1
+        try:
+            self._validate_directory_chain(directories, target.parent)
+            if live_hash is None:
+                live = self._read_proof(parent_fd, target.name)
+                live_hash = live.content_hash if live else "absent"
+            else:
+                live = self._read_proof(parent_fd, target.name)
+            selected = journal["selected_live"]
+            if selected is None:
+                raise ManifestPreconditionError(
+                    "manifest conflict resolution predates live binding; owner must reconfirm"
+                )
+            if not self._matches(live, selected):
+                raise ManifestPreconditionError(
+                    "owner-selected live manifest changed during conflict resolution; inspect and reconfirm"
+                )
+            items = self._resolution_items(journal)
+            index = journal["cleanup_index"]
+            if index > len(items):
+                raise ManifestError("manifest resolution cleanup index is invalid")
+            while index < len(items):
+                kind, name, expected_hash, expected_identity = items[index]
+                if kind == "side":
+                    if side_fd < 0:
+                        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                        try:
+                            side_fd = os.open(_SIDECAR, flags, dir_fd=parent_fd)
+                        except FileNotFoundError:
+                            side_fd = -1
+                    if side_fd >= 0:
+                        proof = self._read_proof(side_fd, name, links=frozenset({1, 2}))
+                        if proof is not None:
+                            if proof.identity != expected_identity or proof.content_hash != expected_hash:
+                                raise ManifestPreconditionError(
+                                    f"manifest conflict artifact {name} changed; owner inspection required"
+                                )
+                            self._unlink_matching(side_fd, name, proof, journal)
+                            os.fsync(side_fd)
+                elif kind == "sidecar":
+                    if side_fd >= 0:
+                        os.close(side_fd)
+                        side_fd = -1
+                    try:
+                        os.rmdir(_SIDECAR, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        if exc.errno == errno.ENOTEMPTY:
+                            raise ManifestPreconditionError(
+                                "manifest conflict sidecar contains owner evidence"
+                            ) from exc
+                        raise
+                else:
+                    wal_fd = self._session[1]
+                    proof = self._read_proof(wal_fd, name)
+                    if proof is not None:
+                        if proof.content_hash != expected_hash:
+                            raise ManifestPreconditionError(
+                                f"manifest conflict evidence {name} changed; owner inspection required"
+                            )
+                        self._unlink_matching(wal_fd, name, proof, journal)
+                        os.fsync(wal_fd)
+                _manifest_fault_point(f"resolution_deleted_{index}")
+                live = self._read_proof(parent_fd, target.name)
+                if not self._matches(live, selected):
+                    raise ManifestPreconditionError(
+                        "owner-selected live manifest changed during conflict resolution; inspect and reconfirm"
+                    )
+                index += 1
+                journal["cleanup_index"] = index
+                self._write_journal(journal)
+            wal_fd = self._session[1]
+            journal_proof = self._read_proof(wal_fd, "journal.json")
+            assert journal_proof is not None
+            live = self._read_proof(parent_fd, target.name)
+            if not self._matches(live, selected):
+                raise ManifestPreconditionError(
+                    "owner-selected live manifest changed before resolution completed"
+                )
+            self._unlink_matching(wal_fd, "journal.json", journal_proof, journal)
+            os.fsync(wal_fd)
+            return {"resolution": "keep-live", "source_id": journal["source_id"], "live": live_hash}
+        finally:
+            if side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(directories)
+
+    def _resume_prepared(self, journal: dict[str, object]) -> None:
+        target, directories = self._target_directories(create=False)
+        parent_fd = directories[-1]
+        side_fd = -1
+        try:
+            self._validate_directory_chain(directories, target.parent)
+            live = self._read_proof(parent_fd, target.name, links=frozenset({1, 2}))
+            try:
+                side_fd, _ = self._ensure_sidecar(parent_fd)
+            except FileNotFoundError:
+                side_fd = -1
+            reserved = (
+                self._read_proof(side_fd, "reserved", links=frozenset({1, 2}))
+                if side_fd >= 0
+                else None
+            )
+            candidate = self._read_proof(side_fd, "candidate", links=frozenset({1, 2})) if side_fd >= 0 else None
+            if self._matches(live, journal["post"]):
+                if live is not None and live.links == 2:
+                    if candidate is None or candidate.identity != live.identity or candidate.content_hash != live.content_hash:
+                        self._conflict(journal, "manifest link window conflicts with WAL")
+                    os.unlink("candidate", dir_fd=side_fd)
+                    os.fsync(side_fd)
+                    os.fsync(parent_fd)
+                journal["state"] = "APPLIED"
+                self._write_journal(journal)
+                self._cleanup_applied(journal)
+                return
+            if reserved is not None:
+                if not self._matches(reserved, journal["pre"]):
+                    if live is None and reserved.links == 1:
+                        try:
+                            os.link("reserved", target.name, src_dir_fd=side_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                            os.fsync(parent_fd)
+                            os.unlink("reserved", dir_fd=side_fd)
+                            self._abort_wal(side_fd, parent_fd)
+                        except FileExistsError:
+                            self._conflict(journal, "manifest concurrent owner conflict")
+                        raise ManifestPreconditionError("manifest shard changed concurrently and was restored")
+                    self._conflict(journal, "manifest reserved bytes conflict with WAL")
+                if live is not None and (
+                    live.links == 2
+                    and reserved.links == 2
+                    and live.identity == reserved.identity
+                    and live.content_hash == reserved.content_hash
+                ):
+                    self._validate_root_attachment(self._session[0])
+                    os.unlink(target.name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                    live = None
+                if live is not None:
+                    self._conflict(journal, "manifest target was created concurrently")
+            elif not self._matches(live, journal["pre"]):
+                self._conflict(journal, "manifest shard changed concurrently")
+            self._apply_prepared(journal, parent_fd, target.name, side_fd)
+        finally:
+            if side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(directories)
+
+    def _apply_prepared(
+        self, journal: dict[str, object], parent_fd: int, target_name: str, side_fd: int = -1
+    ) -> None:
+        self._validate_target_parent(parent_fd)
+        if side_fd < 0:
+            side_fd, _ = self._ensure_sidecar(parent_fd)
+            close_side = True
+        else:
+            close_side = False
+        try:
+            post = journal["post"]
+            if journal["action"] == "upsert":
+                self._validate_target_parent(parent_fd)
+                candidate = self._read_proof(side_fd, "candidate", links=frozenset({1, 2}))
+                if candidate is None:
+                    assert self._session is not None
+                    post_blob = self._read_proof(self._session[1], "post.bin")
+                    assert post_blob is not None
+                    self._write_exclusive(side_fd, "candidate", post_blob.data)
+                    os.fsync(side_fd)
+                    candidate = self._read_proof(side_fd, "candidate")
+                if candidate is None or candidate.content_hash != post["hash"]:
+                    self._conflict(journal, "manifest candidate conflicts with WAL")
+                journal["candidate_identity"] = list(candidate.identity)
+                self._write_journal(journal)
+            pre = journal["pre"]
+            reserved = self._read_proof(side_fd, "reserved")
+            if pre["present"] and reserved is None:
+                live = self._read_proof(parent_fd, target_name)
+                if not self._matches(live, pre):
+                    self._conflict(journal, "manifest shard changed before reservation")
+                self._validate_root_attachment(self._session[0])
+                self._validate_target_parent(parent_fd)
+                try:
+                    os.link(
+                        target_name,
+                        "reserved",
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=side_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    self._conflict(journal, "manifest reservation conflicts with concurrent owner")
+                linked = self._read_proof(side_fd, "reserved", links=frozenset({2}))
+                current = self._read_proof(parent_fd, target_name, links=frozenset({2}))
+                if (
+                    linked is None
+                    or current is None
+                    or linked.identity != current.identity
+                    or not self._matches(linked, pre)
+                ):
+                    self._conflict(journal, "manifest shard changed while being reserved")
+                os.fsync(side_fd)
+                _manifest_fault_point("reserved_linked")
+                self._validate_root_attachment(self._session[0])
+                self._validate_target_parent(parent_fd)
+                os.unlink(target_name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+                os.fsync(side_fd)
+                self._validate_root_attachment(self._session[0])
+                reserved = self._read_proof(side_fd, "reserved")
+                if not self._matches(reserved, pre):
+                    if reserved is not None:
+                        try:
+                            os.link("reserved", target_name, src_dir_fd=side_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                            os.fsync(parent_fd)
+                            os.unlink("reserved", dir_fd=side_fd)
+                            self._abort_wal(side_fd, parent_fd)
+                        except FileExistsError:
+                            self._conflict(journal, "manifest concurrent owner conflict")
+                    raise ManifestPreconditionError("manifest shard changed concurrently and was restored")
+            elif not pre["present"] and self._read_proof(parent_fd, target_name) is not None:
+                self._conflict(journal, "manifest target was created concurrently")
+            _manifest_fault_point("reserved")
+            self._validate_target_parent(parent_fd)
+            if journal["action"] == "upsert":
+                self._validate_root_attachment(self._session[0])
+                try:
+                    os.link("candidate", target_name, src_dir_fd=side_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                except FileExistsError:
+                    self._conflict(journal, "manifest target was created concurrently")
+                os.fsync(parent_fd)
+                self._validate_target_parent(parent_fd)
+                _manifest_fault_point("linked")
+                os.unlink("candidate", dir_fd=side_fd)
+                os.fsync(side_fd)
+                os.fsync(parent_fd)
+            elif self._read_proof(parent_fd, target_name) is not None:
+                self._conflict(journal, "manifest target was created concurrently during remove")
+            _manifest_fault_point("installed")
+            journal["state"] = "APPLIED"
+            self._write_journal(journal)
+            _manifest_fault_point("applied")
+            self._cleanup_applied(journal, side_fd=side_fd, parent_fd=parent_fd)
+        finally:
+            if close_side:
+                os.close(side_fd)
+
+    @staticmethod
+    def _write_exclusive(parent_fd: int, name: str, data: bytes) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, 0o600, dir_fd=parent_fd)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _cleanup_applied(
+        self, journal: dict[str, object], *, side_fd: int = -1, parent_fd: int = -1
+    ) -> None:
+        own_descriptors: list[int] = []
+        own_side = False
+        if side_fd < 0 or parent_fd < 0:
+            target, own_descriptors = self._target_directories(create=False)
+            parent_fd = own_descriptors[-1]
+            try:
+                side_fd, _ = self._ensure_sidecar(parent_fd)
+                own_side = True
+            except FileNotFoundError:
+                side_fd = -1
+        try:
+            if side_fd >= 0:
+                for name, image in (("candidate", journal["post"]), ("reserved", journal["pre"])):
+                    proof = self._read_proof(side_fd, name, links=frozenset({1, 2}))
+                    if proof is None:
+                        continue
+                    if proof.content_hash != image["hash"]:
+                        self._conflict(journal, "manifest cleanup artifact conflicts with WAL")
+                    self._unlink_matching(side_fd, name, proof, journal)
+                os.fsync(side_fd)
+                try:
+                    os.rmdir(_SIDECAR, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except OSError as exc:
+                    if exc.errno not in (errno.ENOTEMPTY, errno.ENOENT):
+                        raise
+            assert self._session is not None
+            wal_fd = self._session[1]
+            for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+                proof = self._read_proof(wal_fd, name)
+                if proof is None:
+                    continue
+                expected = image["hash"] if image["present"] else self._digest(b"")
+                if proof.content_hash != expected:
+                    self._conflict(journal, "manifest WAL cleanup artifact conflicts with journal")
+                self._unlink_matching(wal_fd, name, proof, journal)
+            os.fsync(wal_fd)
+            os.unlink("journal.json", dir_fd=wal_fd)
+            os.fsync(wal_fd)
+            self._clean_idle_wal()
+        finally:
+            if own_side and side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(own_descriptors)
+
+    def _unlink_matching(
+        self,
+        parent_fd: int,
+        name: str,
+        expected: _FileProof,
+        journal: dict[str, object],
+    ) -> None:
+        """Best-effort conditional cleanup; a changed path becomes fixed conflict evidence."""
+        current = self._read_proof(parent_fd, name, links=frozenset({1, 2}))
+        if current is None:
+            return
+        if current.identity != expected.identity or current.content_hash != expected.content_hash:
+            self._conflict(journal, "manifest cleanup artifact changed concurrently")
+        assert self._session is not None
+        self._validate_root_attachment(self._session[0])
+        os.unlink(name, dir_fd=parent_fd)
+
+    def _abort_wal(self, side_fd: int, parent_fd: int) -> None:
+        candidate = self._read_proof(side_fd, "candidate", links=frozenset({1, 2}))
+        if candidate is not None:
+            os.unlink("candidate", dir_fd=side_fd)
+        os.fsync(side_fd)
+        try:
+            os.rmdir(_SIDECAR, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTEMPTY, errno.ENOENT):
+                raise
+        assert self._session is not None
+        wal_fd = self._session[1]
+        for name in ("pre.bin", "post.bin", "journal.json"):
+            if self._read_proof(wal_fd, name) is not None:
+                os.unlink(name, dir_fd=wal_fd)
+        os.fsync(wal_fd)
+
+    def _mutate(
+        self, source_id: str, action: str, post_data: bytes | None, expected: str | None | object
+    ) -> None:
+        assert self._session is not None
+        target = self.entry_path(source_id)
+        directories = self._open_directory(self._session[0], target.parent, create=True)
+        try:
+            parent_fd = directories[-1]
+            pre = self._read_proof(parent_fd, target.name)
+            if expected is not _UNSET_PREIMAGE:
+                if expected is not None and (
+                    not isinstance(expected, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", expected) is None
+                ):
+                    raise ManifestError("manifest shard expected preimage is invalid")
+                current = pre.content_hash if pre is not None else None
+                if current != expected:
+                    raise ManifestPreconditionError("manifest shard changed after transaction began")
+            pre_data = pre.data if pre is not None else b""
+            resolved_post = post_data if post_data is not None else b""
+            if len(pre_data) > _MAX_SHARD_BYTES or len(resolved_post) > _MAX_SHARD_BYTES:
+                raise ManifestError("manifest shard exceeds the WAL size limit")
+            self._validate_directory_chain(directories, target.parent)
+            self._probe_target_filesystem(parent_fd)
+            self._validate_directory_chain(directories, target.parent)
+            wal_fd = self._session[1]
+            self._write_fixed(wal_fd, "pre.bin", pre_data)
+            self._write_fixed(wal_fd, "post.bin", resolved_post)
+            journal: dict[str, object] = {
+                "schema_version": 1,
+                "state": "PREPARED",
+                "op_id": secrets.token_hex(16),
+                "action": action,
+                "source_id": source_id,
+                "target": target.relative_to(self.config.root).as_posix(),
+                "sidecar": (target.parent / _SIDECAR).relative_to(self.config.root).as_posix(),
+                "pre": {"present": pre is not None, "hash": pre.content_hash if pre else None, "identity": list(pre.identity) if pre else None},
+                "post": {"present": post_data is not None, "hash": self._digest(post_data) if post_data is not None else None, "identity": None},
+                "candidate_identity": None,
+                "resolution": None,
+                "cleanup_index": None,
+                "selected_live": None,
+            }
+            self._write_journal(journal)
+            _manifest_fault_point("prepared")
+            self._apply_prepared(journal, parent_fd, target.name)
+        except ManifestError:
+            raise
+        except OSError as exc:
+            raise ManifestError("cannot sync or durably write manifest shard") from exc
+        finally:
+            self._close_fds(directories)
+
+    def _read_live_shard(self, source_id: str, path: Path) -> _FileProof | None:
+        if not _manifest_mutation_supported():
+            if not path.exists() and not path.is_symlink():
+                return None
+            try:
+                metadata = path.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise ManifestError("manifest shard must be a single-link ordinary file")
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ManifestError("manifest shard is unreadable") from exc
+            return _FileProof(self._digest(data), (metadata.st_dev, metadata.st_ino), 1, data)
+        with self._bound_repository_root() as root_fd:
+            try:
+                directories = self._open_directory(
+                    root_fd, path.parent, create=False
+                )
+            except _MissingManifestDirectory:
+                self._validate_root_attachment(root_fd)
+                return None
+            try:
+                parent_fd = directories[-1]
+                proof = self._read_proof(parent_fd, path.name, links=frozenset({1, 2}))
+                if proof is None:
+                    return None
+                if proof.links == 1:
+                    return proof
+                if self._link_window_matches_fd(root_fd, parent_fd, source_id, path, proof):
+                    return proof
+                raise ManifestError("manifest shard must be a single-link ordinary file")
+            finally:
+                self._close_fds(directories)
+
+    def _link_window_matches_fd(
+        self,
+        root_fd: int,
+        parent_fd: int,
+        source_id: str,
+        path: Path,
+        target: _FileProof,
+    ) -> bool:
+        wal_descriptors: list[int] = []
+        side_fd = -1
+        try:
+            wal_descriptors = self._open_directory(root_fd, self.wal_root, create=False)
+            journal = self._read_proof(
+                wal_descriptors[-1], "journal.json", size_limit=64 * 1024
+            )
+            if journal is None:
+                return False
+            payload = json.loads(journal.data.decode("utf-8"))
+            expected_keys = {
+                "schema_version", "state", "op_id", "action", "source_id",
+                "target", "sidecar", "pre", "post", "candidate_identity",
+                "resolution", "cleanup_index",
+                "selected_live",
+            }
+            legacy_keys = expected_keys - {
+                "resolution", "cleanup_index", "selected_live"
+            }
+            unbound_resolution_keys = expected_keys - {"selected_live"}
+            expected_sidecar = (path.parent / _SIDECAR).relative_to(self.config.root).as_posix()
+            if (
+                not isinstance(payload, dict)
+                or (
+                    set(payload) != expected_keys
+                    and set(payload) != legacy_keys
+                    and set(payload) != unbound_resolution_keys
+                )
+                or payload.get("schema_version") != 1
+                or payload.get("state") != "PREPARED"
+                or payload.get("action") != "upsert"
+                or payload.get("source_id") != source_id
+                or payload.get("target") != path.relative_to(self.config.root).as_posix()
+                or payload.get("sidecar") != expected_sidecar
+                or payload.get("candidate_identity") != list(target.identity)
+                or not isinstance(payload.get("post"), dict)
+                or payload["post"].get("hash") != target.content_hash
+            ):
+                return False
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            side_fd = os.open(_SIDECAR, flags, dir_fd=parent_fd)
+            candidate = self._read_proof(side_fd, "candidate", links=frozenset({2}))
+            return candidate is not None and candidate.identity == target.identity and candidate.content_hash == target.content_hash
+        except (OSError, ManifestError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return False
+        finally:
+            if side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(wal_descriptors)
+
     @staticmethod
     def _validate_source_file(source_path: Path) -> None:
         try:
@@ -404,7 +1610,9 @@ class ShardedManifest:
             raise ManifestError("source must be a single-link ordinary file")
 
     def remove(self, source_id: str) -> None:
-        self.entry_path(source_id).unlink(missing_ok=True)
+        self.entry_path(source_id)
+        with self._auto_session():
+            self._mutate(source_id, "remove", None, _UNSET_PREIMAGE)
 
     def status(self) -> dict[str, list[str]]:
         tracked = {entry.source_id: entry for entry in self.iter_entries()}
@@ -425,8 +1633,7 @@ class ShardedManifest:
                     metadata.st_mode
                 ):
                     continue
-                self._validate_source_file(path)
-                current[self.source_id(path)] = path
+                current[self.validated_source_id(path)] = path
         result = {"new": [], "modified": [], "unchanged": [], "missing": []}
         for source_id, path in sorted(current.items()):
             entry = tracked.get(source_id)
@@ -446,16 +1653,16 @@ class ShardedManifest:
         selected: set[str] = set()
         for raw in source_paths:
             path = Path(raw)
-            if not path.exists():
-                result["missing"].append(str(path))
-                try:
-                    selected.add(self.source_id(path))
-                except ManifestError:
-                    pass
-                continue
-            self._validate_source_file(path)
             source_id = self.source_id(path)
             selected.add(source_id)
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                result["missing"].append(source_id)
+                continue
+            except OSError as exc:
+                raise ManifestError("source cannot be inspected") from exc
+            source_id = self.validated_source_id(path)
             entry = tracked.get(source_id)
             if entry is None:
                 result["new"].append(source_id)
@@ -465,6 +1672,13 @@ class ShardedManifest:
                 result["unchanged"].append(source_id)
         for source_id in sorted(set(tracked) - selected):
             source = self.source_path(source_id)
-            if not source.exists():
+            self.source_id(source)
+            try:
+                source.lstat()
+            except FileNotFoundError:
                 result["missing"].append(source_id)
+            except OSError as exc:
+                raise ManifestError("source cannot be inspected") from exc
+            else:
+                self.validated_source_id(source)
         return result

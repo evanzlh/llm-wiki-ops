@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -85,14 +86,17 @@ def test_runtime_asset_lookup_has_no_checkout_fallback(
         cli.bootstrap_dir()
 
 
-def test_missing_packaged_bootstrap_file_fails_instead_of_skipping(
-    tmp_path: Path,
+def test_packaged_bootstrap_resource_must_be_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bootstrap = tmp_path / "bootstrap"
-    bootstrap.mkdir()
+    package = tmp_path / "obsidian_wiki"
+    data = package / "_data"
+    data.mkdir(parents=True)
+    (data / "bootstrap").write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "_pkg_dir", lambda: package)
 
-    with pytest.raises(FileNotFoundError, match="bootstrap file.*Reinstall"):
-        cli._resolve_bootstrap_src(bootstrap, "AGENTS.md")
+    with pytest.raises(FileNotFoundError, match="bundled bootstrap.*Reinstall"):
+        cli.bootstrap_dir()
 
 
 def test_framework_bootstraps_are_ordinary_development_pointers() -> None:
@@ -695,15 +699,29 @@ def test_legacy_digest_capture_preserves_read_error_over_close_error(
     assert "secondary close failure" not in str(error.value)
 
 
-def test_committed_legacy_catalog_covers_every_bundled_skill_name() -> None:
+def test_committed_legacy_catalog_contains_no_removed_personal_skills() -> None:
     payload = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert [item["label"] for item in payload["collections"]] == [
         "portable-adapter-baseline-7596215"
     ]
+    catalog = payload["collections"][0]["skills"]
     discovered = discover_skill_collection(
         DATA / "skills", ignore_source_artifacts=True
     )
-    assert set(payload["collections"][0]["skills"]) == {
-        skill.name for skill in discovered.skills
+    current_names = {skill.name for skill in discovered.skills}
+    removed = {
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
     }
+
+    catalog_names = set(catalog)
+    assert removed.isdisjoint(catalog_names)
+    assert {"llm-wiki", "wiki-ingest"} <= current_names & catalog_names
+    assert current_names - catalog_names == {"wiki-transaction-review"}
+    assert "wiki-transaction-review" in current_names
+    assert "wiki-transaction-review" not in catalog
+    for digest in catalog.values():
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest)

@@ -21,11 +21,19 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .safe_files import (
+    MarkdownFile,
+    UnsafeVaultError,
+    read_safe_file,
+    stable_directory_identity,
+    scan_markdown_files,
+)
+
 TRUST_LEDGER_RELATIVE_PATH = Path("_meta/trust-ledger.json")
 TRUST_LEDGER_SCHEMA_VERSION = 1
 TRUST_REVIEW_METHOD = "manual-lineage-and-claim-coverage-v1"
 TRUST_SKIP_DIRS = frozenset(
-    "_raw _archived _staging _archives _bootstrap .obsidian .git".split()
+    "_archived _bootstrap .obsidian .git".split()
 )
 TRUST_RESERVED_STEMS = frozenset({"index", "log", "hot", "_insights"})
 ALLOWED_LIFECYCLES = frozenset({"draft", "reviewed", "verified", "disputed", "archived"})
@@ -115,6 +123,7 @@ def _effective_schema(
 def _trust_metadata(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
@@ -123,10 +132,12 @@ def _trust_metadata(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
-    try:
-        text = _normalise_text(path.read_text(encoding="utf-8"))
-    except UnicodeError as exc:
-        raise ValueError("page is not valid UTF-8") from exc
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ValueError("page is not valid UTF-8") from exc
+    text = _normalise_text(text)
     frontmatter = _frontmatter(text)
     if not frontmatter:
         raise ValueError("missing frontmatter")
@@ -208,12 +219,14 @@ def _strip_volatile_confidence_fields(frontmatter: str) -> str:
 def page_fingerprint(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> str:
     """Hash material claims and evidence, excluding validated volatile bookkeeping."""
     metadata = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -229,12 +242,14 @@ def page_fingerprint(
 def validate_trust_metadata(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Validate present trust fields even when no review ledger is configured."""
     return _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -243,11 +258,13 @@ def validate_trust_metadata(
 def _parse_confidence(
     path: Path,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> float:
     value = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )["confidence"]
@@ -256,17 +273,17 @@ def _parse_confidence(
     return float(value)
 
 
+def _trust_snapshots(vault: Path) -> dict[str, MarkdownFile]:
+    return {
+        snapshot.relative: snapshot
+        for snapshot in scan_markdown_files(vault, skip_dirs=TRUST_SKIP_DIRS)
+        if snapshot.path.stem not in TRUST_RESERVED_STEMS
+    }
+
+
 def iter_trust_pages(vault: Path) -> list[Path]:
     """Return every non-reserved content page that must participate in trust review."""
-    pages: list[Path] = []
-    for path in vault.rglob("*.md"):
-        rel = path.relative_to(vault)
-        if any(part in TRUST_SKIP_DIRS for part in rel.parts):
-            continue
-        if path.stem in TRUST_RESERVED_STEMS:
-            continue
-        pages.append(path)
-    return sorted(pages, key=lambda item: item.relative_to(vault).as_posix())
+    return [snapshot.path for snapshot in _trust_snapshots(vault).values()]
 
 
 def build_trust_ledger(
@@ -280,10 +297,12 @@ def build_trust_ledger(
     reviewed_at = _validate_reviewed_at(reviewed_at)
     pages: dict[str, dict[str, Any]] = {}
     not_applicable: list[str] = []
-    for path in iter_trust_pages(vault):
-        rel = path.relative_to(vault).as_posix()
+    for rel, snapshot in _trust_snapshots(vault).items():
+        path = snapshot.path
+        text = snapshot.text()
         metadata = _trust_metadata(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -293,6 +312,7 @@ def build_trust_ledger(
         pages[rel] = _review_entry(
             path,
             reviewed_at,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -309,11 +329,13 @@ def _review_entry(
     path: Path,
     reviewed_at: str,
     *,
+    text: str | None = None,
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
     metadata = _trust_metadata(
         path,
+        text=text,
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
@@ -322,11 +344,13 @@ def _review_entry(
     return {
         "reviewed_confidence": _parse_confidence(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         ),
         "material_fingerprint": page_fingerprint(
             path,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         ),
@@ -376,10 +400,15 @@ def update_trust_ledger(
 ) -> dict[str, Any]:
     """Update reviewed pages and remove entries whose confidence is not applicable."""
     reviewed_at = _validate_reviewed_at(reviewed_at)
-    if ledger_path.is_file():
+    snapshots = _trust_snapshots(vault)
+    try:
+        ledger_content = read_safe_file(vault, ledger_path, missing_ok=True)
+    except UnsafeVaultError as exc:
+        raise RuntimeError(f"cannot update unreadable trust ledger: {exc}") from exc
+    if ledger_content is not None:
         try:
             ledger = json.loads(
-                ledger_path.read_text(encoding="utf-8"),
+                ledger_content.decode("utf-8"),
                 parse_constant=_reject_json_constant,
                 object_pairs_hook=_reject_duplicate_json_keys,
             )
@@ -406,11 +435,13 @@ def update_trust_ledger(
             "pages": {},
         }
 
-    current = {path.relative_to(vault).as_posix(): path for path in iter_trust_pages(vault)}
+    current = {relative: snapshot.path for relative, snapshot in snapshots.items()}
     not_applicable: list[str] = []
     for rel, page in current.items():
+        text = snapshots[rel].text()
         metadata = _trust_metadata(
             page,
+            text=text,
             allowed_lifecycles=allowed_lifecycles,
             required_trust_keys=required_trust_keys,
         )
@@ -436,6 +467,7 @@ def update_trust_ledger(
             ledger["pages"][rel] = _review_entry(
                 page,
                 reviewed_at,
+                text=snapshots[rel].text(),
                 allowed_lifecycles=allowed_lifecycles,
                 required_trust_keys=required_trust_keys,
             )
@@ -450,9 +482,158 @@ def write_trust_ledger(
     ledger: dict[str, Any],
     *,
     vault: Path | None = None,
+    repository_root: Path | None = None,
+    root_identity: tuple[int, ...] | None = None,
 ) -> None:
     """Write a ledger atomically without following vault-internal symlinks."""
-    vault_root = (vault or path.parent.parent).expanduser().resolve(strict=True)
+    vault_root = (vault or path.parent.parent).expanduser().absolute()
+    expected = vault_root / TRUST_LEDGER_RELATIVE_PATH
+    requested = path.expanduser().absolute()
+    if requested != expected:
+        raise RuntimeError("trust ledger destination resolves outside the resolved vault")
+    if (repository_root is None) != (root_identity is None):
+        raise RuntimeError("repository root and identity must be supplied together")
+    bound_repository = (
+        repository_root.expanduser().absolute() if repository_root is not None else None
+    )
+    if bound_repository is not None:
+        try:
+            vault_root.relative_to(bound_repository)
+        except ValueError as exc:
+            raise RuntimeError("trust vault escapes the configured repository") from exc
+
+    try:
+        payload = json.dumps(ledger, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"trust ledger is not valid JSON data: {exc}") from exc
+
+    if os.name == "posix":
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            directory_fd = os.open(vault_root.anchor, directory_flags)
+        except OSError as exc:
+            raise RuntimeError(f"cannot securely open trust ledger anchor: {exc}") from exc
+        component = Path(vault_root.anchor)
+        components = (*vault_root.parts[1:], TRUST_LEDGER_RELATIVE_PATH.parent.name)
+        try:
+            for index, part in enumerate(components):
+                component = component / part
+                try:
+                    observed = os.stat(part, dir_fd=directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    if index != len(components) - 1:
+                        raise RuntimeError(
+                            f"trust ledger path component is missing: {component}"
+                        )
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"cannot securely create trust ledger directory: {exc}"
+                        ) from exc
+                    observed = os.stat(part, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+                    raise RuntimeError(
+                        "trust ledger path component must not be a symlink or special "
+                        f"file: {component}"
+                    )
+                try:
+                    child = os.open(part, directory_flags, dir_fd=directory_fd)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"cannot securely open trust ledger directory: {exc}"
+                    ) from exc
+                try:
+                    opened = os.fstat(child)
+                except BaseException:
+                    os.close(child)
+                    raise
+                if (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_mode,
+                ) != (
+                    observed.st_dev,
+                    observed.st_ino,
+                    observed.st_mode,
+                ):
+                    os.close(child)
+                    raise RuntimeError(
+                        f"trust ledger path component changed while opening: {component}"
+                    )
+                if (
+                    bound_repository is not None
+                    and component == bound_repository
+                    and stable_directory_identity(opened) != root_identity
+                ):
+                    os.close(child)
+                    raise RuntimeError(
+                        "configured repository root changed since configuration was read"
+                    )
+                os.close(directory_fd)
+                directory_fd = child
+
+            temporary_name = f".trust-ledger-{secrets.token_hex(16)}.tmp"
+            temporary_created = False
+            try:
+                try:
+                    destination_stat = os.stat(
+                        expected.name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    destination_stat = None
+                if destination_stat is not None and (
+                    stat.S_ISLNK(destination_stat.st_mode)
+                    or not stat.S_ISREG(destination_stat.st_mode)
+                    or destination_stat.st_nlink != 1
+                ):
+                    raise RuntimeError(
+                        "trust ledger destination must not be a symlink, hard link, "
+                        "or special file"
+                    )
+
+                descriptor = os.open(
+                    temporary_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                temporary_created = True
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(
+                    temporary_name,
+                    expected.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                temporary_created = False
+                os.fsync(directory_fd)
+            except OSError as exc:
+                raise RuntimeError(f"cannot securely write trust ledger: {exc}") from exc
+            finally:
+                if temporary_created:
+                    try:
+                        os.unlink(temporary_name, dir_fd=directory_fd)
+                    except FileNotFoundError:
+                        pass
+        finally:
+            os.close(directory_fd)
+        return
+
+    vault_root = vault_root.resolve(strict=True)
     expected = vault_root / TRUST_LEDGER_RELATIVE_PATH
     requested = path.expanduser().absolute()
     if requested.resolve(strict=False) != expected:
@@ -466,64 +647,6 @@ def write_trust_ledger(
         raise RuntimeError("trust ledger parent resolves outside the resolved vault")
     if expected.is_symlink():
         raise RuntimeError("trust ledger destination must not be a symlink")
-
-    try:
-        payload = json.dumps(ledger, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"trust ledger is not valid JSON data: {exc}") from exc
-
-    if os.name == "posix":
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            directory_fd = os.open(parent, directory_flags)
-        except OSError as exc:
-            raise RuntimeError(f"cannot securely open trust ledger directory: {exc}") from exc
-        temporary_name = f".trust-ledger-{secrets.token_hex(16)}.tmp"
-        temporary_created = False
-        try:
-            try:
-                destination_stat = os.stat(
-                    expected.name,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                destination_stat = None
-            if destination_stat is not None and stat.S_ISLNK(destination_stat.st_mode):
-                raise RuntimeError("trust ledger destination must not be a symlink")
-
-            descriptor = os.open(
-                temporary_name,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-                dir_fd=directory_fd,
-            )
-            temporary_created = True
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(
-                temporary_name,
-                expected.name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            temporary_created = False
-            os.fsync(directory_fd)
-        except OSError as exc:
-            raise RuntimeError(f"cannot securely write trust ledger: {exc}") from exc
-        finally:
-            if temporary_created:
-                try:
-                    os.unlink(temporary_name, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-            os.close(directory_fd)
-        return
 
     try:
         descriptor, temporary_name = tempfile.mkstemp(
@@ -585,6 +708,7 @@ def check_trust_ledger(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,
     )
+    snapshots = _trust_snapshots(vault)
     path = ledger_path or vault / TRUST_LEDGER_RELATIVE_PATH
     report = _empty_report(
         path,
@@ -593,15 +717,16 @@ def check_trust_ledger(
         schema_source=schema_source,
     )
     try:
+        ledger_content = read_safe_file(vault, path, missing_ok=True)
+        if ledger_content is None:
+            report["errors"].append({"issue": "ledger_missing", "path": str(path)})
+            return _finalise_report(report)
         ledger = json.loads(
-            path.read_text(encoding="utf-8"),
+            ledger_content.decode("utf-8"),
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except FileNotFoundError:
-        report["errors"].append({"issue": "ledger_missing", "path": str(path)})
-        return _finalise_report(report)
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (UnsafeVaultError, UnicodeError, ValueError) as exc:
         report["errors"].append({"issue": "ledger_unreadable", "detail": str(exc)})
         return _finalise_report(report)
 
@@ -644,13 +769,13 @@ def check_trust_ledger(
     if report["errors"]:
         return _finalise_report(report)
 
-    current: dict[str, Path] = {
-        page.relative_to(vault).as_posix(): page for page in iter_trust_pages(vault)
-    }
+    current = {relative: snapshot.path for relative, snapshot in snapshots.items()}
     for rel, page in current.items():
+        text = snapshots[rel].text()
         try:
             page_metadata = _trust_metadata(
                 page,
+                text=text,
                 allowed_lifecycles=lifecycles,
                 required_trust_keys=required,
             )
@@ -676,6 +801,7 @@ def check_trust_ledger(
         fingerprint, reviewed_value, reviewed_at = validated_entries[rel]
         if page_fingerprint(
             page,
+            text=text,
             allowed_lifecycles=lifecycles,
             required_trust_keys=required,
         ) != fingerprint:

@@ -19,6 +19,7 @@ from typing import Callable
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
 from obsidian_wiki.operations import OperationChange, write_operation
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.portable_manifest import (
     ManifestError,
     ManifestPreconditionError,
@@ -67,6 +68,7 @@ class TransactionRecord:
     candidate_vault: Path
     preimages: dict[str, str | None]
     deletions: tuple[str, ...]
+    legacy_source_preimages: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ _METADATA_FIELDS = frozenset(
         "removed",
         "snapshot_index",
         "source_ids",
+        "source_preimages",
         "started_at",
         "status",
         "transaction_id",
@@ -125,11 +128,7 @@ _CONTROL_DIRECTORIES = frozenset(
         ".manifest",
         ".obsidian",
         ".obsidian-wiki",
-        "_archives",
         "_meta",
-        "_raw",
-        "_readouts",
-        "_staging",
     }
 )
 _TRACKED_ROOT_GRAPH_PAGES = frozenset({"index.md", "log.md"})
@@ -226,6 +225,7 @@ class TransactionManager:
                 cleanup_root=self.local_state,
             )
         )
+        self._action_manifest: ShardedManifest | None = None
         self._require_contained(self.local_state, self.config.root, "local state")
 
     def begin(
@@ -235,6 +235,7 @@ class TransactionManager:
         transaction_id: str | None = None,
         started_at: str | None = None,
     ) -> TransactionRecord:
+        self._verify_repository_identity()
         resolved_started_at = started_at or self._utc_now()
         self._validate_started_at(resolved_started_at)
         resolved_id = transaction_id or self._generated_id()
@@ -264,6 +265,13 @@ class TransactionManager:
 
             self._write_json_atomic(workspace / "deletions.json", [])
             preimages = self._snapshot_preimages()
+            manifest = ShardedManifest(self.config)
+            source_preimages = {
+                source_id: self._hash_single_link_file(
+                    manifest.source_path(source_id), "transaction source"
+                )
+                for source_id in source_ids
+            }
             payload = {
                 "completed_at": None,
                 "created": [],
@@ -277,6 +285,7 @@ class TransactionManager:
                 "removed": [],
                 "snapshot_index": {},
                 "source_ids": list(source_ids),
+                "source_preimages": dict(sorted(source_preimages.items())),
                 "started_at": resolved_started_at,
                 "status": "active",
                 "transaction_id": resolved_id,
@@ -322,6 +331,9 @@ class TransactionManager:
         started_at = payload.get("started_at")
         self._validate_started_at(started_at)
         source_ids = self._load_source_ids(payload.get("source_ids"))
+        legacy_source_preimages = payload.get("source_preimages") is None
+        if not legacy_source_preimages:
+            self._load_source_preimages(payload.get("source_preimages"), source_ids)
         preimages = self._load_image_map(
             payload.get("preimages"), "transaction preimages"
         )
@@ -350,6 +362,7 @@ class TransactionManager:
             candidate_vault=candidate_vault,
             preimages=preimages,
             deletions=deletions,
+            legacy_source_preimages=legacy_source_preimages,
         )
 
     def list_transactions(self) -> list[TransactionRecord]:
@@ -390,6 +403,7 @@ class TransactionManager:
         return report
 
     def abort(self, transaction_id: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status == "promoting":
@@ -421,6 +435,7 @@ class TransactionManager:
                 self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
 
     def mark_delete(self, transaction_id: str, relative_path: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status != "active":
@@ -445,19 +460,37 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
-        with self._action_lock():
-            record = self.load(transaction_id)
-            if record.status != "active":
-                raise TransactionError(
-                    f"only an active transaction can commit, not {record.status}"
+        self._verify_repository_identity()
+        try:
+            with self._action_lock(manifest=True):
+                record = self.load(transaction_id)
+                if record.legacy_source_preimages:
+                    raise TransactionError(
+                        "legacy transaction has no frozen source hashes; abort and restart"
+                    )
+                if record.status != "active":
+                    raise TransactionError(
+                        f"only an active transaction can commit, not {record.status}"
+                    )
+                lock_identity = self._require_owned_lock(transaction_id)
+                return self._commit_record(
+                    record,
+                    completed_at=completed_at,
+                    lock_identity=lock_identity,
+                    release_pre_snapshot_failure=False,
+                    manifest=self._action_manifest,
                 )
-            lock_identity = self._require_owned_lock(transaction_id)
-            return self._commit_record(
-                record,
-                completed_at=completed_at,
-                lock_identity=lock_identity,
-                release_pre_snapshot_failure=False,
-            )
+        except TransactionError as exc:
+            if "safe manifest mutation requires" in str(exc):
+                record = self.load(transaction_id)
+                payload = self._read_metadata_payload(record.workspace)
+                payload["status"] = "failed"
+                payload["residual_postimages"] = {}
+                payload["rollback_exclusions"] = {}
+                self._write_metadata(record.workspace, payload)
+                if self.lock_path.exists() or self.lock_path.is_symlink():
+                    self._unlink_owned_lock(transaction_id)
+            raise
 
     def retry(
         self,
@@ -465,8 +498,13 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
-        with self._action_lock():
+        self._verify_repository_identity()
+        with self._action_lock(manifest=True):
             record = self.load(transaction_id)
+            if record.legacy_source_preimages:
+                raise TransactionError(
+                    "legacy transaction has no frozen source hashes; restore or discard it"
+                )
             if record.status != "failed":
                 raise TransactionError(
                     f"only a failed transaction can retry, not {record.status}"
@@ -533,6 +571,7 @@ class TransactionManager:
                     lock_identity=lock_identity,
                     release_pre_snapshot_failure=True,
                     preflight_candidates=candidates,
+                    manifest=self._action_manifest,
                 )
             except Exception:
                 if self.lock_path.exists() or self.lock_path.is_symlink():
@@ -545,7 +584,8 @@ class TransactionManager:
                 raise
 
     def restore(self, transaction_id: str) -> None:
-        with self._action_lock():
+        self._verify_repository_identity()
+        with self._action_lock(manifest=True):
             record = self.load(transaction_id)
             if record.status not in {"promoting", "failed", "complete", "restored"}:
                 raise TransactionError(
@@ -633,6 +673,7 @@ class TransactionManager:
                     )
 
     def discard(self, transaction_id: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             workspace = self._workspace_path(transaction_id)
             if not workspace.exists() and not workspace.is_symlink():
@@ -665,11 +706,13 @@ class TransactionManager:
         lock_identity: _FileIdentity,
         release_pre_snapshot_failure: bool,
         preflight_candidates: tuple[_Candidate, ...] | None = None,
+        manifest: ShardedManifest | None = None,
     ) -> CommitResult:
         resolved_completed_at = completed_at or self._utc_now()
         self._validate_started_at(resolved_completed_at)
         snapshot_started = False
         payload = self._read_metadata_payload(record.workspace)
+        self._verify_source_preimages(payload, record.source_ids)
         snapshot_index: dict[str, str | None] = {}
         operation_relative: str | None = None
         operation_affected: set[str] = set()
@@ -706,6 +749,7 @@ class TransactionManager:
 
             snapshot_started = True
             snapshot_index = self._snapshot_targets(record, affected)
+            self._verify_source_preimages(payload, record.source_ids)
             payload.update(
                 {
                     "completed_at": resolved_completed_at,
@@ -750,7 +794,10 @@ class TransactionManager:
                     raise
 
             pages_by_source = self._scan_page_relationships(record.source_ids)
-            manifest = ShardedManifest(self.config)
+            manifest = manifest or ShardedManifest(self.config)
+            source_preimages = self._load_source_preimages(
+                payload.get("source_preimages"), record.source_ids
+            )
             for source_id in record.source_ids:
                 shard_relative = (
                     manifest.entry_path(source_id)
@@ -763,6 +810,7 @@ class TransactionManager:
                         pages=list(pages_by_source[source_id]),
                         compiled_at=resolved_completed_at,
                         expected_preimage=record.preimages.get(shard_relative),
+                        expected_source_hash=source_preimages[source_id],
                     )
                 except ManifestPreconditionError as exc:
                     rollback_exclusion_paths.add(shard_relative)
@@ -773,6 +821,8 @@ class TransactionManager:
                         "transaction target changed after transaction began: "
                         + shard_relative
                     ) from exc
+
+            self._verify_source_preimages(payload, record.source_ids)
 
             change = OperationChange(
                 transaction_id=record.transaction_id,
@@ -831,6 +881,7 @@ class TransactionManager:
                     "unauthorized operation writer side effect outside "
                     "journal/operations"
                 )
+            self._verify_source_preimages(payload, record.source_ids)
             snapshot_index[operation_relative] = None
             operation_affected.add(operation_relative)
 
@@ -962,7 +1013,7 @@ class TransactionManager:
             raise TransactionError(detail) from exc
 
     @contextmanager
-    def _action_lock(self) -> Iterator[None]:
+    def _action_lock(self, *, manifest: bool = False) -> Iterator[None]:
         self._ensure_directory(self.local_state)
         self._require_contained(
             self.action_lock_path,
@@ -985,7 +1036,18 @@ class TransactionManager:
                 )
             self._lock_action_descriptor(descriptor)
             locked = True
-            yield
+            if manifest:
+                store = ShardedManifest(self.config)
+                try:
+                    with store.mutation_session():
+                        self._action_manifest = store
+                        yield
+                except ManifestError as exc:
+                    raise TransactionError(str(exc)) from exc
+                finally:
+                    self._action_manifest = None
+            else:
+                yield
         finally:
             try:
                 if locked:
@@ -2070,6 +2132,7 @@ class TransactionManager:
         *,
         before_replace: Callable[[], None] | None = None,
     ) -> None:
+        self._verify_repository_identity()
         self._require_ordinary_directory(target.parent, "atomic write directory")
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.", dir=target.parent
@@ -2156,8 +2219,14 @@ class TransactionManager:
         payload = self._read_json_file(
             workspace / "metadata.json", "transaction metadata"
         )
-        if not isinstance(payload, dict) or set(payload) != _METADATA_FIELDS:
+        legacy_fields = _METADATA_FIELDS - {"source_preimages"}
+        if not isinstance(payload, dict) or set(payload) not in {
+            _METADATA_FIELDS,
+            legacy_fields,
+        }:
             raise TransactionError("transaction metadata has invalid fields")
+        if "source_preimages" not in payload:
+            payload["source_preimages"] = None
         self._validate_recovery_metadata(payload, workspace)
         return payload
 
@@ -2623,6 +2692,37 @@ class TransactionManager:
             raise TransactionError("duplicate transaction source")
         return tuple(sorted(source_ids))
 
+    def _load_source_preimages(
+        self, raw: object, source_ids: tuple[str, ...]
+    ) -> dict[str, str]:
+        if not isinstance(raw, dict) or set(raw) != set(source_ids):
+            raise TransactionError("transaction source_preimages must match source_ids")
+        result: dict[str, str] = {}
+        for source_id, content_hash in raw.items():
+            if not isinstance(source_id, str) or not isinstance(content_hash, str) or _HASH_RE.fullmatch(content_hash) is None:
+                raise TransactionError("transaction source_preimages are invalid")
+            result[source_id] = content_hash
+        return dict(sorted(result.items()))
+
+    def _verify_source_preimages(
+        self, payload: dict[str, object], source_ids: tuple[str, ...]
+    ) -> None:
+        expected = self._load_source_preimages(payload.get("source_preimages"), source_ids)
+        manifest = ShardedManifest(self.config)
+        for source_id in source_ids:
+            try:
+                current = self._hash_single_link_file(
+                    manifest.source_path(source_id), "transaction source"
+                )
+            except (ManifestError, TransactionError) as exc:
+                raise TransactionError(
+                    f"transaction source changed after begin; restart required: {source_id}"
+                ) from exc
+            if current != expected[source_id]:
+                raise TransactionError(
+                    f"transaction source changed after begin; restart required: {source_id}"
+                )
+
     def _snapshot_preimages(self) -> dict[str, str | None]:
         self._require_ordinary_directory(self.config.vault, "portable vault")
         excluded_local: Path | None = None
@@ -3000,6 +3100,7 @@ class TransactionManager:
                 os.close(directory_fd)
 
     def _ensure_directory(self, path: Path) -> None:
+        self._verify_repository_identity()
         self._require_contained(path, self.config.root, "local transaction directory")
         try:
             relative = path.relative_to(self.config.root)
@@ -3020,6 +3121,21 @@ class TransactionManager:
                         f"cannot create local transaction directory: {current}"
                     ) from exc
             self._require_ordinary_directory(current, "local transaction directory")
+
+    def _verify_repository_identity(self) -> None:
+        descriptor = self._open_directory(
+            self.config.root, "portable repository root"
+        )
+        try:
+            if (
+                stable_directory_identity(os.fstat(descriptor))
+                != self.config.root_identity
+            ):
+                raise TransactionError(
+                    "configured repository root changed since configuration was read"
+                )
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _require_ordinary_directory(path: Path, label: str) -> None:

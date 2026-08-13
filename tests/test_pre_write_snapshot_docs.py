@@ -1,4 +1,4 @@
-"""Contract tests for destructive-skill pre-write snapshots."""
+"""Contract tests for owner-safe transactional maintenance skills."""
 
 from pathlib import Path
 
@@ -18,23 +18,25 @@ def _skill_texts() -> list[tuple[str, str]]:
     ]
 
 
-def test_snapshot_only_runs_for_standalone_vault_repositories() -> None:
+def test_maintenance_resolves_nearest_repository_and_closes_sources_before_write() -> None:
     for path, text in _skill_texts():
-        assert "rev-parse --show-toplevel" in text, path
-        assert '"$VAULT_GIT_ROOT" = "$VAULT_REAL_PATH"' in text, path
+        assert "nearest ancestor `.obsidian-wiki/config.toml`" in text, path
+        assert "complete source closure" in text, path
+        assert "live vault read-only" in text, path
 
 
-def test_snapshot_distinguishes_clean_repository_from_commit_failure() -> None:
+def test_maintenance_uses_cli_transaction_validation_and_commit() -> None:
     for path, text in _skill_texts():
-        assert "diff --quiet" in text, path
-        assert "diff --cached --quiet" in text, path
-        assert "ls-files --others --exclude-standard" in text, path
-        assert 'if ! git -C "$OBSIDIAN_VAULT_PATH" add -A; then' in text, path
-        assert "abort the skill without writing any vault files" in text, path
+        assert "obsidian-wiki transaction begin --source" in text, path
+        assert "obsidian-wiki transaction validate <id>" in text, path
+        assert "obsidian-wiki transaction commit <id>" in text, path
 
 
-def test_snapshot_records_an_actionable_rollback_point() -> None:
+def test_maintenance_uses_trusted_recovery_and_leaves_git_to_owner() -> None:
     for path, text in _skill_texts():
-        assert 'SNAPSHOT_SHA=$(git -C "$OBSIDIAN_VAULT_PATH" rev-parse HEAD)' in text, path
-        assert 'reset --hard "$SNAPSHOT_SHA"' in text, path
-        assert "clean -fd" in text, path
+        assert "trusted transaction ID" in text, path
+        assert "recovery.preferred_action" in text, path
+        assert "allowed_actions" in text, path
+        assert "Do not commit, push, or open a pull request" in text, path
+        for forbidden in ("git add", "git commit", "reset --hard", "clean -fd"):
+            assert forbidden not in text, (path, forbidden)

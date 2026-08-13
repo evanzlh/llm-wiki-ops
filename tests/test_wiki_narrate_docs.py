@@ -10,12 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WikiNarrateDocsTest(unittest.TestCase):
     def read(self, relpath: str) -> str:
-        return (ROOT / relpath).read_text()
+        return (ROOT / relpath).read_text(encoding="utf-8")
 
-    def test_skill_declares_the_canonical_command_and_voices(self) -> None:
+    def test_skill_declares_the_portable_command_and_voices(self) -> None:
         skill = self.read("obsidian_wiki/_data/skills/wiki-narrate/SKILL.md")
 
-        self.assertIn("/wiki-narrate <topic> [--voice briefing|plain-language|lecturer] [--save]", skill)
+        self.assertIn("/wiki-narrate <topic> [--voice briefing|plain-language|lecturer]", skill)
+        self.assertNotIn("--save", skill)
         self.assertIn("default voice is `briefing`", skill)
         self.assertIn("case-sensitive", skill)
         self.assertIn("Unsupported values", skill)
@@ -29,26 +30,21 @@ class WikiNarrateDocsTest(unittest.TestCase):
         self.assertIn("web knowledge", skill)
         self.assertIn("model memory", skill)
 
-    def test_skill_keeps_readouts_out_of_the_knowledge_graph(self) -> None:
+    def test_skill_returns_narration_without_a_saved_readout(self) -> None:
         skill = self.read("obsidian_wiki/_data/skills/wiki-narrate/SKILL.md")
 
-        self.assertIn("`_readouts/<slug>.md`", skill)
-        self.assertIn("must not update `index.md` or `.manifest.json`", skill)
-        self.assertIn("exclude `_readouts/`", skill)
+        self.assertIn("Return the narration in the conversation", skill)
+        self.assertIn("wiki-capture", skill)
+        self.assertIn("wiki-ingest", skill)
+        self.assertNotIn("_readouts", skill)
+        self.assertNotIn("transaction begin", skill)
+        self.assertNotIn("append to `log.md`", skill)
 
     def test_voice_reference_has_exactly_the_three_first_release_voices(self) -> None:
         voices = self.read("obsidian_wiki/_data/skills/wiki-narrate/references/voices.md")
 
         headings = set(re.findall(r"^## `([^`]+)`$", voices, flags=re.MULTILINE))
         self.assertEqual(headings, {"briefing", "plain-language", "lecturer"})
-
-    def test_routing_and_skills_reference_expose_wiki_narrate(self) -> None:
-        agents = self.read("obsidian_wiki/_data/bootstrap/AGENTS.md")
-        skills = self.read("docs/skills.md")
-
-        self.assertIn("`wiki-narrate`", agents)
-        self.assertIn("`wiki-narrate`", skills)
-        self.assertIn("`/wiki-narrate <topic>`", skills)
 
 
 if __name__ == "__main__":

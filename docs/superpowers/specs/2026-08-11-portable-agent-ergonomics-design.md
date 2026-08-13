@@ -1,3 +1,6 @@
+> **Superseded (2026-08-12):** Current behavior is defined by the
+> [Portable-Only Repository Design](2026-08-12-portable-only-design.md).
+
 # Portable Agent Safety and Ergonomics Design
 
 **Date:** 2026-08-11

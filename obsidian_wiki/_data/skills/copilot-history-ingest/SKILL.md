@@ -1,476 +1,76 @@
 ---
 name: copilot-history-ingest
-description: >
-  Ingest GitHub Copilot CLI session history into an Obsidian wiki as distilled knowledge pages. Use this skill
-  when the user wants to capture their Copilot CLI sessions into a personal wiki — extracting architecture
-  decisions, debug notes, and patterns into searchable Obsidian pages. Triggers on phrases like "ingest my
-  copilot sessions into obsidian", "add my copilot history to my wiki", "pull my copilot session history into
-  the vault", "capture what I've learned from copilot into obsidian", "just the new sessions since last time",
-  or "mine patterns across my copilot sessions". Also triggers when the user mentions session-store.db,
-  ~/.copilot/session-state, or VS Code copilot-chat transcripts in the context of building a wiki or knowledge
-  base. Does NOT trigger for general copilot usage questions, searching sessions, or backing up history.
+description: Use when mining selected GitHub Copilot CLI or VS Code chat sessions for durable repository knowledge.
 ---
 
-# Copilot History Ingest — Conversation Mining
-
-You are extracting knowledge from the user's past GitHub Copilot CLI conversations and distilling it into the Obsidian wiki. Conversations are rich but messy — your job is to find the signal and compile it.
-
-This skill can be invoked directly or via the `wiki-history-ingest` router (`/wiki-history-ingest copilot`).
-
-## Before You Start
-
-1. **Resolve config and ownership** — follow the Config Resolution Protocol in
-   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
-   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
-   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
-   parent agent resolves config and mode, records the concrete vault, Copilot
-   history, and VS Code storage paths, and reads the owner `AGENTS.md` at the
-   resolved vault before any other work.
-2. Select one terminal workflow after the shared analysis and page-preparation steps:
-   **Portable Repository completion** or **Personal mode completion**. Never
-   mix their writes or tracking. The Portable branch implements the canonical
-   Portable Write Protocol locally. Shared inventory, SQL queries, filtering,
-   extraction, clustering, and drafting are read-only. If work is divided, use
-   analysis-only workers: they return evidence and page proposals but do not
-   resolve mode, snapshot sources, begin transactions, or mutate the vault.
-   The parent agent owns completion.
-3. **Read mode-appropriate state.** Personal mode reads manifest v1 and
-   `index.md` from the concrete vault. Portable Repository mode may inspect
-   existing knowledge pages read-only, but Copilot databases, transcripts,
-   checkpoints, and memory artifacts remain transient until the parent creates
-   reviewed source snapshots; never parse manifest v2 as a Personal source map.
-   Personal append mode uses manifest v1. Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
-
-## Ingest Modes
-
-### Append Mode (default)
-
-**Personal mode delta:** Compare every events JSONL, transcript JSONL,
-checkpoint, and session-store record with the manifest v1 session map. A
-session is new when its canonical identity is absent and modified when its
-`updated_at` is later than `ingested_at`.
-
-**Portable Repository mode delta:** Inspect reviewed snapshots below the
-configured `sources` root. A session is new when no reviewed snapshot has the
-same agent/session identity; it is changed when the matching snapshot's
-recorded content hash differs from the hash of the currently selected Copilot
-material.
-
-**After mode-specific delta selection:** Process only sessions classified as
-new or changed by the selected rule. Never apply the Personal delta rule to a
-Portable run.
-
-This is usually what you want — the user ran a few new sessions and wants to capture the delta.
-
-### Full Mode
-
-Process everything regardless of prior tracking state. Use after a `wiki-rebuild` or if the user explicitly asks.
-
-## GitHub Copilot Data Layout
-
-Copilot stores data in three locations. Scan **all three**.
-
-### Source 1: `~/.copilot/session-state/` (CLI sessions)
-
-```
-~/.copilot/session-state/
-├── <session-uuid>/
-│   ├── workspace.yaml           # Session metadata (id, cwd, summary_count, created_at, updated_at)
-│   ├── vscode.metadata.json     # VS Code context (workspaceFolder, repositoryProperties, customTitle)
-│   ├── events.jsonl             # Full event log — all turns, tool calls, reasoning
-│   ├── session.db               # Per-session SQLite (todos/todo_deps only — skip for ingestion)
-│   ├── index.md                 # Session summary written at session end
-│   ├── checkpoints/             # Checkpoint JSON files (mid-session summaries)
-│   │   └── <uuid>.json          # title, overview, history, work_done, technical_details,
-│   │                            #   important_files, next_steps
-│   ├── files/                   # Artifacts produced during session (plans, diagrams, etc.)
-│   └── research/                # Research artifacts
-└── ...
-```
-
-### Source 2: `~/.copilot/session-store.db` (Global SQLite)
-
-The canonical cross-session database. This is the **highest-value** source: structured, queryable, and pre-summarised.
-
-```
-sessions       — id, cwd, repository, branch, summary, created_at, updated_at, host_type
-turns          — session_id, turn_index, user_message, assistant_response, timestamp
-checkpoints    — session_id, checkpoint_number, title, overview, history, work_done,
-                 technical_details, important_files, next_steps, created_at
-session_files  — session_id, file_path, tool_name, turn_index, first_seen_at
-session_refs   — session_id, ref_type (commit/pr/issue), ref_value, turn_index, created_at
-search_index   — FTS5 virtual table (content, session_id, source_type, source_id)
-```
-
-### Source 3: VS Code Workspace Storage (`<workspaceStorage>/<hash>/GitHub.copilot-chat/`)
-
-VS Code extension data, keyed by workspace hash. The path is platform-specific and must come from `.env` or user input.
-
-```
-<hash>/GitHub.copilot-chat/
-├── transcripts/
-│   └── <session-uuid>.jsonl     # Conversation transcripts (same JSONL format as events.jsonl)
-├── memory-tool/
-│   └── memories/
-│       └── <base64-session-id>/ # Per-session saved artifacts (plan.md, etc.)
-│           └── plan.md
-└── codebase-external.sqlite     # Codebase index (skip — no conversation knowledge)
-```
+# Copilot History Ingest
 
-### Key data sources ranked by value:
+Use [Copilot data format](references/copilot-data-format.md) for SQLite/JSONL details and [source snapshot rules](../wiki-capture/references/source-snapshot.md) for evidence.
 
-1. **Checkpoints** (`session-store.db` `checkpoints` table + per-session `checkpoints/*.json`) — Pre-distilled summaries with `overview`, `work_done`, `technical_details`, `important_files`, `next_steps`. Gold.
-2. **Session summaries** (`session-store.db` `sessions.summary` + `index.md`) — One-paragraph synopsis per session.
-3. **Turns** (`session-store.db` `turns` table + `events.jsonl` / transcript JSONL) — Full conversation. Rich but verbose.
-4. **Memory artifacts** (`memory-tool/memories/<id>/plan.md` etc.) — Pre-written plans and structured notes the user saved explicitly. Worth importing verbatim (or lightly summarised).
-5. **File access patterns** (`session_files` table + `tool.execution_*` events) — Which files the agent repeatedly touched — reveals high-value project files.
-6. **Session refs** (`session_refs` table) — Commits, PRs, and issues linked to sessions.
-7. **`vscode.metadata.json`** — Workspace folder path, branch, `customTitle` (user-set session label). Useful for grouping and naming.
+## Mandatory authority preflight
 
-## Step 1: Survey and Compute Delta
+Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in order.
 
-Scan all three data locations to build the source inventory:
+Resolve the GitHub Copilot CLI root from non-empty absolute `COPILOT_HOME` when set, otherwise absolute `~/.copilot`; reject an empty or relative override/root. CLI sessions are below `<COPILOT_HOME>/session-state/` and the sibling store is `<COPILOT_HOME>/session-store.db`. VS Code stores are separate allowed roots and must be explicitly selected from their documented platform locations, not inferred from an arbitrary path.
 
-```bash
-# --- Source 1: per-session directories ---
-# Find all session directories (each has workspace.yaml)
-ls ~/.copilot/session-state/
+## Bounded safe input
 
-# For each session, read workspace.yaml for id/cwd/updated_at
-# and vscode.metadata.json for customTitle / repositoryProperties
+Defaults: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows, and 100,000 messages/content blocks. The owner may lower; a raise needs explicit authorization. Oversize input fails or receives an explicit omission marker. Every selected input must be root-contained; lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. For TOCTOU safety open ordinary files with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment and size before/after bounded read.
 
-# --- Source 2: global database ---
-# Query session-store.db with sqlite3 (or Python sqlite3)
-SELECT s.id, s.cwd, s.repository, s.branch, s.summary, s.updated_at,
-       COUNT(DISTINCT t.turn_index) AS turn_count,
-       COUNT(DISTINCT c.id)         AS checkpoint_count
-FROM sessions s
-LEFT JOIN turns t ON t.session_id = s.id
-LEFT JOIN checkpoints c ON c.session_id = s.id
-GROUP BY s.id
-ORDER BY s.updated_at DESC;
+For SQLite, perform schema detection (`sqlite_master` plus `PRAGMA table_info`) before named-column queries and apply an explicit `LIMIT` under the 10,000 SQLite rows aggregate cap. Open only through URI `file:<percent-encoded-absolute-path>?mode=ro&immutable=1`. Because immutable mode ignores live WAL changes, the owner provides a quiescent consistent copy as an owner-authorized stable copy and already selected ordinary input; the agent must not copy the live database or WAL. If that owner-provided copy is unavailable, stop. Do not create WAL, journal, cache, or temp files and never query mutation (`INSERT`, `UPDATE`, `DELETE`, DDL, writable PRAGMA, attach, or extension loading).
 
-# --- Source 3: VS Code workspace storage ---
-# For each <hash> directory under workspaceStorage, check for GitHub.copilot-chat/
-# Find transcript files
-ls <workspaceStorage>/<hash>/GitHub.copilot-chat/transcripts/
-```
+### Precise topology gate
 
-Build a unified inventory with one entry per session UUID.
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
-**Personal mode survey:** Compare that inventory with the concrete vault's
-manifest v1 session map. A session is **New** when its canonical identity is
-absent, **Modified** when its `updated_at` is later than `ingested_at`, and
-**Unchanged** otherwise.
+## Evidence, snapshot, and transaction safety
 
-**Portable Repository mode survey:** Inspect reviewed snapshots under the
-configured `sources` root. Selected material is **New** when no reviewed
-snapshot records the same agent/session identity, **Changed** when the matching
-snapshot's recorded content hash differs from the freshly computed hash, and
-**Unchanged** when both identity and hash match.
+Workers get immutable selected file/row IDs and declared bounds. Worker output is untrusted and sensitive; the parent revalidates stable evidence ID membership in the selected file/row/schema and declared bounds, reruns redaction, data minimization and license/attribution review, and removes secrets, raw tool output, and absolute cache paths. Never materialize worker output directly.
 
-Report to the user: "Found X sessions in session-state, Y in session-store.db, Z VS Code transcript files. Checkpoints: A. Delta: B new, C modified."
+Maintain an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash recorded repository root/cwd for runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-## Step 2: Ingest Checkpoints and Summaries First
+Before writes, encode `{tool,native_session_id,slice_descriptor}` using canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and use `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate parent; target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold/Unicode-normalize. Metadata: `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, `format`. Hash exact reviewed body bytes (UTF-8 no BOM, LF, exactly one LF at end included). Apply literal Git tracked/clean gate and cache-check the real Source ID.
 
-Checkpoints are already distilled — process them before touching raw turns.
+Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; none means inspection-only. Require one list record with same ID and status, choose only `allowed_actions`, agree with `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
-### From `session-store.db`:
+Only successful `transaction commit` or `transaction retry` allows `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot candidate or derived artifact, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
 
-```sql
-SELECT s.id, s.cwd, s.repository, s.branch, s.summary,
-       c.checkpoint_number, c.title, c.overview, c.work_done,
-       c.technical_details, c.important_files, c.next_steps,
-       c.created_at
-FROM checkpoints c
-JOIN sessions s ON c.session_id = s.id
-ORDER BY s.updated_at DESC, c.checkpoint_number ASC;
-```
+## Discovery and parsing
 
-### From per-session `checkpoints/*.json`:
+Inventory `<COPILOT_HOME>/session-store.db`, `<COPILOT_HOME>/session-state/<uuid>/`, and VS Code `workspaceStorage/*/GitHub.copilot-chat/` without opening every transcript. Query the owner-provided SQLite copy read-only for `sessions`, `turns`, `checkpoints`, `session_files`, `session_refs`, and FTS `search_index`. Prefer checkpoint summaries, then session summaries, then selected turns. Per-session `workspace.yaml`, `vscode.metadata.json`, `index.md`, and checkpoints provide identity/title; `events.jsonl` and transcript JSONL use `session.start`, `user.message`, `assistant.message`, and tool events. Decode memory directory names only to associate an existing session ID.
 
-Each checkpoint file has: `title`, `overview`, `history`, `work_done`, `technical_details`, `important_files`, `next_steps`.
+Open only explicitly selected session files or database rows. Attribute projects from `session.start.data.context.cwd`, SQLite workspace/cwd fields, and branch; never reverse engineer workspace hashes or persist absolute cache paths. Append compares stable tool/session identity and content hash with snapshots; Full broadens bounded analysis only. State session/row/byte/line/time limits. Redact secrets, private personal material, and irrelevant tool output. Preserve Unicode.
 
-Read `index.md` (if present) as a session-level summary — it's typically written at session end and is already concise.
+## Parent and worker boundary
 
-### What to extract:
+The parent owns selection, snapshots, all repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files/row IDs and bounds. Workers return evidence/proposals only and never discover extra inputs, write, list, or mutate.
 
-- `overview` → high-level description of what the session accomplished
-- `work_done` → concrete tasks completed (good for skills / project pages)
-- `technical_details` → implementation specifics (good for concepts pages)
-- `important_files` → high-value files in the project (good for project pages)
-- `next_steps` → open threads (good for linking to ongoing project work)
+### Existing snapshot preservation and identity
 
-## Step 3: Parse Session Turns
+Persist these history-extension frontmatter fields:
 
-Read turns from `session-store.db` (preferred — already parsed) or from `events.jsonl` / transcript JSONL.
-
-### From `session-store.db`:
-
-```sql
-SELECT turn_index, user_message, assistant_response, timestamp
-FROM turns
-WHERE session_id = '<uuid>'
-ORDER BY turn_index ASC;
-```
-
-### From `events.jsonl` / transcript JSONL:
-
-Each file is one session. Each line is a JSON event. See `references/copilot-data-format.md` for the full schema.
-
-**Relevant event types:**
-
-| `type`                | What it is                              | Worth reading?                            |
-| --------------------- | --------------------------------------- | ----------------------------------------- |
-| `session.start`       | Session metadata (cwd, branch, version) | Yes — establishes project context         |
-| `user.message`        | User turn                               | Yes — `data.content`                      |
-| `assistant.message`   | Assistant turn                          | Yes — `data.content` (text) + `data.toolRequests` |
-| `tool.execution_start`| Tool call                               | Skim — reveals what files/commands were used |
-| `tool.execution_end`  | Tool result                             | No — usually noise                        |
-
-**Extraction strategy for `assistant.message`:**
-
-- `data.content` is the assistant's text response — extract this
-- `data.reasoningText` is internal reasoning — skip (it's the unpacked `reasoningOpaque` field)
-- `data.toolRequests` lists tool calls — skim tool names and arguments for file access patterns
-- Skip `type: "tool.execution_end"` entirely
-
-## Step 3b: Process Memory Artifacts
-
-For each session that has a `memory-tool/memories/<base64-id>/` directory in VS Code workspace storage, read any markdown files saved there (typically `plan.md`). These are documents the user explicitly saved — treat them as high-quality, user-authored content.
-
-Decode the base64 directory name to get the session UUID:
-
-```python
-import base64
-session_id = base64.b64decode(dir_name).decode('utf-8')
-```
-
-Memory artifacts map to project `skills/` or `concepts/` pages, depending on content type.
-
-## Step 3c: Extract File and Ref Patterns
-
-From `session-store.db`:
-
-```sql
--- Most-touched files per project
-SELECT repository, file_path, COUNT(*) AS touch_count
-FROM session_files
-GROUP BY repository, file_path
-ORDER BY touch_count DESC;
-
--- Linked commits/PRs/issues per session
-SELECT session_id, ref_type, ref_value, turn_index
-FROM session_refs
-ORDER BY session_id, turn_index;
-```
-
-**File access patterns** reveal which files are architecturally important — note them on project pages.
-
-**Session refs** link Copilot sessions to git history — useful for connecting wiki knowledge to concrete code changes.
-
-## Step 4: Cluster by Topic
-
-Don't create one wiki page per session. Instead:
-
-- Group extracted knowledge **by topic** across sessions
-- A single session about "debugging auth + setting up CI" → two separate topics
-- Three sessions across different days about "React performance" → one merged topic
-- `cwd` / `repository` give you a natural first-level grouping; `vscode.metadata.json`'s `customTitle` gives a human-readable session label
-
-## Step 5: Distill into Wiki Pages
-
-Each Copilot project maps to a project directory in the vault. Derive the project name from `cwd` or `repository`:
-
-```
-C:\Users\name\git\my-project   → my-project
-/Users/name/code/another-app   → another-app
-```
-
-Prefer `repository` (e.g., `owner/repo`) from `session-store.db` over raw `cwd` when available.
-
-### Project-specific vs. global knowledge
-
-| What you found                      | Where it goes               | Example                                              |
-| ----------------------------------- | --------------------------- | ---------------------------------------------------- |
-| Project architecture decisions      | `projects/<name>/concepts/` | `projects/my-project/concepts/main-architecture.md`  |
-| Project-specific debugging patterns | `projects/<name>/skills/`   | `projects/my-project/skills/api-rate-limiting.md`    |
-| General concept the user learned    | `concepts/` (global)        | `concepts/react-server-components.md`                |
-| Recurring problem across projects   | `skills/` (global)          | `skills/debugging-hydration-errors.md`               |
-| A tool/service used                 | `entities/` (global)        | `entities/vercel-functions.md`                       |
-| Patterns across many sessions       | `synthesis/` (global)       | `synthesis/common-debugging-patterns.md`             |
-
-For each project with content, create or update the project overview page at `projects/<name>/<name>.md` — **named after the project, not `_project.md`**. Obsidian's graph view uses the filename as the node label, so `_project.md` makes every project show up as `_project` in the graph. Naming it `<name>.md` gives each project a distinct, readable node name.
-
-`projects/<name>/<name>.md` uses `category: projects`. Its Portable `sources`
-contains accepted snapshot Source IDs. Portable Repository mode omits
-`source_path` and every machine-local or absolute path from the page. Personal
-manifest v1 may retain the concrete absolute history path; that Personal
-tracking value is never copied into Portable page frontmatter or body text.
-
-**Important:** Distill the _knowledge_, not the conversation. Don't write "In a session on March 15, the user asked about X." Write the knowledge itself, with the session as a source attribution.
-
-**Write a `summary:` frontmatter field** on every new/updated page — 1–2 sentences, ≤200 chars, answering "what is this page about?" for a reader who hasn't opened it. `wiki-query`'s cheap retrieval path reads this field to avoid opening page bodies.
-
-**Add confidence and lifecycle fields** to every new page's frontmatter:
 ```yaml
-base_confidence: 0.42
-lifecycle: draft
-lifecycle_changed: <ISO date today>
-```
-Leave `lifecycle` unchanged on update.
-
-**Mark provenance** per the convention in `llm-wiki` (Provenance Markers section):
-
-- **Checkpoints and index.md** are pre-distilled by the system — treat checkpoint-derived claims as extracted (the system wrote them from observed actions).
-- **Memory artifacts** are user-authored — treat as extracted.
-- **Conversation turn distillation** is mostly inferred. You're synthesizing a coherent claim from many turns. Apply `^[inferred]` liberally to synthesized patterns, generalizations across sessions, and "what the user really meant" interpretations.
-- Use `^[ambiguous]` when the user changed direction mid-session or when the session ended unresolved.
-- Write a `provenance:` frontmatter block on every new/updated page summarizing the rough mix.
-
-## Privacy
-
-- Distill and synthesize — don't copy raw conversation text verbatim
-- Skip anything that looks like secrets, API keys, passwords, tokens
-- `data.reasoningOpaque` / `data.reasoningText` in assistant events is internal reasoning — skip entirely, never copy to wiki
-- If you encounter personal/sensitive content, ask the user before including it
-- The user's conversations may reference other people — be thoughtful about what goes in the wiki
-
-## Reference
-
-See `references/copilot-data-format.md` for detailed data structure documentation.
-
-## Portable Repository completion
-
-Use this branch only when config resolution selected Portable Repository mode.
-The external history cache and selected session files are transient analysis input,
-never Portable Source IDs. This includes `session-store.db`, per-session state,
-VS Code storage, checkpoints, and extracted memory artifacts.
-
-1. **Create or select reviewable source snapshots.** The parent agent creates,
-   updates, or reuses one small, reviewable UTF-8 Markdown or plain-text snapshot
-   strictly below the configured `sources` root for each selected Copilot session
-   or coherent slice. Record agent identity, session identity, relevant excerpts,
-   source timestamps, and a content hash. Redact secrets, transformed prompt
-   context, `reasoningOpaque`/`reasoningText`, private identifiers, and local
-   paths. Include no machine-local absolute paths. Preserve valid Unicode exactly.
-   If an adequate snapshot cannot be created, stop or use Personal mode.
-2. **Review and accept every selected snapshot.** After creation, update, or
-   reuse, the parent agent reviews and accepts every selected snapshot, including
-   its identity, excerpts, hash, redaction, and Source ID. If any snapshot is
-   rejected, incomplete, unsafe, or cannot be traced, stop before `transaction begin`.
-   Candidates may cite only accepted snapshots, never database/cache paths,
-   live URLs, or pseudo-sources.
-3. **Compute complete source closure.** Compute full source closure before
-   `transaction begin` as the set union of:
-   - `live-page sources`: every existing `sources` Source ID on every page to be
-     updated or deleted;
-   - `accepted snapshots`: every selected and accepted reviewed snapshot Source
-     ID, whether newly created, changed existing, or unchanged and reused; and
-   - `candidate citations`: every Source ID that any candidate `sources` field
-     will cite, including a changed existing snapshot used by a new page.
-   Deduplicate the union, verify each ID resolves below configured `sources`,
-   and freeze it before begin.
-4. **Begin exactly once.** Keep the repository root as the command CWD and run
-   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
-   Record `transaction_id`, runtime-only absolute `candidate_vault`,
-   `started_at`, and Source IDs; do not `cd` into it or persist the absolute path.
-5. **Write candidates.** A new page uses `created = updated = started_at`; an
-   update must preserve the existing `created` and set `updated = started_at`.
-   Write final vault-relative knowledge pages only, each with a non-empty subset
-   of the transaction Source IDs.
-6. **Declare removals.** Use
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Stop as
-   unsupported if a mutation cannot be expressed as knowledge candidates or
-   declared deletions.
-7. **Validate candidates.** Run
-   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
-   warnings do not block commit. Fix every issue and rerun validation.
-8. **Commit the passing transaction.** Run
-   `obsidian-wiki transaction commit <id> --json --pretty` only after a pass.
-9. **Use status-aware recovery.** Follow only a trusted
-   `recovery.preferred_action` or reported alternative whose prerequisites hold.
-   Confirm `recommended_action` with `obsidian-wiki transaction list --json`
-   and choose only from `allowed_actions`. Fix/revalidate an active preflight
-   failure or run `obsidian-wiki transaction abort <id> --json`. A `promoting`
-   record permits only its reported
-   `obsidian-wiki transaction restore <id> --json`. For a `failed` record,
-   prefer `obsidian-wiki transaction retry <id> --json`; use
-   `obsidian-wiki transaction restore <id> --json` or
-   `obsidian-wiki transaction discard <id> --json` only when reported and its
-   prerequisites hold. Follow reported actions for complete/restored records.
-   A configuration or begin failure with no trusted transaction ID, or an
-   empty list, has no recovery action. Never replace a transaction whose
-   outcome is ambiguous.
-10. **Refresh local hot context after the terminal gate.** Only after commit
-   succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`; if stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
-   the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-11. **Report and stop.** Report sessions, snapshot Source IDs, page changes, warnings, recovery, and
-   hot-cache status.
-
-Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
-
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Keep the
-concrete resolved vault, Copilot storage, QMD CLI, and QMD collection values in
-agent memory: config resolution does not export these values into the parent shell.
-Write the prepared pages directly below `<resolved-vault-path>`, using current
-ISO timestamps and preserving `created` on update.
-
-### Personal direct writes and Git safety
-
-Apply any owner-required Personal Git snapshot to the concrete vault before
-direct writes. Write or merge all prepared pages at their final paths below
-`<resolved-vault-path>`; stop before tracking on any write failure.
-
-### Personal manifest v1 and cache
-
-For each processed session, checkpoint, transcript, or memory artifact, update
-`<resolved-vault-path>/.manifest.json` as manifest v1 with `ingested_at`,
-`session_id`, `updated_at`, source type, project, and page lists. Preserve
-canonical absolute Personal source keys and unrelated state. Retain the project
-summary fields (`repository`, `cwd`, vault path, counts, and last-ingested time)
-using the concrete resolved Copilot history values; absolute `cwd` is permitted
-only in this Personal manifest v1 branch.
-
-Record each source mapping with:
-
-```bash
-obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
+slice_identity: sha256:<64-lowercase-hex>
+slice_descriptor: <bounded-redacted-human-description>
 ```
 
-### Personal central files
+The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
 
-Update `<resolved-vault-path>/index.md`. Append to
-`<resolved-vault-path>/log.md`:
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
-```text
-- [TIMESTAMP] COPILOT_HISTORY_INGEST projects=N sessions=M checkpoints=C pages_updated=X pages_created=Y mode=append|full
-```
+## Repository-native completion
 
-Read `<resolved-vault-path>/hot.md`, creating the `wiki-ingest` template when
-missing. Update **Recent Activity** with the conceptual Copilot ingest, keep the
-last three operations, update **Active Threads** when useful, and bump `updated`.
+Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
-### Personal QMD refresh
+After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
-When the concrete QMD collection is configured, refresh it only after all
-Personal writes. Failure does not roll back the vault.
+Every absolute cache path is transient and forbidden in snapshot/page provenance.
 
-```bash
-<resolved-qmd-cli> update
-<resolved-qmd-cli> embed
-<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
-```
-
-Use `embed` only for stale/missing vectors and report refreshed, skipped,
-unavailable, or failed status.
-
-Do not fall through into Portable Repository completion. Report the Personal
-page, manifest v1, cache, central-file, Personal Git snapshot, and QMD results,
-then stop.
+1. Parent writes bounded reviewable UTF-8 Markdown snapshot evidence below `sources/history/<tool>/` (`sources/history/copilot/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant material.
+2. Validate Unicode Source IDs as non-empty POSIX repository-relative paths below configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty status. Tracked is not reviewed: stop for owner review, stage, and commit externally, then rerun.
+3. Parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure and fails closed on mismatch.
+4. Parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
+5. Parent alone writes final candidates under the runtime candidate vault with non-empty accepted sources and declares deletions via CLI.
+6. Parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews the prospective diff, then runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
+7. Parent refreshes `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only the bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report sessions, Source IDs, omissions, and changes. Do not commit, push, or open a pull request.

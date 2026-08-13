@@ -1,11 +1,11 @@
 """Tests for the GraphRAG query index module."""
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+import obsidian_wiki.graphrag as graphrag
+from obsidian_wiki.frontmatter import FrontmatterError
 from obsidian_wiki.graphrag import (
     build_index,
     classify_query,
@@ -13,6 +13,12 @@ from obsidian_wiki.graphrag import (
     query,
     rank_candidates,
 )
+
+
+def test_module_docs_use_current_portable_query_command() -> None:
+    assert graphrag.__doc__ is not None
+    assert 'obsidian-wiki query "<question>"' in graphrag.__doc__
+    assert "graph-query" not in graphrag.__doc__
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +34,8 @@ def vault(tmp_path):
 
 def _page(vault: Path, name: str, *, title: str = "", summary: str = "",
           tags: list[str] | None = None, links: list[str] | None = None,
-          tier: str = "supporting", category: str = "concepts") -> Path:
+          tier: str = "supporting", category: str = "concepts",
+          lifecycle: str = "reviewed", updated: str = "2026-08-13") -> Path:
     lines = ["---", f"title: {title or name}"]
     if summary:
         lines.append(f"summary: {summary}")
@@ -36,6 +43,8 @@ def _page(vault: Path, name: str, *, title: str = "", summary: str = "",
         lines.append(f"tags: [{', '.join(tags)}]")
     lines.append(f"tier: {tier}")
     lines.append(f"category: {category}")
+    lines.append(f"lifecycle: {lifecycle}")
+    lines.append(f"updated: {updated}")
     lines.append("---")
     lines.append(f"# {title or name}")
     for lnk in (links or []):
@@ -88,6 +97,119 @@ class TestBuildIndex:
         idx = build_index(simple_vault)
         assert idx["transformer"]["tier"] == "core"
 
+    def test_public_only_filters_metadata_before_body_read(self, vault, monkeypatch):
+        _page(vault, "public", summary="Public summary", tags=["public"], links=[])
+        blocked = _page(
+            vault,
+            "private",
+            summary="Private metadata",
+            tags=["visibility/internal"],
+            links=["public"],
+        )
+        blocked.write_text(
+            blocked.read_text(encoding="utf-8") + "PRIVATE-BODY-SENTINEL\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        original = graphrag.read_markdown_snapshot
+
+        def observed(snapshot):
+            reads.append(snapshot.relative)
+            return original(snapshot)
+
+        monkeypatch.setattr(graphrag, "read_markdown_snapshot", observed)
+
+        index = build_index(vault, public_only=True)
+
+        assert set(index) == {"public"}
+        assert "private.md" not in reads
+        assert "PRIVATE-BODY-SENTINEL" not in repr(index)
+
+    @pytest.mark.parametrize(
+        "tag_line",
+        [
+            "  - visibility/internal # restricted",
+            '  - "visibility/internal" # restricted',
+        ],
+    )
+    def test_public_only_parses_commented_and_quoted_block_tags_before_body_read(
+        self, vault, monkeypatch, tag_line
+    ):
+        (vault / "private.md").write_text(
+            "---\r\ntitle: Private\r\ntags:\r\n"
+            f"{tag_line}\r\n---\r\nPRIVATE-BODY-SENTINEL\r\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        original = graphrag.read_markdown_snapshot
+
+        def observed(snapshot):
+            reads.append(snapshot.relative)
+            return original(snapshot)
+
+        monkeypatch.setattr(graphrag, "read_markdown_snapshot", observed)
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+
+    def test_public_only_parses_cr_only_private_metadata_before_body_read(
+        self, vault, monkeypatch
+    ):
+        (vault / "private.md").write_bytes(
+            b"---\rtitle: Private\rtags:\r"
+            b"  - visibility/internal # restricted\r---\r"
+            b"PRIVATE-BODY-SENTINEL\r"
+        )
+        reads: list[str] = []
+        monkeypatch.setattr(
+            graphrag,
+            "read_markdown_snapshot",
+            lambda snapshot: reads.append(snapshot.relative),
+        )
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+
+    def test_invalid_public_metadata_fails_closed_before_body_read(
+        self, vault, monkeypatch
+    ):
+        (vault / "private.md").write_text(
+            "---\ntags: [public]\ntags: [visibility/internal]\n---\n"
+            "PRIVATE-BODY-SENTINEL\n",
+            encoding="utf-8",
+        )
+        reads: list[str] = []
+        monkeypatch.setattr(
+            graphrag,
+            "read_markdown_snapshot",
+            lambda snapshot: reads.append(snapshot.relative),
+        )
+
+        assert build_index(vault, public_only=True) == {}
+        assert reads == []
+        with pytest.raises(FrontmatterError, match="duplicate"):
+            build_index(vault)
+
+    def test_shared_parser_preserves_legacy_index_keys_and_adds_trust_metadata(
+        self, simple_vault
+    ):
+        entry = build_index(simple_vault)["transformer"]
+        legacy = {
+            "title": "Transformer Architecture",
+            "tags": ["deep-learning", "nlp"],
+            "summary": "Self-attention mechanism for sequence modelling.",
+            "category": "concepts",
+            "tier": "core",
+            "path": "transformer.md",
+            "out_links": ["attention", "embedding"],
+            "in_links": ["attention"],
+        }
+
+        assert {key: entry[key] for key in legacy} == legacy
+        assert entry["visibility"] == []
+        assert entry["lifecycle"] == "reviewed"
+        assert entry["updated"] == "2026-08-13"
+
     def test_out_links(self, simple_vault):
         idx = build_index(simple_vault)
         assert "attention" in idx["transformer"]["out_links"]
@@ -100,11 +222,36 @@ class TestBuildIndex:
         idx = build_index(vault)
         assert idx == {}
 
-    def test_skips_raw_dir(self, vault):
-        (vault / "_raw").mkdir()
-        _page(vault / "_raw", "draft", title="Draft")
+    @pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+    def test_does_not_hide_personal_artifact_names(self, vault, name):
+        directory = vault / name
+        directory.mkdir()
+        _page(directory, "draft", title="Draft")
         idx = build_index(vault)
-        assert "draft" not in idx
+        assert "draft" in idx
+
+    def test_rejects_external_symlink_without_leaking_content(self, vault, tmp_path):
+        raw = vault / "_raw"
+        raw.mkdir()
+        secret = tmp_path / "secret.md"
+        secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+        (raw / "leak.md").symlink_to(secret)
+
+        with pytest.raises(RuntimeError, match="symlink") as raised:
+            build_index(vault)
+
+        assert "SECRET-MARKER" not in str(raised.value)
+
+    def test_ignores_unrelated_non_markdown_symlink(self, vault, tmp_path):
+        _page(vault, "kept", title="Kept")
+        secret = tmp_path / "secret.json"
+        secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+        (vault / "unrelated.json").symlink_to(secret)
+
+        index = build_index(vault)
+
+        assert "kept" in index
+        assert "SECRET-MARKER" not in str(index)
 
     def test_reads_folded_block_scalar_summary(self, vault):
         # Regression for #156: `summary: >-` puts the real text on the next
@@ -279,29 +426,34 @@ class TestQuery:
         result = query(simple_vault, "deep learning")
         json.dumps(result)
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-class TestGraphQueryCLI:
-    def _run(self, *args):
-        return subprocess.run(
-            [sys.executable, "-m", "obsidian_wiki.cli", *args],
-            capture_output=True, text=True,
+    def test_public_result_has_trust_metadata_without_private_identity(self, vault):
+        _page(
+            vault,
+            "public",
+            summary="Launch summary",
+            tags=["visibility/public"],
+            lifecycle="verified",
+            updated="2026-08-12",
+        )
+        _page(
+            vault,
+            "secret-roadmap",
+            summary="SECRET-METADATA-SENTINEL",
+            tags=["visibility/pii"],
         )
 
-    def test_outputs_json(self, simple_vault):
-        proc = self._run("graph-query", str(simple_vault), "transformer")
-        assert proc.returncode == 0
-        data = json.loads(proc.stdout)
-        assert "candidates" in data
+        result = query(vault, "launch", public_only=True)
 
-    def test_pretty_flag(self, simple_vault):
-        proc = self._run("graph-query", str(simple_vault), "transformer", "--pretty")
-        assert proc.returncode == 0
-        assert "\n  " in proc.stdout
-
-    def test_missing_vault_exits_nonzero(self, tmp_path):
-        proc = self._run("graph-query", str(tmp_path / "nope"), "anything")
-        assert proc.returncode != 0
+        assert result["stats"]["indexed_pages"] == 1
+        assert "secret-roadmap" not in json.dumps(result)
+        candidate = result["candidates"][0]
+        assert candidate["visibility"] == ["visibility/public"]
+        assert candidate["lifecycle"] == "verified"
+        assert candidate["updated"] == "2026-08-12"
+        trust = result["should_read_metadata"][0]
+        assert trust == {
+            "page": "public.md",
+            "visibility": ["visibility/public"],
+            "lifecycle": "verified",
+            "updated": "2026-08-12",
+        }

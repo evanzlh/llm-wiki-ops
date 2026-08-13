@@ -2,31 +2,22 @@
 
 ## Attribution
 
-This repository derives from [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki) at commit `5ef66b6bec8b26bab6594ac37fb4d8371469fbab`. The upstream author and MIT license remain credited in `pyproject.toml`, Git history, and `LICENSE`.
+This project is an independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). It preserves upstream Git history and the MIT license, but it is not an official upstream release and does not track future upstream changes.
 
-## Independent evolution
+## Product direction
 
-`evanzlh/obsidian-wiki` evolves independently from that baseline and does not track future upstream changes. It is not an official upstream distribution. Similar names and compatible commands describe ancestry, not release equivalence.
-
-## Motivation
-
-The fork targets knowledge bases maintained like software: authoritative sources and the compiled Obsidian vault share one Git repository; any contributor can compile changes on a branch; and humans review the resulting knowledge diff in a pull request.
-
-## Fork-specific capabilities
-
-- Portable Repository mode and repository-relative TOML configuration
-- Repository-local canonical skills with complete ordinary-file mirrors for six agent discovery trees
-- Stable Source IDs with sharded manifest v2
-- Transactional page promotion and merge-friendly operation journals
-- Stable index/log views and local rebuildable `hot.md`
-- Deterministic `obsidian-wiki check` validation without LLM calls
-- Dry-run-first legacy migration with byte-for-byte rollback snapshots
-- Clone-stable source bytes and conflict-resistant multi-branch collaboration
+This fork focuses on clone-ready, multi-contributor knowledge repositories. Configuration, source material, source snapshots, generated pages, skills, and agent instructions are repository-relative and reviewable in Git. Transactions make agent writes deterministic to validate, recoverable on failure, and visible as ordinary working-tree changes.
 
 ## Compatibility
 
-The fork keeps the `obsidian-wiki` Python distribution and CLI command names. Portable repositories additionally require the implementation identifier `evanzlh/obsidian-wiki`, so an upstream binary with a coincidentally matching version is rejected.
+The supported surface is a single repository product created by `obsidian-wiki setup [DIR]`. Knowledge repositories declare an accepted CLI range through `requires_cli`; commands fail closed when the installed version does not satisfy it.
+
+Historical design records are preserved for context and marked when superseded. They are not compatibility promises. The authoritative current surfaces are the CLI help, package behavior, tests, README pair, and current `docs/` pages.
 
 ## Installation policy
 
-The only supported installation is `git clone` followed by non-editable `uv tool install --link-mode copy .`. The fork is not published to PyPI, does not support remote-URL or skills-registry installation, and does not retain `setup.sh`.
+Install a non-editable build from a local clone with `uv tool install --link-mode copy .`. Knowledge repositories do not vendor the executable. See [Installation](installation.md).
+
+## Publication and future scope
+
+The CLI never performs Git publication. Repository owners decide how to commit, push, and review changes. A Dashboard is not part of the package and has no stub; any future work requires its own approved design.

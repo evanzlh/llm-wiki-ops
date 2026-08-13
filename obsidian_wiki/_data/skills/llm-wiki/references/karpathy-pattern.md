@@ -1,45 +1,33 @@
-# Karpathy's LLM Wiki Pattern — Original Reference
+# Repository Compilation Pattern
 
-Source: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
+The wiki is a compiled artifact: reviewed Markdown sources are transformed into
+small, linked Markdown pages. Source material remains authoritative; the vault
+is the readable knowledge graph derived from it.
 
-## Core Insight
+## Source layer
 
-"The wiki is a persistent, compounding artifact. The knowledge is compiled once and then kept current, not re-derived on every query."
+There is exactly one configured source root. Every ordinary input is a tracked
+file beneath that root and is named by a repository-relative Source ID. External
+or live material becomes authoritative only after it is captured as a reviewed
+Markdown snapshot in that source root.
 
-Human curates sources and asks questions; LLM maintains the knowledge system. Obsidian becomes the IDE, the LLM becomes the programmer, and the wiki becomes the codebase.
+## Compilation layer
 
-## Why This Beats RAG
+An agent reads a bounded source closure, distils concepts, updates existing
+pages instead of duplicating them, and writes final candidate paths. Pages carry
+required frontmatter and use the repository's configured internal-link format.
 
-Traditional RAG rediscovers knowledge on every query — it searches raw sources, pulls relevant chunks, and synthesizes an answer from scratch. The LLM Wiki compiles knowledge once into maintained pages, so queries hit pre-synthesized, cross-referenced content.
+All mutation uses one transaction: begin with Source IDs, write candidates,
+declare deletions, validate, review, and commit. Recovery follows the structured
+transaction record rather than guessing.
 
-## Key Operations
+## Tracking layer
 
-| Operation | What it does | When to use |
-|---|---|---|
-| **Ingest** | Read new sources, extract key information, update 10-15 wiki pages, maintain consistency | When new documents arrive |
-| **Query** | Answer questions against compiled wiki with citations | When the user asks something |
-| **Lint** | Identify contradictions, orphaned pages, stale claims, missing cross-references | Periodic maintenance |
+The repository uses manifest v2 with sharded entries and exactly one configured
+source root. The transaction commit command owns the immutable operation record
+and all manifest mutation. Agents never edit manifest shards directly. Stable
+`index.md` and `log.md` are not rewritten during ordinary compilation.
 
-## Recommended Tools
-
-- **Obsidian** — IDE for browsing and exploring the wiki
-- **Web Clipper** — Browser extension for converting articles to markdown
-- **Marp** — Markdown-based slide decks from wiki content
-- **Dataview** — Obsidian plugin for querying page metadata
-- **qmd** — Local search engine with BM25/vector hybrid search
-
-## Applications
-
-- Personal tracking (goals, psychology, self-improvement)
-- Research (building comprehensive understanding over weeks/months)
-- Book annotation (companion wikis with characters, themes, plot connections)
-- Team/business (wikis from Slack threads, meeting transcripts)
-- Due diligence, competitive analysis, trip planning
-
-## Community Extensions Worth Knowing
-
-- **Provenance tracking** — Record which source files produced each claim, detect staleness through content hashing
-- **Hierarchical inheritance** — Parent-child page relationships instead of flat indexing
-- **Decision records** — Capture why the wiki evolved, not just what changed
-- **Two-tier LLMs** — Local models for sensitive data, cloud for the rest
-- **Graph databases** — Typed ontologies instead of markdown links
+This separation keeps provenance reviewable: sources explain why knowledge
+exists, transactions explain how it changed, and compiled pages explain what the
+repository currently knows.

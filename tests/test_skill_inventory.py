@@ -10,6 +10,7 @@ from types import MappingProxyType
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki.cli import list_skills
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     MIRROR_FORMAT,
@@ -23,6 +24,14 @@ from obsidian_wiki.skill_inventory import (
 
 DIGEST_1 = "sha256:" + "1" * 64
 DIGEST_2 = "sha256:" + "2" * 64
+REMOVED_SKILLS = frozenset(
+    {
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
+    }
+)
 EXPECTED = {
     "implementation": IMPLEMENTATION_ID,
     "managed_skill_digests": {
@@ -45,6 +54,19 @@ def make_inventory() -> ManagedSkillsInventory:
             "wiki-query": DIGEST_2,
         },
     )
+
+
+def test_bundled_skill_inventory_replaces_personal_only_workflows() -> None:
+    bundled = set(list_skills())
+
+    assert REMOVED_SKILLS == {
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
+    }
+    assert bundled.isdisjoint(REMOVED_SKILLS)
+    assert "wiki-transaction-review" in bundled
 
 
 def test_v2_inventory_round_trip_uses_canonical_json() -> None:

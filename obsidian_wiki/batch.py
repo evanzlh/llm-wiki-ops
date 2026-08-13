@@ -4,7 +4,7 @@ When ingesting a large folder of docs, this module splits the source list into
 batches and emits a dispatch plan the skill uses to spawn parallel Claude
 subagents — each handling one batch independently, then merging results.
 
-The agent calls `obsidian-wiki batch-plan <vault> <source-dir> [options]`
+The agent calls `obsidian-wiki batch-plan [options]`
 and gets back a JSON plan:
 
 {
@@ -66,7 +66,7 @@ SKIP_EXTENSIONS = frozenset(
 SKIP_DIRS = frozenset(
     "node_modules .git __pycache__ .pytest_cache dist build target "
     ".venv venv env .mypy_cache .ruff_cache coverage .tox .obsidian "
-    "_raw _archived _staging _archives".split()
+    "_archived".split()
 )
 
 
@@ -175,31 +175,20 @@ def discover_sources(
 
 def _filter_unchanged(
     files: list[dict],
-    vault: Path,
-    *,
-    portable: PortableConfig | None = None,
+    config: PortableConfig,
 ) -> tuple[list[dict], int]:
     """Remove files whose hash matches the manifest. Returns (to_ingest, skipped_count)."""
-    try:
-        from obsidian_wiki.cache import check_sources
+    from obsidian_wiki.cache import check_sources
 
-        paths = [Path(f["path"]) for f in files]
-        result = check_sources(vault, paths, portable=portable)
-        unchanged_set = set(result["unchanged"])
-        if portable is None:
-            to_ingest = [f for f in files if f["path"] not in unchanged_set]
-        else:
-            store = ShardedManifest(portable)
-            to_ingest = [
-                f
-                for f in files
-                if store.source_id(Path(f["path"])) not in unchanged_set
-            ]
-        return to_ingest, len(unchanged_set)
-    except Exception:
-        if portable is not None:
-            raise
-        return files, 0
+    paths = [Path(f["path"]) for f in files]
+    unchanged_set = set(check_sources(config, paths)["unchanged"])
+    store = ShardedManifest(config)
+    to_ingest = [
+        f
+        for f in files
+        if store.validated_source_id(Path(f["path"])) not in unchanged_set
+    ]
+    return to_ingest, len(unchanged_set)
 
 
 # ---------------------------------------------------------------------------
@@ -240,9 +229,9 @@ def _make_batches(
 
 def _validated_portable_store(
     source_dir: Path,
-    portable: PortableConfig,
+    config: PortableConfig,
 ) -> ShardedManifest:
-    store = ShardedManifest(portable)
+    store = ShardedManifest(config)
     try:
         source_dir.resolve(strict=False).relative_to(
             store.source_root.resolve(strict=False)
@@ -256,31 +245,30 @@ def _validated_portable_store(
 
 def plan_batches(
     source_dir: Path,
-    vault: Path,
+    config: PortableConfig,
     *,
     max_batch_mb: float = 2.0,
     max_batch_files: int = 20,
     skip_unchanged: bool = True,
     include_code: bool = False,
-    portable: PortableConfig | None = None,
 ) -> dict[str, Any]:
-    """Discover sources, filter unchanged, and split into batches."""
-    portable_store = (
-        _validated_portable_store(source_dir, portable)
-        if portable is not None
-        else None
+    """Plan batches for a source directory owned by the portable config."""
+    portable_store = _validated_portable_store(source_dir, config)
+    all_files = discover_sources(
+        source_dir,
+        vault=config.vault,
+        include_code=include_code,
     )
-    all_files = discover_sources(source_dir, vault=vault, include_code=include_code)
-    if portable_store is not None:
-        for file in all_files:
-            portable_store.source_id(Path(file["path"]))
+    for file in all_files:
+        source_path = Path(file["path"])
+        portable_store.validated_source_id(source_path)
 
     skipped_binary = 0  # files already excluded by _classify
     skipped_unchanged = 0
 
     to_ingest = all_files
-    if skip_unchanged and vault.is_dir():
-        to_ingest, skipped_unchanged = _filter_unchanged(all_files, vault, portable=portable)
+    if skip_unchanged:
+        to_ingest, skipped_unchanged = _filter_unchanged(all_files, config)
 
     max_batch_bytes = int(max_batch_mb * 1024 * 1024)
     batches_raw = _make_batches(
@@ -304,11 +292,12 @@ def plan_batches(
         })
 
     merge_hint = (
-        "Dispatch each batch as a parallel subagent with /wiki-ingest on its file list. "
-        "Once all batches complete, run /cross-linker to wire up cross-references."
+        "Dispatch each batch for analysis and let the parent wiki-ingest workflow "
+        "own reviewed transaction completion."
     )
 
     return {
+        "source_dir": str(source_dir),
         "batches": batches_out,
         "stats": {
             "total_files": len(all_files),

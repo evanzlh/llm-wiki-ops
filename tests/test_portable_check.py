@@ -1221,6 +1221,34 @@ def test_valid_portable_repo_passes(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("name", ["_archives", "_raw", "_readouts", "_staging"])
+@pytest.mark.parametrize("kind", ["directory", "file", "dangling-symlink"])
+def test_check_rejects_unsupported_personal_vault_artifacts(
+    tmp_path: Path, name: str, kind: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    artifact = root / "wiki" / name
+    if artifact.is_dir() and not artifact.is_symlink():
+        shutil.rmtree(artifact)
+    elif artifact.exists() or artifact.is_symlink():
+        artifact.unlink()
+    if kind == "directory":
+        artifact.mkdir()
+    elif kind == "file":
+        artifact.write_text("personal artifact\n", encoding="utf-8")
+    else:
+        artifact.symlink_to(root / "missing-personal-artifact")
+
+    report = check_portable_repo(config)
+
+    assert {
+        "code": "unsupported-personal-artifact",
+        "path": f"wiki/{name}",
+        "message": "Personal vault artifact is not supported",
+        "severity": "error",
+    } in report["issues"]
+
+
 def test_valid_portable_repo_accepts_supported_nested_frontmatter(
     tmp_path: Path,
 ) -> None:
@@ -2172,7 +2200,8 @@ def test_cli_check_wrong_implementation_never_falls_back_to_global(
     proc = _run_cli(home, root / "sources", "check", "--json")
 
     assert proc.returncode == 1
-    assert "implementation" in proc.stderr
+    assert proc.stderr == ""
+    assert "implementation" in json.loads(proc.stdout)["error"]["message"]
     assert str(global_vault) not in proc.stdout + proc.stderr
 
 
@@ -2184,36 +2213,46 @@ def test_cli_check_outside_portable_repo_uses_exact_error(tmp_path: Path) -> Non
     proc = _run_cli(home, project, "check", "--json")
 
     assert proc.returncode == 1
-    assert proc.stdout == ""
-    assert proc.stderr.strip() == "error: check requires a portable repository"
+    assert proc.stderr == ""
+    assert json.loads(proc.stdout)["status"] == "error"
 
 
 def test_cmd_check_uses_shared_portable_config_discovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    discovered: list[Path] = []
-    candidate = tmp_path / ".obsidian-wiki" / "config.toml"
     before = tuple(tmp_path.iterdir())
     monkeypatch.chdir(tmp_path)
-
-    def discover(cwd: Path) -> Path:
-        discovered.append(cwd)
-        return candidate
+    sinks: list[list[ConfigError]] = []
 
     def resolution_failure(*, error_sink: list[ConfigError]) -> None:
+        sinks.append(error_sink)
         error_sink.append(ConfigError("portable config is invalid"))
         return None
 
-    monkeypatch.setattr(cli, "nearest_portable_config", discover)
     monkeypatch.setattr(cli, "_resolve_runtime", resolution_failure)
 
     assert cli.cmd_check(SimpleNamespace()) == 1
 
     captured = capsys.readouterr()
-    assert discovered == [tmp_path]
+    assert len(sinks) == 1
     assert captured.out == ""
     assert captured.err == "error: portable config is invalid\n"
     assert tuple(tmp_path.iterdir()) == before
+
+
+def test_cmd_check_handles_unavailable_current_directory(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def cwd_failure() -> Path:
+        raise PermissionError("cwd denied")
+
+    monkeypatch.setattr(Path, "cwd", cwd_failure)
+
+    assert cli.cmd_check(SimpleNamespace()) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: current working directory is unavailable: cwd denied\n"
 
 
 def test_checker_rejects_noncanonical_configured_skills_path(tmp_path: Path) -> None:

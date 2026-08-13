@@ -1,141 +1,75 @@
 # Skills Reference
 
-Framework built-ins live in `obsidian_wiki/_data/skills/` and are packaged into
-the installed CLI. Each skill is a Markdown file the agent reads when your
-request matches its description—there is no skill runtime or registration
-step. In a portable knowledge repository, `.skills/` is that repository's only
-editable canonical skill tree; six agent-native directories contain complete
-derived ordinary-file mirrors. Install this project through the supported
-[local-clone source build](installation.md#install-from-a-clone); this page does
-not define another project installation route.
+The framework packages 36 skills. `setup` copies them into the repository's canonical `.skills/` tree and builds complete agent mirrors. Managed built-ins are upgraded with `obsidian-wiki repo upgrade-skills`; repository-authored custom skills are preserved.
 
-Slash commands (`/skill-name`) work in Claude Code, Cursor, Windsurf, and most CLI agents. Everywhere else, just describe what you want.
+## Canonical protocol and review
 
-## Portable write-skill contract
+- `llm-wiki` defines repository resolution, Source IDs, page schema, manifest v2, and the transaction-only write contract.
+- `wiki-transaction-review` reviews candidate pages, deletions, validation reports, and prospective changes before the only completion step, `transaction commit`.
 
-Every write skill has explicit adjacent Portable Repository completion and
-Personal mode completion branches. Shared analysis may precede them, but an
-agent selects one locally complete branch and never falls through into the
-other mode's tracking operations.
+Every writing skill must invoke the canonical protocol, begin a transaction for exact source paths, write only inside `candidate_vault`, validate, review, and commit once. Recovery follows the transaction status. Direct mutation of the live vault or manifest shards is outside skill authority.
 
-In Portable mode, keep the repository root as CWD and treat the returned
-runtime-only absolute `candidate_vault` as a destination without changing into
-it or persisting it. Candidate timestamps come from the transaction
-`started_at`: new pages use it for both `created` and `updated`; updates retain
-their original `created` and use `started_at` for `updated`. The branch computes
-complete authoritative source closure, stages candidates and deletions,
-validates before commit, then follows status-aware recovery if promotion cannot
-finish.
+## Complete bundled inventory
 
-Portable skills also use the hot freshness gate before reading local semantic
-context: `hot status`, then `hot inputs` and an agent-written semantic refresh
-when stale, followed by `hot mark-current`. Transaction commit owns manifest
-shards and operation pages; skills do not update Portable `index.md`, `log.md`,
-or Git state.
+History ingestion:
 
-## Setup & vaults
+- `claude-history-ingest`
+- `codex-history-ingest`
+- `copilot-history-ingest`
+- `hermes-history-ingest`
+- `openclaw-history-ingest`
+- `pi-history-ingest`
+- `wiki-history-ingest`
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `wiki-setup` | Initialize the vault structure, index, log, and Obsidian config | `/wiki-setup` |
-| `wiki-switch` | Manage multiple named vault profiles; switch the active one | `/wiki-switch <name>` |
-| `daily-update` | Daily maintenance cycle — source freshness, index rebuild, hot cache | `/daily-update` |
+Capture, ingestion, and synthesis:
 
-## Feeding the brain
+- `daily-update`
+- `wiki-capture`
+- `wiki-import`
+- `wiki-ingest`
+- `wiki-research`
+- `wiki-synthesize`
+- `wiki-update`
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `wiki-ingest` | The catch-all. Distills documents, PDFs, chat exports, logs, transcripts, images, and URLs into wiki pages | `/wiki-ingest` |
-| `wiki-capture` | Save the current conversation as a wiki note; in Personal mode, `--quick` stages findings to `_raw/` in under 60 seconds | `/wiki-capture` |
-| `wiki-update` | Sync the current project's knowledge into the vault — works from any repo | `/wiki-update` |
-| `wiki-research` | Autonomous multi-round web research, filed straight into the vault | `/wiki-research [topic]` |
-| `wiki-history-ingest` | Unified router for agent history ingest | `/wiki-history-ingest <agent>` |
-| `claude-history-ingest` | Mine `~/.claude` conversations and memories (Claude Code + desktop) | `/claude-history-ingest` |
-| `codex-history-ingest` | Mine `~/.codex` sessions and rollout logs | `/codex-history-ingest` |
-| `hermes-history-ingest` | Mine `~/.hermes` memories and sessions | `/hermes-history-ingest` |
-| `openclaw-history-ingest` | Mine `~/.openclaw` `MEMORY.md` and sessions | `/openclaw-history-ingest` |
-| `copilot-history-ingest` | Mine `~/.copilot` CLI session history | `/copilot-history-ingest` |
-| `pi-history-ingest` | Mine `~/.pi/agent/sessions` JSONL history | `/pi-history-ingest` |
-| `wiki-agent` | Topic-first ingest from one agent's raw history | `/wiki-claude`, `/wiki-codex`, `/wiki-hermes`, `/wiki-openclaw`, `/wiki-copilot`, `/wiki-pi` |
+Reading and navigation:
 
-## Asking the brain
+- `cross-linker`
+- `graph-colorize`
+- `session-brain`
+- `session-search`
+- `wiki-agent`
+- `wiki-context-pack`
+- `wiki-digest`
+- `wiki-export`
+- `wiki-narrate`
+- `wiki-query`
+- `wiki-status`
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `wiki-query` | Answer questions from the vault with citations. Tiered — reads summaries before page bodies | `/wiki-query` |
-| `wiki-narrate` | Render a cited briefing, plain-language explanation, or progressive lecture from a topic | `/wiki-narrate <topic>` |
-| `wiki-digest` | Newsletter-style summary of what you learned over a day, week, or month | `/wiki-digest [period]` |
-| `wiki-context-pack` | Produce a token-bounded context slice for a downstream agent or skill | `/wiki-context-pack` |
-| `memory-bridge` | Browse and diff knowledge by which AI tool wrote it | `/memory-bridge` |
+Quality and maintenance:
 
-## Finding past sessions
+- `impl-validator`
+- `obsidian-layout-adjustment`
+- `tag-taxonomy`
+- `wiki-dedup`
+- `wiki-lint`
+- `wiki-rebuild`
+- `wiki-transaction-review`
 
-These two build a retrieval index over your raw agent sessions. They write a sidecar at `~/.claude/session-brain/` and **never touch the vault**. See [Session Brain](session-brain.md).
+Setup and extension:
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `session-brain` | Build and maintain a topic graph over your agent session history | `/session-brain` |
-| `session-search` | Find a past session by topic and load its context into the current conversation | `/wiki-sessions <topic>` |
+- `llm-wiki`
+- `skill-creator`
+- `vault-skill-factory`
+- `wiki-setup`
 
-> **Ingest vs. retrieve.** If you want knowledge preserved as permanent vault pages, use `wiki-history-ingest`. If you want to find the session where something happened, use these.
+## Authoring and upgrades
 
-## Maintaining the brain
+Framework skill sources live at `obsidian_wiki/_data/skills/<name>/SKILL.md`. In a generated knowledge repository, custom skills belong in `.skills/<name>/SKILL.md`. Rebuild mirrors, run `doctor` and `check`, and review the tracked diff.
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `wiki-status` | What's ingested, what's pending, the delta — plus vault-shape insights (hubs, bridges, clusters) | `/wiki-status` |
-| `wiki-lint` | Find broken links, orphans, stale content, contradictions, missing frontmatter | `/wiki-lint` |
-| `wiki-dedup` | Identity resolution — merge pages covering the same concept under different names | `/wiki-dedup` |
-| `cross-linker` | Auto-discover unlinked mentions and weave them into the graph with `[[wikilinks]]` | `/cross-linker` |
-| `tag-taxonomy` | Enforce a consistent tag vocabulary across every page | `/tag-taxonomy` |
-| `wiki-synthesize` | Discover and fill synthesis gaps across concepts | `/wiki-synthesize` |
-| `wiki-stage-commit` | Personal mode only: review and promote staged pages when `WIKI_STAGED_WRITES=true`; Portable mode reviews CLI transactions | `/wiki-stage-commit` |
-| `wiki-rebuild` | Personal mode: archive, rebuild, or restore; Portable mode: transaction-backed replacement/deletion without `_archives/` | `/wiki-rebuild` |
+A managed upgrade refuses drift in built-ins and unknown historical content rather than overwriting owner work. The package currently has no Dashboard skill or compatibility placeholder; that capability remains a separate follow-up design.
 
-## Seeing & moving the brain
+## Local export and factory boundaries
 
-| Skill | What it does | Slash command |
-|---|---|---|
-| `graph-colorize` | Color-code the Obsidian graph view by tag, category, or visibility | `/graph-colorize` |
-| `wiki-dashboard` | Create dynamic Obsidian Bases dashboard views | `/wiki-dashboard` |
-| `wiki-export` | Export the graph to JSON, GraphML, Neo4j Cypher, interactive HTML, or an OKF bundle | `/wiki-export` |
-| `wiki-import` | Import a `graph.json` export or an OKF markdown bundle into the current vault | `/wiki-import` |
-| `obsidian-layout-adjustment` | Restyle Obsidian via CSS snippets — tabs, sidebars, graph panes, note surfaces | — |
+`wiki-export` writes review artifacts only to ignored `.obsidian-wiki/local/exports/<timestamp>/`. Public export is metadata-first: it reads bounded frontmatter, excludes restricted visibility before any body read, and never discloses excluded identities. It can emit JSON, GraphML, Cypher, HTML, and an explicitly requested OKF bundle. It never changes knowledge, starts a transaction, or performs Git publication.
 
-## Extending the framework
-
-| Skill | What it does | Slash command |
-|---|---|---|
-| `llm-wiki` | The core pattern and architecture reference every other skill defers to | `/llm-wiki` |
-| `skill-creator` | Create, edit, and eval new skills | `/skill-creator` |
-| `vault-skill-factory` | Turn a cluster of mature vault pages into a portable "digital expert" skill | `/vault-skill-factory` |
-| `impl-validator` | Validate an implementation against its stated goal | `/impl-validator` |
-
-## Recommended companion: Obsidian Skills by Kepano
-
-This framework handles the knowledge-management workflow — ingest, query, lint, rebuild. For Obsidian format mastery, you may separately add [**kepano/obsidian-skills**](https://github.com/kepano/obsidian-skills) alongside it. This optional companion does not install or replace obsidian-wiki, but it can improve output quality:
-
-| Skill | What it adds |
-|---|---|
-| `obsidian-markdown` | Correct Obsidian-flavored syntax — wikilinks, callouts, embeds, properties |
-| `obsidian-bases` | Create and edit `.base` files (database-like views of notes) |
-| `json-canvas` | Create and edit `.canvas` files (visual mind maps, flowcharts) |
-| `obsidian-cli` | Interact with a running Obsidian instance via CLI |
-| `defuddle` | Extract clean markdown from web pages — less noise, fewer tokens during ingest |
-
-```bash
-npx skills add kepano/obsidian-skills
-```
-
-Both projects follow the same [Agent Skills spec](https://agentskills.io/specification), so their skills can coexist in the same agent discovery environment without conflicts.
-
-## Writing your own
-
-See [Contributing → Adding a new skill](contributing.md#adding-a-new-skill), or just ask:
-
-> "Create a skill that generates weekly summaries from my journal entries"
-
-`skill-creator` walks you through drafting, testing, and refining it. Framework
-contributors edit `obsidian_wiki/_data/skills/<name>/SKILL.md`; portable wiki
-owners add repository-specific skills to their repository's canonical
-`.skills/<name>/SKILL.md` and then rebuild its agent mirrors.
+`vault-skill-factory` writes a review artifact only to ignored `.obsidian-wiki/local/generated-skills/<name>/`. It selects a confirmed mature cluster, preserves uncertainty and provenance, validates the generated artifact with the repository-managed validator when safe, and never installs the result. It never writes `.skills/` or any agent discovery directory; human review and a separate owner-controlled installation are required.

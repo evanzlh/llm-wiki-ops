@@ -11,17 +11,19 @@ from pathlib import Path
 from obsidian_wiki import IMPLEMENTATION_ID
 
 
-def _page(vault: Path, name: str, *, title: str, summary: str, links: list[str] | None = None) -> None:
+def _page(vault: Path, name: str, *, title: str, summary: str, links: list[str] | None = None,
+          tags: list[str] | None = None, lifecycle: str = "reviewed") -> None:
     path = vault / f"{name}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
         f"title: {title}",
         "category: concepts",
-        "tags: [test]",
+        f"tags: [{', '.join(tags or ['test'])}]",
         "sources: [manual]",
         "created: 2026-07-01",
         "updated: 2026-07-01",
+        f"lifecycle: {lifecycle}",
         f"summary: {summary}",
         "---",
         f"# {title}",
@@ -67,31 +69,30 @@ local_state = ".obsidian-wiki/local"
     return root, vault
 
 
-def test_query_cli_uses_configured_vault(tmp_path: Path) -> None:
+def test_query_cli_uses_portable_vault_from_nested_directory(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    vault = tmp_path / "vault"
+    root, vault = _portable_root(tmp_path)
     _page(vault, "transformer", title="Transformer Architecture", summary="Self-attention model.")
     _page(vault, "attention", title="Attention Mechanism", summary="Weighted lookup.", links=["transformer"])
+    nested = root / "work/nested"
+    nested.mkdir(parents=True)
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config").write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
-
-    proc = _run(home, "query", "transformer", "--json")
+    proc = _run(home, "query", "transformer", "--json", cwd=nested)
 
     assert proc.returncode == 0
     data = json.loads(proc.stdout)
     assert any(item["page"] == "transformer.md" for item in data["candidates"])
-    assert data["context_warnings"] == []
+    assert "context_warnings" not in data
 
 
-def test_query_cli_requires_vault_when_unconfigured(tmp_path: Path) -> None:
+def test_query_cli_requires_portable_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
 
     proc = _run(home, "query", "anything", "--json")
 
     assert proc.returncode == 1
-    assert "vault not configured" in proc.stderr
+    assert proc.stderr == ""
+    assert "repository not configured" in json.loads(proc.stdout)["error"]["message"]
 
 
 def test_query_cli_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> None:
@@ -122,52 +123,7 @@ def test_query_cli_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> Non
     pages = {item["page"] for item in json.loads(proc.stdout)["candidates"]}
     assert "portable-result.md" in pages
     assert "global-result.md" not in pages
-    assert json.loads(proc.stdout)["context_warnings"] == []
-
-
-def test_query_cli_reports_explicit_portable_context_override_in_json_and_human_output(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    root, _portable_vault = _portable_root(tmp_path)
-    explicit_vault = tmp_path / "explicit-vault"
-    _page(
-        explicit_vault,
-        "explicit-result",
-        title="Runtime Resolver",
-        summary="Explicit vault result.",
-    )
-    nested = root / "work/nested"
-    nested.mkdir(parents=True)
-
-    json_proc = _run(
-        home,
-        "query",
-        "runtime resolver",
-        "--vault",
-        str(explicit_vault),
-        "--json",
-        cwd=nested,
-    )
-
-    assert json_proc.returncode == 0, json_proc.stderr
-    payload = json.loads(json_proc.stdout)
-    assert len(payload["context_warnings"]) == 1
-    assert payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert payload["context_warnings"][0]["selected_mode"] == "explicit"
-
-    human_proc = _run(
-        home,
-        "query",
-        "runtime resolver",
-        "--vault",
-        str(explicit_vault),
-        cwd=nested,
-    )
-
-    assert human_proc.returncode == 0, human_proc.stderr
-    assert human_proc.stderr.count("warning: explicit vault selection overrides") == 1
-    assert "portable-context-overridden" not in human_proc.stdout
+    assert "context_warnings" not in json.loads(proc.stdout)
 
 
 def test_query_cli_invalid_portable_config_never_falls_back_global(
@@ -200,6 +156,45 @@ def test_query_cli_invalid_portable_config_never_falls_back_global(
     proc = _run(home, "query", "runtime resolver", "--json", cwd=nested)
 
     assert proc.returncode == 1
-    assert "implementation" in proc.stderr
+    assert proc.stderr == ""
+    assert "implementation" in json.loads(proc.stdout)["error"]["message"]
     assert str(global_vault) not in proc.stdout
     assert not any(portable_vault.iterdir())
+
+
+def test_query_cli_public_only_excludes_private_metadata_and_body(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root, vault = _portable_root(tmp_path)
+    _page(
+        vault,
+        "public",
+        title="Launch",
+        summary="Public launch summary.",
+        tags=["visibility/public"],
+        lifecycle="verified",
+    )
+    _page(
+        vault,
+        "private-sentinel",
+        title="Private sentinel",
+        summary="PRIVATE-METADATA-SENTINEL",
+        tags=["visibility/internal"],
+        links=["public"],
+    )
+    (vault / "private-sentinel.md").write_text(
+        "---\r\ntitle: Private sentinel\r\nsummary: PRIVATE-METADATA-SENTINEL\r\n"
+        'tags:\r\n  - "visibility/internal" # restricted\r\n'
+        "updated: 2026-07-01\r\nlifecycle: reviewed\r\n---\r\n"
+        "PRIVATE-BODY-SENTINEL\r\n",
+        encoding="utf-8",
+    )
+
+    proc = _run(home, "query", "launch", "--public-only", "--json", cwd=root)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "PRIVATE-METADATA-SENTINEL" not in proc.stdout
+    assert "private-sentinel" not in proc.stdout
+    candidate = json.loads(proc.stdout)["candidates"][0]
+    assert candidate["visibility"] == ["visibility/public"]
+    assert candidate["lifecycle"] == "verified"
+    assert candidate["updated"] == "2026-07-01"

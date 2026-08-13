@@ -13,6 +13,7 @@ import pytest
 from obsidian_wiki import (
     IMPLEMENTATION_ID,
     SOURCE_REINSTALL_COMMAND,
+    __version__,
     cli,
     portable,
     skill_trees,
@@ -33,8 +34,10 @@ from obsidian_wiki.portable import (
     setup_portable_repo,
 )
 from obsidian_wiki.portable import (
-    upgrade_portable_skills as _upgrade_portable_skills,
+    upgrade_portable_skills as _upgrade_portable_skills_impl,
 )
+from obsidian_wiki.portable_check import check_portable_repo
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     LegacyManagedSkillsInventory,
     ManagedSkillsInventory,
@@ -75,6 +78,16 @@ Read and follow `../../../.skills/wiki-ingest/SKILL.md` from this repository. Re
 '''
 
 SYNTHETIC_LEGACY_BASELINES: dict[Path, dict[str, str]] = {}
+
+BUNDLED_BOOTSTRAP_TARGETS = {
+    "AGENTS.md": "AGENTS.md",
+    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
+    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
+    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
+    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
+    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    ".github/copilot-instructions.md": "github/copilot-instructions.md",
+}
 
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -136,6 +149,36 @@ def snapshot_tree(root: Path) -> tuple[tuple[str, str, bytes | str], ...]:
         else:
             entries.append((relative, "file", path.read_bytes()))
     return tuple(entries)
+
+
+def portable_root_identity(root: Path) -> tuple[int, int]:
+    return stable_directory_identity(root.stat())
+
+
+def _upgrade_portable_skills(
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    warning_sink: list[dict[str, str]] | None = None,
+) -> tuple[str, ...]:
+    return _upgrade_portable_skills_impl(
+        root,
+        version=version,
+        source_skills=source_skills,
+        expected_root_identity=portable_root_identity(root),
+        warning_sink=warning_sink,
+    )
+
+
+def _sync_portable_skill_mirrors(
+    root: Path, *, apply: bool
+) -> portable.SkillSyncReport:
+    return portable.sync_portable_skill_mirrors(
+        root,
+        apply=apply,
+        expected_root_identity=portable_root_identity(root),
+    )
 
 
 def make_skill_source(root: Path, name: str = "wiki-ingest") -> Path:
@@ -418,7 +461,7 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     target = work / "knowledge"
     work.mkdir()
 
-    result = run_cli(home, work, "setup", "--portable", str(target))
+    result = run_cli(home, work, "setup", str(target))
 
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -449,7 +492,7 @@ def test_portable_complete_mirrors_are_ordinary_and_survive_repo_move(
 ) -> None:
     home = tmp_path / "home"
     target = tmp_path / "knowledge"
-    result = run_cli(home, tmp_path, "setup", "--portable", str(target))
+    result = run_cli(home, tmp_path, "setup", str(target))
     assert result.returncode == 0, result.stderr
     mirror = target / ".claude/skills/wiki-ingest/SKILL.md"
     canonical = target / ".skills/wiki-ingest/SKILL.md"
@@ -465,23 +508,6 @@ def test_portable_complete_mirrors_are_ordinary_and_survive_repo_move(
     assert (renamed / ".claude/skills/wiki-ingest/SKILL.md").read_bytes() == (
         renamed / ".skills/wiki-ingest/SKILL.md"
     ).read_bytes()
-
-
-def test_setup_portable_rejects_legacy_setup_flags(tmp_path: Path) -> None:
-    target = tmp_path / "portable"
-    result = run_cli(
-        tmp_path / "home",
-        tmp_path,
-        "setup",
-        "--portable",
-        str(target),
-        "--vault",
-        str(tmp_path / "vault"),
-    )
-
-    assert result.returncode != 0
-    assert "cannot be combined" in result.stderr
-    assert not target.exists()
 
 
 @pytest.mark.parametrize(
@@ -537,7 +563,6 @@ def test_portable_config_is_relative_minimal_and_loadable(
         "OBSIDIAN_CATEGORIES": "concepts,entities,skills,references,synthesis,journal,projects",
         "OBSIDIAN_MAX_PAGES_PER_INGEST": "15",
         "OBSIDIAN_LINK_FORMAT": "wikilink",
-        "OBSIDIAN_RAW_DIR": "_raw",
         "OBSIDIAN_TRUST_STRICT": "false",
     }
 
@@ -581,7 +606,11 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     for relative in (*PORTABLE_VAULT_DIRS, ".manifest/sources"):
         assert (vault / relative).is_dir(), relative
     assert (root / "sources").is_dir()
-    assert not (vault / "_staging").exists()
+    for unsupported in ("_archives", "_raw", "_readouts", "_staging"):
+        assert not (vault / unsupported).exists()
+    assert "OBSIDIAN_RAW_DIR" not in (
+        root / ".obsidian-wiki/config.toml"
+    ).read_text(encoding="utf-8")
     assert not (vault / "hot.md").exists()
     assert json.loads((vault / ".manifest.json").read_text()) == {
         "schema_version": 2,
@@ -591,6 +620,52 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     for relative in (".obsidian/app.json", ".obsidian/appearance.json"):
         parsed = json.loads((vault / relative).read_text())
         assert isinstance(parsed, dict) and parsed
+
+
+def test_setup_rerun_preserves_unsupported_owner_artifacts_and_check_rejects_them(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version=__version__, source_skills=tiny_skills)
+    owner_file = root / "wiki/_raw"
+    owner_file.write_text("owner file\n", encoding="utf-8")
+    owner_directory_file = root / "wiki/_archives/owner.txt"
+    owner_directory_file.parent.mkdir()
+    owner_directory_file.write_text("owner directory content\n", encoding="utf-8")
+
+    setup_portable_repo(root, version=__version__, source_skills=tiny_skills)
+
+    assert owner_file.read_text(encoding="utf-8") == "owner file\n"
+    assert owner_directory_file.read_text(encoding="utf-8") == (
+        "owner directory content\n"
+    )
+    config = load_portable_config(
+        root / ".obsidian-wiki/config.toml",
+        installed_version=__version__,
+        implementation=IMPLEMENTATION_ID,
+    )
+    issues = check_portable_repo(config)["issues"]
+    assert {
+        (issue["code"], issue["path"])
+        for issue in issues
+        if issue["code"] == "unsupported-personal-artifact"
+    } == {
+        ("unsupported-personal-artifact", "wiki/_archives"),
+        ("unsupported-personal-artifact", "wiki/_raw"),
+    }
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return "", text
+    boundary = text.index("\n---\n", 4) + len("\n---\n")
+    return text[:boundary], text[boundary:].lstrip("\n")
+
+
+def managed_body(text: str) -> str:
+    start = text.index(MANAGED_START) + len(MANAGED_START)
+    end = text.index(MANAGED_END, start)
+    return text[start:end].strip("\n") + "\n"
 
 
 def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(
@@ -658,6 +733,104 @@ def test_setup_writes_complete_mirrors_and_v2_inventory(
         root / ".skills/wiki-ingest/assets/blob.bin"
     ).read_bytes() == b"\x00\xff\x10wiki\n"
     assert (root / ".skills/wiki-ingest/scripts/run.sh").stat().st_mode & 0o111
+
+
+def test_bundled_setup_installs_the_exact_current_skill_inventory(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    bundled = tuple(cli.list_skills())
+
+    setup_portable_repo(root, version=__version__, source_skills=cli.skills_dir())
+
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skills == bundled
+    assert discover_skill_collection(root / ".skills").names == bundled
+    assert_all_agent_mirrors_match(root)
+    assert "wiki-transaction-review" in bundled
+    assert set(bundled).isdisjoint(
+        {"memory-bridge", "wiki-dashboard", "wiki-stage-commit", "wiki-switch"}
+    )
+
+
+def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    legacy_source = tmp_path / "legacy-skills"
+    shutil.copytree(cli.skills_dir(), legacy_source)
+    review = legacy_source / "wiki-transaction-review"
+    if review.exists():
+        shutil.rmtree(review)
+    removed = {"memory-bridge", "wiki-dashboard", "wiki-stage-commit", "wiki-switch"}
+    for name in removed:
+        skill = legacy_source / name
+        skill.mkdir(exist_ok=True)
+        (skill / "SKILL.md").write_text(skill_markdown(name), encoding="utf-8")
+    setup_portable_repo(root, version=__version__, source_skills=legacy_source)
+    owner_paths = [root / ".skills/team-owned"] + [
+        root / agent_relative / "team-owned"
+        for agent_relative, _label in portable.PROJECT_AGENT_DIRS
+    ]
+    for path in owner_paths:
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(
+            skill_markdown("team-owned", "Team-owned workflow."), encoding="utf-8"
+        )
+    owner_before = {path: snapshot_tree(path) for path in owner_paths}
+    make_legacy_adapter_repo(root)
+    assert isinstance(read_inventory(root, allow_legacy=True), LegacyManagedSkillsInventory)
+
+    upgrade_portable_skills(root, version=__version__, source_skills=cli.skills_dir())
+
+    expected = tuple(cli.list_skills())
+    inventory = read_inventory(root)
+    assert isinstance(inventory, ManagedSkillsInventory)
+    assert inventory.managed_skills == expected
+    assert discover_skill_collection(root / ".skills").names == tuple(
+        sorted((*expected, "team-owned"))
+    )
+    assert_all_agent_mirrors_match(root)
+    for name in removed:
+        assert not (root / ".skills" / name).exists()
+    assert (root / ".skills/wiki-transaction-review/SKILL.md").is_file()
+    assert {path: snapshot_tree(path) for path in owner_paths} == owner_before
+    upgrade_transactions = root / ".obsidian-wiki/local/skill-upgrades"
+    assert not upgrade_transactions.exists() or not any(
+        upgrade_transactions.iterdir()
+    )
+
+
+def test_bundled_upgrade_refuses_an_owner_modified_removed_skill_adapter(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    legacy_source = tmp_path / "legacy-skills"
+    shutil.copytree(cli.skills_dir(), legacy_source)
+    shutil.rmtree(legacy_source / "wiki-transaction-review")
+    for name in (
+        "memory-bridge",
+        "wiki-dashboard",
+        "wiki-stage-commit",
+        "wiki-switch",
+    ):
+        skill = legacy_source / name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(skill_markdown(name), encoding="utf-8")
+    setup_portable_repo(root, version=__version__, source_skills=legacy_source)
+    make_legacy_adapter_repo(root)
+    modified = root / ".claude/skills/wiki-switch/SKILL.md"
+    modified.write_text(
+        modified.read_text(encoding="utf-8") + "\nOwner modification.\n",
+        encoding="utf-8",
+    )
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="adapter|legacy"):
+        upgrade_portable_skills(
+            root, version=__version__, source_skills=cli.skills_dir()
+        )
+
+    assert snapshot_tree(root) == before
 
 
 def test_skill_sync_plan_reports_all_agent_additions_without_writing(
@@ -748,7 +921,7 @@ def test_skill_sync_apply_recreates_a_missing_agent_parent(
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     shutil.rmtree(root / ".cursor")
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == "applied"
     assert_all_agent_mirrors_match(root)
@@ -771,7 +944,7 @@ def test_skill_sync_staging_failure_rolls_back_a_created_agent_parent(
     monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", fail_after_staging)
 
     with pytest.raises(OSError, match="staging failure"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert not (root / ".cursor").exists()
     assert not (root / portable.SYNC_OPERATION.transactions_relative).exists()
@@ -1155,21 +1328,21 @@ def test_sync_skills_dry_run_apply_and_clean_preserve_authoritative_state(
     inventory = root / ".obsidian-wiki/managed-skills.json"
     inventory_before = inventory.read_bytes()
 
-    dry = portable.sync_portable_skill_mirrors(root, apply=False)
+    dry = _sync_portable_skill_mirrors(root, apply=False)
 
     assert dry.status == "drift"
     assert owner_only.is_file()
     assert snapshot_tree(root / ".skills") == canonical_before
     assert inventory.read_bytes() == inventory_before
 
-    applied = portable.sync_portable_skill_mirrors(root, apply=True)
+    applied = _sync_portable_skill_mirrors(root, apply=True)
 
     assert applied.status == "applied"
     assert_all_agent_mirrors_match(root)
     assert not owner_only.exists()
     assert snapshot_tree(root / ".skills") == canonical_before
     assert inventory.read_bytes() == inventory_before
-    assert portable.sync_portable_skill_mirrors(root, apply=False).status == "clean"
+    assert _sync_portable_skill_mirrors(root, apply=False).status == "clean"
 
 
 def test_sync_skills_preserves_existing_mirror_root_mode(
@@ -1181,7 +1354,7 @@ def test_sync_skills_preserves_existing_mirror_root_mode(
     os.chmod(target, 0o700)
     _add_custom_canonical_skill(root)
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == "applied"
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
@@ -1310,7 +1483,7 @@ def test_sync_skills_fails_fast_while_repository_lock_is_held_without_writes(
     before = snapshot_tree(root)
     try:
         with pytest.raises(ValueError, match="locked|another"):
-            portable.sync_portable_skill_mirrors(root, apply=True)
+            _sync_portable_skill_mirrors(root, apply=True)
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -1366,7 +1539,7 @@ def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
         portable, "_apply_journaled_replacements", interrupt_after_target_swaps
     )
     with pytest.raises(OSError, match="interruption"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     journals = list(
         (root / portable.SYNC_OPERATION.transactions_relative).glob("*/journal.json")
@@ -1377,7 +1550,7 @@ def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
         assert plan_portable_skill_sync(root).status == "drift"
 
     monkeypatch.setattr(portable, "_apply_journaled_replacements", original_apply)
-    recovered = portable.sync_portable_skill_mirrors(root, apply=True)
+    recovered = _sync_portable_skill_mirrors(root, apply=True)
 
     assert recovered.status == "applied"
     assert_all_agent_mirrors_match(root)
@@ -1417,7 +1590,7 @@ def test_sync_rollback_failure_preserves_evidence_for_next_recovery(
 
     monkeypatch.setattr(portable, "_rename_sync_path", fail_forward_and_restore)
     with pytest.raises(OSError, match="rollback|evidence|preserved"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     journals = list(
         (root / portable.SYNC_OPERATION.transactions_relative).glob("*/journal.json")
@@ -1426,7 +1599,7 @@ def test_sync_rollback_failure_preserves_evidence_for_next_recovery(
     assert any((journals[0].parent / "backups").iterdir())
 
     monkeypatch.setattr(portable, "_rename_sync_path", original_rename)
-    recovered = portable.sync_portable_skill_mirrors(root, apply=True)
+    recovered = _sync_portable_skill_mirrors(root, apply=True)
     assert recovered.status == "applied"
     assert_all_agent_mirrors_match(root)
     assert not journals[0].exists()
@@ -1748,7 +1921,7 @@ def test_sync_apply_binds_live_parent_before_ordinary_swap(
     monkeypatch.setattr(portable, "_rename_sync_path", swap_before_first_live_rename)
 
     with pytest.raises(ValueError, match="changed|identity|bound|directory"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert swapped
     assert snapshot_tree(outside) == before
@@ -1795,7 +1968,7 @@ def test_sync_apply_binds_live_parent_before_staging(
     monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", swap_before_staging)
 
     with pytest.raises(ValueError, match="changed|identity|bound|directory"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert swapped
     assert snapshot_tree(outside) == before
@@ -1941,11 +2114,90 @@ def test_sync_recovery_rejects_transaction_swap_after_authorization(
     monkeypatch.setattr(portable, "_authorize_sync_recovery", swap_after_authorization)
 
     with pytest.raises(ValueError, match="transaction.*changed|identity"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert swapped
     assert (transaction / "replacement-marker").is_file()
     assert (detached / "journal.json").is_file()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root descriptor binding")
+@pytest.mark.parametrize("operation", ["recover", "sync", "upgrade"])
+def test_public_skill_mutator_rejects_root_rebinding_before_lock_without_touching_replacement(
+    operation: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    replacement = tmp_path / "replacement"
+    detached = tmp_path / "detached-original"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    setup_portable_repo(
+        replacement, version="2026.8.3", source_skills=tiny_skills
+    )
+    if operation == "sync":
+        _add_custom_canonical_skill(replacement)
+    expected_identity = portable_root_identity(root)
+    original_lock = portable._portable_skills_lock
+    replacement_before = snapshot_tree(replacement)
+    original_before = snapshot_tree(root)
+    swapped = False
+
+    def swap_before_lock(repository: Path):
+        nonlocal swapped
+        assert repository == root
+        if not swapped:
+            root.rename(detached)
+            replacement.rename(root)
+            swapped = True
+        return original_lock(repository)
+
+    monkeypatch.setattr(portable, "_portable_skills_lock", swap_before_lock)
+
+    with pytest.raises(ValueError, match="changed|identity|detached"):
+        if operation == "recover":
+            portable.recover_portable_skill_operations(
+                root,
+                version="2026.8.3",
+                source_skills=tiny_skills,
+                expected_root_identity=expected_identity,
+            )
+        elif operation == "sync":
+            portable.sync_portable_skill_mirrors(
+                root,
+                apply=True,
+                expected_root_identity=expected_identity,
+            )
+        else:
+            portable.upgrade_portable_skills(
+                root,
+                version="2026.8.4",
+                source_skills=tiny_skills,
+                expected_root_identity=expected_identity,
+            )
+
+    assert swapped
+    assert snapshot_tree(root) == replacement_before
+    assert snapshot_tree(detached) == original_before
+
+
+def test_public_skill_mutators_require_loaded_root_identity(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.recover_portable_skill_operations(
+            root, version="2026.8.3", source_skills=tiny_skills
+        )
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.sync_portable_skill_mirrors(root, apply=False)
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX transaction identity binding")
@@ -2042,7 +2294,7 @@ def test_sync_recovers_each_journal_status(
             (transaction / "journal.json").read_text(encoding="utf-8")
         )["status"] == "committed"
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == ("applied" if status == "prepared" else "clean")
     assert_all_agent_mirrors_match(root)
@@ -2091,7 +2343,7 @@ def test_sync_recovery_rejects_unauthorized_schema_operation_or_record_plan(
     with pytest.raises(
         ValueError, match="schema-3|operation|target|record|six|duplicate"
     ):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (transaction / "journal.json").is_file()
@@ -2114,7 +2366,7 @@ def test_sync_recovery_rejects_proof_or_canonical_tampering_without_writes(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="canonical|proof|candidate|differs"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (transaction / "journal.json").is_file()
@@ -2137,7 +2389,7 @@ def test_schema4_sync_journal_is_bound_to_sync_transaction_directory(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="operation|identity|journal"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (moved / "journal.json").is_file()
@@ -2190,7 +2442,7 @@ def test_sync_recovery_binds_proof_and_live_postimage_against_swap_restore(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="changed|unsafe|proof|postimage"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert swapped
     assert snapshot_tree(root) == before
@@ -2259,12 +2511,6 @@ def test_bootstrap_files_are_ordinary_markdown_with_correct_agents_reference(
         "CLAUDE.md": "AGENTS.md",
         "GEMINI.md": "AGENTS.md",
         ".hermes.md": "AGENTS.md",
-        ".agent/rules/obsidian-wiki.md": "../../AGENTS.md",
-        ".agent/workflows/obsidian-wiki.md": "../../AGENTS.md",
-        ".cursor/rules/obsidian-wiki.mdc": "../../AGENTS.md",
-        ".windsurf/rules/obsidian-wiki.md": "../../AGENTS.md",
-        ".kiro/steering/obsidian-wiki.md": "../../AGENTS.md",
-        ".github/copilot-instructions.md": "../AGENTS.md",
     }
 
     for relative, reference in references.items():
@@ -2274,18 +2520,81 @@ def test_bootstrap_files_are_ordinary_markdown_with_correct_agents_reference(
         assert f"`{reference}`" in path.read_text(encoding="utf-8")
 
 
+def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    result = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
+    assert result.returncode == 0, result.stderr
+
+    source = cli.bootstrap_dir()
+    for target_relative, asset_relative in BUNDLED_BOOTSTRAP_TARGETS.items():
+        installed = (root / target_relative).read_text(encoding="utf-8")
+        asset = (source / asset_relative).read_text(encoding="utf-8")
+        asset_frontmatter, asset_body = split_frontmatter(asset)
+        installed_frontmatter, _installed_body = split_frontmatter(installed)
+        assert installed_frontmatter == asset_frontmatter, target_relative
+        assert managed_body(installed) == asset_body, target_relative
+
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    canonical = agents.index("`.skills/llm-wiki/SKILL.md`")
+    task = agents.index("`.skills/<task>/SKILL.md`")
+    assert canonical < task
+    assert "canonical protocol takes precedence" in agents
+    checked = run_cli(tmp_path / "home", root, "check")
+    assert checked.returncode == 0, checked.stderr or checked.stdout
+
+
+def test_repo_upgrade_skills_repairs_bundled_bootstrap_managed_regions(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    setup = run_cli(home, tmp_path, "setup", str(root))
+    assert setup.returncode == 0, setup.stderr
+
+    for target_relative in BUNDLED_BOOTSTRAP_TARGETS:
+        target = root / target_relative
+        target.write_text(
+            target.read_text(encoding="utf-8").replace("transaction", "stale-rule"),
+            encoding="utf-8",
+        )
+
+    drifted = run_cli(home, root, "check", "--json")
+    assert drifted.returncode == 1
+    drift_payload = json.loads(drifted.stdout)
+    assert any(
+        issue["code"] == "managed-bootstrap-invalid"
+        for issue in drift_payload["issues"]
+    )
+
+    upgraded = run_cli(home, root, "repo", "upgrade-skills")
+    assert upgraded.returncode == 0, upgraded.stderr
+    source = cli.bootstrap_dir()
+    for target_relative, asset_relative in BUNDLED_BOOTSTRAP_TARGETS.items():
+        installed = (root / target_relative).read_text(encoding="utf-8")
+        asset = (source / asset_relative).read_text(encoding="utf-8")
+        asset_frontmatter, asset_body = split_frontmatter(asset)
+        installed_frontmatter, _installed_body = split_frontmatter(installed)
+        assert installed_frontmatter == asset_frontmatter, target_relative
+        assert managed_body(installed) == asset_body, target_relative
+    checked = run_cli(home, root, "check")
+    assert checked.returncode == 0, checked.stderr or checked.stdout
+
+
 def test_root_agents_is_portable_dedicated_and_preserves_team_conventions(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     text = (root / "AGENTS.md").read_text(encoding="utf-8")
+    flat = " ".join(text.split())
 
-    assert ".obsidian-wiki/config.toml" in text
-    assert ".skills/<name>/SKILL.md" in text
-    assert "wiki/AGENTS.md" in text
-    assert "transaction-only" in text
-    assert "commit, push, or open a pull request" in text
+    assert ".obsidian-wiki/config.toml" in flat
+    assert ".skills/<task>/SKILL.md" in flat
+    assert "canonical protocol takes precedence" in flat
+    assert "All knowledge writes use CLI transactions" in flat
+    assert "commits, pushes, and pull requests" in flat
     assert "## Team conventions" in text
     assert "terminology" in text and "writing style" in text
     assert "README Translation Parity" not in text
@@ -2322,6 +2631,7 @@ def test_merge_managed_block_rejects_malformed_markers(malformed: str) -> None:
 @pytest.mark.parametrize(
     "legacy_args",
     [
+        ["--portable"],
         ["--vault", "vault"],
         ["--project", "project"],
         ["--project-only"],
@@ -2338,12 +2648,11 @@ def test_setup_portable_rejects_every_legacy_setup_flag(
         tmp_path / "home",
         tmp_path,
         "setup",
-        "--portable",
         str(target),
         *legacy_args,
     )
-    assert result.returncode != 0
-    assert "cannot be combined" in result.stderr
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
     assert not target.exists()
 
 
@@ -2353,7 +2662,7 @@ def test_setup_portable_without_directory_defaults_to_current_directory(
     target = tmp_path / "cwd-target"
     target.mkdir()
 
-    result = run_cli(tmp_path / "home", target, "setup", "--portable")
+    result = run_cli(tmp_path / "home", target, "setup")
 
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -2763,7 +3072,7 @@ def test_setup_cli_scaffolds_git_only_target_and_validators_pass(
     assert initialized.returncode == 0, initialized.stderr
     assert {path.name for path in root.iterdir()} == {".git"}
 
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     doctor = run_cli(home, root, "doctor")
     check = run_cli(home, root, "check")
 
@@ -2830,7 +3139,7 @@ def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_reru
 
 def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> None:
     root = tmp_path / "repo"
-    first = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    first = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
     assert first.returncode == 0, first.stderr
     agents = root / "AGENTS.md"
     agents.write_text(
@@ -2838,7 +3147,7 @@ def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    second = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    second = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
 
     assert second.returncode == 0, second.stderr
     assert "## Team policy\nUse our glossary." in agents.read_text(encoding="utf-8")
@@ -2849,7 +3158,7 @@ def test_repo_upgrade_skills_refuses_mirror_drift_and_preserves_team_sentence(
 ) -> None:
     root = tmp_path / "repo"
     home = tmp_path / "home"
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     assert setup.returncode == 0, setup.stderr
     agents = root / "AGENTS.md"
     agents.write_text(
@@ -2902,7 +3211,7 @@ def test_v2_upgrade_preserves_custom_canonical_and_rebuilds_full_mirrors(
     (custom / "references/团队约定.md").write_text(
         "# 团队约定\n", encoding="utf-8"
     )
-    portable.sync_portable_skill_mirrors(root, apply=True)
+    _sync_portable_skill_mirrors(root, apply=True)
     custom_before = snapshot_tree(custom)
 
     (tiny_skills / "wiki-ingest/SKILL.md").write_text(
@@ -3584,7 +3893,9 @@ def test_upgrade_refreshes_only_bootstrap_managed_regions(
     agents.write_text(
         (
             "Owner preface\n\n"
-            + agents.read_text().replace("transaction-only writes", "stale managed rule")
+            + agents.read_text().replace(
+                "canonical protocol takes precedence", "stale managed rule"
+            )
             + "\nOwner footer\n"
         )
     )
@@ -3607,7 +3918,7 @@ def test_upgrade_refreshes_only_bootstrap_managed_regions(
     assert claude.read_text().endswith("Owner after\n")
     assert unknown.read_text() == "owner file\n"
     assert "stale managed rule" not in agents.read_text()
-    assert "transaction-only writes" in agents.read_text()
+    assert "canonical protocol takes precedence" in agents.read_text()
     assert "Stale managed bootstrap" not in claude.read_text()
     assert "Read and follow `AGENTS.md`" in claude.read_text()
     assert agents.read_text().count(MANAGED_START) == 1
@@ -3728,7 +4039,7 @@ def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
     assert not (home / ".obsidian-wiki").exists()
 
     root = tmp_path / "repo"
-    setup = run_cli(home, tmp_path, "setup", "--portable", str(root))
+    setup = run_cli(home, tmp_path, "setup", str(root))
     assert setup.returncode == 0, setup.stderr
     nested = root / "wiki/concepts/deep"
     nested.mkdir(parents=True)
@@ -4037,7 +4348,9 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
     os.chmod(inventory, 0o640)
     os.chmod(adapter, 0o600)
     agents.write_text(
-        agents.read_text().replace("transaction-only writes", "stale managed rule"),
+        agents.read_text().replace(
+            "canonical protocol takes precedence", "stale managed rule"
+        ),
         encoding="utf-8",
     )
 
@@ -4046,7 +4359,9 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
     assert stat.S_IMODE(agents.stat().st_mode) == 0o600
     assert stat.S_IMODE(inventory.stat().st_mode) == 0o640
     assert stat.S_IMODE(adapter.stat().st_mode) == 0o644
-    assert "transaction-only writes" in agents.read_text(encoding="utf-8")
+    assert "canonical protocol takes precedence" in agents.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_pre_inventory_repository_fails_without_partial_writes(
@@ -4723,7 +5038,7 @@ def test_cli_reports_malformed_portable_target_without_traceback(tmp_path: Path)
     (root / "README.md").write_text("owner\n", encoding="utf-8")
     before = snapshot_tree(root)
 
-    result = run_cli(tmp_path / "home", tmp_path, "setup", "--portable", str(root))
+    result = run_cli(tmp_path / "home", tmp_path, "setup", str(root))
 
     assert result.returncode != 0
     assert "error:" in result.stderr

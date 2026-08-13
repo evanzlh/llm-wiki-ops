@@ -1,59 +1,76 @@
 # Contributing
 
-This is early. The skills work, but there's room to make the brain smarter: better cross-referencing, sharper deduplication, bigger vaults, new ingest sources. If you've been chewing on this problem or have a workflow that could be a skill, PRs are welcome.
+This checkout is framework source, not an initialized knowledge repository. Do not resolve a vault or run repository skills unless a test or an explicit end-to-end task requires it.
 
-## Adding a new skill
+## Source boundaries
 
-1. Create a folder in `obsidian_wiki/_data/skills/your-skill-name/`
-2. Add a `SKILL.md` with YAML frontmatter (`name`, `description`) and markdown instructions
-3. From the framework clone, rebuild the non-editable installed CLI so the updated bundled tree is installed:
-   ```bash
-   uv tool install --force --reinstall --link-mode copy .
-   ```
-4. Run `obsidian-wiki setup` to refresh personal-mode agent directories, or create a disposable portable repository with `obsidian-wiki setup --portable <path>`
-5. Test by saying something to your agent that matches the description
+- Python under `obsidian_wiki/` owns deterministic setup, validation, transactions, and maintenance.
+- Built-in skill sources live under `obsidian_wiki/_data/skills/`.
+- Bootstrap templates live under `obsidian_wiki/_data/bootstrap/`.
+- The framework checkout intentionally has no project-local wiki skill mirrors.
 
-The `description` is load-bearing — it's the only thing an agent sees when deciding whether your skill is relevant. Write it as a list of the phrases a user would actually say, and state what the skill is *not* for when it's easily confused with a neighbour.
-
-Use the corresponding bundled skill at
-`obsidian_wiki/_data/skills/skill-creator/SKILL.md` for the full guide, or just
-ask your agent to run `/skill-creator`.
-
-The framework source has no local wiki skills by design: opening this source
-repository in a coding agent must not inject the wiki-maintenance skill set.
-Edit `obsidian_wiki/_data/skills/<name>/SKILL.md` (for example,
-`obsidian_wiki/_data/skills/wiki-ingest/SKILL.md`), reinstall with the command
-above, and exercise setup in a disposable portable repository. Inside an actual
-portable knowledge repository, `.skills/` is owner-editable canonical content;
-never copy those repository-specific edits back into the framework bundle.
-
-When you add a skill, also add it to the [skills reference](skills.md) and the routing table in `AGENTS.md`.
-
-## Keeping both READMEs in sync
-
-`README.md` (English) and `README_ZH.md` (Simplified Chinese) are **one documentation surface**. Keep headings, examples, links, and user-facing behavior structurally and semantically aligned.
-
-Syncing is advisory, not a merge gate — the `readme-translation-drift` CI job only reports when the translation falls behind. To catch up:
-
-```bash
-python tools/check_readme_sync.py
-```
-
-It lists the commits that changed `README.md` without a later `README_ZH.md` update, plus the pending English diff. Translate and backfill those into `README_ZH.md`. Reviewers assess translation quality.
-
-The `docs/` pages are English-only for now.
-
-## Repo conventions
-
-- `obsidian_wiki/_data/skills/` is the framework source of truth. Portable repositories have their own `.skills/` canonical tree and six generated agent mirrors; never edit a generated mirror.
-- `CLAUDE.md`, `GEMINI.md`, and `.hermes.md` are symlinks to `AGENTS.md`. Edit `AGENTS.md`.
-- New config variables belong in three places: `.env.example`, [`docs/configuration.md`](configuration.md), and the skill that reads them.
-- New CLI subcommands belong in [`docs/cli.md`](cli.md).
+Preserve owner changes, reject unsafe links and special files, and keep persisted paths repository-relative.
 
 ## Tests
 
+Run a focused test while iterating, then the full suite:
+
 ```bash
-pytest
+uv run --with pytest python -m pytest tests/test_portable_setup.py -q
+PYTHONDONTWRITEBYTECODE=1 uv run --with pytest python -m pytest -q -p no:cacheprovider
 ```
 
-Tests live in `tests/`. Skill behavior that can be asserted deterministically (config resolution, manifest handling, graph math, session indexing) has coverage there; the LLM-driven parts don't.
+Behavior changes require a regression test that fails before the implementation changes. Documentation tests scan only current surfaces; Superseded decision records retain their historical bodies.
+
+## Documentation
+
+`README.md` and `README_ZH.md` are one landing-page surface. Keep headings, examples, links, and behavior aligned. Put detailed reference material under `docs/`, verify local links, and run:
+
+```bash
+uv run python tools/check_readme_sync.py
+```
+
+Current documentation describes only the single repository product. Describe interfaces by their current names and verify CLI examples against `obsidian-wiki --help`.
+
+## Skills
+
+Add a managed built-in at `obsidian_wiki/_data/skills/<name>/SKILL.md`, update inventory and parity tests, and ensure every knowledge-writing path uses transaction validation and review. Do not add generated mirrors to this source checkout.
+
+## Test a skill change
+
+Rebuild the installed CLI before testing. Create a disposable Git repository, scaffold it with the installed command, validate the generated mirrors, and run asset parity tests from the framework checkout:
+
+```bash
+uv tool install --force --reinstall --link-mode copy .
+disposable="$(mktemp -d)"
+mkdir "$disposable/knowledge"
+git -C "$disposable/knowledge" init
+obsidian-wiki setup "$disposable/knowledge"
+(cd "$disposable/knowledge" && obsidian-wiki check)
+(cd "$disposable/knowledge" && obsidian-wiki repo sync-skills --json --pretty)
+uv run --with pytest python -m pytest tests/test_asset_artifact_parity.py tests/test_skill_trees.py -q
+```
+
+The disposable repository is the runtime fixture. Never use the framework source checkout as a runtime fallback; it intentionally has no generated repository skill tree.
+
+## Upgrade protocol for maintainers
+
+Use the same two-step CLI and repository upgrade protocol as users. On an owner branch, install the new CLI from the framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if its PEP 440 constraint excludes the new version, so explicitly review and edit the constraint before maintenance:
+
+```bash
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+uv tool install --force --reinstall --link-mode copy .
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
+obsidian-wiki repo upgrade-skills
+obsidian-wiki check
+git diff
+git commit -m "Upgrade obsidian-wiki"
+```
+
+The command does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
+
+## Commits
+
+Keep changes scoped, run `git diff --check`, and include the tests that establish the contract. Publishing a branch or pull request remains an explicit maintainer action.

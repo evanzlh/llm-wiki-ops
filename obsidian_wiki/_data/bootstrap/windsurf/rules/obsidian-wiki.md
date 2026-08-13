@@ -3,39 +3,10 @@ name: "Obsidian Wiki"
 activation: "always-on"
 ---
 
-# Obsidian Wiki — Agent Context
+# Obsidian Wiki Repository Rules
 
-This project is a **skill-based framework** for building and maintaining an Obsidian knowledge base.
-
-## Quick Orientation
-
-1. Follow the canonical Config Resolution Protocol in `AGENTS.md`: explicit `@name`, nearest ancestor `.obsidian-wiki/config.toml`, then `.env`, personal global config, and setup guidance. This gives `OBSIDIAN_VAULT_PATH`.
-2. Read `.manifest.json` at the vault root to see what's already been ingested.
-3. Skills are in `.skills/` (also at `.windsurf/skills/`). Each subfolder has a `SKILL.md`.
-
-## When to Use Skills
-
-| User says something like… | Read this skill |
-|---|---|
-| "set up my wiki" / "initialize" | `.skills/wiki-setup/SKILL.md` |
-| "ingest" / "add this to the wiki" / "process this export" / "ingest this data" | `.skills/wiki-ingest/SKILL.md` |
-| "/wiki-history-ingest claude" / "/wiki-history-ingest codex" / "/wiki-history-ingest pi" | `.skills/wiki-history-ingest/SKILL.md` |
-| "import my Claude history" | `.skills/claude-history-ingest/SKILL.md` |
-| "import my Codex history" | `.skills/codex-history-ingest/SKILL.md` |
-| "import my Pi history" | `.skills/pi-history-ingest/SKILL.md` |
-| "what's the status" / "show the delta" | `.skills/wiki-status/SKILL.md` |
-| "what do I know about X" / any question | `.skills/wiki-query/SKILL.md` |
-| "use my vault as context" / "context pack for X" / "bounded context" | `.skills/wiki-context-pack/SKILL.md` |
-| "audit" / "lint" / "find broken links" | `.skills/wiki-lint/SKILL.md` |
-| "rebuild" / "start over" / "archive" | `.skills/wiki-rebuild/SKILL.md` |
-| "link my pages" / "cross-reference" | `.skills/cross-linker/SKILL.md` |
-| "fix my tags" / "normalize tags" | `.skills/tag-taxonomy/SKILL.md` |
-| "create a new skill" | `.skills/skill-creator/SKILL.md` |
-
-## Key Rules
-
-- **Compile, don't retrieve.** Update existing pages, don't just append.
-- **Always update `.manifest.json`** after ingesting.
-- **Always update `index.md` and `log.md`** after any operation.
-- **Use `[[wikilinks]]`** to connect related pages.
-- **Frontmatter is required** on every wiki page.
+Resolve the nearest ancestor `.obsidian-wiki/config.toml`, then read repository
+`AGENTS.md`. First load `.skills/llm-wiki/SKILL.md` as the canonical transaction
+protocol, then load the applicable `.skills/<task>/SKILL.md`. The canonical
+protocol takes precedence over conflicts. Stop when configuration is missing or
+invalid.

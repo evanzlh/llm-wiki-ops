@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,27 @@ class ReadmeDriftTest(unittest.TestCase):
             with self.subTest(path=path.name):
                 contents = path.read_text(encoding="utf-8")
                 self.assertIn("check_readme_sync.py", contents)
+
+    def test_readme_structure_examples_and_links_are_aligned(self) -> None:
+        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
+
+        headings = lambda text: re.findall(r"^## (.+)$", text, re.MULTILINE)
+        self.assertEqual(
+            headings(english),
+            [
+                "Product model", "Install", "Create a knowledge repository",
+                "Collaborate safely", "Documentation", "License",
+            ],
+        )
+        self.assertEqual(
+            headings(chinese),
+            ["产品模型", "安装", "创建知识库仓库", "安全协作", "文档", "许可证"],
+        )
+        fence = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+        self.assertEqual(fence.findall(english), fence.findall(chinese))
+        link = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
+        self.assertEqual(link.findall(english), link.findall(chinese))
 
 
 if __name__ == "__main__":

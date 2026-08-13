@@ -401,6 +401,10 @@ def _normalized_skill_frontmatter(text: str) -> tuple[str, str | None]:
     if closing is None:
         return text, None
 
+    canonical = lines[:]
+    canonical[0] = "---"
+    canonical[closing] = "---"
+
     description_lines: list[int] = []
     folded_line: int | None = None
     folded_indicator: str | None = None
@@ -461,7 +465,7 @@ def _normalized_skill_frontmatter(text: str) -> tuple[str, str | None]:
     if len(description_lines) > 1:
         raise FrontmatterError("duplicate skill description")
     if folded_line is None:
-        return text, None
+        return "\n".join(canonical) + "\n", None
     assert folded_indicator is not None
 
     content: list[str] = []
@@ -496,9 +500,9 @@ def _normalized_skill_frontmatter(text: str) -> tuple[str, str | None]:
     if indentation is None:
         raise FrontmatterError("folded skill description is empty")
     folded = _fold_skill_description(content, folded_indicator)
-    normalized = lines[:folded_line]
+    normalized = canonical[:folded_line]
     normalized.append("description: '__folded_skill_description__'")
-    normalized.extend(lines[end:])
+    normalized.extend(canonical[end:])
     return "\n".join(normalized) + "\n", folded
 
 

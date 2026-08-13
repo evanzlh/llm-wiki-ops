@@ -10,10 +10,50 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID
-from obsidian_wiki.lint import lint_vault
+from obsidian_wiki.lint import (
+    ALLOWED_RELATIONSHIP_TYPES,
+    TRUST_REQUIRED_FRONTMATTER,
+    lint_vault,
+)
 from obsidian_wiki.page_graph import parse_page_text
-from obsidian_wiki.trust import build_trust_ledger, write_trust_ledger
+from obsidian_wiki.trust import (
+    ALLOWED_LIFECYCLES,
+    TRUST_REQUIRED_FIELD_ALLOWLIST,
+    build_trust_ledger,
+    write_trust_ledger,
+)
+
+
+def _portable_cli_context(
+    vault: Path, settings: dict[str, str] | None = None
+) -> Path:
+    root = vault.parent
+    vault.mkdir(parents=True, exist_ok=True)
+    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / "sources").mkdir(exist_ok=True)
+    (root / ".skills").mkdir(exist_ok=True)
+    nested = root / "work/nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    setting_lines = "".join(
+        f'{key} = "{value}"\n' for key, value in (settings or {}).items()
+    )
+    (root / ".obsidian-wiki/config.toml").write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "{vault.name}"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+[settings]
+{setting_lines}''',
+        encoding="utf-8",
+    )
+    return nested
 
 
 def _page(
@@ -57,7 +97,9 @@ def _page(
     return path
 
 
-def _run(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    home: Path, *args: str, cwd: Path
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     return subprocess.run(
@@ -66,6 +108,7 @@ def _run(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=False,
         text=True,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -111,6 +154,61 @@ def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path
     assert report["findings"]["broken_links"] == [{"page": "concepts/alpha.md", "target": "ghost"}]
     assert any(item["page"] == "concepts/beta.md" for item in report["findings"]["missing_frontmatter"])
     assert report["findings"]["typed_relationship_issues"] == []
+
+
+def test_lint_does_not_hide_unsupported_personal_artifact_paths(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    for name in ("_archives", "_raw", "_readouts", "_staging"):
+        _page(vault, f"{name}/legacy.md", include_frontmatter=False)
+
+    report = lint_vault(vault)
+
+    assert {
+        item["page"] for item in report["findings"]["missing_frontmatter"]
+    } == {
+        "_archives/legacy.md",
+        "_raw/legacy.md",
+        "_readouts/legacy.md",
+        "_staging/legacy.md",
+    }
+
+
+def test_lint_rejects_external_symlink_without_leaking_content(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        lint_vault(vault)
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
+def test_lint_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    secret = tmp_path / "image.png"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "image.png").symlink_to(secret)
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert "SECRET-MARKER" not in json.dumps(report)
+
+
+def test_lint_preserves_strict_utf8_trust_validation(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    page = _page(vault, "concepts/invalid.md")
+    page.write_bytes(page.read_bytes() + b"\xff")
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["trust_metadata_errors"] == [
+        {"page": "concepts/invalid.md", "issue": "page is not valid UTF-8: concepts/invalid.md"}
+    ]
 
 
 def test_parse_page_text_preserves_wikilink_and_markdown_targets() -> None:
@@ -173,13 +271,11 @@ def test_lint_cli_uses_configured_vault_and_strict_mode(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", summary=None)
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config").write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
     ledger = build_trust_ledger(vault, reviewed_at="2026-07-12T17:38:39+07:00")
     write_trust_ledger(vault / "_meta" / "trust-ledger.json", ledger)
+    nested = _portable_cli_context(vault)
 
-    proc = _run(home, "lint", "--json", "--strict")
+    proc = _run(home, "lint", "--json", "--strict", cwd=nested)
 
     assert proc.returncode == 1
     data = json.loads(proc.stdout)
@@ -239,10 +335,10 @@ OBSIDIAN_ALLOWED_LIFECYCLES = ["active"]
     assert "concepts/global.md" not in report["findings"]["missing_summaries"]
     assert "active" in report["schema"]["allowed_lifecycles"]
     assert report["schema"]["source"] == f"config:{portable_config.resolve()}"
-    assert report["context_warnings"] == []
+    assert "context_warnings" not in report
 
 
-def test_lint_cli_reports_explicit_portable_context_override(tmp_path: Path) -> None:
+def test_lint_cli_rejects_explicit_vault_in_portable_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
@@ -269,11 +365,8 @@ local_state = ".obsidian-wiki/local"
 
     proc = _run_at(home, nested, "lint", str(explicit_vault), "--json")
 
-    assert proc.returncode == 0, proc.stderr
-    payload = json.loads(proc.stdout)
-    assert len(payload["context_warnings"]) == 1
-    assert payload["context_warnings"][0]["code"] == "portable-context-overridden"
-    assert payload["context_warnings"][0]["selected_mode"] == "explicit"
+    assert proc.returncode == 2
+    assert "unrecognized arguments" in proc.stderr
 
 
 def test_lint_vault_legacy_pages_without_trust_schema_warn_by_default(tmp_path: Path) -> None:
@@ -321,20 +414,18 @@ def test_lint_vault_strict_trust_still_passes_clean_reviewed_vault(tmp_path: Pat
     assert report["status"] == "pass"
 
 
-def test_lint_cli_strict_trust_flag_fails_legacy_vault(tmp_path: Path) -> None:
+def test_lint_cli_strict_trust_flag_fails_portable_vault(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", include_trust_fields=False)
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config").write_text(f'OBSIDIAN_VAULT_PATH="{vault}"\n', encoding="utf-8")
+    nested = _portable_cli_context(vault)
 
-    default_proc = _run(home, "lint", "--json")
+    default_proc = _run(home, "lint", "--json", cwd=nested)
     assert default_proc.returncode == 0
     assert json.loads(default_proc.stdout)["status"] == "warn"
 
-    strict_proc = _run(home, "lint", "--json", "--strict-trust")
+    strict_proc = _run(home, "lint", "--json", "--strict-trust", cwd=nested)
     assert strict_proc.returncode == 1
     assert json.loads(strict_proc.stdout)["status"] == "fail"
 
@@ -435,14 +526,11 @@ def test_invalid_configured_required_trust_field_fails_closed_for_all_cli_paths(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
-    project = tmp_path / "project"
     vault = tmp_path / "vault"
-    project.mkdir()
     _page(vault, "concepts/alpha.md")
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{vault}"\n'
-        "OBSIDIAN_REQUIRED_TRUST_FIELDS=updated,base_confidnce\n",
-        encoding="utf-8",
+    nested = _portable_cli_context(
+        vault,
+        {"OBSIDIAN_REQUIRED_TRUST_FIELDS": "updated,base_confidnce"},
     )
     expected = (
         "error: invalid OBSIDIAN_REQUIRED_TRUST_FIELDS value(s): base_confidnce; "
@@ -462,7 +550,7 @@ def test_invalid_configured_required_trust_field_fails_closed_for_all_cli_paths(
     )
 
     for command in commands:
-        proc = _run_at(home, project, *command)
+        proc = _run_at(home, nested, *command)
         assert proc.returncode == 1, (command, proc.stdout, proc.stderr)
         assert proc.stdout == ""
         assert expected in proc.stderr
@@ -484,8 +572,9 @@ def test_empty_relationship_cli_extension_cannot_hide_missing_relation_type(
             'summary: Short summary.\nrelationships:\n  - type:\n    target: "[[concepts/beta]]"',
         )
     )
+    nested = _portable_cli_context(vault)
 
-    baseline = _run(home, "lint", str(vault), "--json")
+    baseline = _run(home, "lint", "--json", cwd=nested)
     assert baseline.returncode == 0
     assert json.loads(baseline.stdout)["findings"]["typed_relationship_issues"] == [
         {"page": "concepts/alpha.md", "index": 0, "issue": "malformed_relationship_entry"}
@@ -495,10 +584,10 @@ def test_empty_relationship_cli_extension_cannot_hide_missing_relation_type(
         invalid = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--allow-relationship-type",
             value,
+            cwd=nested,
         )
         assert invalid.returncode == 1
         assert invalid.stdout == ""
@@ -510,15 +599,16 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
+    nested = _portable_cli_context(vault)
 
     for value in ("", "   "):
         lifecycle = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--allow-lifecycle",
             value,
+            cwd=nested,
         )
         assert lifecycle.returncode == 1
         assert lifecycle.stdout == ""
@@ -528,10 +618,10 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
     required = _run(
         home,
         "lint",
-        str(vault),
         "--json",
         "--required-trust-field",
         "",
+        cwd=nested,
     )
     assert required.returncode == 2
     assert required.stdout == ""
@@ -542,10 +632,10 @@ def test_empty_cli_lifecycle_and_required_field_overrides_fail_closed(tmp_path: 
         source = _run(
             home,
             "lint",
-            str(vault),
             "--json",
             "--schema-source",
             value,
+            cwd=nested,
         )
         assert source.returncode == 1
         assert source.stdout == ""
@@ -576,23 +666,19 @@ def test_empty_configured_schema_values_fail_closed_for_all_cli_paths(tmp_path: 
         "OBSIDIAN_REQUIRED_TRUST_FIELDS",
         "OBSIDIAN_SCHEMA_SOURCE",
     ):
-        project = tmp_path / key.lower()
-        project.mkdir()
-        (project / ".env").write_text(
-            f'OBSIDIAN_VAULT_PATH="{vault}"\n{key}=   \n',
-            encoding="utf-8",
-        )
+        nested = _portable_cli_context(vault, {key: "   "})
         for command in commands:
-            invalid = _run_at(home, project, *command)
+            invalid = _run_at(home, nested, *command)
             assert invalid.returncode == 1, (key, command, invalid.stdout, invalid.stderr)
-            assert invalid.stdout == ""
-            detail = (
-                "must not be empty"
-                if key == "OBSIDIAN_SCHEMA_SOURCE"
-                else "entries must not be empty"
-            )
-            assert f"error: invalid {key} value: {detail}" in invalid.stderr
-            assert "Traceback" not in invalid.stderr
+            if key == "OBSIDIAN_SCHEMA_SOURCE":
+                assert invalid.stderr == ""
+                message = json.loads(invalid.stdout)["error"]["message"]
+                assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in message
+                assert "Traceback" not in invalid.stdout
+            else:
+                assert invalid.stdout == ""
+                assert f"invalid {key} value: entries must not be empty" in invalid.stderr
+                assert "Traceback" not in invalid.stderr
 
     assert not (vault / "_meta" / "trust-ledger.json").exists()
 
@@ -601,11 +687,8 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{vault}"\nOBSIDIAN_SCHEMA_SOURCE=   \n',
-        encoding="utf-8",
+    nested = _portable_cli_context(
+        vault, {"OBSIDIAN_SCHEMA_SOURCE": "   "}
     )
     ledger = vault / "_meta" / "trust-ledger.json"
     before = {
@@ -629,11 +712,13 @@ def test_blank_config_schema_source_cannot_be_masked_by_valid_cli_source(tmp_pat
     )
 
     for command in commands:
-        invalid = _run_at(home, project, *command)
+        invalid = _run_at(home, nested, *command)
         assert invalid.returncode == 1, (command, invalid.stdout, invalid.stderr)
-        assert invalid.stdout == ""
-        assert "error: invalid OBSIDIAN_SCHEMA_SOURCE value: must not be empty" in invalid.stderr
-        assert "Traceback" not in invalid.stderr
+        assert invalid.stderr == ""
+        assert "unsupported portable setting: OBSIDIAN_SCHEMA_SOURCE" in json.loads(
+            invalid.stdout
+        )["error"]["message"]
+        assert "Traceback" not in invalid.stdout
         after = {
             path.relative_to(vault): path.read_bytes()
             for path in vault.rglob("*")
@@ -652,7 +737,6 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         "OBSIDIAN_REQUIRED_TRUST_FIELDS",
         "OBSIDIAN_SCHEMA_SOURCE",
     )
-    env_example = (root / ".env.example").read_text(encoding="utf-8")
     configuration = (root / "docs" / "configuration.md").read_text(encoding="utf-8")
     skills = root / "obsidian_wiki" / "_data" / "skills"
     lint_skill = (skills / "wiki-lint" / "SKILL.md").read_text(encoding="utf-8")
@@ -660,14 +744,35 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
     capture_skill = (skills / "wiki-capture" / "SKILL.md").read_text(encoding="utf-8")
 
     for variable in variables:
-        assert variable in env_example
         assert variable in configuration
         assert variable in lint_skill
-        assert variable in llm_skill
-        assert variable in capture_skill
-    assert "CLI flags > these environment/config values >" in env_example
-    assert "CLI flags > resolved environment/config values > framework defaults" in lint_skill
-    assert "Empty or whitespace-only values fail closed" in env_example
+    assert "not a repository setting" in configuration
+    portable_settings = configuration.split("## Settings", 1)[1].split(
+        "## Tracked and ignored state", 1
+    )[0]
+    assert "OBSIDIAN_SCHEMA_SOURCE" not in portable_settings.split(
+        "Schema command inputs", 1
+    )[0]
+    assert "CLI flags > resolved environment/config values > framework defaults" in (
+        " ".join(configuration.split())
+    )
+    assert "does not read environment variables or `.env` directly" in configuration
+    assert "external wrapper" in configuration
+    for value in (
+        *ALLOWED_LIFECYCLES,
+        *ALLOWED_RELATIONSHIP_TYPES,
+        *TRUST_REQUIRED_FRONTMATTER,
+        *TRUST_REQUIRED_FIELD_ALLOWLIST,
+    ):
+        assert f"`{value}`" in configuration
+    for skill in (llm_skill, capture_skill):
+        assert "nearest" in skill
+        assert ".obsidian-wiki/config.toml" in skill
+        assert "canonical" in skill
+    assert (
+        "CLI flags > resolved environment/config values > framework defaults"
+        in " ".join(lint_skill.split())
+    )
     assert "fails closed" in lint_skill
 
 
@@ -707,6 +812,28 @@ def test_default_schema_remains_framework_compatible(tmp_path: Path) -> None:
     assert "related_to" in report["schema"]["allowed_relationship_types"]
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+def test_optional_present_fifo_ledger_is_rejected_without_opening(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md")
+    ledger_path = vault / "_meta/trust-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    os.mkfifo(ledger_path)
+
+    report = lint_vault(
+        vault,
+        require_trust_ledger=False,
+        strict_trust=True,
+    )
+
+    assert report["status"] == "fail"
+    assert report["findings"]["confidence_ledger_errors"][0]["issue"] == (
+        "ledger_unreadable"
+    )
+
+
 def test_lifecycle_typo_fails_without_ledger_when_ledger_is_not_required(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     page = _page(vault, "concepts/alpha.md")
@@ -733,45 +860,31 @@ def test_present_invalid_confidence_fails_without_ledger_when_not_required(tmp_p
     ]
 
 
-def test_schema_config_is_scoped_to_explicit_cwd_and_named_vaults(tmp_path: Path) -> None:
+def test_schema_source_is_portable_config_and_positional_vaults_are_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    global_vault = tmp_path / "global-vault"
     local_vault = tmp_path / "local-vault"
     explicit_vault = tmp_path / "explicit-vault"
-    for vault in (global_vault, local_vault, explicit_vault):
+    for vault in (local_vault, explicit_vault):
         page = _page(vault, "concepts/alpha.md")
         page.write_text(page.read_text().replace("lifecycle: reviewed", "lifecycle: active"))
 
-    config_dir = home / ".obsidian-wiki"
-    config_dir.mkdir(parents=True)
-    (config_dir / "config").write_text(
-        f'OBSIDIAN_VAULT_PATH="{global_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
-    )
-    (config_dir / "config.owner").write_text(
-        f'OBSIDIAN_VAULT_PATH="{local_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
-    )
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".env").write_text(
-        f'OBSIDIAN_VAULT_PATH="{local_vault}"\nOBSIDIAN_ALLOWED_LIFECYCLES=active\n',
-        encoding="utf-8",
+    portable_config = tmp_path / ".obsidian-wiki/config.toml"
+    nested = _portable_cli_context(
+        local_vault, {"OBSIDIAN_ALLOWED_LIFECYCLES": "active"}
     )
 
-    explicit = _run_at(home, project, "lint", str(explicit_vault), "--json")
-    assert explicit.returncode == 1
-    assert json.loads(explicit.stdout)["findings"]["trust_metadata_errors"][0]["issue"] == "invalid lifecycle: active"
+    explicit = _run_at(home, nested, "lint", str(explicit_vault), "--json")
+    assert explicit.returncode == 2
+    assert "unrecognized arguments" in explicit.stderr
 
-    local = _run_at(home, project, "lint", "--json")
+    local = _run_at(home, nested, "lint", "--json")
     assert local.returncode == 0, local.stderr
     local_source = json.loads(local.stdout)["schema"]["source"]
-    assert Path(local_source.removeprefix("config:")).resolve() == (project / ".env").resolve()
+    assert Path(local_source.removeprefix("config:")).resolve() == portable_config.resolve()
 
-    named = _run_at(home, tmp_path, "lint", "@owner", "--json")
-    assert named.returncode == 0, named.stderr
-    named_source = json.loads(named.stdout)["schema"]["source"]
-    assert Path(named_source.removeprefix("config:")).resolve() == (config_dir / "config.owner").resolve()
+    named = _run_at(home, nested, "lint", "@owner", "--json")
+    assert named.returncode == 2
+    assert "unrecognized arguments" in named.stderr
 
 
 def test_correction_contract_requires_temporal_authority_and_immutable_hash_check(tmp_path: Path) -> None:
@@ -790,6 +903,18 @@ def test_correction_contract_requires_temporal_authority_and_immutable_hash_chec
         "source_post_sha256",
     ):
         assert field in skill
+    for phrase in (
+        "Before any candidate write",
+        "safe ordinary-file read",
+        "source_pre_sha256",
+        "source_post_sha256",
+        "before `transaction begin`",
+        "identity or hash changed",
+        "stop and restart",
+        "complete source closure",
+        "affected page",
+    ):
+        assert phrase in skill
 
     source = tmp_path / "immutable.jsonl"
     source.write_text('{"role":"user","content":"tool result"}\n', encoding="utf-8")

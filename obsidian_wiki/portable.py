@@ -17,6 +17,7 @@ import stat
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -31,6 +32,7 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     LegacyManagedSkillsInventory,
@@ -43,11 +45,13 @@ from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
-    _digest as _skill_tree_digest,
     discover_anchored_skill_collection,
     discover_skill_collection,
     materialize_skill_collection,
     snapshot_ordinary_tree_with_unsafe,
+)
+from obsidian_wiki.skill_trees import (
+    _digest as _skill_tree_digest,
 )
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
@@ -80,9 +84,13 @@ PORTABLE_VAULT_DIRS = (
     "journal/operations",
     "projects",
     "_meta",
+    ".obsidian",
+)
+UNSUPPORTED_PERSONAL_VAULT_PATHS = (
+    "_archives",
     "_raw",
     "_readouts",
-    ".obsidian",
+    "_staging",
 )
 PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
 _PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
@@ -154,15 +162,6 @@ path:"journal/operations"
 ```
 '''
 
-_PORTABLE_AGENT_INSTRUCTIONS = """# Portable Obsidian Wiki Repository
-
-- Discover this repository's configuration at `.obsidian-wiki/config.toml`; resolve every configured path relative to the repository root.
-- Route user intent through `.skills/<name>/SKILL.md`, which is the repository-canonical skill location.
-- Read `wiki/AGENTS.md` when it exists and apply its owner-specific conventions after these repository rules.
-- Treat vault changes as transaction-only writes: inspect and validate the complete write set before applying it.
-- Never automatically commit, push, or open a pull request. Those source-control actions require an explicit user request.
-"""
-
 _TEAM_CONVENTIONS = """## Team conventions
 
 Maintainers may add repository-specific terminology, writing style, scope, and review rules below this heading.
@@ -178,6 +177,17 @@ _BOOTSTRAP_REFERENCES = {
     ".windsurf/rules/obsidian-wiki.md": "../../AGENTS.md",
     ".kiro/steering/obsidian-wiki.md": "../../AGENTS.md",
     ".github/copilot-instructions.md": "../AGENTS.md",
+}
+
+_BUNDLED_BOOTSTRAP_DIR = Path(__file__).parent / "_data/bootstrap"
+_BOOTSTRAP_ASSET_TARGETS = {
+    "AGENTS.md": "AGENTS.md",
+    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
+    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
+    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
+    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
+    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    ".github/copilot-instructions.md": "github/copilot-instructions.md",
 }
 
 _SOURCE_IGNORED_DIRS = frozenset(
@@ -210,6 +220,66 @@ def _safe_root(root: Path) -> Path:
     if requested.is_symlink():
         raise ValueError(f"portable repository root must not be a symlink: {requested}")
     return requested.resolve(strict=False)
+
+
+_ACTIVE_MUTATION_ROOTS: ContextVar[tuple[tuple[Path, int], ...]] = ContextVar(
+    "portable_active_mutation_roots", default=()
+)
+
+
+@contextmanager
+def _bound_portable_mutation_root(
+    root: Path, expected_root_identity: tuple[int, ...]
+) -> Iterator[Path]:
+    """Keep the loaded repository inode open for an entire public mutation."""
+    requested = _absolute_no_resolve(root)
+    flags = _inventory_directory_flags()
+    descriptor = -1
+    token = None
+    try:
+        descriptor = os.open(requested, flags)
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise ValueError(f"portable repository root is unsafe: {requested}: {exc}") from exc
+    if stable_directory_identity(opened) != expected_root_identity:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise ValueError(
+            "portable repository root changed since configuration was read"
+        )
+    body_error: BaseException | None = None
+    try:
+        token = _ACTIVE_MUTATION_ROOTS.set(
+            (*_ACTIVE_MUTATION_ROOTS.get(), (requested, descriptor))
+        )
+        yield requested
+    except BaseException as exc:
+        body_error = exc
+        raise
+    finally:
+        if token is not None:
+            _ACTIVE_MUTATION_ROOTS.reset(token)
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                if body_error is None:
+                    raise
+
+
+def _active_mutation_root_descriptor(root: Path) -> int | None:
+    requested = _absolute_no_resolve(root)
+    for bound_root, descriptor in reversed(_ACTIVE_MUTATION_ROOTS.get()):
+        if bound_root == requested:
+            return descriptor
+    return None
 
 
 def _assert_safe_managed_path(root: Path, path: Path) -> None:
@@ -1027,7 +1097,6 @@ def render_portable_config(
         'OBSIDIAN_CATEGORIES = "concepts,entities,skills,references,synthesis,journal,projects"\n'
         "OBSIDIAN_MAX_PAGES_PER_INGEST = 15\n"
         'OBSIDIAN_LINK_FORMAT = "wikilink"\n'
-        'OBSIDIAN_RAW_DIR = "_raw"\n'
         "OBSIDIAN_TRUST_STRICT = false\n"
     )
 
@@ -1749,11 +1818,85 @@ def _bootstrap_body(relative_agents: str) -> str:
     )
 
 
+def _bootstrap_source(source_bootstrap: Path | None) -> Path:
+    source = _absolute_no_resolve(source_bootstrap or _BUNDLED_BOOTSTRAP_DIR)
+    try:
+        kind = _source_entry_kind(source)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"bundled bootstrap directory not found: {source}") from exc
+    if kind != "directory":
+        raise ValueError(f"bundled bootstrap source must be an ordinary directory: {source}")
+    return source
+
+
+def _read_bootstrap_asset(source: Path, relative: str) -> str:
+    parts = PurePosixPath(relative).parts
+    parent = source
+    for part in parts[:-1]:
+        parent /= part
+        if _source_entry_kind(parent) != "directory":
+            raise ValueError(
+                f"bundled bootstrap asset parent must be an ordinary directory: {parent}"
+            )
+    path = parent / parts[-1]
+    if _source_entry_kind(path) != "file":
+        raise ValueError(f"bundled bootstrap asset must be an ordinary file: {path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"bundled bootstrap asset is unreadable: {path}: {exc}") from exc
+
+
+def _split_bootstrap_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return "", text
+    boundary = text.find("\n---\n", 4)
+    if boundary < 0:
+        raise ValueError("bundled bootstrap asset has unclosed frontmatter")
+    boundary += len("\n---\n")
+    return text[:boundary], text[boundary:].lstrip("\n")
+
+
+def _owner_around_managed_bootstrap(existing: str) -> tuple[str, str] | None:
+    start_count = existing.count(MANAGED_START)
+    end_count = existing.count(MANAGED_END)
+    if start_count != end_count or start_count > 1:
+        raise ValueError("malformed obsidian-wiki managed markers")
+    if start_count == 0:
+        return None
+    start = existing.index(MANAGED_START)
+    end = existing.index(MANAGED_END, start) + len(MANAGED_END)
+    before = existing[:start]
+    _frontmatter, before = _split_bootstrap_frontmatter(before)
+    return before.strip("\n"), existing[end:].strip("\n")
+
+
+def _render_asset_bootstrap(asset: str, existing: str) -> str:
+    frontmatter, body = _split_bootstrap_frontmatter(asset)
+    if not existing or existing == asset:
+        owner_before = owner_after = ""
+    else:
+        owners = _owner_around_managed_bootstrap(existing)
+        if owners is None:
+            return existing
+        owner_before, owner_after = owners
+
+    parts = []
+    if frontmatter:
+        parts.append(frontmatter.rstrip("\n"))
+    if owner_before:
+        parts.append(owner_before)
+    parts.append(merge_managed_block("", body).rstrip("\n"))
+    if owner_after:
+        parts.append(owner_after)
+    return "\n\n".join(parts) + "\n"
+
+
 def _legacy_bootstrap_text(relative_agents: str) -> str:
     return "<!-- obsidian-wiki:portable-bootstrap -->\n" + _bootstrap_body(relative_agents)
 
 
-def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
+def _planned_reference_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     body = _bootstrap_body(relative_agents)
     if not existing:
         return merge_managed_block("", body)
@@ -1764,30 +1907,50 @@ def _planned_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     return None
 
 
-def _render_bootstrap_target(root: Path, target: Path, existing: str) -> str:
+def _render_bootstrap_target(
+    root: Path,
+    target: Path,
+    existing: str,
+    *,
+    source_bootstrap: Path | None = None,
+) -> str:
     """Render one fixed bootstrap target from its authoritative old content."""
     relative = _repo_relative_path(root, target)
-    return render_portable_bootstrap(relative, existing)
+    return render_portable_bootstrap(
+        relative, existing, source_bootstrap=source_bootstrap
+    )
 
 
-def render_portable_bootstrap(relative: str, existing: str) -> str:
+def render_portable_bootstrap(
+    relative: str, existing: str, *, source_bootstrap: Path | None = None
+) -> str:
     """Render one managed bootstrap file while preserving owner-maintained text."""
+    source = _bootstrap_source(source_bootstrap)
     if relative == "AGENTS.md":
+        asset = _read_bootstrap_asset(source, _BOOTSTRAP_ASSET_TARGETS[relative])
         if not existing:
             existing = _TEAM_CONVENTIONS
         elif MANAGED_START not in existing and "## Team conventions" not in existing:
             existing = f"{_TEAM_CONVENTIONS}\n{existing}"
-        return merge_managed_block(existing, _PORTABLE_AGENT_INSTRUCTIONS)
+        return merge_managed_block(existing, asset)
+
+    asset_relative = _BOOTSTRAP_ASSET_TARGETS.get(relative)
+    if asset_relative is not None:
+        return _render_asset_bootstrap(
+            _read_bootstrap_asset(source, asset_relative), existing
+        )
 
     try:
         agents_reference = _BOOTSTRAP_REFERENCES[relative]
     except KeyError as exc:  # pragma: no cover - callers use the fixed target set
         raise ValueError(f"unexpected portable bootstrap target: {relative}") from exc
-    planned = _planned_bootstrap_text(existing, agents_reference)
+    planned = _planned_reference_bootstrap_text(existing, agents_reference)
     return existing if planned is None else planned
 
 
-def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
+def _portable_bootstrap_plans(
+    root: Path, *, source_bootstrap: Path | None = None
+) -> list[tuple[Path, str]]:
     agents_path = root / "AGENTS.md"
     _assert_safe_managed_path(root, agents_path)
     if agents_path.exists() and not agents_path.is_file():
@@ -1796,7 +1959,12 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
         _assert_single_link_ordinary_file(root, agents_path, "AGENTS.md")
     existing = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
     plans: list[tuple[Path, str]] = [
-        (agents_path, _render_bootstrap_target(root, agents_path, existing))
+        (
+            agents_path,
+            _render_bootstrap_target(
+                root, agents_path, existing, source_bootstrap=source_bootstrap
+            ),
+        )
     ]
     for relative in _BOOTSTRAP_REFERENCES:
         target = root / relative
@@ -1813,14 +1981,23 @@ def _portable_bootstrap_plans(root: Path) -> list[tuple[Path, str]]:
                 root, target, f"bootstrap target {relative}"
             )
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        plans.append((target, _render_bootstrap_target(root, target, current)))
+        plans.append(
+            (
+                target,
+                _render_bootstrap_target(
+                    root, target, current, source_bootstrap=source_bootstrap
+                ),
+            )
+        )
     return plans
 
 
-def install_portable_bootstrap(root: Path) -> None:
+def install_portable_bootstrap(
+    root: Path, *, source_bootstrap: Path | None = None
+) -> None:
     """Install dedicated portable agent discovery and bootstrap Markdown."""
     root = _safe_root(Path(root))
-    plans = _portable_bootstrap_plans(root)
+    plans = _portable_bootstrap_plans(root, source_bootstrap=source_bootstrap)
 
     for target, text in plans:
         _write_text_if_changed(target, text, root=root)
@@ -2038,7 +2215,10 @@ def _preflight_existing_portable(
 
 
 def _populate_portable_repo(
-    root: Path, *, version: str, bundled_skills: SkillCollection
+    root: Path,
+    *,
+    version: str,
+    bundled_skills: SkillCollection,
 ) -> None:
     write_portable_config(root, version=version)
     _ensure_portable_lock_file(root)
@@ -2807,7 +2987,10 @@ def _open_sync_directory_chain(
     flags = _inventory_directory_flags()
     directories: list[_BoundDirectory] = []
     try:
-        descriptor = os.open(root, flags)
+        active_root = _active_mutation_root_descriptor(root)
+        descriptor = (
+            os.dup(active_root) if active_root is not None else os.open(root, flags)
+        )
         metadata = os.fstat(descriptor)
         directories.append((root, "", descriptor, metadata))
         current = root
@@ -4720,10 +4903,24 @@ def _recover_skill_operations(
 
 
 def recover_portable_skill_operations(
-    root: Path, *, version: str, source_skills: Path
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    expected_root_identity: tuple[int, ...],
 ) -> None:
     """Recover pending replacements before a read-oriented CLI operation."""
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        _recover_portable_skill_operations_bound(
+            root, version=version, source_skills=source_skills
+        )
+
+
+def _recover_portable_skill_operations_bound(
+    root: Path, *, version: str, source_skills: Path
+) -> None:
+    root = _safe_root(root)
     source, current_names = _discover_source_skills(source_skills)
     with _portable_skills_lock(root):
         _recover_skill_operations(
@@ -4739,6 +4936,7 @@ def _preflight_upgrade_paths(
     *,
     previous_names: tuple[str, ...],
     current_names: tuple[str, ...],
+    source_bootstrap: Path | None = None,
 ) -> list[tuple[Path, str]]:
     """Validate all managed and potentially owner-owned upgrade targets."""
     previous = set(previous_names)
@@ -4767,7 +4965,7 @@ def _preflight_upgrade_paths(
                 root, target, f"managed skill directory {name}"
             )
 
-    return _portable_bootstrap_plans(root)
+    return _portable_bootstrap_plans(root, source_bootstrap=source_bootstrap)
 
 
 def _prepare_replacement_journal(
@@ -5147,10 +5345,21 @@ def _stage_complete_agent_mirrors(
 
 
 def sync_portable_skill_mirrors(
-    root: Path, *, apply: bool
+    root: Path,
+    *,
+    apply: bool,
+    expected_root_identity: tuple[int, ...],
 ) -> SkillSyncReport:
     """Check or transactionally rebuild all derived agent skill mirrors."""
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        return _sync_portable_skill_mirrors_bound(root, apply=apply)
+
+
+def _sync_portable_skill_mirrors_bound(
+    root: Path, *, apply: bool
+) -> SkillSyncReport:
+    root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):
@@ -5218,6 +5427,7 @@ def upgrade_portable_skills(
     *,
     version: str,
     source_skills: Path,
+    expected_root_identity: tuple[int, ...],
     warning_sink: list[dict[str, str]] | None = None,
 ) -> tuple[str, ...]:
     """Upgrade managed canonical skills, full mirrors, and bootstrap blocks.
@@ -5226,7 +5436,24 @@ def upgrade_portable_skills(
     adopted, replaced, or removed, and the new inventory is committed last.
     """
     compatible_cli_spec(version)
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        return _upgrade_portable_skills_bound(
+            root,
+            version=version,
+            source_skills=source_skills,
+            warning_sink=warning_sink,
+        )
+
+
+def _upgrade_portable_skills_bound(
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    warning_sink: list[dict[str, str]] | None,
+) -> tuple[str, ...]:
+    root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):
@@ -5565,7 +5792,11 @@ def setup_portable_repo(
     )
     removed_empty_target = False
     try:
-        _populate_portable_repo(staging, version=version, bundled_skills=bundled_skills)
+        _populate_portable_repo(
+            staging,
+            version=version,
+            bundled_skills=bundled_skills,
+        )
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)

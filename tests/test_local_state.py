@@ -497,8 +497,13 @@ def test_hot_cli_fails_outside_portable_mode(
     result = run_cli(tmp_path / "home", cwd, *arguments)
 
     assert result.returncode == 1
-    assert "portable repository" in result.stderr
-    assert "Traceback" not in result.stderr
+    if "--json" in arguments or arguments[-1] == "inputs":
+        assert result.stderr == ""
+        assert "portable repository" in json.loads(result.stdout)["error"]["message"]
+        assert "Traceback" not in result.stdout
+    else:
+        assert "portable repository" in result.stderr
+        assert "Traceback" not in result.stderr
 
 
 def test_hot_inputs_returns_cjk_page_summary_and_serialized_operation(
@@ -925,9 +930,11 @@ def test_hot_inputs_cli_reports_negative_limit_errors(
     )
 
     assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr == "error: hot input limits must be non-negative\n"
-    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    assert "hot input limits must be non-negative" in json.loads(result.stdout)[
+        "error"
+    ]["message"]
+    assert "Traceback" not in result.stdout
 
 
 def test_hot_inputs_cli_reports_invalid_authoritative_input_cleanly(
@@ -946,9 +953,27 @@ def test_hot_inputs_cli_reports_invalid_authoritative_input_cleanly(
     )
 
     assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr.startswith("error: invalid knowledge page")
-    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["error"]["message"].startswith(
+        "invalid knowledge page"
+    )
+    assert "Traceback" not in result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_mark_hot_rejects_ordinary_repository_rebound(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    config = config_fixture
+    original = tmp_path / "original-knowledge"
+    config.root.rename(original)
+    (config.root / "wiki").mkdir(parents=True)
+    (config.root / "wiki/hot.md").write_text("# replacement\n", encoding="utf-8")
+
+    with pytest.raises(LocalStateError, match="repository root changed"):
+        mark_hot_current(config)
+
+    assert not config.local_state.exists()
 
 
 @pytest.mark.parametrize("relative", ["concepts", "concepts/nested"])

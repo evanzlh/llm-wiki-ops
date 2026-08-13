@@ -1,226 +1,116 @@
 ---
 name: obsidian-layout-adjustment
 description: >
-  Workflow for working with Dan on changing how Obsidian looks using CSS snippets.
-  Use this whenever Dan asks to restyle Obsidian, tune a vault's visual layout,
-  adjust tabs, sidebars, note surfaces, properties, backlinks, graph panes, file
-  explorer rows, icons, links, shadows, active states, or CSS snippets. Also use
-  it when Dan says a visual CSS change did nothing, still looks wrapped, is not
-  lifted, is unreadable, or needs to be refactored without changing the current
-  appearance.
+  Use when changing or debugging Obsidian appearance, layout, active CSS snippets,
+  panes, tabs, sidebars, note surfaces, properties, backlinks, graph, or icons.
 ---
 
 # Obsidian Layout Adjustment
 
-This skill is for changing how Obsidian looks with CSS files while working with Dan's visual language.
+This workflow explicitly edits files under `.obsidian/`; those are Obsidian
+configuration changes, not a knowledge transaction. Do not run `obsidian-wiki transaction begin`:
+these edits have no knowledge candidates and do
+not update manifest shards, `index.md`, or `log.md`.
 
-Obsidian is always the same kind of environment: app frame, tab headers, side docks, view headers, pane shells, note surface, properties, file explorer, backlinks, graph, rendered markdown, and status bar. The vault, theme, snippets, plugins, and desired taste direction change, but the canvas stays Obsidian.
+## Authority and subjective approval
 
-The core behavior is translation:
+Resolve the nearest ancestor `.obsidian-wiki/config.toml`. If absent, stop with
+`obsidian-wiki setup [DIR]`. Read repository `AGENTS.md`, then
+`.skills/llm-wiki/SKILL.md`, then this skill; the canonical protocol wins on conflict.
+Invalid config fails closed, and an invocation cannot select another vault.
 
-> Dan names a visible Obsidian object. Translate that phrase into the stable Obsidian layer/backend object, edit the active snippets safely, screenshot the result, and keep iterating without losing good states.
+Read `<vault>/.obsidian/appearance.json` and treat `enabledCssSnippets` as the active
+styling source of truth. Require `.obsidian/` to exist. Explain the visible-object to
+Obsidian-layer mapping, scoped files, and intended visual effect, then obtain explicit user approval
+before a subjective edit. Also ask before switching themes, disabling
+plugins/snippets, moving properties, or substantially changing typography/density.
 
-This is not a general CSS workflow and not a fixed-theme generator.
+Read `references/workflow-reference.md` when the object is ambiguous, the change did
+nothing, the surface is still wrapped/not lifted/unreadable, or an accepted design is
+being refactored.
 
-## Normal Output Mode
+## Operating loop
 
-This skill should make live styling work faster, not turn every small request into a report.
+1. Inspect `appearance.json`, active snippets, and the precise current selector block.
+2. Map the phrase to visible object, Obsidian layer, selector/settings surface, change
+   type, and owning layer. Distinguish tab headers from the markdown view header.
+3. Back up every file to be edited under
+   `.obsidian-wiki/local/obsidian-config-backups/<timestamp>/`, preserving its
+   repository-relative `.obsidian/` path.
+4. Patch one owning stage, shell, header, wrapper, or child. Format CSS without
+   changing selector order unless the approved change requires it.
+5. Reload or focus Obsidian, screenshot the exact affected area, and compare it to
+   the request. A valid stylesheet is not visual proof.
+6. If evidence disproves the change, atomically restore the backup or change the
+   ownership model. If one direction fails twice, restore before trying another.
+7. Refactor only after the user accepts the visual result.
 
-In normal use:
+## Backup and edit safety
 
-1. Say the mapping only when it prevents ambiguity.
-2. Keep the mapping short: one sentence is usually enough.
-3. Then act: inspect active snippets, checkpoint, patch, format, reload, screenshot.
-4. Report the result concisely with changed files, checkpoint, and screenshot status.
+`.obsidian-wiki/local/` is ignored local state. Inspect every source, target, and
+backup component without following links. Reject a symbolic link, hard link, special
+file, non-owner path, escaping resolution, or identity change. Create a new
+owner-only timestamp backup directory and flush ordinary single-link preimages before
+editing. Store a backup manifest for every target with path, `existed`, preimage
+SHA-256, and mode, using an explicit absent marker when the target did not exist.
+Record the expected postimage identity and SHA-256 after each edit. Local backup
+parents/directories use mode `0700` and backup files use `0600` where supported.
 
-Good normal update:
+Write each approved complete replacement through an owner-only temporary ordinary
+file in the target directory, flush it, recheck the target, and use atomic rename.
+Never alter app bundles, plugin source, installed theme source, or vault knowledge to
+force a visual effect. To restore, validate the selected backup, back up the current
+target, and require the current identity and hash to equal the recorded postimage;
+concurrent change stops restore. Atomically replace an originally existing target
+with its preimage and mode. For an originally absent target, validate the postimage
+then delete only that created ordinary single-link file. Never copy through a link.
 
-> "I’m treating 'tabs above the note' as workspace tab headers, not the arrows/book/dots view header. I’ll checkpoint active snippets, patch that selector family only, and screenshot the tab strip."
+Keep a bound parent directory descriptor for every promotion and rollback.
+Immediately before `os.replace` or `unlink`, re-lstat through that descriptor and
+compare identity and SHA-256 with the expected current preimage or postimage, and
+fstat the open replacement or created file; a mismatch stops without overwrite or deletion.
+For an originally absent target, unlink only the identity-bound file this
+workflow created; a name match alone is insufficient.
 
-Do not write a long workflow report unless:
+## Layer and change model
 
-- Dan asks for a plan, audit, review, or explanation.
-- You are running evals or building this skill.
-- You are refactoring without visual changes.
-- The request is ambiguous enough that acting first would be risky.
+Translate natural language before editing. Typical mappings include:
 
-The value is in preventing bad CSS loops while still moving quickly.
+| Visible object | Owning surface |
+| --- | --- |
+| tabs above a note / plus | workspace tab headers / new-tab control |
+| arrows, book, dots | markdown view header |
+| far-left icons | ribbon / side dock and active icon state |
+| file/folder buttons | file explorer tree rows |
+| note edge, shadow, lift | stage, pane shell, gutter, overflow |
+| right sidebar / backlinks | right workspace split / backlink group wrapper |
+| graph | graph plugin leaf/canvas |
 
-## Use The Reference
+For color, handle background, text/icon contrast, active, hover, and focus together.
+For lift or rounding, inspect stage/shell/gutter/overflow relationships. “Nothing
+changed” signals wrong ownership, clipping, coverage, override, or missed reload;
+“still wrapped” usually signals both wrapper and child styling.
 
-Read `references/workflow-reference.md` when:
+## Review and closeout
 
-- Dan names a visible Obsidian object in natural language.
-- The requested target could be more than one Obsidian layer.
-- A screenshot shows "nothing changed," "still wrapped," "not lifted," uneven edges, washed-out surfaces, or unreadable icons.
-- You are refactoring active snippets without changing the accepted look.
-- You need the Obsidian surface map, change-type map, or failure-pattern list.
+From the resolved config, retain its repository root and configured vault path. For
+each edited file, compute the configured vault path relative to the repository root,
+verify containment and reject `..`, then append that file's `.obsidian/` path. Call
+the resulting single repository-relative path `CONFIG_PATH`; never assume the vault
+directory is named `wiki` and never use an absolute host path as a Git pathspec.
 
-The reference is Obsidian-specific. Use it before treating the UI as an unknown web page.
+From the repository root, review every edited file separately with argv-safe literal
+pathspec handling:
 
-## Operating Loop
-
-1. Start from the live vault.
-2. Read `<vault>/.obsidian/appearance.json`.
-3. Treat `enabledCssSnippets` as the active styling source of truth.
-4. Read active snippets before archives, backups, or old experiments.
-5. Translate Dan's phrase into an Obsidian object and owning layer.
-6. Classify the change type: color, readability, lift, shape, structure, density, simplification, workflow, or refactor.
-7. Save a named checkpoint before subjective edits: copy the active snippets to `.obsidian/snippet-archive/`, never into `.obsidian/snippets`, so the snippet picker stays clean.
-8. Re-read the exact current block, then edit one owning layer: stage, shell, header, wrapper, or child. Formatting reshapes the file; a patch written from a remembered shape misses mechanically.
-9. Format CSS.
-10. Reload/focus Obsidian and screenshot the exact affected area.
-11. Use the screenshot and Dan's correction as evidence.
-12. If it fails, inspect ownership or restore; do not keep piling CSS onto the same wrong target.
-13. Refactor only after Dan accepts the visual state.
-
-## Translate Before Editing
-
-Dan will usually name what he sees, not the selector:
-
-- "tabs above the note"
-- "arrows/book/dots above the note"
-- "left side note buttons"
-- "right sidebar"
-- "links in those little areas"
-- "the thing around the note"
-- "selected icon"
-- "top-left white corner"
-
-Before editing, map the phrase:
-
-```text
-Dan phrase -> visible object -> Obsidian layer -> likely selector/settings surface -> change type -> owning layer
+```bash
+git --literal-pathspecs diff -- "$CONFIG_PATH"
 ```
 
-Say the mapping back when it could be ambiguous:
+`CONFIG_PATH` is one validated argument, not shell text or a glob. Show each diff to
+the user. The owner decides whether to commit tracked config; this workflow never
+commits, pushes, or publishes. Reload Obsidian with Cmd/Ctrl+R after edit or restore
+and screenshot-check the result.
 
-> "When you say the tabs above the note, I am treating that as the workspace tab headers, not the arrows/book/dots row inside the note pane."
-
-This is the main mistake-prevention step. Most frustrating failures came from changing a plausible element that was not the object Dan meant, or changing a child when the wrapper/header/stage owned the visible shape.
-
-## Stable Layer Stack
-
-Use this compact map first, then verify exact selectors in the live vault:
-
-| Dan points at | Usually means |
-| --- | --- |
-| top-left white/native area | titlebar/native chrome or adjacent app header |
-| tabs above note | workspace tab headers |
-| plus next to tab | new tab control |
-| green/top bar | app frame or tab header container |
-| far-left icons | ribbon / side dock |
-| selected side icon | active side-dock tab header plus icon state |
-| buttons above file list | file explorer nav controls |
-| left note/folder buttons | file explorer tree rows |
-| vault name/footer | side dock profile/footer |
-| arrows/book/dots above note | markdown view header |
-| note/page/paper | markdown leaf, editor, or readable surface |
-| note shadow/lift/edge | stage, shell, gutter, overflow, or pseudo-element relationship |
-| properties | metadata container or Properties View workflow |
-| links | internal link spans in reading/editing modes |
-| right sidebar | right workspace split and utility leaves |
-| linked mentions/backlinks | backlinks plugin result groups |
-| graph | graph plugin leaf/canvas |
-| bottom stats | status bar |
-
-The visible object and backend layer should be treated as stable across Obsidian work. Exact class names can vary by theme/plugin/app version, so verify in the live vault before patching.
-
-## Change-Type Split
-
-The same object needs different work depending on the request:
-
-- **Color/accent**: update background, text, border, icon stroke/fill, and active/hover/focus states together.
-- **Readability**: check rendered contrast, especially for icons on colored toolbars.
-- **Lift/depth**: decide foreground, stage, shell, gutter, overflow, and exterior shadow. Lift is a relationship, not just `box-shadow`.
-- **Rounded corners**: check parent shell, child radius, overflow, and adjacent background.
-- **Structure**: style the wrapper/header/shell that owns the visible shape.
-- **Simplification**: remove wrappers, borders, gradients, shadows, or pseudo-elements before adding more treatment.
-- **Properties/workflow**: consider Obsidian's Properties View or display settings before CSS-compressing metadata.
-- **Refactor**: preserve cascade order and verify the screenshot does not change.
-
-If a target needs two change types, do two passes. For example, make side-dock icons readable first, then tune the selected-state color.
-
-## What To Change First
-
-Start with:
-
-- active CSS snippets from `appearance.json`
-- Obsidian settings when the issue is a workspace behavior
-- Style Settings or theme variables when the change should remain tunable
-- stable Obsidian wrappers: tab headers, view headers, pane shells, side docks, file rows, note surface, backlinks groups
-
-Avoid changing first:
-
-- Obsidian app bundle files
-- community plugin source files
-- installed theme source files
-- vault content just to force visual styling
-- app internals/minified code before active snippets and theme CSS are ruled out
-
-Ask for explicit confirmation before:
-
-- switching themes
-- disabling snippets or plugins
-- hiding/moving properties as a workflow change
-- changing global typography or editor density substantially
-- deleting archived experiments
-- changing files outside `.obsidian/snippets` or Obsidian settings
-
-## Screenshot Gate
-
-CSS validity is not visual success. The screenshot is product truth.
-
-For every meaningful visual pass:
-
-1. Save checkpoint.
-2. Patch.
-3. Format CSS.
-4. Reload or focus Obsidian.
-5. Screenshot the affected area.
-6. Compare the screenshot to the complaint.
-
-If another window covers Obsidian, retake the screenshot. Verify the verifier: confirm Obsidian is actually frontmost before trusting a capture (AppleScript can check the frontmost process). If the issue is tiny, capture just that region — `screencapture -R<x,y,w,h> out.png` — around the edge, icon, tab, row, or pane.
-
-If the screenshot disproves the fix, keep working, restore, or say it failed. Do not close as if formatting proved success.
-
-## Failure Signals
-
-Dan's corrections are selector evidence:
-
-- "nothing changed" means wrong selector, wrong layer, clipping, coverage, or override.
-- "still wrapped" usually means both wrapper and child are styled.
-- "not lifted" means the stage/shell/gutter relationship is wrong or too subtle.
-- "right side got lighter" points to an overlay or pseudo-element on top of the note.
-- "icon is impossible to see" means active/inactive button fill and icon color must be handled together.
-- "overdone" often means remove treatment before adding another one.
-
-If a direction fails twice, restore the last good checkpoint and change the ownership model.
-
-## Refactor Rule
-
-Do not refactor during taste exploration.
-
-When Dan likes the look:
-
-1. Save a baseline checkpoint.
-2. Add or update a file map and section headers.
-3. Preserve selector order unless changing it intentionally.
-4. Format CSS.
-5. Check the diff for accidental visual changes.
-6. Screenshot Obsidian.
-7. Archive inactive iterations outside `.obsidian/snippets`.
-
-CSS size is usually less dangerous than cascade confusion and a messy active snippet picker.
-
-## Closing Report
-
-When done, keep the closeout short. Report:
-
-- active snippet files changed
-- checkpoint paths saved
-- what Dan phrase mapped to which Obsidian layer
-- what was screenshot-verified
-- anything not verified or intentionally deferred
-
-Avoid explaining the whole workflow after every small pass. The workflow should be visible in the actions: checkpoint, scoped edit, screenshot, and evidence-based next step.
+Report changed files, backup paths, phrase-to-layer mapping, `git diff` status,
+reload/screenshot result, and anything unverified. Do not mutate wiki pages,
+`log.md`, `index.md`, `hot.md`, or `.manifest.json`.

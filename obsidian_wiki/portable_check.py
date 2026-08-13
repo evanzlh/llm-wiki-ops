@@ -22,12 +22,12 @@ from .portable import (
     _BOOTSTRAP_REFERENCES,
     _INDEX,
     _LOG,
-    _PORTABLE_AGENT_INSTRUCTIONS,
     MANAGED_END,
     MANAGED_SKILLS_INVENTORY,
     MANAGED_START,
     PROJECT_AGENT_DIRS,
-    _bootstrap_body,
+    UNSUPPORTED_PERSONAL_VAULT_PATHS,
+    render_portable_bootstrap,
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
@@ -247,6 +247,21 @@ def _load_manifest(
         )
         return None, []
     return store, entries
+
+
+def _check_unsupported_personal_artifacts(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> None:
+    for name in UNSUPPORTED_PERSONAL_VAULT_PATHS:
+        path = config.vault / name
+        if path.exists() or path.is_symlink():
+            issues.append(
+                CheckIssue(
+                    "unsupported-personal-artifact",
+                    _rel(config.root, path),
+                    "Personal vault artifact is not supported",
+                )
+            )
 
 
 def _source_files(
@@ -642,7 +657,7 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
             require_trust_ledger=False,
             strict_trust=False,
         )
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         issues.append(CheckIssue("lint-invalid", ".", _scrub(config.root, exc)))
         return
     findings = report.get("findings", {})
@@ -995,14 +1010,8 @@ def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
                 "portable byte-stability attributes are missing or stale",
             )
         )
-    targets: list[tuple[str, str]] = [
-        ("AGENTS.md", _PORTABLE_AGENT_INSTRUCTIONS),
-        *(
-            (relative, _bootstrap_body(reference))
-            for relative, reference in _BOOTSTRAP_REFERENCES.items()
-        ),
-    ]
-    for relative, expected_body in targets:
+    targets = ("AGENTS.md", *_BOOTSTRAP_REFERENCES)
+    for relative in targets:
         path = config.root / relative
         if not _ordinary_file(path) or _has_symlink_component(config.root, path):
             issues.append(
@@ -1037,9 +1046,11 @@ def _check_bootstrap(config: PortableConfig, issues: list[CheckIssue]) -> None:
                 )
             )
             continue
-        managed = text[start + len(MANAGED_START) : end]
-        expected = "\n" + expected_body.rstrip() + "\n"
-        if managed != expected:
+        try:
+            expected = render_portable_bootstrap(relative, text)
+        except (OSError, UnicodeDecodeError, ValueError):
+            expected = ""
+        if text != expected:
             issues.append(
                 CheckIssue(
                     "managed-bootstrap-invalid",
@@ -1073,6 +1084,7 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     if loaded is None:
         return _report(issues)
 
+    _check_unsupported_personal_artifacts(loaded, issues)
     store, entries = _load_manifest(loaded, issues)
     if store is not None:
         _check_sources(store, entries, issues)

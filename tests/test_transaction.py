@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,170 @@ from obsidian_wiki.transaction_validation import (
     validate_page_metadata,
     validate_prospective_pages,
 )
+
+
+def test_commit_holds_manifest_session_before_snapshot_and_through_manifest_updates(
+    tmp_path: Path, operation_writer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="tx-manifest-session")
+    candidate_page(record, "concepts/a.md")
+    active = False
+    observed_upsert = False
+    original_session = ShardedManifest.mutation_session
+    original_snapshot = manager._snapshot_targets
+    original_upsert = ShardedManifest.upsert
+
+    @contextmanager
+    def tracked_session(store):
+        nonlocal active
+        with original_session(store):
+            active = True
+            try:
+                yield store
+            finally:
+                active = False
+
+    def checked_snapshot(*args, **kwargs):
+        assert active
+        return original_snapshot(*args, **kwargs)
+
+    def checked_upsert(store, *args, **kwargs):
+        nonlocal observed_upsert
+        assert active
+        observed_upsert = True
+        return original_upsert(store, *args, **kwargs)
+
+    monkeypatch.setattr(ShardedManifest, "mutation_session", tracked_session)
+    monkeypatch.setattr(manager, "_snapshot_targets", checked_snapshot)
+    monkeypatch.setattr(ShardedManifest, "upsert", checked_upsert)
+
+    manager.commit("tx-manifest-session")
+    assert observed_upsert
+    assert not active
+
+
+def test_commit_rejects_source_content_drift_after_begin(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source], transaction_id="tx-source-freeze")
+    candidate_page(record, "concepts/a.md")
+    source.write_text("changed after candidate generation", encoding="utf-8")
+
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-source-freeze")
+    assert manager.load("tx-source-freeze").status in {"active", "failed"}
+
+
+def test_commit_rejects_source_drift_after_initial_verification(
+    tmp_path: Path, operation_writer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source], transaction_id="tx-source-race")
+    candidate_page(record, "concepts/a.md")
+    original = manager._snapshot_targets
+
+    def drift_after_verify(*args, **kwargs):
+        result = original(*args, **kwargs)
+        source.write_text("drift after verify", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(manager, "_snapshot_targets", drift_after_verify)
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-source-race")
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+
+
+def test_commit_rejects_source_drift_from_operation_writer(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+
+    def writer(change) -> Path:
+        source.write_text("drift in operation writer", encoding="utf-8")
+        path = config.vault / "journal/operations" / f"{change.transaction_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# operation\n", encoding="utf-8")
+        return path
+
+    manager = TransactionManager(config, operation_writer=writer)
+    record = manager.begin([source], transaction_id="tx-writer-drift")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-writer-drift")
+    assert manager.load("tx-writer-drift").status != "complete"
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert not (config.vault / "journal/operations/tx-writer-drift.md").exists()
+
+
+def _remove_source_preimages_for_legacy_fixture(workspace: Path) -> None:
+    metadata = workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload.pop("source_preimages")
+    metadata.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_legacy_active_transaction_can_list_and_abort_but_not_commit(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="legacy-active")
+    candidate_page(record, "concepts/a.md")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+
+    loaded = manager.list_transactions()[0]
+    assert loaded.legacy_source_preimages
+    with pytest.raises(TransactionError, match="legacy.*restart"):
+        manager.commit("legacy-active")
+    manager.abort("legacy-active")
+    assert not record.workspace.exists()
+
+
+def test_legacy_failed_transaction_can_restore_and_discard(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="legacy-failed")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError):
+        manager.commit("legacy-failed")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+
+    with pytest.raises(TransactionError, match="legacy.*restore|legacy.*discard"):
+        manager.retry("legacy-failed")
+    manager.restore("legacy-failed")
+    assert manager.load("legacy-failed").status == "restored"
+    manager.discard("legacy-failed")
+
+
+def test_legacy_transaction_cli_lists_and_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="legacy-cli")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+    monkeypatch.chdir(root)
+
+    assert cli_module.main(["transaction", "list", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["transaction_id"] == "legacy-cli"
+    assert cli_module.main(
+        ["transaction", "abort", "legacy-cli", "--json"]
+    ) == 0
+    capsys.readouterr()
+    assert not record.workspace.exists()
 
 PAGE = """---
 title: A
@@ -84,6 +249,21 @@ def add_source(root: Path, name: str = "a.md") -> Path:
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("source", encoding="utf-8")
     return source
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_begin_rejects_ordinary_repository_rebound(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    root.rename(tmp_path / "original-knowledge")
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "wiki/concepts").mkdir(parents=True)
+    (root / "sources").mkdir()
+
+    with pytest.raises(TransactionError, match="repository root changed"):
+        manager.begin([], transaction_id="rebound")
+
+    assert not config.local_state.exists()
 
 
 @pytest.fixture
@@ -786,7 +966,7 @@ def test_windows_reparse_attribute_is_treated_as_unsafe() -> None:
     assert TransactionManager._is_reparse_point(metadata)
 
 
-def test_transaction_lifecycle_without_posix_filesystem_capabilities(
+def test_transaction_manifest_mutation_fails_closed_without_posix_capabilities(
     tmp_path: Path,
     operation_writer,
     monkeypatch: pytest.MonkeyPatch,
@@ -836,8 +1016,9 @@ def test_transaction_lifecycle_without_posix_filesystem_capabilities(
     candidate_page(record, "concepts/a.md")
     manager.mark_delete("tx-1", "concepts/deleted.md")
 
-    manager.commit("tx-1")
-    manager.restore("tx-1")
+    with pytest.raises(TransactionError, match="safe manifest mutation requires"):
+        manager.commit("tx-1")
+
     manager.discard("tx-1")
 
     assert deleted.read_text(encoding="utf-8") == PAGE
@@ -996,7 +1177,7 @@ def test_commit_refuses_target_changed_after_begin(
     assert manager.lock_path.exists()
 
 
-def test_source_drift_does_not_count_as_output_target_drift(
+def test_source_drift_requires_transaction_restart(
     tmp_path: Path, operation_writer
 ) -> None:
     root, config = make_config(tmp_path)
@@ -1006,16 +1187,8 @@ def test_source_drift_does_not_count_as_output_target_drift(
     candidate_page(record, "concepts/a.md")
     source.write_text("new source bytes", encoding="utf-8")
 
-    manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
-
-    entry = ShardedManifest(config).load("sources/a.md")
-    assert entry is not None
-    assert (
-        entry.content_hash
-        == transaction_module.TransactionManager._hash_single_link_file(
-            source, "source"
-        )
-    )
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
 
 
 def test_failed_manifest_write_rolls_back_promoted_page_and_shard(
@@ -4064,24 +4237,41 @@ def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
     assert "requires: the candidate is no longer needed" in result.stderr
 
 
-def test_global_stale_warning_is_skipped_for_non_transaction_json_command(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_transaction_command_rejects_hard_linked_repository_config(
+    tmp_path: Path,
 ) -> None:
-    def stale_warning() -> None:
-        print("stale warning", file=sys.stderr)
+    root, _ = make_config(tmp_path)
+    config = root / ".obsidian-wiki" / "config.toml"
+    duplicate = tmp_path / "config-copy.toml"
+    os.link(config, duplicate)
 
-    def hot_status(args) -> int:
-        cli_module._json_print({"status": "current"}, pretty=args.pretty)
-        return 0
+    result = run_cli(tmp_path / "home", root, "transaction", "list", "--json")
 
-    monkeypatch.setattr(cli_module, "_check_stale", stale_warning)
-    monkeypatch.setattr(cli_module, "cmd_hot_status", hot_status)
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert "single-link ordinary file" in payload["error"]["message"]
+    assert "Traceback" not in result.stdout
 
-    assert cli_module.main(["hot", "status", "--json"]) == 0
-    captured = capsys.readouterr()
-    assert json.loads(captured.out) == {"status": "current"}
-    assert captured.err == ""
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink behavior")
+def test_transaction_json_structures_configured_path_symlink_loop(
+    tmp_path: Path,
+) -> None:
+    root, _ = make_config(tmp_path)
+    (root / "wiki").rename(root / "original-wiki")
+    (root / "wiki").symlink_to("wiki")
+
+    result = run_cli(tmp_path / "home", root, "transaction", "list", "--json")
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert "paths.vault cannot be resolved safely" in payload["error"]["message"]
+    assert "Traceback" not in result.stdout
 
 
 def _prospective_page(

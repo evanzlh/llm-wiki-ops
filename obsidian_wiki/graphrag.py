@@ -1,21 +1,24 @@
 """GraphRAG query index for wiki-query.
 
-Builds a compact in-memory index from vault page frontmatter and wikilinks,
-then answers structural and factual queries against it without opening any
-page bodies. Equivalent to graphify's "query the compiled graph instead of
+Builds a compact in-memory index from bounded vault frontmatter and eligible-page
+wikilinks, then answers structural and factual queries against it without requiring
+an agent to open page bodies. Equivalent to graphify's "query the compiled graph instead of
 raw files" — saves reading 10–50 pages for questions answerable from the
 graph structure.
 
 The agent calls:
-  obsidian-wiki graph-query <vault> "<question>" [options]
+  obsidian-wiki query "<question>" [options]
 
 And gets back a JSON response:
 {
   "answer_type": "direct" | "path" | "list" | "gap",
-  "candidates": [{"page": "...", "score": 0.N, "summary": "..."}, ...],
+  "candidates": [{"page": "...", "score": 0.N, "summary": "...",
+                  "visibility": [], "lifecycle": "...", "updated": "..."}, ...],
   "path": ["page-a", "page-b", "page-c"],   # multi-hop, if applicable
   "god_nodes_relevant": ["page", ...],        # hub pages related to query terms
   "should_read": ["page-a.md", "page-b.md"], # pages worth opening for full detail
+  "should_read_metadata": [{"page": "page-a.md", "visibility": [],
+                            "lifecycle": "...", "updated": "..."}],
   "index_only": true/false                    # true = answer is complete without page reads
 }
 
@@ -30,66 +33,28 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
+from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
+from .safe_files import read_markdown_snapshot, scan_markdown_headers
+
 
 # ---------------------------------------------------------------------------
 # Index building
 # ---------------------------------------------------------------------------
 
-_FRONT_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
-_TAGS_RE = re.compile(r"^tags:\s*\[([^\]]+)\]", re.MULTILINE)
-_TAGS_LIST_RE = re.compile(r"^tags:\s*\n((?:\s+-\s+\S+\n)+)", re.MULTILINE)
-_CATEGORY_RE = re.compile(r"^category:\s*(\w+)", re.MULTILINE)
-_TIER_RE = re.compile(r"^tier:\s*(\w+)", re.MULTILINE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
 
-# A bare `>`, `>-`, `>+`, `|`, `|-`, `|+` (optionally followed by an indent
-# indicator digit) marks a YAML block scalar — the real value lives on the
-# following indented lines, not on this line.
-_BLOCK_SCALAR_RE = re.compile(r"^[>|][+-]?\d*$")
-
 SKIP_DIRS = frozenset(
-    "_raw _archived _staging _archives .obsidian".split()
+    "_archived .obsidian".split()
 )
+BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 
 
 def _slug(s: str) -> str:
     return s.strip().lower().replace(" ", "-")
 
 
-def _extract_scalar(front: str, key: str) -> str:
-    """Extract a YAML scalar frontmatter value, folding block scalars (>, |).
-
-    Handles both `key: value` and the block-scalar form:
-        key: >-
-          wrapped
-          text
-    where the real value lives on subsequent indented lines, not on the
-    `key:` line itself (see issue #156 — a naive same-line regex captures
-    the `>-` indicator instead of the text).
-    """
-    lines = front.splitlines()
-    pattern = re.compile(rf"^{re.escape(key)}:\s*(.*)$")
-    for i, line in enumerate(lines):
-        m = pattern.match(line)
-        if not m:
-            continue
-        rest = m.group(1).strip()
-        if not rest or _BLOCK_SCALAR_RE.match(rest):
-            block_lines = []
-            for cont in lines[i + 1:]:
-                if cont.strip() == "":
-                    continue
-                if re.match(r"^\s+\S", cont):
-                    block_lines.append(cont.strip())
-                else:
-                    break
-            return " ".join(block_lines).strip()
-        return rest.strip("\"'")
-    return ""
-
-
-def build_index(vault: Path) -> dict[str, dict]:
+def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     """Build a lightweight index dict from vault frontmatter and wikilinks.
 
     Returns:
@@ -97,66 +62,71 @@ def build_index(vault: Path) -> dict[str, dict]:
     """
     pages: dict[str, dict] = {}
 
-    md_files = [
-        p for p in vault.rglob("*.md")
-        if not any(part in SKIP_DIRS for part in p.relative_to(vault).parts)
-    ]
+    headers = scan_markdown_headers(vault, skip_dirs=SKIP_DIRS)
+    eligible = []
 
     # First pass: collect all slugs and frontmatter
-    for page in md_files:
-        slug = _slug(page.stem)
+    for header in headers:
+        page = header
+        slug = _slug(page.path.stem)
         try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            text = page.text()
+        except ValueError:
+            if public_only:
+                continue
+            raise
+
+        try:
+            parsed, _body = split_frontmatter(text)
+        except FrontmatterError:
+            if public_only:
+                continue
+            raise
+        values = frontmatter_values(parsed)
+        title = str(values.get("title", "")).strip()
+        raw_tags = values.get("tags", ())
+        tags = (
+            [str(tag) for tag in raw_tags]
+            if isinstance(raw_tags, tuple)
+            else ([str(raw_tags)] if raw_tags else [])
+        )
+
+        if public_only and BLOCKED_PUBLIC_TAGS.intersection(tags):
             continue
 
-        front_m = _FRONT_RE.match(text)
-        front = front_m.group(1) if front_m else ""
+        summary = str(values.get("summary", "")).strip()
 
-        title = _extract_scalar(front, "title")
+        category = str(values.get("category", "")).strip() or str(
+            Path(page.relative).parent
+        )
 
-        tags: list[str] = []
-        m = _TAGS_RE.search(front)
-        if m:
-            tags = [t.strip().strip("'\"") for t in m.group(1).split(",")]
-        else:
-            m2 = _TAGS_LIST_RE.search(front)
-            if m2:
-                tags = [ln.strip().lstrip("- ") for ln in m2.group(1).splitlines() if ln.strip()]
-
-        summary = _extract_scalar(front, "summary")
-
-        category = str(page.relative_to(vault).parent)
-        m = _CATEGORY_RE.search(front)
-        if m:
-            category = m.group(1).strip()
-
-        tier = "supporting"
-        m = _TIER_RE.search(front)
-        if m:
-            tier = m.group(1).strip()
+        tier = str(values.get("tier", "supporting")).strip()
+        lifecycle = str(values.get("lifecycle", "")).strip()
+        updated = str(values.get("updated", "")).strip()
 
         pages[slug] = {
-            "title": title or page.stem,
+            "title": title or page.path.stem,
             "tags": tags,
             "summary": summary,
             "category": category,
             "tier": tier,
-            "path": str(page.relative_to(vault)),
+            "visibility": [tag for tag in tags if tag.startswith("visibility/")],
+            "lifecycle": lifecycle,
+            "updated": updated,
+            "path": page.relative,
             "out_links": [],
             "in_links": [],
         }
+        eligible.append(header)
 
     # Second pass: extract wikilinks
     known = set(pages.keys())
-    for page in md_files:
-        slug = _slug(page.stem)
+    for header in eligible:
+        page = read_markdown_snapshot(header)
+        slug = _slug(page.path.stem)
         if slug not in pages:
             continue
-        try:
-            text = page.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        text = page.text(errors="replace")
 
         for link in _WIKILINK_RE.findall(text):
             target = _slug(link.split("/")[-1])
@@ -218,6 +188,9 @@ def rank_candidates(
             "score": _score(slug, entry, terms),
             "summary": entry["summary"],
             "tier": entry["tier"],
+            "visibility": entry["visibility"],
+            "lifecycle": entry["lifecycle"],
+            "updated": entry["updated"],
             "in_degree": len(entry["in_links"]),
         }
         for slug, entry in index.items()
@@ -318,8 +291,9 @@ def query(
     *,
     top_n: int = 8,
     max_should_read: int = 3,
+    public_only: bool = False,
 ) -> dict[str, Any]:
-    index = build_index(vault)
+    index = build_index(vault, public_only=public_only)
     if not index:
         return {
             "answer_type": "direct",
@@ -327,6 +301,7 @@ def query(
             "path": [],
             "god_nodes_relevant": [],
             "should_read": [],
+            "should_read_metadata": [],
             "index_only": True,
             "note": "Vault appears empty.",
         }
@@ -372,6 +347,15 @@ def query(
             if p not in should_read:
                 should_read.append(p)
         should_read = should_read[:max_should_read + 2]
+    trust_by_path = {
+        entry["path"]: {
+            "page": entry["path"],
+            "visibility": entry["visibility"],
+            "lifecycle": entry["lifecycle"],
+            "updated": entry["updated"],
+        }
+        for entry in index.values()
+    }
 
     return {
         "answer_type": answer_type,
@@ -382,12 +366,16 @@ def query(
                 "score": round(c["score"], 2),
                 "summary": c["summary"],
                 "tier": c["tier"],
+                "visibility": c["visibility"],
+                "lifecycle": c["lifecycle"],
+                "updated": c["updated"],
             }
             for c in candidates
         ],
         "path": path_result,
         "god_nodes_relevant": god_relevant,
         "should_read": should_read,
+        "should_read_metadata": [trust_by_path[path] for path in should_read],
         "index_only": index_only,
         "stats": {
             "indexed_pages": len(index),

@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import obsidian_wiki.context_pack as context_pack
+from obsidian_wiki.frontmatter import FrontmatterError
+
 from obsidian_wiki.context_pack import (
     ContextError,
     build_context_pack,
@@ -57,11 +60,57 @@ Prefer short-lived access tokens.
     assert page.base_confidence == "0.82"
 
 
-def test_load_pages_skips_control_and_staging_paths(tmp_path: Path) -> None:
+def test_load_pages_does_not_hide_unsupported_personal_artifact_paths(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
-    for relative, text in (("AGENTS.md", "# Instructions\n"), ("hot.md", "# Hot\n"), ("_raw/draft.md", "# Draft\n"), ("_staging/review.md", "# Review\n"), ("_archives/old.md", "# Old\n"), ("AI/kept.md", "# Kept\n\nUseful knowledge.\n")):
+    pages = (
+        ("AGENTS.md", "# Instructions\n"),
+        ("hot.md", "# Hot\n"),
+        ("_raw/draft.md", "# Draft\n"),
+        ("_staging/review.md", "# Review\n"),
+        ("_archives/old.md", "# Old\n"),
+        ("_readouts/brief.md", "# Brief\n"),
+        ("AI/kept.md", "# Kept\n\nUseful knowledge.\n"),
+    )
+    for relative, text in pages:
         write_note(vault, relative, text)
-    assert [page.path for page in load_pages(vault)] == ["AI/kept.md"]
+    assert [page.path for page in load_pages(vault)] == [
+        "AI/kept.md",
+        "_archives/old.md",
+        "_raw/draft.md",
+        "_readouts/brief.md",
+        "_staging/review.md",
+    ]
+
+
+def test_load_pages_rejects_external_symlink_without_leaking_content(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    raw = vault / "_raw"
+    raw.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("# SECRET-MARKER\n", encoding="utf-8")
+    (raw / "leak.md").symlink_to(secret)
+
+    with pytest.raises(RuntimeError, match="symlink") as raised:
+        load_pages(vault)
+
+    assert "SECRET-MARKER" not in str(raised.value)
+
+
+def test_load_pages_ignores_unrelated_non_markdown_symlink(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    write_note(vault, "kept.md", "# Kept\n\nPublic content.\n")
+    secret = tmp_path / "secret.json"
+    secret.write_text("SECRET-MARKER\n", encoding="utf-8")
+    (vault / "unrelated.json").symlink_to(secret)
+
+    pages = load_pages(vault)
+
+    assert [page.path for page in pages] == ["kept.md"]
+    assert "SECRET-MARKER" not in pages[0].body
 
 
 def test_public_only_filters_before_ranking(tmp_path: Path) -> None:
@@ -70,6 +119,74 @@ def test_public_only_filters_before_ranking(tmp_path: Path) -> None:
     write_note(vault, "pii.md", "---\ntitle: PII\ntags: [visibility/pii]\nsummary: Personal details.\n---\n# PII\n")
     write_note(vault, "public.md", "# Public\n\nPublic launch plan.\n")
     assert [page.path for page in load_pages(vault, public_only=True)] == ["public.md"]
+
+
+def test_public_only_does_not_full_read_blocked_body(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_note(
+        vault,
+        "blocked.md",
+        "---\ntitle: Blocked\ntags: [visibility/internal]\nsummary: Private\n---\n"
+        "# Blocked\n\nPRIVATE-BODY-SENTINEL\n",
+    )
+    write_note(vault, "public.md", "# Public\n\nPublic body.\n")
+    reads: list[str] = []
+    original = context_pack.read_markdown_snapshot
+
+    def observed(snapshot):
+        reads.append(snapshot.relative)
+        return original(snapshot)
+
+    monkeypatch.setattr(context_pack, "read_markdown_snapshot", observed)
+
+    pages = load_pages(vault, public_only=True)
+
+    assert [page.path for page in pages] == ["public.md"]
+    assert "blocked.md" not in reads
+
+
+def test_invalid_public_metadata_is_excluded_before_body_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    vault = tmp_path / "vault"
+    write_note(
+        vault,
+        "invalid.md",
+        "---\ntags: [public]\ntags: [visibility/internal]\n---\n"
+        "PRIVATE-BODY-SENTINEL\n",
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        context_pack,
+        "read_markdown_snapshot",
+        lambda snapshot: reads.append(snapshot.relative),
+    )
+
+    assert load_pages(vault, public_only=True) == []
+    assert reads == []
+    with pytest.raises(FrontmatterError, match="duplicate"):
+        load_pages(vault)
+
+
+def test_public_only_parses_cr_only_private_metadata_before_body_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "private.md").write_bytes(
+        b"---\rtitle: Private\rtags:\r"
+        b"  - visibility/internal # restricted\r---\r"
+        b"PRIVATE-BODY-SENTINEL\r"
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        context_pack,
+        "read_markdown_snapshot",
+        lambda snapshot: reads.append(snapshot.relative),
+    )
+
+    assert load_pages(vault, public_only=True) == []
+    assert reads == []
 
 
 def test_public_only_handles_yaml_comments_without_losing_quoted_hashes(

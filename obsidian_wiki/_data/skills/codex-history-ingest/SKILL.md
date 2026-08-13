@@ -1,357 +1,74 @@
 ---
 name: codex-history-ingest
-description: >
-  Ingest Codex CLI conversation history into the Obsidian wiki. Use this skill when the user wants to mine
-  their past Codex sessions for knowledge, import their ~/.codex folder, extract insights from previous coding
-  sessions, or says things like "process my Codex history", "add my Codex conversations to the wiki", or
-  "what have I discussed in Codex before". Also triggers when the user mentions .codex sessions, rollout files,
-  session_index.jsonl, or Codex transcript logs.
+description: Use when mining selected Codex rollout sessions for durable repository knowledge.
 ---
 
-# Codex History Ingest — Conversation Mining
+# Codex History Ingest
 
-You are extracting knowledge from the user's past Codex sessions and distilling it into the Obsidian wiki. Session logs are rich but noisy: focus on durable knowledge, not operational telemetry.
+Mine selected Codex sessions while keeping the cache transient. Read [Codex data format](references/codex-data-format.md) and [source snapshot rules](../wiki-capture/references/source-snapshot.md).
 
-This skill can be invoked directly or via the `wiki-history-ingest` router (`/wiki-history-ingest codex`).
+## Mandatory authority preflight
 
-## Before You Start
+Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
 
-1. **Resolve config and ownership** — follow the Config Resolution Protocol in
-   `llm-wiki/SKILL.md`: explicit `@name`, nearest ancestor
-   `.obsidian-wiki/config.toml`, nearest ancestor `.env` containing
-   `OBSIDIAN_VAULT_PATH`, `~/.obsidian-wiki/config`, then setup guidance. The
-   parent agent resolves config and mode, records the concrete runtime vault
-   and Codex-history paths, and reads the owner `AGENTS.md` at the resolved
-   vault before any other work.
-2. Select one terminal workflow after the shared analysis and page-preparation steps:
-   **Portable Repository completion** or **Personal mode completion**. Never
-   mix their page-write or tracking operations. The Portable branch implements
-   the canonical Portable Write Protocol locally. Shared discovery, filtering,
-   extraction, clustering, and drafting is read-only. If work is divided, use
-   analysis-only workers: they return session inventories, evidence, and page
-   proposals but never resolve mode, snapshot sources, begin transactions, or
-   mutate the vault. The parent agent owns completion.
-3. **Read mode-appropriate state.** Personal mode reads manifest v1 and
-   `index.md` from the concrete resolved vault. Portable Repository mode may
-   inspect existing knowledge pages read-only, but Codex cache/index/rollout
-   files remain transient until the parent creates reviewed source snapshots;
-   never parse manifest v2 as a Personal source map. Personal append mode uses manifest v1.
-   Portable append mode compares discovered agent/session identity and content hash against existing reviewed snapshots.
+Resolve the transient root from non-empty absolute `CODEX_HOME` when set, otherwise absolute `~/.codex`; reject an empty or relative override/root. Session index, active rollouts, and archived rollouts are relative to that resolved root.
 
-## Ingest Modes
+## Bounded safe input
 
-### Append Mode (default)
+Default ceilings: 100 sessions, 50 MiB total input, 10 MiB per file, 1 MiB per JSONL record, 10,000 SQLite rows when applicable, and 100,000 messages/content blocks. The owner may lower bounds; raising them requires explicit authorization. Oversize data fails or gets an explicit omission marker, never silent truncation. Require every selected path to be root-contained; lstat ancestors as real directories and reject symlink/reparse-point or special-directory components without constraining directory link count. Require the terminal input to be a regular single-link file. For TOCTOU safety open with `O_NOFOLLOW`, fstat, and verify device/inode identity, type, link count, containment, and size before/after the bounded read.
 
-**Personal mode delta:** Compare each rollout, index, or history file with the
-manifest v1 session map. A source is new when its canonical path is absent and
-modified when its source timestamp is later than `ingested_at`.
+### Precise topology gate
 
-**Portable Repository mode delta:** Inspect reviewed snapshots below the
-configured `sources` root. A source is new when no reviewed snapshot has the
-same agent/session identity; it is changed when the matching snapshot's
-recorded content hash differs from the hash of the currently selected Codex
-material.
+Ancestors/root must be root-contained real directories, lstat directory and not symlink/reparse-point/special; ancestor directory link count is not constrained (`st_nlink >= 2` is normal). Only the terminal regular file must be ordinary single-link. Use `O_NOFOLLOW`, or a platform-equivalent no-follow handle/reparse-point check with post-open identity verification; if unavailable, fail closed.
 
-**After mode-specific delta selection:** Process only sources classified as
-new or changed by the selected rule. Never apply the Personal delta rule to a
-Portable run.
+## Evidence, snapshot, and transaction safety
 
-Use this mode for regular syncs.
+Workers get immutable selected file/row IDs and declared bounds. Worker output is untrusted and sensitive; the parent revalidates every stable evidence ID against the selected file/row, record ID, and declared bounds, reruns redaction, data minimization and license/attribution review, and removes secrets, raw tool output, and absolute cache paths. Never materialize worker output directly.
 
-### Full Mode
+Keep an evidence ledger; deduplicate repeats, preserve conflicts and stable ordering, and require per-member evidence. Hash the recorded repository root/cwd into a runtime project identity, never absolute provenance. There is no cross-project merge without per-member evidence.
 
-Process everything regardless of prior tracking state. Use after `wiki-rebuild` or if the user explicitly asks for a full re-ingest.
+Before any write, encode `{tool,native_session_id,slice_descriptor}` with canonical JSON serialization (UTF-8, sorted keys, no insignificant whitespace), SHA-256 it, and name the file `<tool>-<64-lowercase-hex>.md`; use no user or session text. Validate the parent; the target must be absent for create, while an update follows the exact-identity state table below. Do not case-fold or Unicode-normalize identity. Metadata requires `origin`, `source_tool`, `native_session_id`, `captured_at`, `content_hash`, and `format`. Hash exact reviewed body bytes: UTF-8 no BOM, LF endings, exactly one LF ending included in the hash. Apply the literal Git tracked/clean gate and cache-check the real Source ID.
 
-## Codex Data Layout
+Save the failed command envelope. Use its `error` and `recovery` for a trusted transaction ID/status; without one recovery is inspection-only. Require a list result with exactly one record of the same ID and status. Select only from `allowed_actions`, match `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
-Codex stores local artifacts under `~/.codex/`.
+Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; if stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot candidate or derived artifact, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
 
-```
-~/.codex/
-├── sessions/                          # Session rollout logs by date
-│   └── YYYY/MM/DD/
-│       └── rollout-<timestamp>-<id>.jsonl
-├── archived_sessions/                 # Archived rollout logs
-├── session_index.jsonl                # Lightweight index of thread id/name/updated_at
-├── history.jsonl                      # Local transcript history (if persistence enabled)
-├── config.toml                        # User config (contains history settings)
-└── state_*.sqlite / logs_*.sqlite     # Runtime DBs (usually skip)
+## Discovery and parsing
+
+Inventory `<resolved CODEX_HOME>/session_index.jsonl`, `<resolved CODEX_HOME>/sessions/**/rollout-*.jsonl`, and `<resolved CODEX_HOME>/archived_sessions/` only when explicitly requested. Use the index for stable thread ID, name, and freshness, then open only explicitly selected session files. Parse one JSON object per line: `session_meta` establishes ID/cwd/model; `turn_context` establishes project and branch context; `event_msg` and `response_item` carry user/assistant content. Keep text and reasoning summaries that support durable decisions. Skip token counts, progress, raw tool payloads, environment dumps, and encrypted content. Attribute projects from recorded `cwd`, never from cache-directory guesses.
+
+Append selection compares stable tool/session identity and content hash against snapshots; Full may reconsider unchanged sessions without changing extraction semantics. Bound sessions, bytes/lines, time range, and excerpts. Redact secrets, credentials, private material, and irrelevant content. Preserve valid Unicode exactly.
+
+## Parent and worker boundary
+
+The parent owns selection, snapshot materialization, repository/vault mutation, complete source closure, transaction begin, final candidates, validation, review, commit, reported recovery, and hot refresh. Workers are analysis-only over immutable inputs naming explicitly selected session files and bounded ranges. They return evidence and proposals only; they do not discover, write, list, or mutate.
+
+### Existing snapshot preservation and identity
+
+Persist these history-extension frontmatter fields:
+
+```yaml
+slice_identity: sha256:<64-lowercase-hex>
+slice_descriptor: <bounded-redacted-human-description>
 ```
 
-### Key data sources ranked by value
+The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
 
-1. `session_index.jsonl` — best inventory source for IDs, titles, and freshness
-2. `sessions/**/rollout-*.jsonl` — rich structured transcript events
-3. `history.jsonl` — useful fallback/timeline aid if enabled
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
-Avoid ingesting SQLite internals unless the user explicitly asks.
+## Repository-native completion
 
-## Step 1: Survey and Compute Delta
+Snapshot identity state table: absent target -> create, so target must be absent only for initial creation. An existing hashed target may be updated only when it is ordinary single-link, Git-tracked, and its `source_tool`, `native_session_id`, and slice descriptor/logical identity exactly match the tuple; use owner-reviewed atomic replacement. Explicit ingest authorizes the parent agent to replace the source, while Git stage/commit stay owner-only. Changed append/Full reuses the same Source ID and changes `content_hash`; identity mismatch or hash collision fails closed.
 
-Scan `CODEX_HISTORY_PATH` to build the source inventory:
+After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
-- `~/.codex/session_index.jsonl`
-- `~/.codex/sessions/**/rollout-*.jsonl`
-- `~/.codex/archived_sessions/**` (optional; only if user asks for archived history)
-- `~/.codex/history.jsonl` (optional fallback)
+Every absolute cache path is transient and must never appear in snapshot or page provenance.
 
-**Personal mode survey:** Compare the inventory with the concrete vault's
-manifest v1 session map. A file is **New** when its canonical path is absent,
-**Modified** when its source timestamp is later than `ingested_at`, and
-**Unchanged** otherwise.
-
-**Portable Repository mode survey:** Inspect reviewed snapshots under the
-configured `sources` root. Selected material is **New** when no reviewed
-snapshot records the same agent/session identity, **Changed** when the matching
-snapshot's recorded content hash differs from the freshly computed hash, and
-**Unchanged** when both identity and hash match.
-
-Report a concise delta summary before deep parsing.
-
-## Step 2: Parse Session Index First
-
-`session_index.jsonl` typically has entries like:
-
-```json
-{"id":"...","thread_name":"...","updated_at":"..."}
-```
-
-Use it to:
-
-- Build a canonical session inventory
-- Prioritize recent/high-signal sessions
-- Map rollout IDs to human-readable thread names
-
-## Step 3: Parse Rollout JSONL Safely
-
-Each `rollout-*.jsonl` line is an event envelope with:
-
-```json
-{
-  "timestamp": "...",
-  "type": "session_meta|turn_context|event_msg|response_item",
-  "payload": { ... }
-}
-```
-
-### Extraction rules
-
-- Prioritize user intent and assistant-visible outputs
-- Favor `response_item` records with user/assistant message content
-- Use `event_msg` selectively for meaningful milestones; ignore pure telemetry
-- Treat `session_meta` as metadata (cwd, model, ids), not user knowledge
-
-### Skip/noise filters
-
-- Token accounting events
-- Tool plumbing with no semantic content
-- Raw command output unless it contains reusable decisions/patterns
-- Repeated plan snapshots unless they add novel decisions
-
-### Critical privacy filter
-
-Rollout logs can include injected instructions, tool payloads, and sensitive text. Do not ingest verbatim system/developer prompts or secrets.
-
-- Remove API keys, tokens, passwords, credentials
-- Redact private identifiers unless relevant and approved
-- Summarize instead of quoting raw transcripts
-
-## Step 4: Cluster by Topic
-
-Do not create one wiki page per session.
-
-- Group by stable topics across many sessions
-- Split mixed sessions into separate themes
-- Merge recurring concepts across dates/projects
-- Use `cwd` from metadata to infer project scope
-
-## Step 5: Distill into Wiki Pages
-
-Route extracted knowledge using existing wiki conventions:
-
-- Project-specific architecture/process -> `projects/<name>/...`
-- General concepts -> `concepts/`
-- Recurring techniques/debug playbooks -> `skills/`
-- Tools/services -> `entities/`
-- Cross-session patterns -> `synthesis/`
-
-For each impacted project, create/update `projects/<name>/<name>.md` (project name as filename, never `_project.md`).
-
-`projects/<name>/<name>.md` uses `category: projects`. Its Portable `sources`
-contains accepted snapshot Source IDs. Portable Repository mode omits
-`source_path` and every machine-local or absolute path from the page. Personal
-manifest v1 may retain the concrete absolute history path; that Personal
-tracking value is never copied into Portable page frontmatter or body text.
-
-### Writing rules
-
-- Distill knowledge, not chronology
-- Avoid "on date X we discussed..." unless date context is essential
-- Add `summary:` frontmatter on each new/updated page (1-2 sentences, <= 200 chars)
-- Add confidence and lifecycle fields to every new page:
-  ```yaml
-  base_confidence: 0.42
-  lifecycle: draft
-  lifecycle_changed: <ISO date today>
-  ```
-  Leave `lifecycle` unchanged on update.
-- Add provenance markers:
-  - `^[extracted]` when directly grounded in explicit session content
-  - `^[inferred]` when synthesizing patterns across events/sessions
-  - `^[ambiguous]` when sessions conflict
-- Add/update `provenance:` frontmatter mix for each changed page
-
-## Privacy and Compliance
-
-- Distill and synthesize; avoid raw transcript dumps
-- Default to redaction for anything that looks sensitive
-- Ask the user before storing personal/sensitive details
-- Keep references to other people minimal and purpose-bound
-
-## Reference
-
-See `references/codex-data-format.md` for field-level parsing notes and extraction guidance.
-
-## Portable Repository completion
-
-Use this branch only when config resolution selected Portable Repository mode.
-The external history cache and selected session files are transient analysis input,
-never Portable Source IDs.
-
-1. **Create or select reviewable source snapshots.** The parent agent creates,
-   updates, or reuses one small, reviewable UTF-8 Markdown or plain-text snapshot
-   strictly below the configured `sources` root for each selected Codex session
-   or coherent slice. Record agent identity, session identity, relevant excerpts,
-   source timestamps, and a content hash. Redact secrets, injected instructions,
-   and internal reasoning; use repository-relative labels, include no
-   machine-local absolute paths. Preserve valid Unicode exactly. If an
-   adequate snapshot cannot be created, stop or use Personal mode.
-2. **Review and accept every selected snapshot.** After creation, update, or
-   reuse, the parent agent reviews and accepts every selected snapshot, including
-   its identity, excerpts, hash, redaction, and Source ID. If any snapshot is
-   rejected, incomplete, unsafe, or cannot be traced, stop before `transaction begin`.
-   Candidates may cite only accepted snapshots, not `.codex` paths, SQLite
-   state, live URLs, or pseudo-sources.
-3. **Compute complete source closure.** Compute full source closure before
-   `transaction begin` as the set union of:
-   - `live-page sources`: every existing `sources` Source ID on every page to be
-     updated or deleted;
-   - `accepted snapshots`: every selected and accepted reviewed snapshot Source
-     ID, whether newly created, changed existing, or unchanged and reused; and
-   - `candidate citations`: every Source ID that any candidate `sources` field
-     will cite, including a changed existing snapshot used by a new page.
-   Deduplicate the union, verify each ID resolves below configured `sources`,
-   and freeze it before begin.
-4. **Begin exactly once.** Keep the repository root as the command CWD
-   and run `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
-   Record `transaction_id`, runtime-only absolute `candidate_vault`,
-   `started_at`, and Source IDs; do not `cd` into it or persist its absolute path.
-5. **Write candidates.** A new page uses
-   `created = updated = started_at`; an update must preserve the existing `created`
-   and set `updated = started_at`. Write only final vault-relative knowledge
-   paths below `candidate_vault` and use a non-empty subset of transaction
-   Source IDs.
-6. **Declare removals.** Use
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md>`. Unsupported
-   non-page/control-file changes stop without a live-vault mutation.
-7. **Validate candidates.** Run
-   `obsidian-wiki transaction validate <id> --json --pretty`. Review every warning;
-   warnings do not block commit. Fix every issue and rerun validation.
-8. **Commit the passing transaction.** Commit a passing report only with
-   `obsidian-wiki transaction commit <id> --json --pretty`.
-9. **Use status-aware recovery.** Follow only a trusted
-   `recovery.preferred_action` or reported alternative whose prerequisites hold;
-   verify the retained record with `obsidian-wiki transaction list --json`:
-   `recommended_action` must agree and the command must be in `allowed_actions`.
-   Fix/revalidate an active preflight failure or run
-   `obsidian-wiki transaction abort <id> --json`. A `promoting` record permits
-   only its reported `obsidian-wiki transaction restore <id> --json`. For a
-   `failed` record, prefer the reported
-   `obsidian-wiki transaction retry <id> --json`; use
-   `obsidian-wiki transaction restore <id> --json` or
-   `obsidian-wiki transaction discard <id> --json` only when allowed and its
-   prerequisites hold. A configuration or begin failure with no trusted transaction ID,
-   or an empty list, has no recovery action. Never replace a transaction while
-   its outcome is ambiguous.
-10. **Refresh local hot context after the terminal gate.** Only after commit
-   succeeds or recovery is fully resolved, run `obsidian-wiki hot status --json`; when stale, run
-   `obsidian-wiki hot inputs --json --pretty`, use only those bounded inputs to write
-   the semantic `hot.md` as the agent, then run
-   `obsidian-wiki hot mark-current --json`.
-11. **Report and stop.** Report sessions, snapshots, created/updated/removed pages, warnings,
-   recovery, and hot-cache status.
-
-Do not run `cache-update`, edit manifest shards, update `index.md` or `log.md`, write `hot.md` as part of the transaction, refresh Personal QMD tracking, create a Git snapshot, commit, or push.
-
-Stop the portable workflow here. Do not continue into Personal mode completion.
-
-## Personal mode completion
-
-Use this branch only when config resolution selected Personal mode. Retain the
-concrete vault, history, QMD CLI, and QMD collection paths in agent memory:
-config resolution does not export these values into the parent shell. Write the prepared pages directly below `<resolved-vault-path>`,
-using current ISO timestamps and preserving `created` on updates.
-
-### Personal direct writes and Git safety
-
-Apply any owner-required Personal Git snapshot against the concrete resolved
-vault before direct writes. Then write or merge all prepared knowledge pages
-at their final paths below `<resolved-vault-path>`; stop before tracking if a
-write fails.
-
-### Personal manifest v1 and cache
-
-For each processed rollout, index, or history file, update
-`<resolved-vault-path>/.manifest.json` as manifest v1 with `ingested_at`,
-`size_bytes`, `modified_at`, `source_type` (`codex_rollout`, `codex_index`, or
-`codex_history`), project, and page lists. Preserve canonical expanded absolute
-Personal source keys and unrelated entries. Retain the project/session summary:
-
-```json
-{
-  "project-name": {
-    "source_path": "<resolved-codex-history-path>/sessions/...",
-    "last_ingested": "TIMESTAMP",
-    "sessions_ingested": 12,
-    "sessions_total": 40,
-    "index_updated_at": "TIMESTAMP"
-  }
-}
-```
-
-Record each source mapping with concrete values:
-
-```bash
-obsidian-wiki cache-update <resolved-vault-path> <source> --pages <page1> [page2 ...] --json --pretty
-```
-
-### Personal central files
-
-Update `<resolved-vault-path>/index.md`. Append to
-`<resolved-vault-path>/log.md`:
-
-```text
-- [TIMESTAMP] CODEX_HISTORY_INGEST sessions=N pages_updated=X pages_created=Y mode=append|full
-```
-
-Read `<resolved-vault-path>/hot.md`, creating the `wiki-ingest` template when
-missing. Update **Recent Activity** with the conceptual Codex ingest, keep the
-last three operations, and bump `updated`.
-
-### Personal QMD refresh
-
-If the concrete QMD collection is configured, refresh only after all Personal
-writes. A failure does not roll back the vault.
-
-```bash
-<resolved-qmd-cli> update
-<resolved-qmd-cli> embed
-<resolved-qmd-cli> get "qmd://<resolved-qmd-wiki-collection>/<page>.md" -l 5
-```
-
-Use `embed` only when vectors are stale or missing and report refreshed,
-skipped, unavailable, or failed status.
-
-Do not fall through into Portable Repository completion. Report the Personal
-page, manifest v1, cache, central-file, Personal Git snapshot, and QMD results,
-then stop.
+1. Parent writes each bounded reviewable UTF-8 Markdown snapshot below `sources/history/<tool>/` (`sources/history/codex/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant material.
+2. Validate each Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics. Reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty output. Tracked is not reviewed: stop for owner review, stage, and commit externally, then rerun.
+3. The parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure and fails closed on any unsafe source.
+4. The parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
+5. The parent alone writes final candidates below the returned candidate vault, with non-empty accepted sources, and declares deletions through the transaction CLI.
+6. The parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews all prospective changes, then runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
+7. On failure, refresh `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID require exactly one same-ID/same-status record and satisfy its reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only its bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report sessions, snapshots, omissions, and pages. Do not commit, push, or open a pull request.

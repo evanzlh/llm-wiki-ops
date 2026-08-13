@@ -2,207 +2,95 @@
 
 ## Prerequisites
 
-Install [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/) before continuing. This project supports one installation path: a non-editable build from a local source clone.
+- Linux or macOS. The filesystem safety boundary requires POSIX
+  descriptor-relative operations and fails closed on unsupported platforms.
+- Git
+- Python 3.9 or newer
+- [uv](https://docs.astral.sh/uv/)
+- Obsidian for viewing the generated `wiki/` directory
 
 ## Install from a clone
 
+Install a non-editable copy so the command remains usable if the clone moves:
+
 ```bash
 git clone https://github.com/evanzlh/obsidian-wiki.git
 cd obsidian-wiki
 uv tool install --link-mode copy .
-```
-
-The installed CLI carries the complete `obsidian_wiki/_data/skills/` built-in
-tree and bootstrap files that setup needs. It does not depend on the clone
-remaining at the same path, and it installs no automatic capture Hook.
-
-Install it as a user/system uv tool, not inside the knowledge repository. Each
-contributor performs this framework-clone installation on their own machine. A
-portable knowledge repository does not contain `.venv`, a vendored CLI package,
-or another runtime copy.
-
-## Verify
-
-```bash
 obsidian-wiki --version
 ```
 
-The version output identifies this independently maintained implementation. Use `obsidian-wiki doctor` after configuring a vault to validate its config, structure, and agent integration.
+Framework contributors can run commands from the checkout with `uv run python -m obsidian_wiki`.
+
+## Create a repository
+
+Setup accepts an optional directory and uses the current directory when it is omitted. It does not initialize Git; repository creation and publication remain owner actions. One executable workflow is to initialize an otherwise empty target first, then scaffold it:
+
+```bash
+mkdir ./team-knowledge
+git -C ./team-knowledge init
+obsidian-wiki setup ./team-knowledge
+```
+
+From the same parent directory, the owner can review and record the scaffold explicitly:
+
+```bash
+git -C ./team-knowledge status
+git -C ./team-knowledge add --all
+git -C ./team-knowledge commit -m "Initialize knowledge repository"
+```
+
+Then enter the knowledge repository, validate it, and open `wiki/` in Obsidian:
+
+```bash
+cd ./team-knowledge
+obsidian-wiki doctor
+obsidian-wiki check
+```
+
+Adding, committing, configuring a remote, and pushing are external Git publication steps, not framework actions.
+
+## Join an existing repository
+
+Clone it, install a CLI version accepted by `requires_cli`, and validate before editing:
+
+```bash
+git clone <knowledge-repository-url> team-knowledge
+cd ./team-knowledge
+obsidian-wiki doctor
+obsidian-wiki check
+```
+
+The repository contains its own configuration, source material, canonical skills, mirrors, and bootstrap instructions. It does not vendor the executable.
+
+After cloning, you can work from anywhere inside it: each repository-aware command discovers `.obsidian-wiki/config.toml` while walking up to the nearest configured ancestor. The repository-local skills and bootstrap files remain the authority from nested directories.
 
 ## Upgrade
 
-Run these commands in the clone used to build the tool:
-
-```bash
-git pull
-uv tool install --force --reinstall --link-mode copy .
-```
-
-## Create a portable repository
-
-Portable Repository mode keeps configuration, sources, vault content, and agent skills inside a clone-ready knowledge repository:
-
-```bash
-obsidian-wiki setup --portable ./team-knowledge
-cd ./team-knowledge
-obsidian-wiki doctor
-```
-
-Open `team-knowledge/wiki/` as the Obsidian vault. The generated repository uses repository-relative configuration and does not write personal global config or global agent directories.
-
-Portable setup accepts a missing target, an empty target, or a target containing only an ordinary `.git` directory. It preserves an existing `.git` directory and rejects arbitrary non-portable content; legacy layouts need explicit migration with `obsidian-wiki repo migrate`.
-
-Setup does not run `git init`, commit, or configure a remote. For a new repository, run setup first and then `git init`; a target containing only `.git` is supported for compatibility and keeps its existing Git metadata.
-
-The first-release CLI support boundary is Linux and macOS. The committed
-representation stays platform-neutral: all six agent skill mirrors are ordinary
-files rather than symlinks and require no link privileges.
-
-## Use an existing portable repository
-
-After cloning a portable knowledge repository, work from anywhere inside it. The CLI discovers `.obsidian-wiki/config.toml` while walking up to the repository root:
+Use this two-step CLI and repository upgrade protocol. First create an owner-controlled branch in the knowledge repository, update the separate framework clone, and reinstall the CLI:
 
 ```bash
 cd /path/to/team-knowledge
-obsidian-wiki doctor
-obsidian-wiki query "what decisions shaped this project?"
+git switch -c upgrade-obsidian-wiki
+cd /path/to/obsidian-wiki
+git pull --ff-only
+uv tool install --force --reinstall --link-mode copy .
 ```
 
-Repository-local skills and bootstrap files are tracked with the knowledge repository. See [Agent Compatibility](agents.md) for how each agent discovers them and [Configuration](configuration.md) for portable precedence.
-
-`.skills/` is the portable repository's only editable canonical skill tree.
-Agent-native skill directories are derived from it. Check and explicitly rebuild
-all six mirrors, validate the result, and inspect the complete skill diff with:
+Return to the knowledge repository and read its tracked `requires_cli`. Resolution fails closed if the old PEP 440 constraint excludes the installed CLI. Before any repository command, the owner must explicitly review and edit the constraint to accept the transition version. A range that accepts both collaborator versions can support a staged rollout; every collaborator must ultimately install an accepted version. Then refresh managed files:
 
 ```bash
-obsidian-wiki repo sync-skills --json --pretty
-obsidian-wiki repo sync-skills --apply --json --pretty
-obsidian-wiki check --json --pretty
-git diff -- .skills .claude/skills .cursor/skills .windsurf/skills .agents/skills .pi/skills .kiro/skills
-```
-
-The first command is read-only; `--apply` is the explicit mutation boundary.
-
-After installing a newer framework CLI, use this two-step portable CLI upgrade protocol.
-Do the work on a branch. First, deliberately update the tracked `requires_cli`
-value in `.obsidian-wiki/config.toml` to a reviewed PEP 440 constraint that
-accepts the installed version. Second, refresh only the managed repository
-skills and their mirrors, validate the result, and review the complete diff:
-
-```bash
-git switch -c upgrade-portable-cli
-# Edit .obsidian-wiki/config.toml so requires_cli accepts the installed version.
+cd /path/to/team-knowledge
+${EDITOR:?} .obsidian-wiki/config.toml
 obsidian-wiki repo upgrade-skills
-obsidian-wiki check
-git diff
-```
-
-Every collaborator must install a CLI version that satisfies the repository's
-updated constraint before using portable commands. `repo upgrade-skills` does
-not bypass compatibility checks and does not automatically rewrite
-`requires_cli`; the config and managed-file changes remain ordinary tracked
-changes. Review and commit them through the branch and pull-request workflow.
-
-## Migrate a co-located legacy repository
-
-Migration is for an existing Git-oriented layout where the legacy vault and a
-single source directory are already separate children of the same repository.
-It does not gather files from elsewhere. Before invoking the CLI, the operator
-must deliberately relocate or capture every authoritative source as a bounded
-snapshot below the repository's source directory and update its legacy
-provenance. Migration itself never moves or copies that material. Then run the
-read-only analysis:
-
-```bash
-cd /path/to/knowledge-base
-obsidian-wiki repo migrate --root . --vault wiki --sources sources
-```
-
-The command reports source mappings, page rewrites, manifest shards, warnings,
-and blockers without changing any file. Fix every blocker and review the plan;
-then ensure the enclosing Git top level equals `--root`, commit the complete
-legacy baseline (including intended sources), and confirm a clean worktree.
-That commit is the supported post-success rollback point. Only then run the
-exact command the analyzer prints:
-
-```bash
-obsidian-wiki repo migrate --root . --vault wiki --sources sources --apply
-obsidian-wiki check
-git diff
-```
-
-Apply converts the legacy manifest and page provenance, installs portable
-repository assets, makes `index.md` and `log.md` stable query surfaces, removes
-the existing legacy `hot.md`, and appends one migration operation page. It
-does not initialize Git, stage, commit, or push. A failed apply attempts to
-restore the original files byte-for-byte. If rollback is incomplete, it reports
-that state and retains evidence for manual diagnosis. A successful apply
-reports retained recovery data below `.obsidian-wiki/local/migrations/`; that
-internal layout is not a supported restore interface. Keep it until the diff is
-accepted and committed. See the [CLI migration reference](cli.md#legacy-to-portable-migration)
-for blocker meanings.
-
-Use Markdown, text, or small reviewable text/structured snapshots for
-collaborative source material, and commit their exact bytes with ordinary Git.
-The analyzer checks ordinary files but not Git-index membership or LFS
-signatures; review `git status` and `git ls-files` before publishing. Binary
-PDFs/images remain Personal-mode inputs unless converted into a reviewable text
-snapshot. A Git LFS pointer contains only metadata for an external object, so
-agents must not compile it as source contents.
-
-## Provider-neutral CI validation
-
-After the knowledge repository has been checked out beside the framework
-clone, this sequence builds the CLI from source and validates the local
-portable repository:
-
-```bash
-git clone https://github.com/evanzlh/obsidian-wiki.git
-cd obsidian-wiki
-uv tool install --link-mode copy .
-cd ../knowledge-base
-obsidian-wiki check
-```
-
-It invokes no LLM and no hosting-provider API; `check` reads local files and
-read-only Git facts only. The `git clone` is ordinary Git transport used to
-obtain the framework source.
-
-In production CI, the knowledge-repository maintainer must pin the framework
-checkout to a concrete fork release tag whose version satisfies the tracked
-`requires_cli` constraint, then run the same `uv tool install --link-mode copy .`. The generic
-sequence above remains runnable before this fork has its first release tag, but
-it is a pre-release convenience rather than a production pin. Once a tag
-exists, insert this before installation:
-
-```bash
-git checkout --detach <fork-release-tag>
-uv tool install --link-mode copy .
-```
-
-`obsidian-wiki check` then fails closed if that tagged CLI does not satisfy
-`requires_cli`.
-
-## Personal mode
-
-Personal mode keeps the existing global configuration and agent-wide skill links. Run it only when you want this machine-wide behavior:
-
-```bash
-obsidian-wiki setup --vault ~/brain
 obsidian-wiki doctor
+obsidian-wiki check
+git diff
+git commit -m "Upgrade obsidian-wiki"
 ```
 
-`obsidian-wiki setup` writes `~/.obsidian-wiki/config` and connects the installed bundled skills to supported agents. See the [CLI reference](cli.md) for setup flags and other commands.
+`repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses owner-modified managed files. Collaborators review the configuration and managed-file diff before the owner commits or publishes it.
 
-For multiple personal vaults, keep named configs such as
-`~/.obsidian-wiki/config.work` and route one request with an `@name` token:
+## CI
 
-```text
-@work update wiki
-wiki-query @personal what do I know about MCP security
-```
-
-All supported agents can use this syntax because setup gives them the same
-Config Resolution Protocol. Claude Code, Cursor, Windsurf, Codex, Gemini,
-Kiro, Hermes, OpenClaw, Copilot CLI, Pi, and generic `AGENTS.md` agents all
-inherit the routing behavior.
+Install the same accepted release, then run `obsidian-wiki doctor --strict` and `obsidian-wiki check --strict`. Both commands are deterministic and require no model credentials.

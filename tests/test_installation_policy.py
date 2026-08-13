@@ -1,17 +1,100 @@
+import hashlib
+import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9/3.10
+    import tomli as tomllib
+
 import pytest
 
-from obsidian_wiki import SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
-from obsidian_wiki.portable import PROJECT_AGENT_DIRS
+from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_INSTALL_COMMAND, SOURCE_REINSTALL_COMMAND
+from obsidian_wiki.config import ConfigError, load_portable_config
+from obsidian_wiki.portable import PROJECT_AGENT_DIRS, render_portable_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _safe_tree_snapshot(
+    root: Path,
+) -> tuple[tuple[str, str, int, str | None, int, int, int], ...]:
+    entries: list[tuple[str, str, int, str | None, int, int, int]] = []
+
+    def visit(directory: Path) -> None:
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            metadata = path.lstat()
+            relative = path.relative_to(root).as_posix()
+            mode = stat.S_IMODE(metadata.st_mode)
+            identity = (
+                stat.S_IFMT(metadata.st_mode),
+                metadata.st_rdev,
+                metadata.st_size,
+            )
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append(
+                    (relative, "symlink", mode, os.readlink(path), *identity)
+                )
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries.append((relative, "directory", mode, None, *identity))
+                visit(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                entries.append(
+                    (
+                        relative,
+                        "file",
+                        mode,
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                        *identity,
+                    )
+                )
+            else:
+                entries.append((relative, "special", mode, None, *identity))
+
+    visit(root)
+    return tuple(entries)
+
+
+def test_safe_home_snapshot_detects_added_agent_skill_tree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    before = _safe_tree_snapshot(home)
+    skill = home / ".gemini/skills/example/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# unexpected global skill\n", encoding="utf-8")
+
+    assert _safe_tree_snapshot(home) != before
+
+
+def test_safe_home_snapshot_records_special_file_identity(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    fifo = home / "owner-fifo"
+    try:
+        os.mkfifo(fifo)
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        pytest.skip(f"FIFO creation is unavailable: {exc}")
+    metadata = fifo.lstat()
+
+    assert _safe_tree_snapshot(home) == (
+        (
+            "owner-fifo",
+            "special",
+            stat.S_IMODE(metadata.st_mode),
+            None,
+            stat.S_IFMT(metadata.st_mode),
+            metadata.st_rdev,
+            metadata.st_size,
+        ),
+    )
 
 
 def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
@@ -34,6 +117,8 @@ def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
     env["PYTHONNOUSERSITE"] = "1"
     env.update(
         HOME=str(tmp_path / "home"),
+        XDG_CACHE_HOME=str(tmp_path / "xdg-cache"),
+        XDG_CONFIG_HOME=str(tmp_path / "xdg-config"),
         UV_TOOL_DIR=str(tmp_path / "tools"),
         UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
         UV_CACHE_DIR=str(tmp_path / "cache"),
@@ -77,6 +162,8 @@ def test_uv_tool_environment_ignores_parent_behavior_overrides(
     } & env.keys()
     assert not any(key.startswith("GIT_") for key in env)
     assert env["HOME"] == str(tmp_path / "home")
+    assert env["XDG_CACHE_HOME"] == str(tmp_path / "xdg-cache")
+    assert env["XDG_CONFIG_HOME"] == str(tmp_path / "xdg-config")
     assert env["UV_TOOL_DIR"] == str(tmp_path / "tools")
     assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
     assert env["UV_CACHE_DIR"] == str(tmp_path / "cache")
@@ -146,6 +233,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         if artifact.suffix == ".whl":
             with zipfile.ZipFile(artifact) as archive:
                 raw_names = archive.namelist()
+                assert "obsidian_wiki/_data/.env.example" not in raw_names
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()
@@ -193,11 +281,10 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     english_paths = (
         "README.md",
         "docs/installation.md",
-        "docs/configuration.md",
         "docs/cli.md",
-        "docs/architecture.md",
+        "docs/contributing.md",
     )
-    marker = "two-step portable CLI upgrade protocol"
+    marker = "two-step CLI and repository upgrade protocol"
     for relative in english_paths:
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert marker in text, relative
@@ -210,16 +297,18 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         if section_ends:
             protocol = protocol[: min(section_ends)]
         protocol = " ".join(protocol.split())
+        protocol_folded = protocol.casefold()
         for required in (
             "`requires_cli`",
             "PEP 440",
             "branch",
             "collaborator",
-            "does not bypass",
-            "does not automatically rewrite",
+            "does not rewrite",
             "commit",
+            SOURCE_REINSTALL_COMMAND,
         ):
-            assert required in protocol, (relative, required)
+            assert required.casefold() in protocol_folded, (relative, required)
+        assert "fail closed" in protocol_folded or "fails closed" in protocol_folded
         constraint = protocol.index("`requires_cli`")
         upgrade = protocol.index("obsidian-wiki repo upgrade-skills")
         check = protocol.index("obsidian-wiki check")
@@ -227,7 +316,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         assert constraint < upgrade < check < diff, relative
 
     chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
-    marker_zh = "两步便携式 CLI 升级协议"
+    marker_zh = "两步 CLI 与仓库升级协议"
     assert marker_zh in chinese
     protocol_zh = chinese.split(marker_zh, 1)[1].split("\n## ", 1)[0]
     protocol_zh = " ".join(protocol_zh.split())
@@ -236,9 +325,10 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         "PEP 440",
         "分支",
         "协作者",
-        "不会绕过",
-        "不会自动改写",
+        "失败并停止",
+        "不会改写",
         "提交",
+        SOURCE_REINSTALL_COMMAND,
     ):
         assert required in protocol_zh, required
     constraint = protocol_zh.index("`requires_cli`")
@@ -248,10 +338,39 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     assert constraint < upgrade < check < diff
 
 
+def test_upgrade_version_transition_fails_closed_until_owner_edits_constraint(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        render_portable_config(version="2026.8.3"), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="requires CLI"):
+        load_portable_config(
+            config_path,
+            installed_version="2026.9.1",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    reviewed = config_path.read_text(encoding="utf-8").replace(
+        'requires_cli = ">=2026.8,<2026.9"',
+        'requires_cli = ">=2026.8,<2026.10"',
+    )
+    config_path.write_text(reviewed, encoding="utf-8")
+    loaded = load_portable_config(
+        config_path,
+        installed_version="2026.9.1",
+        implementation=IMPLEMENTATION_ID,
+    )
+    assert loaded.requires_cli == ">=2026.8,<2026.10"
+
+
 def test_cli_quick_reference_does_not_skip_requires_cli_upgrade_step() -> None:
     cli = (ROOT / "docs/cli.md").read_text(encoding="utf-8")
     quick_reference = cli.split(
-        "### Upgrade portable CLI compatibility and managed skills", 1
+        "## Upgrade protocol", 1
     )[0]
 
     assert "obsidian-wiki repo upgrade-skills" not in quick_reference
@@ -261,33 +380,88 @@ def test_fork_policy_is_explicit() -> None:
     policy = (ROOT / "docs/fork.md").read_text(encoding="utf-8")
     assert "independently" in policy
     assert "does not track future upstream changes" in policy
-    assert "Portable Repository mode" in policy
+    assert "single repository product" in policy
 
 
 def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
     contributing = (ROOT / "docs/contributing.md").read_text(encoding="utf-8")
-    adding_skill = contributing.split("## Adding a new skill", 1)[1].split(
-        "## Keeping both READMEs in sync", 1
+    adding_skill = contributing.split("## Test a skill change", 1)[1].split(
+        "## Documentation", 1
     )[0]
     rebuild = adding_skill.index(SOURCE_REINSTALL_COMMAND)
     assert rebuild < adding_skill.index("obsidian-wiki setup")
-    assert rebuild < adding_skill.index("Test by saying")
+    assert adding_skill.index("obsidian-wiki setup") < adding_skill.index(
+        "obsidian-wiki check"
+    )
+    assert "obsidian-wiki repo sync-skills" in adding_skill
+    assert "tests/test_asset_artifact_parity.py" in adding_skill
+    assert "source checkout as a runtime fallback" in adding_skill
 
 
-def test_agents_describes_obsidian_wiki_repo_as_bundled_data_root() -> None:
+def test_agents_routes_repository_authority_without_global_source_variables() -> None:
     agents = (ROOT / "obsidian_wiki/_data/bootstrap/AGENTS.md").read_text(
         encoding="utf-8"
     )
-    assert "`OBSIDIAN_WIKI_REPO` (installed CLI bundled-data root)" in agents
-    assert "`OBSIDIAN_WIKI_REPO` (where this repo is cloned)" not in agents
+    assert "canonical" in agents.casefold()
+    assert "task" in agents.casefold()
+    assert "nearest" in agents.casefold()
+    assert "OBSIDIAN_WIKI_REPO" not in agents
 
 
-def test_factory_resolves_skill_creator_from_bundled_data_root() -> None:
+def test_factory_uses_safe_managed_validator_from_nearest_repository(
+    tmp_path: Path,
+) -> None:
     factory = (ROOT / "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md").read_text(
         encoding="utf-8"
     )
-    assert "$OBSIDIAN_WIKI_REPO/skills/skill-creator/scripts/" in factory
-    assert "$OBSIDIAN_WIKI_REPO/.skills/skill-creator/scripts/" not in factory
+    assert "$OBSIDIAN_WIKI_REPO" not in factory
+    assert ".skills/skill-creator/scripts/quick_validate.py" in factory
+    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert 'status: "clean"' in factory
+    assert "Do not use `--apply`" in factory
+    assert "uv run --with" not in factory
+    assert "dynamically resolve or download" in factory
+    assert "`sys.executable`" in factory
+    assert "absolute interpreter" in factory
+    assert "without a shell" in factory
+    assert "Immediately before execution" in factory
+    assert "package inventory expected digest" in factory
+
+    repository = tmp_path / "repository"
+    setup = subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki", "setup", str(repository)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert setup.returncode == 0, setup.stderr
+    validator = repository / ".skills/skill-creator/scripts/quick_validate.py"
+    metadata = validator.lstat()
+    assert validator.is_file() and not validator.is_symlink()
+    assert metadata.st_nlink == 1
+
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "obsidian_wiki",
+            "repo",
+            "sync-skills",
+            "--json",
+            "--pretty",
+        ],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert preflight.returncode == 0, preflight.stderr
+    payload = json.loads(preflight.stdout)
+    assert payload["status"] == "clean"
+    assert payload["warnings"] == []
 
 
 def test_no_unsupported_install_guidance_remains() -> None:
@@ -325,7 +499,7 @@ def test_no_unsupported_install_guidance_remains() -> None:
 
 def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
     checked_roots = (ROOT / ".github", ROOT / "obsidian_wiki", ROOT / "tools")
-    files = [ROOT / "pyproject.toml", ROOT / ".env.example"]
+    files = [ROOT / "pyproject.toml"]
     for base in checked_roots:
         files.extend(
             path
@@ -351,6 +525,24 @@ def test_no_unsupported_install_guidance_in_user_facing_tooling() -> None:
     assert offenders == {}
 
 
+def test_distribution_declares_the_posix_safety_boundary() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    classifiers = set(project["classifiers"])
+    assert "Operating System :: OS Independent" not in classifiers
+    assert "Operating System :: POSIX" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+    assert "Operating System :: MacOS :: MacOS X" in classifiers
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_zh = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
+    installation = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+    assert "Linux or macOS" in readme
+    assert "Linux 或 macOS" in readme_zh
+    assert "Linux or macOS" in installation
+
+
 @pytest.mark.skipif(
     shutil.which("uv") is None, reason="uv is required by the supported installer"
 )
@@ -365,6 +557,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         symlinks=True,
     )
     env = _uv_tool_environment(tmp_path)
+    home = Path(env["HOME"])
+    home.mkdir(parents=True)
+    sentinel = home / "owner-sentinel.txt"
+    sentinel.write_text("owner home remains unchanged\n", encoding="utf-8")
+    home_before = _safe_tree_snapshot(home)
     canonical_skill_names = sorted(
         path.name
         for path in (source / "obsidian_wiki/_data/skills").iterdir()
@@ -544,41 +741,95 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     ] == []
     portable = tmp_path / "portable"
     setup = subprocess.run(
-        [executable, "setup", "--portable", str(portable)],
+        [executable, "setup", str(portable)],
         cwd=tmp_path,
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
         timeout=60,
     )
-    assert "Portable repository scaffolded" in setup.stdout
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    assert "Repository scaffolded" in setup.stdout
+    assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
     canonical_query = portable / ".skills/wiki-query/SKILL.md"
     query_bytes = canonical_query.read_bytes()
     assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         mirrored = portable / agent_relative / "wiki-query/SKILL.md"
         assert mirrored.read_bytes() == query_bytes
-    sync = subprocess.run(
-        [executable, "repo", "sync-skills", "--json"],
-        cwd=portable,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    assert '"status": "clean"' in sync.stdout
     doctor = subprocess.run(
         [executable, "doctor"],
         cwd=portable,
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
         timeout=60,
     )
+    assert doctor.returncode == 0, doctor.stdout + doctor.stderr
     assert "obsidian-wiki doctor: pass" in doctor.stdout
+    check = subprocess.run(
+        [executable, "check", "--json", "--pretty"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    assert json.loads(check.stdout) == {
+        "status": "warn",
+        "errors": 0,
+        "warnings": 1,
+        "issues": [
+            {
+                "code": "git-unavailable",
+                "path": ".",
+                "message": "Git is unavailable or the repository is not a worktree",
+                "severity": "warning",
+            }
+        ],
+    }
+    sync = subprocess.run(
+        [executable, "repo", "sync-skills", "--json"],
+        cwd=portable,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert sync.returncode == 0, sync.stdout + sync.stderr
+    sync_payload = json.loads(sync.stdout)
+    assert sync_payload["status"] == "clean"
+    assert sync_payload["canonical_skills"] == canonical_skill_names
+    assert sync_payload["warnings"] == []
+    assert len(sync_payload["targets"]) == len(PROJECT_AGENT_DIRS)
+    assert all(
+        target["added"] == []
+        and target["changed"] == []
+        and target["removed"] == []
+        and target["unsafe"] == []
+        for target in sync_payload["targets"]
+    )
+    assert _safe_tree_snapshot(home) == home_before
+    assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".obsidian-wiki").is_symlink()
+    assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
+    for arguments in (("rev-parse", "--git-dir"), ("log", "-1"), ("remote",)):
+        probe = subprocess.run(
+            ["git", *arguments],
+            cwd=portable,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert probe.returncode != 0, (arguments, probe.stdout, probe.stderr)
+
     subprocess.run(
         ["git", "init"],
         cwd=portable,
@@ -588,16 +839,6 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=30,
     )
-    check = subprocess.run(
-        [executable, "check", "--json", "--pretty"],
-        cwd=portable,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    assert '"status": "pass"' in check.stdout
     subprocess.run(
         ["git", "add", "--all"],
         cwd=portable,
@@ -626,8 +867,9 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         relative = os.fsdecode(encoded_relative)
         payload = (portable / relative).read_bytes()
         assert not [value for value in forbidden_paths if value in payload], relative
-    home = Path(env["HOME"])
     assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".obsidian-wiki").is_symlink()
     assert not any(
         (home / agent / "skills").exists() for agent in (".claude", ".codex", ".agents")
     )
+    assert _safe_tree_snapshot(home) == home_before
