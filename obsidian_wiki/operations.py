@@ -7,10 +7,21 @@ import os
 import re
 import secrets
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Tuple
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    _fcntl = None
+
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - exercised on POSIX
+    _msvcrt = None
 
 
 class OperationError(ValueError):
@@ -560,6 +571,103 @@ def _sync_parent(descriptor: Optional[int]) -> None:
         raise
 
 
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _lock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        if _msvcrt is None:
+            raise OperationError("operation log locking is unavailable")
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            _msvcrt.locking(descriptor, _msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise OperationError("another operation log update is in progress") from exc
+        return
+    if _fcntl is None:
+        raise OperationError("operation log locking is unavailable")
+    try:
+        _fcntl.flock(descriptor, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            raise OperationError("another operation log update is in progress") from exc
+        raise OperationError("cannot lock operation log update file") from exc
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        if _msvcrt is None:  # pragma: no cover - guarded by acquisition
+            return
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        _msvcrt.locking(descriptor, _msvcrt.LK_UNLCK, 1)
+        return
+    if _fcntl is not None:
+        _fcntl.flock(descriptor, _fcntl.LOCK_UN)
+
+
+@contextmanager
+def _operation_lock(lock_path: Path, root: Path):
+    lock_path = Path(lock_path)
+    if not lock_path.is_absolute() or not root.is_absolute():
+        raise OperationError("operation log root and lock path must be absolute")
+    try:
+        root_resolved = root.resolve(strict=True)
+        parent_resolved = lock_path.parent.resolve(strict=True)
+    except OSError as exc:
+        raise OperationError("operation log lock parent is unsafe or unreadable") from exc
+    if _path_is_within(lock_path, root) or _path_is_within(
+        parent_resolved / lock_path.name, root_resolved
+    ):
+        raise OperationError("operation log lock must be outside the vault root")
+    try:
+        parent_before = lock_path.parent.lstat()
+    except OSError as exc:
+        raise OperationError("operation log lock parent is unsafe or unreadable") from exc
+    if not _ordinary_directory(parent_before):
+        raise OperationError("operation log lock parent must be an ordinary directory")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    locked = False
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        lexical = lock_path.lstat()
+        opened = os.fstat(descriptor)
+        parent_after = lock_path.parent.lstat()
+        if (
+            not _ordinary_single_file(lexical)
+            or not _ordinary_single_file(opened)
+            or (lexical.st_dev, lexical.st_ino) != (opened.st_dev, opened.st_ino)
+            or (parent_before.st_dev, parent_before.st_ino)
+            != (parent_after.st_dev, parent_after.st_ino)
+        ):
+            raise OperationError(
+                "operation log lock must be a single-link ordinary file"
+            )
+        _lock_descriptor(descriptor)
+        locked = True
+        yield
+    except OperationError:
+        raise
+    except OSError as exc:
+        raise OperationError("cannot open operation log lock") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                if locked:
+                    _unlock_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+
+
 def _verify_installed(
     path: Path,
     descriptor: Optional[int],
@@ -604,11 +712,13 @@ def _verify_installed(
     parse_operation_log(parsed)
 
 
-def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path:
+def append_operation(
+    path: Path, change: OperationChange, *, root: Path, lock_path: Path
+) -> Path:
     """Atomically append one canonical record to root/log.md.
 
-    Cooperative writers are serialized by the repository transaction lock. This
-    function still detects target and parent changes before the atomic replacement.
+    Cooperative writers are serialized by a persistent lock outside the vault.
+    This function still detects target and parent changes before replacement.
     """
 
     path = Path(path)
@@ -616,6 +726,13 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
     if path != root / "log.md":
         raise OperationError("operation log path must be exactly root/log.md")
 
+    with _operation_lock(Path(lock_path), root):
+        return _append_operation_locked(path, change, root=root)
+
+
+def _append_operation_locked(
+    path: Path, change: OperationChange, *, root: Path
+) -> Path:
     parent_descriptor: Optional[int] = None
     preimage_descriptor: Optional[int] = None
     temp_descriptor: Optional[int] = None

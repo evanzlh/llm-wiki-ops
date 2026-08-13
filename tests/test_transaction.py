@@ -129,7 +129,7 @@ def test_commit_rejects_source_drift_from_log_writer(tmp_path: Path) -> None:
     source = add_source(root)
 
     def writer(change) -> Path:
-        path = append_operation(config.vault / "log.md", change, root=config.vault)
+        path = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         source.write_text("drift in operation writer", encoding="utf-8")
         return path
 
@@ -301,6 +301,7 @@ def log_writer():
                 config.vault / "log.md",
                 change,
                 root=config.vault,
+                lock_path=config.local_state / "operation-log.lock",
             )
 
         return write
@@ -1396,6 +1397,7 @@ def test_restore_refuses_owner_drift_in_operation_log(tmp_path: Path) -> None:
             (),
         ),
         root=config.vault,
+                lock_path=config.root.parent / ".operation-log.lock",
     )
     owner_bytes = (config.vault / "log.md").read_bytes()
 
@@ -1767,7 +1769,7 @@ def test_log_writer_runs_after_pages_and_all_manifest_shards(
         manifest = ShardedManifest(config)
         assert manifest.load("sources/a.md") is not None
         assert manifest.load("sources/b.md") is not None
-        return append_operation(config.vault / "log.md", change, root=config.vault)
+        return append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
 
     manager = TransactionManager(config, log_writer=writer)
     record = manager.begin([source_b, source_a], transaction_id="tx-1")
@@ -1782,7 +1784,7 @@ def test_log_writer_partial_creation_is_removed_on_failure(
     root, config = make_config(tmp_path)
 
     def writer(change):
-        append_operation(config.vault / "log.md", change, root=config.vault)
+        append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         raise OSError("operation interrupted")
 
     manager = TransactionManager(config, log_writer=writer)
@@ -1831,7 +1833,7 @@ def test_log_writer_wrong_last_record_rolls_back(tmp_path: Path) -> None:
             change.updated,
             change.removed,
         )
-        return append_operation(log, wrong, root=config.vault)
+        return append_operation(log, wrong, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
 
     manager = TransactionManager(config, log_writer=writer)
     record = manager.begin([add_source(root)], transaction_id="tx-wrong-tail")
@@ -1856,7 +1858,7 @@ def test_log_writer_cannot_replace_valid_history_before_intended_tail(
         (),
         (),
     )
-    append_operation(log, original_record, root=config.vault)
+    append_operation(log, original_record, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
     original = log.read_bytes()
 
     def writer(change):
@@ -1885,13 +1887,12 @@ def test_log_writer_cannot_replace_valid_history_before_intended_tail(
     assert not (config.vault / "concepts/a.md").exists()
 
 
-def test_log_drift_after_initial_writer_validation_rolls_back(
+def test_log_drift_after_initial_writer_validation_requires_manual_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, config = make_config(tmp_path)
     log = config.vault / "log.md"
-    original = log.read_bytes()
     manager = TransactionManager(config)
     record = manager.begin([add_source(root)], transaction_id="tx-final-log-check")
     candidate_page(record, "concepts/a.md")
@@ -1914,17 +1915,44 @@ def test_log_drift_after_initial_writer_validation_rolls_back(
                     (),
                 ),
                 root=config.vault,
+                lock_path=config.local_state / "operation-log.lock",
             )
         return result
 
     monkeypatch.setattr(manager, "_validate_log_result", validate_then_drift)
 
-    with pytest.raises(TransactionError, match="rolled back.*exact expected log"):
+    with pytest.raises(
+        TransactionError, match="requires manual recovery.*exact expected log"
+    ):
         manager.commit("tx-final-log-check", completed_at="2026-08-07T01:00:00Z")
 
     assert drifted
-    assert log.read_bytes() == original
-    assert not (config.vault / "concepts/a.md").exists()
+    assert [item.transaction_id for item in parse_operation_log(log.read_text())] == [
+        "tx-final-log-check",
+        "owner-drift",
+    ]
+    page = config.vault / "concepts/a.md"
+    assert page.exists()
+    assert ShardedManifest(config).load("sources/a.md") is not None
+    live_log = log.read_bytes()
+    live_page = page.read_bytes()
+    metadata = json.loads((record.workspace / "metadata.json").read_text())
+    assert metadata["status"] == "failed"
+    assert metadata["residual_postimages"] is None
+    assert set(metadata["rollback_exclusions"]) == {
+        ShardedManifest(config)
+        .entry_path("sources/a.md")
+        .relative_to(config.vault)
+        .as_posix(),
+        "concepts/a.md",
+        "log.md",
+    }
+
+    for action in (manager.retry, manager.restore):
+        with pytest.raises(TransactionError, match="discard is required"):
+            action("tx-final-log-check")
+        assert log.read_bytes() == live_log
+        assert page.read_bytes() == live_page
 
 
 def test_duplicate_transaction_in_log_is_rejected_and_preserved(
@@ -1940,7 +1968,7 @@ def test_duplicate_transaction_in_log_is_rejected_and_preserved(
         (),
         (),
     )
-    append_operation(log, existing, root=config.vault)
+    append_operation(log, existing, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
     original = log.read_bytes()
     manager = TransactionManager(config)
     record = manager.begin([add_source(root)], transaction_id="tx-duplicate")
@@ -1968,6 +1996,7 @@ def test_commit_rejects_log_preimage_drift_before_promotion(tmp_path: Path) -> N
             (),
         ),
         root=config.vault,
+                lock_path=config.root.parent / ".operation-log.lock",
     )
 
     with pytest.raises(TransactionError, match="changed after transaction began: log.md"):
@@ -2063,7 +2092,7 @@ def test_log_writer_extra_page_then_return_rolls_back_all_new_pages(
     extra = config.vault / "concepts/extra.md"
 
     def writer(change):
-        append_operation(returned, change, root=config.vault)
+        append_operation(returned, change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         extra.write_text("extra\n", encoding="utf-8")
         return returned
 
@@ -2245,7 +2274,7 @@ def test_restore_refuses_while_same_transaction_commit_is_still_running(
         writer_entered.set()
         if not release_writer.wait(timeout=5):
             raise RuntimeError("test timed out waiting to release operation writer")
-        return append_operation(config.vault / "log.md", change, root=config.vault)
+        return append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
 
     manager = TransactionManager(config, log_writer=writer)
     record = manager.begin([add_source(root)], transaction_id="tx-1")
@@ -2285,7 +2314,7 @@ def test_mark_delete_refuses_while_same_transaction_commit_is_running(
         writer_entered.set()
         if not release_writer.wait(timeout=5):
             raise RuntimeError("test timed out waiting to release operation writer")
-        return append_operation(config.vault / "log.md", change, root=config.vault)
+        return append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
 
     manager = TransactionManager(config, log_writer=writer)
     record = manager.begin([add_source(root)], transaction_id="tx-1")
@@ -2723,7 +2752,8 @@ def test_log_writer_vault_side_effect_is_rolled_back(
 
     def writer(change):
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         unrelated.write_text("unauthorized writer side effect\n", encoding="utf-8")
         return operation
@@ -2755,7 +2785,8 @@ def test_log_writer_may_refresh_writer_guard_exclusions(
 
     def writer(change):
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         target.write_text("refreshed\n", encoding="utf-8")
         return operation
@@ -2779,7 +2810,8 @@ def test_log_writer_nested_hot_page_side_effect_is_rolled_back(tmp_path: Path) -
 
     def writer(change):
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         nested_hot.write_text("unauthorized writer side effect\n", encoding="utf-8")
         return operation
@@ -2840,7 +2872,7 @@ def test_log_writer_empty_directory_side_effect_is_rolled_back(
     side_effect = config.vault / "references/writer-empty"
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         side_effect.mkdir(parents=True)
         return result
 
@@ -2864,7 +2896,7 @@ def test_log_writer_chmod_side_effect_is_rolled_back(tmp_path: Path) -> None:
     unrelated.chmod(0o640)
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         unrelated.chmod(0o600)
         return result
 
@@ -2887,7 +2919,7 @@ def test_log_writer_vault_root_chmod_is_rolled_back(tmp_path: Path) -> None:
     original_manifest = (config.vault / ".manifest.json").read_bytes()
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         config.vault.chmod(0o700)
         return result
 
@@ -3044,7 +3076,7 @@ def test_log_writer_nested_nonempty_directory_side_effect_is_rolled_back(
     side_effect = config.vault / "writer-tree/nested"
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         side_effect.mkdir(parents=True)
         (side_effect / "artifact.txt").write_text("writer data\n", encoding="utf-8")
         return result
@@ -3071,7 +3103,7 @@ def test_log_writer_restores_preexisting_empty_directory(
     directory.chmod(0o750)
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         directory.rmdir()
         if replace:
             directory.write_text("replacement\n", encoding="utf-8")
@@ -3104,7 +3136,7 @@ def test_restore_uses_persisted_writer_guard_after_writer_crash(
     operation = config.vault / "log.md"
 
     def writer(change):
-        append_operation(operation, change, root=config.vault)
+        append_operation(operation, change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         modified.write_text("writer corruption\n", encoding="utf-8")
         removed.unlink()
         extra.write_text("writer addition\n", encoding="utf-8")
@@ -3151,7 +3183,7 @@ def test_restore_retries_persisted_writer_guard_after_cleanup_crash(
     operation = config.vault / "log.md"
 
     def writer(change):
-        append_operation(operation, change, root=config.vault)
+        append_operation(operation, change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         unrelated.write_text("writer corruption\n", encoding="utf-8")
         raise OSError("writer failed")
 
@@ -3260,7 +3292,8 @@ def test_retry_cleans_persisted_writer_additions_before_new_attempt(
         nonlocal calls
         calls += 1
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         if calls == 1:
             extra.parent.mkdir(parents=True, exist_ok=True)
@@ -3316,7 +3349,7 @@ def _prepare_failed_writer_residual(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     extra = config.vault / "references/writer-extra.md"
 
     def writer(change):
-        append_operation(config.vault / "log.md", change, root=config.vault)
+        append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         extra.parent.mkdir(parents=True, exist_ok=True)
         extra.write_text("writer addition\n", encoding="utf-8")
         raise OSError("writer failed")
@@ -3405,7 +3438,8 @@ def test_failed_recovery_resumes_after_partial_residual_cleanup(
         nonlocal calls
         calls += 1
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         if calls == 1:
             for extra in extras:
@@ -3535,7 +3569,7 @@ def test_writer_added_symlink_is_identity_checked_and_rolled_back(
     require_symlink_support(unsafe, external, target_is_directory=True)
 
     def writer(change):
-        append_operation(config.vault / "log.md", change, root=config.vault)
+        append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         unsafe.parent.mkdir(parents=True, exist_ok=True)
         unsafe.symlink_to(external, target_is_directory=True)
         raise OSError("writer failed")
@@ -3572,7 +3606,7 @@ def test_writer_addition_substitution_is_preserved_during_rollback(
         require_symlink_support(addition, original_target)
 
     def writer(change):
-        append_operation(config.vault / "log.md", change, root=config.vault)
+        append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         addition.parent.mkdir(parents=True, exist_ok=True)
         if kind == "file":
             addition.write_text("writer file\n", encoding="utf-8")
@@ -3637,7 +3671,7 @@ def test_writer_added_directory_substitution_is_preserved_during_rollback(
     substituted = False
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         addition.mkdir(parents=True)
         return result
 
@@ -3684,7 +3718,7 @@ def test_preexisting_directory_replacement_substitution_is_preserved(
     substituted = False
 
     def writer(change):
-        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        result = append_operation(config.vault / "log.md", change, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
         directory.rmdir()
         directory.write_text("writer replacement\n", encoding="utf-8")
         return result
@@ -6054,7 +6088,8 @@ def test_retry_preflight_omits_known_failed_writer_residual(
         nonlocal calls
         calls += 1
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         if calls == 1:
             extra.parent.mkdir(parents=True, exist_ok=True)
@@ -6112,7 +6147,8 @@ def test_retry_preflight_reads_absent_deletion_target_from_snapshot(
         nonlocal calls
         calls += 1
         operation = append_operation(
-            config.vault / "log.md", change, root=config.vault
+            config.vault / "log.md", change, root=config.vault,
+            lock_path=config.root.parent / ".operation-log.lock",
         )
         if calls == 1:
             raise OSError("writer failed")

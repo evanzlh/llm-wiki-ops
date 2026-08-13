@@ -235,11 +235,13 @@ class TransactionManager:
         self.transactions_root = self.local_state / "transactions"
         self.lock_path = self.local_state / "write.lock"
         self.action_lock_path = self.local_state / "action.lock"
+        self.operation_log_lock_path = self.local_state / "operation-log.lock"
         self.log_writer = log_writer or (
             lambda change: append_operation(
                 self.config.vault / "log.md",
                 change,
                 root=self.config.vault,
+                lock_path=self.operation_log_lock_path,
             )
         )
         self._action_manifest: ShardedManifest | None = None
@@ -735,6 +737,7 @@ class TransactionManager:
         writer_rollback: dict[str, str | None] = {}
         rollback_exclusion_paths: set[str] = set()
         rollback_exclusions: dict[str, str | None] | None = {}
+        manual_recovery_required = False
         try:
             candidates, validation = self._validate_record(
                 record, preflight_candidates
@@ -887,9 +890,21 @@ class TransactionManager:
                 for relative in postimage_paths
                 if relative != "log.md"
             }
-            postimages["log.md"] = self._validate_installed_log_data(
-                expected_log_data
-            )
+            try:
+                postimages["log.md"] = self._validate_installed_log_data(
+                    expected_log_data
+                )
+            except TransactionError:
+                # The writer already installed and validated our exact tail. A
+                # later mismatch is owner drift, so rolling back any related
+                # page would split the live transaction from its log history.
+                manual_recovery_required = True
+                rollback_exclusion_paths.update(affected)
+                for relative in sorted(affected):
+                    rollback_exclusions = self._capture_rollback_exclusion(
+                        rollback_exclusions, relative
+                    )
+                raise
             postimages = dict(sorted(postimages.items()))
             complete_payload = dict(payload)
             complete_payload.update(
@@ -963,7 +978,7 @@ class TransactionManager:
                         f"writer cleanup discovery failed: {rollback_exc}"
                     )
             residual_postimages = None
-            if root_is_safe():
+            if not manual_recovery_required and root_is_safe():
                 try:
                     self._restore_writer_guard_changes(
                         record,
@@ -973,7 +988,7 @@ class TransactionManager:
                     )
                 except (OSError, TransactionError) as rollback_exc:
                     rollback_errors.append(f"writer restore failed: {rollback_exc}")
-            if root_is_safe():
+            if not manual_recovery_required and root_is_safe():
                 try:
                     self._restore_snapshot_index(
                         record,
@@ -986,7 +1001,7 @@ class TransactionManager:
                     )
                 except (OSError, TransactionError) as rollback_exc:
                     rollback_errors.append(f"restore failed: {rollback_exc}")
-            if root_is_safe():
+            if not manual_recovery_required and root_is_safe():
                 try:
                     residual_postimages = self._failed_residual_postimages(
                         record,
@@ -1019,7 +1034,10 @@ class TransactionManager:
                     )
                 except TransactionError as rollback_exc:
                     rollback_errors.append(f"lock release failed: {rollback_exc}")
-            outcome = "failed recovery" if root_unsafe else "rolled back"
+            if manual_recovery_required:
+                outcome = "requires manual recovery"
+            else:
+                outcome = "failed recovery" if root_unsafe else "rolled back"
             detail = f"transaction {record.transaction_id} {outcome}: {exc}"
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)

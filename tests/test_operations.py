@@ -35,6 +35,10 @@ def change(
     )
 
 
+def operation_lock_path(root: Path) -> Path:
+    return root.parent / ("." + root.name + "-operation-log.lock")
+
+
 def test_empty_operation_log_is_exact_and_parses() -> None:
     assert EMPTY_OPERATION_LOG == (
         "---\n"
@@ -191,7 +195,7 @@ def test_append_operation_atomically_replaces_log(tmp_path: Path) -> None:
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     before = target.stat()
 
-    result = append_operation(target, change(), root=tmp_path)
+    result = append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     after = target.stat()
     assert result == target
@@ -200,12 +204,84 @@ def test_append_operation_atomically_replaces_log(tmp_path: Path) -> None:
     assert not list(tmp_path.glob(".log.md.tmp-*"))
 
 
+def test_nested_public_append_is_rejected_without_losing_outer_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    lock_path = tmp_path / "local" / "operation-log.lock"
+    lock_path.parent.mkdir()
+    original_replace = operations.os.replace
+    nested_error = None
+
+    def interposed_replace(source: Path, destination: Path) -> None:
+        nonlocal nested_error
+        if nested_error is None:
+            try:
+                append_operation(
+                    target,
+                    change(
+                        transaction_id="tx-nested",
+                        completed_at="2026-08-07T08:00:00Z",
+                    ),
+                    root=root,
+                    lock_path=lock_path,
+                )
+            except OperationError as exc:
+                nested_error = exc
+        original_replace(source, destination)
+
+    monkeypatch.setattr(operations.os, "replace", interposed_replace)
+
+    append_operation(target, change(), root=root, lock_path=lock_path)
+
+    assert nested_error is not None
+    assert "in progress" in str(nested_error)
+    assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
+    assert lock_path.is_file()
+    assert lock_path.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("kind", ["inside", "symlink", "hardlink", "directory"])
+def test_append_rejects_unsafe_operation_lock(tmp_path: Path, kind: str) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    local = tmp_path / "local"
+    local.mkdir()
+    lock_path = local / "operation-log.lock"
+    external = tmp_path / "external.lock"
+    external.write_bytes(b"")
+    if kind == "inside":
+        lock_path = root / "operation-log.lock"
+    elif kind == "symlink":
+        try:
+            lock_path.symlink_to(external)
+        except (NotImplementedError, OSError):
+            pytest.skip("symlinks are unavailable")
+    elif kind == "hardlink":
+        try:
+            os.link(external, lock_path)
+        except (NotImplementedError, OSError):
+            pytest.skip("hard links are unavailable")
+    else:
+        lock_path.mkdir()
+
+    with pytest.raises(OperationError, match="lock"):
+        append_operation(target, change(), root=root, lock_path=lock_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
 def test_append_preserves_existing_permission_bits(tmp_path: Path) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     target.chmod(0o600)
 
-    append_operation(target, change(), root=tmp_path)
+    append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
@@ -213,7 +289,7 @@ def test_append_preserves_existing_permission_bits(tmp_path: Path) -> None:
 def test_success_leaves_only_log_file(tmp_path: Path) -> None:
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
-    append_operation(target, change(), root=tmp_path)
+    append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
     assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
 
 
@@ -224,7 +300,7 @@ def test_append_does_not_require_linux_only_primitives(
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     monkeypatch.delattr(os, "O_TMPFILE", raising=False)
 
-    append_operation(target, change(), root=tmp_path)
+    append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
 
@@ -256,7 +332,7 @@ def test_append_rejects_unsafe_target_without_changing_external_inode(
     original = external.read_bytes()
 
     with pytest.raises(OperationError):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert external.read_bytes() == original
 
@@ -309,7 +385,7 @@ def test_initial_temp_fstat_failure_closes_and_cleans_temp(
     monkeypatch.setattr(operations.os, "fstat", fail_temp_fstat)
     monkeypatch.setattr(operations.os, "close", record_close)
     with pytest.raises(OperationError, match="temporary"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert temp_descriptor in closed
     assert not list(tmp_path.glob(".log.md.tmp-*"))
@@ -320,7 +396,7 @@ def test_append_rejects_noncanonical_target_path(tmp_path: Path) -> None:
     target = tmp_path / "other.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
     with pytest.raises(OperationError, match="root/log.md"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
 
 
@@ -338,7 +414,7 @@ def test_concurrent_target_change_is_not_overwritten_and_temp_is_cleaned(
 
     monkeypatch.setattr(operations, "_verify_preimage", replace_before_check)
     with pytest.raises(OperationError, match="changed"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert target.read_text(encoding="utf-8") == "concurrent\n"
     assert not list(tmp_path.glob(".log.md.tmp-*"))
@@ -368,7 +444,7 @@ def test_preimage_byte_drift_is_rejected_even_if_metadata_looks_stable(
     monkeypatch.setattr(operations, "_stable_identity", ignore_change_times)
     monkeypatch.setattr(operations, "_verify_preimage", drift_before_check)
     with pytest.raises(OperationError, match="changed"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert target.read_bytes() != render_operation_log((change(),)).encode("utf-8")
     assert not list(tmp_path.glob(".log.md.tmp-*"))
@@ -390,7 +466,7 @@ def test_fchmod_failure_cleanup_does_not_unlink_substituted_temp(
 
     monkeypatch.setattr(operations.os, "fchmod", substitute_then_fail)
     with pytest.raises(OperationError, match="prepare"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     substituted = next(tmp_path.glob(".log.md.tmp-*"))
     assert substituted.read_bytes() == b"external"
@@ -417,7 +493,7 @@ def test_concurrent_parent_swap_does_not_touch_replacement_directory(
 
     monkeypatch.setattr(operations, "_verify_parent", swap_before_check)
     with pytest.raises(OperationError, match="parent changed"):
-        append_operation(target, change(), root=root)
+        append_operation(target, change(), root=root, lock_path=operation_lock_path(root))
 
     assert (root / "log.md").read_text(encoding="utf-8") == "external\n"
     assert not list((tmp_path / "moved-vault").glob(".log.md.tmp-*"))
@@ -451,7 +527,7 @@ def test_prereplace_pipeline_failure_preserves_log_and_cleans_temp(
         )
 
     with pytest.raises(OperationError, match="append"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert target.read_bytes() == original
     assert not list(tmp_path.glob(".log.md.tmp-*"))
@@ -478,7 +554,7 @@ def test_temp_mutation_is_rejected_before_replacement(
 
     monkeypatch.setattr(operations, "_verify_temp", mutate_before_second_verify)
     with pytest.raises(OperationError, match="temporary"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert target.read_bytes() == original
     assert not list(tmp_path.glob(".log.md.tmp-*"))
@@ -501,7 +577,7 @@ def test_parent_fsync_failure_leaves_exact_installed_candidate(
 
     monkeypatch.setattr(operations.os, "fsync", fail_parent_sync)
     with pytest.raises(OperationError, match="append"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
@@ -518,7 +594,7 @@ def test_installed_verification_failure_leaves_exact_candidate(
 
     monkeypatch.setattr(operations, "_verify_installed", fail_verification)
     with pytest.raises(OperationError, match="verification failure"):
-        append_operation(target, change(), root=tmp_path)
+        append_operation(target, change(), root=tmp_path, lock_path=operation_lock_path(tmp_path))
 
     assert parse_operation_log(target.read_text(encoding="utf-8")) == (change(),)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["log.md"]
