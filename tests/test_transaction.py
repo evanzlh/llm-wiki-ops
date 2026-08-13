@@ -78,6 +78,21 @@ def test_commit_holds_manifest_session_before_snapshot_and_through_manifest_upda
     assert observed_upsert
     assert not active
 
+
+def test_commit_rejects_source_content_drift_after_begin(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source], transaction_id="tx-source-freeze")
+    candidate_page(record, "concepts/a.md")
+    source.write_text("changed after candidate generation", encoding="utf-8")
+
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-source-freeze")
+    assert manager.load("tx-source-freeze").status in {"active", "failed"}
+
 PAGE = """---
 title: A
 category: concepts
@@ -1055,7 +1070,7 @@ def test_commit_refuses_target_changed_after_begin(
     assert manager.lock_path.exists()
 
 
-def test_source_drift_does_not_count_as_output_target_drift(
+def test_source_drift_requires_transaction_restart(
     tmp_path: Path, operation_writer
 ) -> None:
     root, config = make_config(tmp_path)
@@ -1065,16 +1080,8 @@ def test_source_drift_does_not_count_as_output_target_drift(
     candidate_page(record, "concepts/a.md")
     source.write_text("new source bytes", encoding="utf-8")
 
-    manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
-
-    entry = ShardedManifest(config).load("sources/a.md")
-    assert entry is not None
-    assert (
-        entry.content_hash
-        == transaction_module.TransactionManager._hash_single_link_file(
-            source, "source"
-        )
-    )
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
 
 
 def test_failed_manifest_write_rolls_back_promoted_page_and_shard(

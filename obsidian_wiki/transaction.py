@@ -103,6 +103,7 @@ _METADATA_FIELDS = frozenset(
         "removed",
         "snapshot_index",
         "source_ids",
+        "source_preimages",
         "started_at",
         "status",
         "transaction_id",
@@ -263,6 +264,13 @@ class TransactionManager:
 
             self._write_json_atomic(workspace / "deletions.json", [])
             preimages = self._snapshot_preimages()
+            manifest = ShardedManifest(self.config)
+            source_preimages = {
+                source_id: self._hash_single_link_file(
+                    manifest.source_path(source_id), "transaction source"
+                )
+                for source_id in source_ids
+            }
             payload = {
                 "completed_at": None,
                 "created": [],
@@ -276,6 +284,7 @@ class TransactionManager:
                 "removed": [],
                 "snapshot_index": {},
                 "source_ids": list(source_ids),
+                "source_preimages": dict(sorted(source_preimages.items())),
                 "started_at": resolved_started_at,
                 "status": "active",
                 "transaction_id": resolved_id,
@@ -321,6 +330,7 @@ class TransactionManager:
         started_at = payload.get("started_at")
         self._validate_started_at(started_at)
         source_ids = self._load_source_ids(payload.get("source_ids"))
+        self._load_source_preimages(payload.get("source_preimages"), source_ids)
         preimages = self._load_image_map(
             payload.get("preimages"), "transaction preimages"
         )
@@ -690,6 +700,7 @@ class TransactionManager:
         self._validate_started_at(resolved_completed_at)
         snapshot_started = False
         payload = self._read_metadata_payload(record.workspace)
+        self._verify_source_preimages(payload, record.source_ids)
         snapshot_index: dict[str, str | None] = {}
         operation_relative: str | None = None
         operation_affected: set[str] = set()
@@ -2654,6 +2665,37 @@ class TransactionManager:
         if len(set(source_ids)) != len(source_ids):
             raise TransactionError("duplicate transaction source")
         return tuple(sorted(source_ids))
+
+    def _load_source_preimages(
+        self, raw: object, source_ids: tuple[str, ...]
+    ) -> dict[str, str]:
+        if not isinstance(raw, dict) or set(raw) != set(source_ids):
+            raise TransactionError("transaction source_preimages must match source_ids")
+        result: dict[str, str] = {}
+        for source_id, content_hash in raw.items():
+            if not isinstance(source_id, str) or not isinstance(content_hash, str) or _HASH_RE.fullmatch(content_hash) is None:
+                raise TransactionError("transaction source_preimages are invalid")
+            result[source_id] = content_hash
+        return dict(sorted(result.items()))
+
+    def _verify_source_preimages(
+        self, payload: dict[str, object], source_ids: tuple[str, ...]
+    ) -> None:
+        expected = self._load_source_preimages(payload.get("source_preimages"), source_ids)
+        manifest = ShardedManifest(self.config)
+        for source_id in source_ids:
+            try:
+                current = self._hash_single_link_file(
+                    manifest.source_path(source_id), "transaction source"
+                )
+            except (ManifestError, TransactionError) as exc:
+                raise TransactionError(
+                    f"transaction source changed after begin; restart required: {source_id}"
+                ) from exc
+            if current != expected[source_id]:
+                raise TransactionError(
+                    f"transaction source changed after begin; restart required: {source_id}"
+                )
 
     def _snapshot_preimages(self) -> dict[str, str | None]:
         self._require_ordinary_directory(self.config.vault, "portable vault")

@@ -50,6 +50,13 @@ inode-conditional unlink, so a same-user process that bypasses the lock can stil
 the final name check and cleanup syscall; that unsupported race has no kernel-level CAS
 guarantee.
 
+`transaction begin` freezes the selected source hashes; commit fails and requires a
+restart if a source changes while candidates are prepared. If a detected manifest
+conflict leaves a fixed recovery journal, inspect the live shard and working-tree diff,
+then explicitly keep that version with
+`obsidian-wiki manifest resolve-conflict --keep-live`. Only recovery artifacts whose
+recorded identity and content still match are removed.
+
 Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.obsidian-wiki/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
 
 ```bash

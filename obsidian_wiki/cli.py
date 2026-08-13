@@ -1032,6 +1032,21 @@ def cmd_transaction_begin(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_manifest_resolve_conflict(args: argparse.Namespace) -> int:
+    from obsidian_wiki.portable_manifest import ShardedManifest
+
+    config = _portable_command_config("manifest resolve-conflict")
+    result = ShardedManifest(config).resolve_conflict_keep_live()
+    payload = {"status": "resolved", **result}
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(
+            f"manifest conflict resolved for {result['source_id']}: kept live shard"
+        )
+    return 0
+
+
 def cmd_transaction_list(args: argparse.Namespace) -> int:
     from obsidian_wiki.portable_manifest import ManifestError
     from obsidian_wiki.transaction import TransactionError
@@ -2048,6 +2063,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_args(transaction_begin)
     transaction_begin.set_defaults(func=cmd_transaction_begin)
+
+    manifest = sub.add_parser(
+        "manifest", help="inspect and reconcile manifest recovery state"
+    )
+    manifest_sub = manifest.add_subparsers(dest="manifest_command", required=True)
+    manifest_resolve = manifest_sub.add_parser(
+        "resolve-conflict",
+        help="keep the current live shard and remove only verified recovery artifacts",
+    )
+    manifest_resolve.add_argument(
+        "--keep-live", action="store_true", required=True,
+        help="confirm that the current live shard is the owner-selected version",
+    )
+    _add_json_args(manifest_resolve)
+    manifest_resolve.set_defaults(func=cmd_manifest_resolve_conflict)
 
     transaction_list = transaction_sub.add_parser(
         "list",

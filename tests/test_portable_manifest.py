@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1076,3 +1077,138 @@ def test_unlock_failure_does_not_replace_body_exception(tmp_path: Path, monkeypa
     with pytest.raises(RuntimeError, match="body wins"):
         with ShardedManifest(config).mutation_session():
             raise RuntimeError("body wins")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory binding")
+def test_vault_swap_after_prepared_is_not_reported_as_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    vault = root / "wiki"
+    detached = root / "detached-wiki"
+    replacement = root / "replacement-wiki"
+    replacement.mkdir()
+    (replacement / ".manifest.json").write_text(
+        '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n'
+    )
+
+    def swap(step: str) -> None:
+        if step == "prepared":
+            vault.rename(detached)
+            replacement.rename(vault)
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", swap)
+    with pytest.raises(ManifestError, match="vault|directory|changed"):
+        ShardedManifest(config).upsert(source)
+    assert not (vault / ".manifest/sources/design/a.md.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
+def test_oversize_postimage_is_rejected_before_any_wal_artifact(tmp_path: Path) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    oversized = b"x" * (portable_manifest_module._MAX_SHARD_BYTES + 1)
+    with store.mutation_session():
+        with pytest.raises(ManifestError, match="size|limit"):
+            store._mutate("sources/design/a.md", "upsert", oversized, portable_manifest_module._UNSET_PREIMAGE)
+    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    assert not any((wal / name).exists() for name in portable_manifest_module._WAL_FILES)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem capability")
+def test_target_filesystem_capability_failure_precedes_wal_and_live(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    real_link = portable_manifest_module.os.link
+
+    def fail_probe(source_name, target_name, *args, **kwargs):
+        if str(source_name).startswith(".manifest-capability-"):
+            raise OSError(portable_manifest_module.errno.ENOTSUP, "unsupported")
+        return real_link(source_name, target_name, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "link", fail_probe)
+    with pytest.raises(ManifestError, match="capability|filesystem"):
+        ShardedManifest(config).upsert(source)
+    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    assert not (wal / "journal.json").exists()
+    assert not ShardedManifest(config).entry_path("sources/design/a.md").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+def test_owner_can_resolve_conflict_by_keep_live(tmp_path: Path, monkeypatch) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+    owner = b"owner selected live\n"
+
+    def interpose(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(owner)
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", interpose)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    result = ShardedManifest(config).resolve_conflict_keep_live()
+    assert result["resolution"] == "keep-live"
+    assert target.read_bytes() == owner
+    ShardedManifest(config).remove("sources/design/a.md")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor cleanup")
+def test_root_identity_mismatch_closes_open_descriptor(tmp_path: Path, monkeypatch) -> None:
+    _, config = make_repo(tmp_path)
+    bad = replace(config, root_identity=(0, 0))
+    real_close = portable_manifest_module.os.close
+    closed: list[int] = []
+
+    def track_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(portable_manifest_module.os, "close", track_close)
+    with pytest.raises(ManifestError, match="changed"):
+        ShardedManifest(bad)
+    assert closed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor cleanup")
+def test_sidecar_fstat_failure_closes_descriptor(tmp_path: Path, monkeypatch) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    real_fstat = portable_manifest_module.os.fstat
+    real_close = portable_manifest_module.os.close
+    side_descriptors: set[int] = set()
+    closed: set[int] = set()
+
+    def fail_sidecar_fstat(descriptor: int):
+        try:
+            path = os.readlink(f"/proc/self/fd/{descriptor}")
+        except OSError:
+            path = ""
+        if path.endswith(portable_manifest_module._SIDECAR):
+            side_descriptors.add(descriptor)
+            raise OSError("fstat injected")
+        return real_fstat(descriptor)
+
+    def track_close(descriptor: int) -> None:
+        closed.add(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(portable_manifest_module.os, "fstat", fail_sidecar_fstat)
+    monkeypatch.setattr(portable_manifest_module.os, "close", track_close)
+    with pytest.raises(ManifestError):
+        store.upsert(source)
+    assert side_descriptors <= closed
