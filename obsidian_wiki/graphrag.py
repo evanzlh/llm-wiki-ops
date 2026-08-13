@@ -48,6 +48,7 @@ SKIP_DIRS = frozenset(
     "_archived .obsidian".split()
 )
 BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
+ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
 
 
 def _slug(s: str) -> str:
@@ -67,6 +68,8 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
 
     # First pass: collect all slugs and frontmatter
     for header in headers:
+        if header.relative in ROOT_VIEW_FILES:
+            continue
         page = header
         slug = _slug(page.path.stem)
         try:

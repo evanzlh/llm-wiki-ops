@@ -76,6 +76,28 @@ def simple_vault(vault):
 # ---------------------------------------------------------------------------
 
 class TestBuildIndex:
+    def test_excludes_exact_root_views_but_keeps_nested_names(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "topic", title="Topic", links=["log"])
+        _page(concepts, "log", title="Nested Log", links=[])
+        for name in ("index", "log", "hot"):
+            _page(vault, name, title=f"Root {name.title()}", links=["topic"])
+
+        index = build_index(vault)
+
+        assert set(index) == {"topic", "log"}
+        assert index["log"]["title"] == "Nested Log"
+        assert index["topic"]["out_links"] == ["log"]
+        assert index["topic"]["in_links"] == []
+
+    def test_skips_root_views_before_frontmatter_parsing(self, vault):
+        for name in ("index.md", "log.md", "hot.md"):
+            (vault / name).write_text("---\ntags: [one]\ntags: [two]\n---\n", encoding="utf-8")
+        _page(vault, "topic", title="Topic")
+
+        assert set(build_index(vault)) == {"topic"}
+
     def test_returns_slugs(self, simple_vault):
         idx = build_index(simple_vault)
         assert "transformer" in idx

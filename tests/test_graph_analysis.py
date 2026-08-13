@@ -79,6 +79,19 @@ def simple_vault(vault):
 # ---------------------------------------------------------------------------
 
 class TestParseVaultGraph:
+    def test_excludes_exact_root_views_but_keeps_nested_names(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "topic", ["log"], tags=["knowledge"])
+        _page(concepts, "log", [], tags=["nested"])
+        for name in ("index", "log", "hot"):
+            _page(vault, name, ["topic"], tags=[f"root-{name}"])
+
+        outgoing, tags = parse_vault_graph(vault)
+
+        assert outgoing == {"log": [], "topic": ["log"]}
+        assert tags == {"log": ["nested"], "topic": ["knowledge"]}
+
     def test_reads_wikilinks(self, simple_vault):
         outgoing, _ = parse_vault_graph(simple_vault)
         assert "b" in outgoing["a"]
@@ -277,6 +290,20 @@ class TestSurprisingConnections:
 # ---------------------------------------------------------------------------
 
 class TestAnalyseVault:
+    def test_root_views_do_not_affect_graph_statistics_or_metrics(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "topic", [])
+        for name in ("index", "log", "hot"):
+            _page(vault, name, ["topic"])
+
+        result = analyse_vault(vault)
+
+        assert result["stats"] == {"pages": 1, "edges": 0, "communities": 1}
+        assert all(item["page"] not in {"index", "log", "hot"} for item in result["god_nodes"])
+        assert not {"index", "log", "hot"}.intersection(result["dead_ends"])
+        assert not {"index", "log", "hot"}.intersection(result["isolated"])
+
     def test_returns_all_keys(self, simple_vault):
         result = analyse_vault(simple_vault)
         assert set(result.keys()) == {

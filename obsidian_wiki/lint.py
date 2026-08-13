@@ -35,7 +35,8 @@ TRUST_REQUIRED_FRONTMATTER = (
     "base_confidence",
     "lifecycle",
 )
-RESERVED_PAGE_STEMS = frozenset({"index", "log", "hot", "_insights"})
+ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
+RESERVED_PAGE_STEMS = frozenset({"_insights"})
 ALLOWED_RELATIONSHIP_TYPES = frozenset(
     {"extends", "implements", "contradicts", "derived_from", "uses", "replaces", "related_to"}
 )
@@ -54,10 +55,14 @@ def _iter_pages(
     *,
     skip_relative_subtrees: Collection[tuple[str, ...]] = (),
 ) -> tuple[MarkdownFile, ...]:
-    return scan_markdown_files(
-        vault,
-        skip_dirs=SKIP_DIRS,
-        skip_relative_subtrees=_relative_subtree_strings(skip_relative_subtrees),
+    return tuple(
+        page
+        for page in scan_markdown_files(
+            vault,
+            skip_dirs=SKIP_DIRS,
+            skip_relative_subtrees=_relative_subtree_strings(skip_relative_subtrees),
+        )
+        if page.relative not in ROOT_VIEW_FILES
     )
 
 

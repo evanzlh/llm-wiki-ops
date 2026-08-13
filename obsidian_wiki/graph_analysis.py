@@ -43,6 +43,7 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
 _TAGS_RE = re.compile(r"^tags:\s*\[([^\]]+)\]", re.MULTILINE)
 _TAGS_LIST_RE = re.compile(r"^tags:\s*\n((?:\s+-\s+\S+\n)+)", re.MULTILINE)
+_ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
 
 
 def _slug(page_name: str) -> str:
@@ -64,7 +65,11 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
     tags_map: dict[str, list[str]] = {}
     skip_dirs = {"_archived", ".obsidian"}
 
-    pages = list(scan_markdown_files(vault, skip_dirs=skip_dirs))
+    pages = [
+        page
+        for page in scan_markdown_files(vault, skip_dirs=skip_dirs)
+        if page.relative not in _ROOT_VIEW_FILES
+    ]
 
     known_slugs = {_page_slug(page) for page in pages}
 

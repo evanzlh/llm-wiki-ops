@@ -21,7 +21,8 @@ DEFAULT_BUDGET = 8_000
 MIN_BUDGET = 256
 MAX_BUDGET = 100_000
 SKIP_DIRS = frozenset({"_archived", ".obsidian", ".git"})
-SKIP_FILES = frozenset({"AGENTS.md", "CLAUDE.md", "GEMINI.md", "hot.md", "index.md", "log.md", "_insights.md"})
+SKIP_FILES = frozenset({"AGENTS.md", "CLAUDE.md", "GEMINI.md", "_insights.md"})
+ROOT_VIEW_FILES = frozenset({"hot.md", "index.md", "log.md"})
 BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 TIER_ORDER = {"core": 0, "supporting": 1, "peripheral": 2}
 _H1_RE = re.compile(r"^[ ]{0,3}#\s+(.+?)\s*$", re.MULTILINE)
@@ -114,6 +115,8 @@ def load_pages(vault: Path, *, public_only: bool = False) -> list[PageRecord]:
     for header in scan_markdown_headers(
         vault, skip_dirs=SKIP_DIRS, skip_files=SKIP_FILES
     ):
+        if header.relative in ROOT_VIEW_FILES:
+            continue
         try:
             parsed, _body = split_frontmatter(header.text())
         except (FrontmatterError, ValueError):

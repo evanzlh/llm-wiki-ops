@@ -84,6 +84,21 @@ def test_load_pages_does_not_hide_unsupported_personal_artifact_paths(
     ]
 
 
+def test_load_pages_excludes_exact_root_views_but_keeps_nested_names(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    for name in ("index.md", "log.md", "hot.md"):
+        write_note(vault, name, f"# Root {name}\n")
+        write_note(vault, f"concepts/{name}", f"# Nested {name}\n")
+
+    assert [page.path for page in load_pages(vault)] == [
+        "concepts/hot.md",
+        "concepts/index.md",
+        "concepts/log.md",
+    ]
+
+
 def test_load_pages_rejects_external_symlink_without_leaking_content(
     tmp_path: Path,
 ) -> None:

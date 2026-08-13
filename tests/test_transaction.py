@@ -5677,7 +5677,7 @@ def test_validate_uses_candidate_replacement_in_prospective_graph(
     assert target.read_text(encoding="utf-8").endswith("[[missing]]\n")
 
 
-def test_validate_resolves_candidate_link_to_tracked_root_page(tmp_path: Path) -> None:
+def test_validate_does_not_resolve_candidate_link_to_root_view(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     (config.vault / "index.md").write_text("# Index\n", encoding="utf-8")
     manager = TransactionManager(config)
@@ -5686,13 +5686,18 @@ def test_validate_resolves_candidate_link_to_tracked_root_page(tmp_path: Path) -
 
     report = manager.validate("tx-root-target")
 
-    assert report.status == "pass"
-    assert report.issues == ()
+    assert report.status == "fail"
+    assert [(issue.code, issue.path, issue.target) for issue in report.issues] == [
+        ("broken-link", "concepts/a.md", "index")
+    ]
 
 
-def test_validate_reports_broken_link_from_tracked_root_page(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["index.md", "log.md", "hot.md"])
+def test_validate_ignores_broken_link_from_root_view(
+    tmp_path: Path, name: str
+) -> None:
     root, config = make_config(tmp_path)
-    (config.vault / "index.md").write_text(
+    (config.vault / name).write_text(
         "# Index\n[[missing]]\n", encoding="utf-8"
     )
     manager = TransactionManager(config)
@@ -5700,8 +5705,22 @@ def test_validate_reports_broken_link_from_tracked_root_page(tmp_path: Path) -> 
 
     report = manager.validate("tx-root-origin")
 
+    assert report.status == "pass"
+    assert report.issues == ()
+
+
+def test_validate_still_reports_broken_link_from_knowledge_page(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    page = config.vault / "journal" / "daily.md"
+    page.parent.mkdir()
+    page.write_text(PAGE + "[[missing]]\n", encoding="utf-8")
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-knowledge-origin")
+
+    report = manager.validate("tx-knowledge-origin")
+
     assert [(issue.code, issue.path, issue.target) for issue in report.issues] == [
-        ("broken-link", "index.md", "missing")
+        ("broken-link", "journal/daily.md", "missing")
     ]
 
 

@@ -157,6 +157,19 @@ def test_lint_vault_passes_clean_graph(tmp_path: Path) -> None:
     assert report["findings"]["missing_frontmatter"] == []
 
 
+def test_lint_ignores_root_view_links_but_checks_knowledge_links(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    for name in ("index.md", "log.md", "hot.md"):
+        _page(vault, name, links=["root-ghost"])
+    _page(vault, "concepts/alpha.md", links=["knowledge-ghost"])
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["broken_links"] == [
+        {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
+    ]
+
+
 def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", links=["ghost"])

@@ -149,7 +149,6 @@ _CONTROL_DIRECTORIES = frozenset(
         "_meta",
     }
 )
-_TRACKED_ROOT_GRAPH_PAGES = frozenset({"index.md", "log.md"})
 
 
 def validate_candidate_path(candidate_vault: Path, raw_path: str | Path) -> str:
@@ -1297,13 +1296,6 @@ class TransactionManager:
 
         live_pages: dict[str, bytes] = {}
         self._require_ordinary_directory(self.config.vault, "portable vault")
-        for relative in sorted(_TRACKED_ROOT_GRAPH_PAGES):
-            page = self.config.vault / relative
-            if not page.exists() and not page.is_symlink():
-                continue
-            live_pages[relative] = self._read_single_link_bytes(
-                page, "knowledge page"
-            )
         for category in sorted(_KNOWLEDGE_DIRECTORIES):
             root = self.config.vault / category
             if not root.exists() and not root.is_symlink():
@@ -1365,7 +1357,7 @@ class TransactionManager:
         if path.suffix != ".md":
             return False
         if len(path.parts) == 1:
-            return relative in _TRACKED_ROOT_GRAPH_PAGES
+            return False
         return (
             path.parts[0] in _KNOWLEDGE_DIRECTORIES
             and path.parts[:2] != ("journal", "operations")
