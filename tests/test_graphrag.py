@@ -76,6 +76,32 @@ def simple_vault(vault):
 # ---------------------------------------------------------------------------
 
 class TestBuildIndex:
+    @pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+    def test_prunes_legacy_operations_subtree_before_scanning(
+        self, vault, tmp_path, kind
+    ):
+        journal = vault / "journal"
+        journal.mkdir()
+        _page(journal, "daily", title="Daily")
+        operations = journal / "operations"
+        if kind == "ordinary":
+            operations.mkdir()
+            (operations / "malformed.md").write_text(
+                "---\ntags: [one]\ntags: [two]\n---\n", encoding="utf-8"
+            )
+        else:
+            external = tmp_path / "external-operations"
+            external.mkdir()
+            _page(external, "secret", title="Secret")
+            try:
+                operations.symlink_to(external, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                pytest.skip(f"symlinks are unavailable: {exc}")
+
+        index = build_index(vault)
+
+        assert set(index) == {"daily"}
+
     def test_excludes_exact_root_views_but_keeps_nested_names(self, vault):
         concepts = vault / "concepts"
         concepts.mkdir()

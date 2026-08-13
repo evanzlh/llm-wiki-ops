@@ -79,6 +79,31 @@ def simple_vault(vault):
 # ---------------------------------------------------------------------------
 
 class TestParseVaultGraph:
+    @pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+    def test_prunes_legacy_operations_subtree_before_scanning(
+        self, vault, tmp_path, kind
+    ):
+        journal = vault / "journal"
+        journal.mkdir()
+        _page(journal, "daily", [])
+        operations = journal / "operations"
+        if kind == "ordinary":
+            operations.mkdir()
+            _page(operations, "legacy", ["daily"], tags=["legacy"])
+        else:
+            external = tmp_path / "external-operations"
+            external.mkdir()
+            _page(external, "secret", [])
+            try:
+                operations.symlink_to(external, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                pytest.skip(f"symlinks are unavailable: {exc}")
+
+        outgoing, tags = parse_vault_graph(vault)
+
+        assert outgoing == {"daily": []}
+        assert tags == {}
+
     def test_excludes_exact_root_views_but_keeps_nested_names(self, vault):
         concepts = vault / "concepts"
         concepts.mkdir()

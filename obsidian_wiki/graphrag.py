@@ -49,6 +49,7 @@ SKIP_DIRS = frozenset(
 )
 BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
+SKIP_RELATIVE_SUBTREES = frozenset({"journal/operations"})
 
 
 def _slug(s: str) -> str:
@@ -63,7 +64,11 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     """
     pages: dict[str, dict] = {}
 
-    headers = scan_markdown_headers(vault, skip_dirs=SKIP_DIRS)
+    headers = scan_markdown_headers(
+        vault,
+        skip_dirs=SKIP_DIRS,
+        skip_relative_subtrees=SKIP_RELATIVE_SUBTREES,
+    )
     eligible = []
 
     # First pass: collect all slugs and frontmatter

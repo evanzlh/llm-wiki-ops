@@ -44,6 +44,7 @@ _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
 _TAGS_RE = re.compile(r"^tags:\s*\[([^\]]+)\]", re.MULTILINE)
 _TAGS_LIST_RE = re.compile(r"^tags:\s*\n((?:\s+-\s+\S+\n)+)", re.MULTILINE)
 _ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
+_SKIP_RELATIVE_SUBTREES = frozenset({"journal/operations"})
 
 
 def _slug(page_name: str) -> str:
@@ -67,7 +68,11 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
 
     pages = [
         page
-        for page in scan_markdown_files(vault, skip_dirs=skip_dirs)
+        for page in scan_markdown_files(
+            vault,
+            skip_dirs=skip_dirs,
+            skip_relative_subtrees=_SKIP_RELATIVE_SUBTREES,
+        )
         if page.relative not in _ROOT_VIEW_FILES
     ]
 

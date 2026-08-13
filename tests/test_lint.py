@@ -170,6 +170,61 @@ def test_lint_ignores_root_view_links_but_checks_knowledge_links(tmp_path: Path)
     ]
 
 
+@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
+def test_lint_prunes_legacy_operations_subtree_by_default(
+    tmp_path: Path, kind: str
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md", links=["knowledge-ghost"])
+    _page(vault, "journal/daily.md", links=["alpha"])
+    operations = vault / "journal" / "operations"
+    if kind == "ordinary":
+        operations.mkdir()
+        (operations / "malformed.md").write_text(
+            "# Missing frontmatter with [[legacy-ghost]]\n", encoding="utf-8"
+        )
+    else:
+        external = tmp_path / "external-operations"
+        external.mkdir()
+        (external / "secret.md").write_text("# Secret\n", encoding="utf-8")
+        _symlink_or_skip(operations, external, directory=True)
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["broken_links"] == [
+        {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
+    ]
+    assert all(
+        not item.get("page", "").startswith("journal/operations/")
+        for finding in report["findings"].values()
+        if isinstance(finding, list)
+        for item in finding
+        if isinstance(item, dict)
+    )
+
+
+def test_lint_unions_default_and_caller_supplied_subtree_exclusions(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/alpha.md", links=["knowledge-ghost"])
+    for relative, target in (
+        ("journal/operations/legacy.md", "legacy-ghost"),
+        ("generated/cache.md", "generated-ghost"),
+    ):
+        _page(vault, relative, links=[target], include_frontmatter=False)
+
+    report = lint_vault(
+        vault,
+        require_trust_ledger=False,
+        skip_relative_subtrees={("generated",)},
+    )
+
+    assert report["findings"]["broken_links"] == [
+        {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
+    ]
+
+
 def test_lint_vault_fails_on_broken_links_and_missing_frontmatter(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", links=["ghost"])
