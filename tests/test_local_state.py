@@ -249,29 +249,34 @@ def test_raw_readouts_and_non_shard_files_are_not_authoritative(
     assert authoritative_fingerprint(config) == before
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
-def test_legacy_operation_subtree_is_not_authoritative(
-    config_fixture: PortableConfig, tmp_path: Path, kind: str
+def test_journal_operation_page_is_authoritative(
+    config_fixture: PortableConfig,
 ) -> None:
     before_fingerprint = authoritative_fingerprint(config_fixture)
     before_inputs = hot_inputs(config_fixture)
-    legacy = config_fixture.vault / "journal" / "operations"
-    legacy.parent.mkdir()
-    if kind == "ordinary":
-        legacy.mkdir()
-        (legacy / "malformed.md").write_text(
-            "# Not a knowledge page\n", encoding="utf-8"
-        )
-    else:
-        external = tmp_path / "external-legacy-operations"
-        external.mkdir()
-        (external / "malformed.md").write_text(
-            "# External legacy operation\n", encoding="utf-8"
-        )
-        legacy.symlink_to(external, target_is_directory=True)
+    _write_page(
+        config_fixture,
+        "journal/operations/entry.md",
+        title="Operation knowledge",
+        summary="A normal journal page.",
+        updated="2026-08-13",
+    )
 
-    assert authoritative_fingerprint(config_fixture) == before_fingerprint
-    assert hot_inputs(config_fixture) == before_inputs
+    assert authoritative_fingerprint(config_fixture) != before_fingerprint
+    assert hot_inputs(config_fixture) != before_inputs
+
+
+def test_symlinked_journal_operations_is_rejected_as_authoritative(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    operations = config_fixture.vault / "journal/operations"
+    operations.parent.mkdir()
+    external = tmp_path / "external-operations"
+    external.mkdir()
+    operations.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(LocalStateError, match="symlink"):
+        authoritative_fingerprint(config_fixture)
 
 
 def test_changed_hot_hash_is_stale_without_mutating_hot_or_tree(

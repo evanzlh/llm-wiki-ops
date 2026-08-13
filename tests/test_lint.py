@@ -184,40 +184,38 @@ def test_lint_validates_root_view_structure_without_reading_it(tmp_path: Path) -
         lint_vault(vault, require_trust_ledger=False)
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
-def test_lint_prunes_legacy_operations_subtree_by_default(
-    tmp_path: Path, kind: str
-) -> None:
+def test_lint_includes_journal_operations_by_default(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md", links=["knowledge-ghost"])
     _page(vault, "journal/daily.md", links=["alpha"])
-    operations = vault / "journal" / "operations"
-    if kind == "ordinary":
-        operations.mkdir()
-        (operations / "malformed.md").write_text(
-            "# Missing frontmatter with [[legacy-ghost]]\n", encoding="utf-8"
-        )
-    else:
-        external = tmp_path / "external-operations"
-        external.mkdir()
-        (external / "secret.md").write_text("# Secret\n", encoding="utf-8")
-        _symlink_or_skip(operations, external, directory=True)
+    _page(
+        vault,
+        "journal/operations/entry.md",
+        links=["operation-ghost"],
+    )
 
     report = lint_vault(vault, require_trust_ledger=False)
 
     assert report["findings"]["broken_links"] == [
-        {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
+        {"page": "concepts/alpha.md", "target": "knowledge-ghost"},
+        {"page": "journal/operations/entry.md", "target": "operation-ghost"},
     ]
-    assert all(
-        not item.get("page", "").startswith("journal/operations/")
-        for finding in report["findings"].values()
-        if isinstance(finding, list)
-        for item in finding
-        if isinstance(item, dict)
-    )
 
 
-def test_lint_unions_default_and_caller_supplied_subtree_exclusions(
+def test_lint_rejects_symlinked_journal_operations(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    operations = vault / "journal" / "operations"
+    operations.parent.mkdir(parents=True)
+    external = tmp_path / "external-operations"
+    external.mkdir()
+    (external / "secret.md").write_text("# Secret\n", encoding="utf-8")
+    _symlink_or_skip(operations, external, directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        lint_vault(vault, require_trust_ledger=False)
+
+
+def test_lint_applies_caller_supplied_subtree_exclusions(
     tmp_path: Path,
 ) -> None:
     vault = tmp_path / "vault"
@@ -235,7 +233,8 @@ def test_lint_unions_default_and_caller_supplied_subtree_exclusions(
     )
 
     assert report["findings"]["broken_links"] == [
-        {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
+        {"page": "concepts/alpha.md", "target": "knowledge-ghost"},
+        {"page": "journal/operations/legacy.md", "target": "legacy-ghost"},
     ]
 
 

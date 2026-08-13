@@ -81,6 +81,16 @@ def test_render_parse_round_trip_canonicalizes_lists() -> None:
     )
 
 
+def test_operation_change_accepts_journal_operations_as_knowledge_path() -> None:
+    original = change(
+        created=("journal/operations/entry.md",),
+        updated=("journal/operations/reviewed.md",),
+        removed=("journal/operations/old.md",),
+    )
+
+    assert parse_operation_log(render_operation_log((original,))) == (original,)
+
+
 def test_render_empty_change_lists_as_none() -> None:
     block = render_operation_block(change())
     assert block.count("- None") == 3

@@ -1426,44 +1426,40 @@ def test_manifest_to_page_edge_must_be_declared_by_page(tmp_path: Path) -> None:
     assert "manifest-page-source-missing" in issue_codes(check_portable_repo(config))
 
 
-def test_manifest_legacy_operation_page_is_invalid_without_inspection(
+def test_manifest_journal_operation_page_is_checked_as_knowledge(
     tmp_path: Path,
 ) -> None:
-    root, config, _, _, entry_path = valid_repo(tmp_path)
+    _, config, _, _, entry_path = valid_repo(tmp_path)
     payload = json.loads(entry_path.read_text(encoding="utf-8"))
-    payload["pages"] = ["journal/operations/legacy.md"]
+    payload["pages"] = ["journal/operations/entry.md"]
     entry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    legacy = config.vault / "journal" / "operations"
-    external = tmp_path / "external-legacy"
-    external.mkdir()
-    _symlink_or_skip(legacy, external, directory=True)
+    page = config.vault / "concepts/a.md"
+    page_text = page.read_text(encoding="utf-8")
+    page.unlink()
+    operation = config.vault / "journal/operations/entry.md"
+    operation.parent.mkdir(parents=True)
+    operation.write_text(
+        page_text
+        .replace("title: A", "title: Entry")
+        .replace("category: concepts", "category: journal"),
+        encoding="utf-8",
+    )
 
     report = check_portable_repo(config)
 
-    assert issues_with_code(report, "manifest-page-invalid") == [
-        {
-            "code": "manifest-page-invalid",
-            "path": "wiki/journal/operations/legacy.md",
-            "message": "manifest page is not a knowledge page",
-            "severity": "error",
-        }
-    ]
-    assert str(root) not in json.dumps(report)
+    assert "manifest-page-invalid" not in issue_codes(report)
+    assert "manifest-page-missing" not in issue_codes(report)
 
 
-def test_knowledge_scan_prunes_legacy_subtree_before_inspection(
+def test_knowledge_scan_has_no_default_subtree_exclusion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, config, _, _, _ = valid_repo(tmp_path)
-    legacy = config.vault / "journal" / "operations"
-    external = tmp_path / "external-legacy"
-    external.mkdir()
-    _symlink_or_skip(legacy, external, directory=True)
     real_scan = portable_check_module.scan_markdown_files
     seen: list[frozenset[str]] = []
 
     def recording_scan(
-        root: Path, *, skip_relative_subtrees: set[str]
+        root: Path, *, skip_relative_subtrees: frozenset[str] = frozenset()
     ):
         seen.append(frozenset(skip_relative_subtrees))
         return real_scan(root, skip_relative_subtrees=skip_relative_subtrees)
@@ -1476,7 +1472,7 @@ def test_knowledge_scan_prunes_legacy_subtree_before_inspection(
 
     check_portable_repo(config)
 
-    assert seen == [frozenset({"journal/operations"})]
+    assert seen == [frozenset()]
 
 
 def test_page_to_manifest_edge_must_be_declared_by_shard(tmp_path: Path) -> None:
@@ -1599,35 +1595,37 @@ def test_operation_log_source_requires_manifest_entry(tmp_path: Path) -> None:
     assert "operation-log-invalid" in issue_codes(check_portable_repo(config))
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
-def test_legacy_operation_subtree_is_ignored(
-    tmp_path: Path, kind: str
-) -> None:
+def test_journal_operation_page_is_linted(tmp_path: Path) -> None:
     _, config, _, _, _ = valid_repo(tmp_path)
-    legacy = config.vault / "journal" / "operations"
-    legacy.parent.mkdir(exist_ok=True)
-    if kind == "ordinary":
-        legacy.mkdir()
-        (legacy / "malformed.md").write_text(
-            "# Missing metadata with [[missing target]]\n", encoding="utf-8"
-        )
-    else:
-        external = tmp_path / "external-legacy-operations"
-        external.mkdir()
-        (external / "malformed.md").write_text(
-            "# External legacy operation\n", encoding="utf-8"
-        )
-        _symlink_or_skip(legacy, external, directory=True)
-    page = config.vault / "concepts/a.md"
-    page.write_text(
-        page.read_text(encoding="utf-8") + "\n[[unrelated missing target]]\n",
+    operation = config.vault / "journal/operations/entry.md"
+    operation.parent.mkdir(parents=True)
+    operation.write_text(
+        "# Missing metadata with [[operation missing target]]\n",
         encoding="utf-8",
     )
 
     report = check_portable_repo(config)
-    assert "lint-broken-link" in issue_codes(report)
-    assert all(
-        "journal/operations" not in issue["path"] for issue in report["issues"]
+    assert any(
+        issue["code"] == "lint-broken-link"
+        and issue["path"] == "wiki/journal/operations/entry.md"
+        for issue in report["issues"]
+    )
+
+
+def test_symlinked_journal_operations_fails_closed(tmp_path: Path) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    operations = config.vault / "journal/operations"
+    operations.parent.mkdir(exist_ok=True)
+    external = tmp_path / "external-operations"
+    external.mkdir()
+    _symlink_or_skip(operations, external, directory=True)
+
+    report = check_portable_repo(config)
+
+    assert any(
+        issue["code"] in {"page-invalid", "lint-invalid"}
+        and "symlink" in issue["message"]
+        for issue in report["issues"]
     )
 
 

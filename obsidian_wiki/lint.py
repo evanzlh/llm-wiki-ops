@@ -37,7 +37,6 @@ TRUST_REQUIRED_FRONTMATTER = (
 )
 ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
 RESERVED_PAGE_STEMS = frozenset({"_insights"})
-LEGACY_RELATIVE_SUBTREES = frozenset({"journal/operations"})
 ALLOWED_RELATIONSHIP_TYPES = frozenset(
     {"extends", "implements", "contradicts", "derived_from", "uses", "replaces", "related_to"}
 )
@@ -54,7 +53,7 @@ def _relative_subtree_strings(
 def _iter_pages(
     vault: Path,
     *,
-    skip_relative_subtrees: Collection[str] = LEGACY_RELATIVE_SUBTREES,
+    skip_relative_subtrees: Collection[str] = (),
 ) -> tuple[MarkdownFile, ...]:
     return scan_markdown_files(
         vault,
@@ -108,9 +107,7 @@ def lint_vault(
     skip_relative_subtrees: Collection[tuple[str, ...]] = (),
     schema_source: str = "framework-defaults",
 ) -> dict[str, Any]:
-    excluded_paths = LEGACY_RELATIVE_SUBTREES | _relative_subtree_strings(
-        skip_relative_subtrees
-    )
+    excluded_paths = _relative_subtree_strings(skip_relative_subtrees)
     relationship_types = frozenset(
         ALLOWED_RELATIONSHIP_TYPES
         if allowed_relationship_types is None

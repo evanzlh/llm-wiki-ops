@@ -111,7 +111,6 @@ def _safe_relative(raw: str, label: str, *, source: bool = False) -> str:
         posix.suffix != ".md"
         or not posix.parts
         or posix.parts[0] not in _KNOWLEDGE_CATEGORIES
-        or posix.parts[:2] == ("journal", "operations")
         or any(part.startswith(".") for part in posix.parts)
         or any(character in raw for character in "[]|#")
     ):

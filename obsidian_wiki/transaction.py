@@ -166,8 +166,6 @@ def validate_candidate_path(candidate_vault: Path, raw_path: str | Path) -> str:
         raise TransactionError(f"candidate path targets a control directory: {raw!r}")
     if any(part in _CONTROL_DIRECTORIES or part.startswith(".") for part in path.parts):
         raise TransactionError(f"candidate path targets a control directory: {raw!r}")
-    if path.parts[:2] == ("journal", "operations"):
-        raise TransactionError("candidate pages cannot target journal/operations")
     candidate = candidate_vault.joinpath(*path.parts)
     TransactionManager._require_contained(
         candidate,
@@ -1327,12 +1325,6 @@ class TransactionManager:
                 kept_directories: list[str] = []
                 for name in sorted(dirnames):
                     child = current / name
-                    if (
-                        category == "journal"
-                        and current == root
-                        and name == "operations"
-                    ):
-                        continue
                     self._require_ordinary_directory(child, "knowledge directory")
                     kept_directories.append(name)
                 dirnames[:] = kept_directories
@@ -1378,7 +1370,6 @@ class TransactionManager:
             return False
         return (
             path.parts[0] in _KNOWLEDGE_DIRECTORIES
-            and path.parts[:2] != ("journal", "operations")
         )
 
     def _affected_preimage_paths(
@@ -2082,12 +2073,6 @@ class TransactionManager:
                 kept: list[str] = []
                 for name in sorted(dirnames):
                     child = current / name
-                    if (
-                        category == "journal"
-                        and current == root
-                        and name == "operations"
-                    ):
-                        continue
                     self._require_ordinary_directory(child, "knowledge directory")
                     kept.append(name)
                 dirnames[:] = kept

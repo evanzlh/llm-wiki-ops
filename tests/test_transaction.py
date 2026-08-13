@@ -1442,7 +1442,6 @@ def test_restore_failed_transaction_marks_restored_without_overwriting(
         ".manifest/sources/a.json",
         ".obsidian/workspace.md",
         "concepts/.git/escape.md",
-        "journal/operations/fake.md",
         "concepts/not-markdown.txt",
     ],
 )
@@ -1455,6 +1454,18 @@ def test_candidate_path_validation_rejects_unsafe_and_control_paths(
 
     with pytest.raises(TransactionError, match="candidate|control|reserved|markdown"):
         validate_candidate_path(record.candidate_vault, raw)
+
+
+def test_candidate_path_accepts_journal_operations_as_knowledge(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+
+    assert validate_candidate_path(
+        record.candidate_vault, "journal/operations/entry.md"
+    ) == "journal/operations/entry.md"
 
 
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
@@ -1519,7 +1530,6 @@ def test_commit_rejects_invalid_or_foreign_candidate_frontmatter(
         ".manifest/sources/a.json",
         ".obsidian/workspace.md",
         "concepts/.git/escape.md",
-        "journal/operations/fake.md",
         "concepts/not-markdown.txt",
     ],
 )
@@ -1530,6 +1540,16 @@ def test_mark_delete_rejects_unsafe_and_control_paths(tmp_path: Path, raw: str) 
 
     with pytest.raises(TransactionError, match="deletion|control|reserved|markdown"):
         manager.mark_delete("tx-1", raw)
+
+
+def test_mark_delete_accepts_journal_operations_as_knowledge(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-1")
+
+    manager.mark_delete("tx-1", "journal/operations/entry.md")
+
+    assert manager.load("tx-1").deletions == ("journal/operations/entry.md",)
 
 
 def test_mark_delete_rejects_duplicate_and_commit_removes_page(
@@ -2011,7 +2031,6 @@ def test_commit_rejects_log_preimage_drift_before_promotion(tmp_path: Path) -> N
         "index.md",
         ".manifest/sources/forged.json",
         ".obsidian/workspace.md",
-        "journal/operations/forged.md",
     ],
 )
 def test_commit_revalidates_tampered_deletions_file(
@@ -2028,7 +2047,7 @@ def test_commit_revalidates_tampered_deletions_file(
     )
 
     with pytest.raises(
-        TransactionError, match="deletion.*(control|reserved|operations|markdown)"
+        TransactionError, match="deletion.*(control|reserved|markdown)"
     ):
         manager.commit("tx-1")
 
@@ -5765,6 +5784,30 @@ def test_validate_reports_live_link_broken_by_deletion(tmp_path: Path) -> None:
     assert removed.read_bytes() == PAGE.replace(
         "title: A", "title: Removed"
     ).encode("utf-8")
+
+
+def test_validate_includes_journal_operations_in_prospective_graph(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    operation = config.vault / "journal/operations/entry.md"
+    operation.parent.mkdir(parents=True)
+    operation.write_text(
+        PAGE.replace("title: A", "title: Operation Entry")
+        .replace("category: concepts", "category: journal")
+        + "[[missing operation target]]\n",
+        encoding="utf-8",
+    )
+    manager = TransactionManager(config)
+    manager.begin([add_source(root)], transaction_id="tx-operation")
+
+    report = manager.validate("tx-operation")
+
+    assert any(
+        issue.code == "broken-link"
+        and issue.path == "journal/operations/entry.md"
+        for issue in report.issues
+    )
 
 
 def test_validate_uses_candidate_replacement_in_prospective_graph(

@@ -76,31 +76,33 @@ def simple_vault(vault):
 # ---------------------------------------------------------------------------
 
 class TestBuildIndex:
-    @pytest.mark.parametrize("kind", ["ordinary", "symlink"])
-    def test_prunes_legacy_operations_subtree_before_scanning(
-        self, vault, tmp_path, kind
-    ):
+    def test_includes_journal_operations_as_knowledge(self, vault):
         journal = vault / "journal"
         journal.mkdir()
         _page(journal, "daily", title="Daily")
         operations = journal / "operations"
-        if kind == "ordinary":
-            operations.mkdir()
-            (operations / "malformed.md").write_text(
-                "---\ntags: [one]\ntags: [two]\n---\n", encoding="utf-8"
-            )
-        else:
-            external = tmp_path / "external-operations"
-            external.mkdir()
-            _page(external, "secret", title="Secret")
-            try:
-                operations.symlink_to(external, target_is_directory=True)
-            except (NotImplementedError, OSError) as exc:
-                pytest.skip(f"symlinks are unavailable: {exc}")
+        operations.mkdir()
+        _page(operations, "entry", title="Operation Entry", links=["daily"])
 
         index = build_index(vault)
 
-        assert set(index) == {"daily"}
+        assert set(index) == {"daily", "entry"}
+        assert index["entry"]["out_links"] == ["daily"]
+
+    def test_rejects_symlinked_journal_operations(self, vault, tmp_path):
+        journal = vault / "journal"
+        journal.mkdir()
+        operations = journal / "operations"
+        external = tmp_path / "external-operations"
+        external.mkdir()
+        _page(external, "secret", title="Secret")
+        try:
+            operations.symlink_to(external, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+
+        with pytest.raises(RuntimeError, match="symlink"):
+            build_index(vault)
 
     def test_excludes_exact_root_views_but_keeps_nested_names(self, vault):
         concepts = vault / "concepts"

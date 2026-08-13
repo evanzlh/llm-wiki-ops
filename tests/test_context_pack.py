@@ -99,24 +99,31 @@ def test_load_pages_excludes_exact_root_views_but_keeps_nested_names(
     ]
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "symlink"])
-def test_load_pages_prunes_legacy_operations_subtree_before_scanning(
-    tmp_path: Path, kind: str
-) -> None:
+def test_load_pages_includes_journal_operations_as_knowledge(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     write_note(vault, "journal/daily.md", "# Daily\n\nUseful knowledge.\n")
     operations = vault / "journal" / "operations"
-    if kind == "ordinary":
-        write_note(operations, "malformed.md", "---\ntags: [one]\ntags: [two]\n---\n")
-    else:
-        external = tmp_path / "external-operations"
-        write_note(external, "secret.md", "# Secret\n")
-        try:
-            operations.symlink_to(external, target_is_directory=True)
-        except (NotImplementedError, OSError) as exc:
-            pytest.skip(f"symlinks are unavailable: {exc}")
+    write_note(operations, "entry.md", "# Operation Entry\n\nUseful record.\n")
 
-    assert [page.path for page in load_pages(vault)] == ["journal/daily.md"]
+    assert [page.path for page in load_pages(vault)] == [
+        "journal/daily.md",
+        "journal/operations/entry.md",
+    ]
+
+
+def test_load_pages_rejects_symlinked_journal_operations(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    write_note(vault, "journal/daily.md", "# Daily\n")
+    operations = vault / "journal" / "operations"
+    external = tmp_path / "external-operations"
+    write_note(external, "secret.md", "# Secret\n")
+    try:
+        operations.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        load_pages(vault)
 
 
 def test_load_pages_rejects_external_symlink_without_leaking_content(

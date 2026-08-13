@@ -433,16 +433,12 @@ def _is_knowledge_page_name(page_name: str) -> bool:
     return (
         len(relative.parts) >= 2
         and relative.parts[0] in _KNOWLEDGE_CATEGORIES
-        and relative.parts[:2] != ("journal", "operations")
         and relative.suffix == ".md"
     )
 
 
 def _knowledge_pages(config: PortableConfig) -> list[MarkdownFile]:
-    snapshots = scan_markdown_files(
-        config.vault,
-        skip_relative_subtrees={"journal/operations"},
-    )
+    snapshots = scan_markdown_files(config.vault)
     return [
         snapshot
         for snapshot in snapshots
@@ -558,21 +554,6 @@ def _check_pages(
 
     for entry in entries:
         for page_name in entry.pages:
-            relative_name = PurePosixPath(page_name)
-            if (
-                isinstance(page_name, str)
-                and "\\" not in page_name
-                and relative_name.as_posix() == page_name
-                and relative_name.parts[:2] == ("journal", "operations")
-            ):
-                issues.append(
-                    CheckIssue(
-                        "manifest-page-invalid",
-                        _rel(config.root, config.vault / relative_name),
-                        "manifest page is not a knowledge page",
-                    )
-                )
-                continue
             page = _safe_page_path(config, page_name)
             repo_path = (
                 _rel(config.root, config.vault / page_name)
@@ -673,7 +654,6 @@ def _check_lint(config: PortableConfig, issues: list[CheckIssue]) -> None:
             config.vault,
             require_trust_ledger=False,
             strict_trust=False,
-            skip_relative_subtrees={("journal", "operations")},
         )
     except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         issues.append(CheckIssue("lint-invalid", ".", _scrub(config.root, exc)))
