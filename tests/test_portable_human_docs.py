@@ -179,7 +179,16 @@ def test_traditional_chinese_cli_documents_tracked_log_and_hot_contract() -> Non
 def test_agent_docs_define_the_only_live_hot_write_exception() -> None:
     text = _text("docs/agents.md")
     assert "sole live-vault write exception" in text
-    assert "successful `transaction commit` or `transaction retry`" in text
+    paragraphs = text.split("\n\n")
+    status = next(paragraph for paragraph in paragraphs if "`hot status`" in paragraph)
+    refresh = next(paragraph for paragraph in paragraphs if "`hot inputs`" in paragraph)
+    assert "may run at any time" in status
+    assert "read-only" in status
+    assert "must not remove" in status
+    assert "successful `transaction commit`" not in status
+    assert "successful `transaction commit` or `transaction retry`" in refresh
+    assert "tracked derived semantic `wiki/hot.md`" in refresh
+    assert "`hot mark-current`" in refresh
 
 
 def test_configuration_example_uses_the_runtime_implementation_id() -> None:

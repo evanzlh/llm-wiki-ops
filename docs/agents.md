@@ -37,7 +37,9 @@ obsidian-wiki check
 
 Write complete candidate pages beneath the returned `candidate_vault`. Do not write the live vault, manifest shards, control files, or `wiki/log.md` directly. The sole live-vault write exception is the semantic refresh of tracked `wiki/hot.md` described below. Transaction review happens after validation and before commit. The commit appends one canonical block to the tracked authoritative operation log last and returns `log_path`. If a command retains recovery state, follow its reported `retry`, `restore`, `discard`, or `abort` action instead of starting an unrelated write.
 
-Only after a successful `transaction commit` or `transaction retry`, use the read-only `hot status`, collect `hot inputs` when stale, rewrite the tracked derived semantic `wiki/hot.md` as a working-tree diff, then run `hot mark-current`. Status must not remove the tracked file. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
+The read-only `hot status` may run at any time and must not remove the tracked file.
+
+Only after a successful `transaction commit` or `transaction retry`, when status reports stale, collect `hot inputs`, rewrite the tracked derived semantic `wiki/hot.md` as a working-tree diff, then run `hot mark-current`. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
 
 ## Git boundary
 

@@ -88,6 +88,17 @@ def test_bootstraps_delegate_to_repository_authority() -> None:
         bootstrap = text(relative)
         for required in ("config.toml", "transaction"):
             assert required in bootstrap, f"{relative}: missing {required!r}"
+
+
+def test_root_bootstrap_defines_the_single_tracked_hot_write_exception() -> None:
+    bootstrap = " ".join(text("obsidian_wiki/_data/bootstrap/AGENTS.md").split())
+    for required in (
+        "sole exception to the direct live-vault mutation ban",
+        "successful `transaction commit` or `transaction retry`",
+        "tracked `wiki/hot.md` semantic refresh",
+        "must not edit `wiki/log.md` directly",
+    ):
+        assert required in bootstrap, required
         assert ".skills/" in bootstrap or "AGENTS.md" in bootstrap, relative
         for forbidden in FORBIDDEN_RUNTIME_TERMS:
             assert forbidden not in bootstrap, f"{relative}: contains {forbidden!r}"
