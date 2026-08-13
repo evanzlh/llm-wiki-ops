@@ -653,7 +653,8 @@ def _verify_operation_lock(
 
 
 @contextmanager
-def _operation_lock(lock_path: Path, root: Path) -> Iterator[Callable[[], None]]:
+def operation_lock(lock_path: Path, root: Path) -> Iterator[Callable[[], None]]:
+    """Hold the cooperative operation-log lock and verify its stable identity."""
     lock_path = Path(lock_path)
     if not lock_path.is_absolute() or not root.is_absolute():
         raise OperationError("operation log root and lock path must be absolute")
@@ -828,7 +829,7 @@ def append_operation(
         raise OperationError("operation log path must be exactly root/log.md")
 
     try:
-        with _operation_lock(Path(lock_path), root) as verify_lock:
+        with operation_lock(Path(lock_path), root) as verify_lock:
             return _append_operation_locked(
                 path, change, root=root, verify_lock=verify_lock
             )

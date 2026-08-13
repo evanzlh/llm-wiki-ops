@@ -26,6 +26,7 @@ from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.operations import (
     EMPTY_OPERATION_LOG,
     OperationChange,
+    OperationError,
     append_operation,
     append_operation_text,
     parse_operation_log,
@@ -2234,6 +2235,86 @@ def test_log_writer_extra_page_then_return_rolls_back_all_new_pages(
 
     assert returned.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
     assert not extra.exists()
+
+
+def test_rollback_holds_operation_lock_through_log_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    log = config.vault / "log.md"
+    operation_lock_path = config.local_state / "operation-log.lock"
+    extra = config.vault / "concepts/extra.md"
+
+    def writer(change):
+        result = append_operation(
+            log, change, root=config.vault, lock_path=operation_lock_path
+        )
+        extra.write_text("unauthorized\n", encoding="utf-8")
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-rollback-lock")
+    candidate_page(record, "concepts/a.md")
+    original_restore = manager._restore_snapshot_index
+    nested_error = None
+
+    def append_owner_during_restore(*args, **kwargs):
+        nonlocal nested_error
+        if nested_error is None:
+            try:
+                append_operation(
+                    log,
+                    OperationChange(
+                        "owner-during-rollback",
+                        "2026-08-07T02:00:00Z",
+                        ("sources/a.md",),
+                        (),
+                        (),
+                        (),
+                    ),
+                    root=config.vault,
+                    lock_path=operation_lock_path,
+                )
+            except OperationError as exc:
+                nested_error = exc
+        return original_restore(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_restore_snapshot_index", append_owner_during_restore)
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-rollback-lock", completed_at="2026-08-07T01:00:00Z")
+
+    assert nested_error is not None
+    assert "in progress" in str(nested_error)
+    assert log.read_text() == EMPTY_OPERATION_LOG
+    assert not (config.vault / "concepts/a.md").exists()
+
+
+def test_restore_prepared_promoting_before_writer_touch_succeeds(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+
+    def crash_before_touch(_change):
+        raise SystemExit("before writer touch")
+
+    manager = TransactionManager(config, log_writer=crash_before_touch)
+    record = manager.begin([add_source(root)], transaction_id="tx-before-writer-touch")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(SystemExit, match="before writer touch"):
+        manager.commit("tx-before-writer-touch")
+
+    assert manager.load("tx-before-writer-touch").status == "promoting"
+    assert json.loads((record.workspace / "metadata.json").read_text())[
+        "writer_prepared"
+    ] is True
+    assert (config.vault / "log.md").read_text() == EMPTY_OPERATION_LOG
+
+    TransactionManager(config).restore("tx-before-writer-touch")
+
+    assert manager.load("tx-before-writer-touch").status == "restored"
+    assert not (config.vault / "concepts/a.md").exists()
     assert not (config.vault / "concepts/a.md").exists()
 
 
@@ -2514,7 +2595,7 @@ def test_restore_recovers_promoting_transaction_after_manifest_replace_crash(
     assert not recovering.lock_path.exists()
 
 
-def test_persistent_failed_status_write_leaves_prepared_promoting_manual(
+def test_persistent_failed_status_write_leaves_promoting_recoverable(
     tmp_path: Path,
     log_writer,
     monkeypatch: pytest.MonkeyPatch,
@@ -2540,9 +2621,10 @@ def test_persistent_failed_status_write_leaves_prepared_promoting_manual(
     assert not manager.lock_path.exists()
     recovering = TransactionManager(config, log_writer=log_writer(config))
     assert recovering.load("tx-1").status == "promoting"
-    with pytest.raises(TransactionError, match="manual intervention"):
-        recovering.restore("tx-1")
-    assert recovering.load("tx-1").status == "promoting"
+    recovering.restore("tx-1")
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+    assert recovering.load("tx-1").status == "restored"
 
 
 @pytest.mark.parametrize(
@@ -3395,13 +3477,12 @@ def test_writer_guard_preserves_unrelated_changes_made_after_begin(
 
     recovering = TransactionManager(config, log_writer=writer)
     assert recovering.load("tx-1").status == "promoting"
-    with pytest.raises(TransactionError, match="manual intervention"):
-        recovering.restore("tx-1")
+    recovering.restore("tx-1")
 
     assert added.read_bytes() == added_bytes
     assert not removed.exists()
-    assert (config.vault / "concepts/a.md").exists()
-    assert ShardedManifest(config).load("sources/a.md") is not None
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
 
 
 def test_retry_cleans_persisted_writer_additions_before_new_attempt(

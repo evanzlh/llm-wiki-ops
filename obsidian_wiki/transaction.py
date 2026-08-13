@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -23,6 +24,7 @@ from obsidian_wiki.operations import (
     OperationError,
     append_operation,
     append_operation_text,
+    operation_lock,
     parse_operation_log,
 )
 from obsidian_wiki.safe_files import stable_directory_identity
@@ -605,18 +607,25 @@ class TransactionManager:
                 raise TransactionError(
                     f"cannot restore {record.status} transaction {transaction_id}"
                 )
-            if record.status == "promoting":
-                promoting_payload = self._read_metadata_payload(record.workspace)
-                if promoting_payload["writer_prepared"]:
-                    raise TransactionError(
-                        "prepared promoting transaction requires manual intervention"
-                    )
             if self.lock_path.exists() or self.lock_path.is_symlink():
                 lock_identity = self._require_owned_lock(transaction_id)
             else:
                 self._acquire_lock(transaction_id, record.started_at)
                 lock_identity = self._require_owned_lock(transaction_id)
+            restore_log_lock = operation_lock(
+                self.operation_log_lock_path, self.config.vault
+            )
+            restore_log_lock_entered = False
+            release_transaction_lock = True
             try:
+                try:
+                    restore_log_lock.__enter__()
+                except OperationError as exc:
+                    release_transaction_lock = False
+                    raise TransactionError(
+                        "operation log recovery lock is unavailable"
+                    ) from exc
+                restore_log_lock_entered = True
                 if record.status == "restored":
                     return
                 payload = self._read_metadata_payload(record.workspace)
@@ -638,6 +647,20 @@ class TransactionManager:
                                 + relative
                             )
                 snapshot_index = self._load_snapshot_index(payload["snapshot_index"])
+                if record.status == "promoting" and payload["writer_prepared"]:
+                    preimage = self._snapshot_bytes(
+                        record,
+                        snapshot_index["log.md"],
+                        "operation log preimage",
+                    )
+                    live_log = self._read_single_link_bytes(
+                        self.config.vault / "log.md", "operation log"
+                    )
+                    if live_log != preimage:
+                        release_transaction_lock = False
+                        raise TransactionError(
+                            "prepared promoting transaction requires manual intervention"
+                        )
                 candidates = self._enumerate_candidates(record)
                 base_affected = set(self._affected_preimage_paths(record, candidates))
                 rollback_exclusions: dict[str, str | None] = {}
@@ -688,7 +711,12 @@ class TransactionManager:
                 payload["rollback_exclusions"] = {}
                 self._write_metadata(record.workspace, payload)
             finally:
-                if self.lock_path.exists() or self.lock_path.is_symlink():
+                pending = sys.exc_info()
+                if restore_log_lock_entered:
+                    restore_log_lock.__exit__(*pending)
+                if release_transaction_lock and (
+                    self.lock_path.exists() or self.lock_path.is_symlink()
+                ):
                     self._unlink_owned_lock(
                         transaction_id, expected_identity=lock_identity
                     )
@@ -971,6 +999,21 @@ class TransactionManager:
                     return False
                 return True
 
+            recovery_log_lock = operation_lock(
+                self.operation_log_lock_path, self.config.vault
+            )
+            recovery_log_lock_entered = False
+            try:
+                recovery_log_lock.__enter__()
+                recovery_log_lock_entered = True
+            except OperationError as rollback_exc:
+                manual_recovery_required = True
+                rollback_exclusions = None
+                rollback_errors.append(
+                    "operation log recovery lock unavailable: "
+                    + str(rollback_exc)
+                )
+
             if (
                 writer_invoked
                 and log_preimage is not None
@@ -1062,6 +1105,14 @@ class TransactionManager:
                 metadata_written = True
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"metadata failed: {rollback_exc}")
+            if recovery_log_lock_entered:
+                try:
+                    recovery_log_lock.__exit__(None, None, None)
+                except OperationError as rollback_exc:
+                    rollback_errors.append(
+                        "operation log recovery lock release failed: "
+                        + str(rollback_exc)
+                    )
             if (
                 (not manual_recovery_required or metadata_written)
                 and (self.lock_path.exists() or self.lock_path.is_symlink())
