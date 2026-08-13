@@ -35,7 +35,8 @@ TRUST_REVIEW_METHOD = "manual-lineage-and-claim-coverage-v1"
 TRUST_SKIP_DIRS = frozenset(
     "_archived _bootstrap .obsidian .git".split()
 )
-TRUST_RESERVED_STEMS = frozenset({"index", "log", "hot", "_insights"})
+TRUST_ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
+TRUST_RESERVED_FILES = frozenset({"_insights.md"})
 ALLOWED_LIFECYCLES = frozenset({"draft", "reviewed", "verified", "disputed", "archived"})
 TRUST_REQUIRED_FIELD_ALLOWLIST = frozenset(
     {"base_confidence", "lifecycle", "lifecycle_changed", "updated"}
@@ -283,9 +284,10 @@ def _trust_snapshots(
         for snapshot in scan_markdown_files(
             vault,
             skip_dirs=TRUST_SKIP_DIRS,
+            skip_files=TRUST_RESERVED_FILES,
+            skip_relative_files=TRUST_ROOT_VIEW_FILES,
             skip_relative_subtrees=skip_relative_subtrees,
         )
-        if snapshot.path.stem not in TRUST_RESERVED_STEMS
     }
 
 

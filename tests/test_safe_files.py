@@ -144,6 +144,77 @@ def test_scan_markdown_files_reads_an_ordinary_nested_tree(tmp_path: Path) -> No
     assert snapshots[0].text() == "# Page\n"
 
 
+@pytest.mark.skipif(
+    not safe_files._SUPPORTS_BOUND_SCAN, reason="bound Markdown scan unavailable"
+)
+@pytest.mark.parametrize("scanner", ["files", "headers"])
+def test_scan_prunes_exact_relative_files_before_content_read(
+    tmp_path: Path, scanner: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "wiki"
+    nested = vault / "concepts/hot.md"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("# Nested Hot\n", encoding="utf-8")
+    (vault / "hot.md").write_text("# Root Hot\n", encoding="utf-8")
+    read_name = "_read_bound_file" if scanner == "files" else "_read_markdown_header"
+    real_read = getattr(safe_files, read_name)
+
+    def reject_root_hot(*args, **kwargs):
+        relative = args[2] if scanner == "files" else args[1]
+        if relative == "hot.md":
+            raise AssertionError("pruned root view content was read")
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(safe_files, read_name, reject_root_hot)
+    scan = (
+        safe_files.scan_markdown_files
+        if scanner == "files"
+        else safe_files.scan_markdown_headers
+    )
+
+    snapshots = scan(vault, skip_relative_files={"hot.md"})
+
+    assert [snapshot.relative for snapshot in snapshots] == ["concepts/hot.md"]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["", "/hot.md", "./hot.md", "../hot.md", "nested/../hot.md", "hot\\.md"],
+)
+@pytest.mark.skipif(
+    not safe_files._SUPPORTS_BOUND_SCAN, reason="bound Markdown scan unavailable"
+)
+def test_scan_rejects_invalid_relative_file_skip(
+    tmp_path: Path, relative: str
+) -> None:
+    vault = tmp_path / "wiki"
+    vault.mkdir()
+
+    with pytest.raises(ValueError, match="skip file"):
+        safe_files.scan_markdown_files(vault, skip_relative_files={relative})
+
+
+@pytest.mark.skipif(
+    not safe_files._SUPPORTS_BOUND_SCAN, reason="bound Markdown scan unavailable"
+)
+@pytest.mark.parametrize("scanner", ["files", "headers"])
+def test_scan_relative_file_pruning_defaults_to_empty(
+    tmp_path: Path, scanner: str
+) -> None:
+    vault = tmp_path / "wiki"
+    vault.mkdir()
+    (vault / "hot.md").write_text("# Root Hot\n", encoding="utf-8")
+
+    scan = (
+        safe_files.scan_markdown_files
+        if scanner == "files"
+        else safe_files.scan_markdown_headers
+    )
+    snapshots = scan(vault)
+
+    assert [snapshot.relative for snapshot in snapshots] == ["hot.md"]
+
+
 @pytest.mark.parametrize("kind", ["ordinary", "symlink", "fifo"])
 def test_scan_markdown_files_prunes_exact_relative_subtree_before_inspection(
     tmp_path: Path, kind: str

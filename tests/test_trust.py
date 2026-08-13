@@ -179,6 +179,26 @@ def test_trust_ledger_does_not_hide_personal_artifact_names(tmp_path: Path) -> N
     assert set(ledger["pages"]) == expected
 
 
+def test_trust_excludes_exact_root_views_but_includes_nested_names(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    for name in ("index.md", "log.md", "hot.md"):
+        _page(vault, name)
+        _page(vault, f"concepts/{name}")
+    _page(vault, "concepts/_insights.md")
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert set(ledger["pages"]) == {
+        "concepts/index.md",
+        "concepts/log.md",
+        "concepts/hot.md",
+    }
+
+
 def test_trust_ledger_rejects_external_symlink_without_leaking_content(
     tmp_path: Path,
 ) -> None:

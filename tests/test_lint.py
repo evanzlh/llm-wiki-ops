@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki import safe_files as safe_files_module
 from obsidian_wiki.lint import (
     ALLOWED_RELATIONSHIP_TYPES,
     TRUST_REQUIRED_FRONTMATTER,
@@ -168,6 +169,19 @@ def test_lint_ignores_root_view_links_but_checks_knowledge_links(tmp_path: Path)
     assert report["findings"]["broken_links"] == [
         {"page": "concepts/alpha.md", "target": "knowledge-ghost"}
     ]
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo") or not safe_files_module._SUPPORTS_BOUND_SCAN,
+    reason="FIFO or bound Markdown scan unavailable",
+)
+def test_lint_validates_root_view_structure_without_reading_it(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "concepts/hot.md", links=["nested-ghost"])
+    os.mkfifo(vault / "hot.md")
+
+    with pytest.raises(safe_files_module.UnsafeVaultError, match="hot.md"):
+        lint_vault(vault, require_trust_ledger=False)
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "symlink"])

@@ -117,10 +117,9 @@ def load_pages(vault: Path, *, public_only: bool = False) -> list[PageRecord]:
         vault,
         skip_dirs=SKIP_DIRS,
         skip_files=SKIP_FILES,
+        skip_relative_files=ROOT_VIEW_FILES,
         skip_relative_subtrees=SKIP_RELATIVE_SUBTREES,
     ):
-        if header.relative in ROOT_VIEW_FILES:
-            continue
         try:
             parsed, _body = split_frontmatter(header.text())
         except (FrontmatterError, ValueError):

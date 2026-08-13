@@ -56,14 +56,11 @@ def _iter_pages(
     *,
     skip_relative_subtrees: Collection[str] = LEGACY_RELATIVE_SUBTREES,
 ) -> tuple[MarkdownFile, ...]:
-    return tuple(
-        page
-        for page in scan_markdown_files(
-            vault,
-            skip_dirs=SKIP_DIRS,
-            skip_relative_subtrees=skip_relative_subtrees,
-        )
-        if page.relative not in ROOT_VIEW_FILES
+    return scan_markdown_files(
+        vault,
+        skip_dirs=SKIP_DIRS,
+        skip_relative_files=ROOT_VIEW_FILES,
+        skip_relative_subtrees=skip_relative_subtrees,
     )
 
 

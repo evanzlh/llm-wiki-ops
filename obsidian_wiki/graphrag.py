@@ -67,14 +67,13 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     headers = scan_markdown_headers(
         vault,
         skip_dirs=SKIP_DIRS,
+        skip_relative_files=ROOT_VIEW_FILES,
         skip_relative_subtrees=SKIP_RELATIVE_SUBTREES,
     )
     eligible = []
 
     # First pass: collect all slugs and frontmatter
     for header in headers:
-        if header.relative in ROOT_VIEW_FILES:
-            continue
         page = header
         slug = _slug(page.path.stem)
         try:

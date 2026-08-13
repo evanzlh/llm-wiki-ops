@@ -66,15 +66,14 @@ def parse_vault_graph(vault: Path) -> tuple[dict[str, list[str]], dict[str, list
     tags_map: dict[str, list[str]] = {}
     skip_dirs = {"_archived", ".obsidian"}
 
-    pages = [
-        page
-        for page in scan_markdown_files(
+    pages = list(
+        scan_markdown_files(
             vault,
             skip_dirs=skip_dirs,
+            skip_relative_files=_ROOT_VIEW_FILES,
             skip_relative_subtrees=_SKIP_RELATIVE_SUBTREES,
         )
-        if page.relative not in _ROOT_VIEW_FILES
-    ]
+    )
 
     known_slugs = {_page_slug(page) for page in pages}
 
