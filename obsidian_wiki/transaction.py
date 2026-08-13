@@ -737,6 +737,7 @@ class TransactionManager:
 
             snapshot_started = True
             snapshot_index = self._snapshot_targets(record, affected)
+            self._verify_source_preimages(payload, record.source_ids)
             payload.update(
                 {
                     "completed_at": resolved_completed_at,
@@ -782,6 +783,9 @@ class TransactionManager:
 
             pages_by_source = self._scan_page_relationships(record.source_ids)
             manifest = manifest or ShardedManifest(self.config)
+            source_preimages = self._load_source_preimages(
+                payload.get("source_preimages"), record.source_ids
+            )
             for source_id in record.source_ids:
                 shard_relative = (
                     manifest.entry_path(source_id)
@@ -794,6 +798,7 @@ class TransactionManager:
                         pages=list(pages_by_source[source_id]),
                         compiled_at=resolved_completed_at,
                         expected_preimage=record.preimages.get(shard_relative),
+                        expected_source_hash=source_preimages[source_id],
                     )
                 except ManifestPreconditionError as exc:
                     rollback_exclusion_paths.add(shard_relative)
@@ -804,6 +809,8 @@ class TransactionManager:
                         "transaction target changed after transaction began: "
                         + shard_relative
                     ) from exc
+
+            self._verify_source_preimages(payload, record.source_ids)
 
             change = OperationChange(
                 transaction_id=record.transaction_id,

@@ -10,6 +10,7 @@ import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki import portable_manifest as portable_manifest_module
+from obsidian_wiki import cli as cli_module
 from obsidian_wiki.config import load_portable_config
 from obsidian_wiki.portable_manifest import (
     ManifestError,
@@ -1163,6 +1164,65 @@ def test_owner_can_resolve_conflict_by_keep_live(tmp_path: Path, monkeypatch) ->
     assert result["resolution"] == "keep-live"
     assert target.read_bytes() == owner
     ShardedManifest(config).remove("sources/design/a.md")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+def test_conflict_resolution_preserves_replaced_wal_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+
+    def interpose(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(b"owner live\n")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", interpose)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    pre = root / ".obsidian-wiki/local/manifest-mutation/pre.bin"
+    pre.write_bytes(b"OWNER EVIDENCE")
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    with pytest.raises(ManifestPreconditionError, match="evidence|inspection"):
+        ShardedManifest(config).resolve_conflict_keep_live()
+    assert pre.read_bytes() == b"OWNER EVIDENCE"
+
+
+def test_manifest_resolve_conflict_cli_json_success(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, _ = make_repo(tmp_path)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        ShardedManifest,
+        "resolve_conflict_keep_live",
+        lambda self: {
+            "resolution": "keep-live",
+            "source_id": "sources/design/a.md",
+            "live": "absent",
+        },
+    )
+    assert cli_module.main(
+        ["manifest", "resolve-conflict", "--keep-live", "--json"]
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "resolved"
+    assert payload["resolution"] == "keep-live"
+
+
+def test_manifest_resolve_conflict_cli_json_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    root, _ = make_repo(tmp_path)
+    monkeypatch.chdir(root)
+    assert cli_module.main(
+        ["manifest", "resolve-conflict", "--keep-live", "--json"]
+    ) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "manifest-error"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor cleanup")

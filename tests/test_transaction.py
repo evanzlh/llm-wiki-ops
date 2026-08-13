@@ -93,6 +93,28 @@ def test_commit_rejects_source_content_drift_after_begin(
         manager.commit("tx-source-freeze")
     assert manager.load("tx-source-freeze").status in {"active", "failed"}
 
+
+def test_commit_rejects_source_drift_after_initial_verification(
+    tmp_path: Path, operation_writer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([source], transaction_id="tx-source-race")
+    candidate_page(record, "concepts/a.md")
+    original = manager._snapshot_targets
+
+    def drift_after_verify(*args, **kwargs):
+        result = original(*args, **kwargs)
+        source.write_text("drift after verify", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(manager, "_snapshot_targets", drift_after_verify)
+    with pytest.raises(TransactionError, match="source.*changed|restart"):
+        manager.commit("tx-source-race")
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+
 PAGE = """---
 title: A
 category: concepts

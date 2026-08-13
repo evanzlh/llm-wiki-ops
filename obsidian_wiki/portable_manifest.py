@@ -544,12 +544,18 @@ class ShardedManifest:
         pages: list[str] | None = None,
         compiled_at: str | None = None,
         expected_preimage: str | None | object = _UNSET_PREIMAGE,
+        expected_source_hash: str | None = None,
     ) -> ManifestEntry:
         source_path = Path(source)
         source_id = self.validated_source_id(source_path)
+        source_hash = f"sha256:{compute_hash(source_path)}"
+        if expected_source_hash is not None and source_hash != expected_source_hash:
+            raise ManifestPreconditionError(
+                "transaction source changed after begin; restart required"
+            )
         entry = ManifestEntry(
             source_id=source_id,
-            content_hash=f"sha256:{compute_hash(source_path)}",
+            content_hash=source_hash,
             pages=self._normalize_pages(pages, self.config.vault),
             compiled_at=compiled_at
             or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -980,10 +986,15 @@ class ShardedManifest:
                         if exc.errno not in (errno.ENOENT, errno.ENOTEMPTY):
                             raise
                 wal_fd = self._session[1]
-                for name in ("pre.bin", "post.bin"):
+                for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
                     proof = self._read_proof(wal_fd, name)
                     if proof is None:
                         continue
+                    expected_hash = image["hash"] if image["present"] else self._digest(b"")
+                    if proof.content_hash != expected_hash:
+                        raise ManifestPreconditionError(
+                            f"manifest conflict evidence {name} changed; owner inspection required"
+                        )
                     self._unlink_matching(wal_fd, name, proof, journal)
                 os.fsync(wal_fd)
                 journal_proof = self._read_proof(wal_fd, "journal.json")
