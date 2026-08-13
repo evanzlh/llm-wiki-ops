@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from obsidian_wiki.cache import compute_hash
 from obsidian_wiki.config import PortableConfig
+from obsidian_wiki.safe_files import stable_directory_identity
 
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
 
@@ -42,7 +43,27 @@ class ShardedManifest:
         self.source_root = config.sources[0]
         self.marker_path = config.vault / ".manifest.json"
         self.entries_root = config.vault / ".manifest" / "sources"
+        self._verify_repository_identity()
         self._validate_marker()
+
+    def _verify_repository_identity(self) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(self.config.root, flags)
+            if (
+                stable_directory_identity(os.fstat(descriptor))
+                != self.config.root_identity
+            ):
+                raise ManifestError(
+                    "configured repository root changed since configuration was read"
+                )
+        except OSError as exc:
+            raise ManifestError("configured repository root is unsafe") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _validate_marker(self) -> None:
         try:
@@ -282,6 +303,7 @@ class ShardedManifest:
         compiled_at: str | None = None,
         expected_preimage: str | None | object = _UNSET_PREIMAGE,
     ) -> ManifestEntry:
+        self._verify_repository_identity()
         source_path = Path(source)
         source_id = self.validated_source_id(source_path)
         entry = ManifestEntry(
@@ -410,6 +432,7 @@ class ShardedManifest:
             raise ManifestError("source must be a single-link ordinary file")
 
     def remove(self, source_id: str) -> None:
+        self._verify_repository_identity()
         self.entry_path(source_id).unlink(missing_ok=True)
 
     def status(self) -> dict[str, list[str]]:

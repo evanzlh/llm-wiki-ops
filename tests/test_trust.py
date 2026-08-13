@@ -872,6 +872,87 @@ local_state = ".obsidian-wiki/local"
     assert not (replacement / "wiki/_meta/trust-ledger.json").exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_trust_writer_rejects_ordinary_repository_rebound_after_config_load(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        f'''schema_version = 1
+implementation = "{IMPLEMENTATION_ID}"
+requires_cli = ">=0"
+[paths]
+vault = "wiki"
+sources = ["sources"]
+skills = ".skills"
+local_state = ".obsidian-wiki/local"
+''',
+        encoding="utf-8",
+    )
+    (repository / "wiki").mkdir()
+    config = load_portable_config(
+        config_path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+    )
+    repository.rename(tmp_path / "original-repository")
+    (repository / "wiki").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="repository root changed"):
+        write_trust_ledger(
+            config.vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=config.vault,
+            repository_root=config.root,
+            root_identity=config.root_identity,
+        )
+
+    assert not (repository / "wiki/_meta/trust-ledger.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor accounting")
+def test_trust_writer_closes_child_descriptor_when_fstat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    opened: set[int] = set()
+
+    def tracking_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)
+        opened.add(descriptor)
+        return descriptor
+
+    def tracking_close(descriptor: int) -> None:
+        opened.discard(descriptor)
+        real_close(descriptor)
+
+    calls = 0
+
+    def failing_fstat(descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected fstat failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "close", tracking_close)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+
+    with pytest.raises(OSError, match="injected fstat failure"):
+        write_trust_ledger(
+            vault / "_meta/trust-ledger.json",
+            {"schema_version": 1, "method": "manual-lineage-and-claim-coverage-v1", "pages": {}},
+            vault=vault,
+        )
+
+    assert opened == set()
+
+
 def test_trust_writer_never_follows_predictable_temp_symlink(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     meta = vault / "_meta"

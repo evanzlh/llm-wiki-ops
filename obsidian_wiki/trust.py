@@ -25,6 +25,7 @@ from .safe_files import (
     MarkdownFile,
     UnsafeVaultError,
     read_safe_file,
+    stable_directory_identity,
     scan_markdown_files,
 )
 
@@ -481,6 +482,8 @@ def write_trust_ledger(
     ledger: dict[str, Any],
     *,
     vault: Path | None = None,
+    repository_root: Path | None = None,
+    root_identity: tuple[int, ...] | None = None,
 ) -> None:
     """Write a ledger atomically without following vault-internal symlinks."""
     vault_root = (vault or path.parent.parent).expanduser().absolute()
@@ -488,6 +491,16 @@ def write_trust_ledger(
     requested = path.expanduser().absolute()
     if requested != expected:
         raise RuntimeError("trust ledger destination resolves outside the resolved vault")
+    if (repository_root is None) != (root_identity is None):
+        raise RuntimeError("repository root and identity must be supplied together")
+    bound_repository = (
+        repository_root.expanduser().absolute() if repository_root is not None else None
+    )
+    if bound_repository is not None:
+        try:
+            vault_root.relative_to(bound_repository)
+        except ValueError as exc:
+            raise RuntimeError("trust vault escapes the configured repository") from exc
 
     try:
         payload = json.dumps(ledger, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -535,7 +548,11 @@ def write_trust_ledger(
                     raise RuntimeError(
                         f"cannot securely open trust ledger directory: {exc}"
                     ) from exc
-                opened = os.fstat(child)
+                try:
+                    opened = os.fstat(child)
+                except BaseException:
+                    os.close(child)
+                    raise
                 if (
                     opened.st_dev,
                     opened.st_ino,
@@ -548,6 +565,15 @@ def write_trust_ledger(
                     os.close(child)
                     raise RuntimeError(
                         f"trust ledger path component changed while opening: {component}"
+                    )
+                if (
+                    bound_repository is not None
+                    and component == bound_repository
+                    and stable_directory_identity(opened) != root_identity
+                ):
+                    os.close(child)
+                    raise RuntimeError(
+                        "configured repository root changed since configuration was read"
                     )
                 os.close(directory_fd)
                 directory_fd = child

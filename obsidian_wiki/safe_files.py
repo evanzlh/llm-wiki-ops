@@ -84,6 +84,11 @@ def _identity(metadata: os.stat_result, *, directory: bool) -> tuple[int, ...]:
     return (*values, metadata.st_size, metadata.st_mtime_ns, metadata.st_nlink)
 
 
+def stable_directory_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """Identify one directory inode across legitimate content changes."""
+    return metadata.st_dev, metadata.st_ino
+
+
 def _unsafe(relative: str, reason: str) -> UnsafeVaultError:
     return UnsafeVaultError(f"unsafe vault entry {relative or '.'}: {reason}")
 
@@ -662,7 +667,12 @@ def verify_safe_file_snapshot(snapshot: SafeFileSnapshot) -> None:
     )
 
 
-def validate_safe_relative_directory_path(root: Path, path: Path) -> None:
+def validate_safe_relative_directory_path(
+    root: Path,
+    path: Path,
+    *,
+    expected_root_identity: tuple[int, ...] | None = None,
+) -> None:
     """Validate existing directory components below *root* without following links.
 
     A missing suffix is valid because setup/local-state paths may be created later.
@@ -675,6 +685,12 @@ def validate_safe_relative_directory_path(root: Path, path: Path) -> None:
         raise _unsafe(str(path), "directory is outside the bound root") from exc
     descriptor = _open_bound_root(root)
     try:
+        if (
+            expected_root_identity is not None
+            and stable_directory_identity(_fstat(descriptor, "."))
+            != expected_root_identity
+        ):
+            raise _unsafe(".", "repository root changed since configuration was read")
         for index, part in enumerate(relative.parts):
             child_relative = "/".join(relative.parts[: index + 1])
             observed = _stat_at(

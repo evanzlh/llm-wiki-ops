@@ -960,6 +960,22 @@ def test_hot_inputs_cli_reports_invalid_authoritative_input_cleanly(
     assert "Traceback" not in result.stdout
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_mark_hot_rejects_ordinary_repository_rebound(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    config = config_fixture
+    original = tmp_path / "original-knowledge"
+    config.root.rename(original)
+    (config.root / "wiki").mkdir(parents=True)
+    (config.root / "wiki/hot.md").write_text("# replacement\n", encoding="utf-8")
+
+    with pytest.raises(LocalStateError, match="repository root changed"):
+        mark_hot_current(config)
+
+    assert not config.local_state.exists()
+
+
 @pytest.mark.parametrize("relative", ["concepts", "concepts/nested"])
 def test_hot_inputs_fails_closed_when_authoritative_directory_is_unreadable(
     config_fixture: PortableConfig,

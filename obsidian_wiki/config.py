@@ -42,6 +42,7 @@ PORTABLE_SETTING_KEYS = frozenset(
 @dataclass(frozen=True)
 class PortableConfig:
     root: Path
+    root_identity: tuple[int, int]
     path: Path
     schema_version: int
     implementation: str
@@ -68,14 +69,22 @@ def _contained_path(root: Path, raw: str, label: str) -> Path:
     return root.joinpath(*parts)
 
 
-def _validate_configured_path(path: Path, *, root: Path, label: str) -> None:
+def _validate_configured_path(
+    path: Path,
+    *,
+    root: Path,
+    root_identity: tuple[int, ...],
+    label: str,
+) -> None:
     """Reject unsafe existing topology without adopting resolved descendants."""
     try:
         path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise ConfigError(f"{label} cannot be resolved safely: {exc}") from exc
     try:
-        validate_safe_relative_directory_path(root, path)
+        validate_safe_relative_directory_path(
+            root, path, expected_root_identity=root_identity
+        )
     except UnsafeVaultError as exc:
         raise ConfigError(f"{label} is unsafe: {exc}") from exc
 
@@ -126,6 +135,7 @@ def _parse_portable_config(
     *,
     installed_version: str,
     implementation: str,
+    root_identity: tuple[int, ...],
 ) -> PortableConfig:
     data = tomllib.loads(content.decode("utf-8"))
 
@@ -177,6 +187,7 @@ def _parse_portable_config(
 
     return PortableConfig(
         root=root,
+        root_identity=root_identity,
         path=path,
         schema_version=schema_version,
         implementation=configured_implementation,
@@ -201,6 +212,7 @@ def load_portable_config(
             snapshot.content,
             installed_version=installed_version,
             implementation=implementation,
+            root_identity=snapshot.root_identity[:2],
         )
         verify_safe_file_snapshot(snapshot)
         for label, configured_path in (
@@ -212,7 +224,12 @@ def load_portable_config(
             ("paths.skills", parsed.skills),
             ("paths.local_state", parsed.local_state),
         ):
-            _validate_configured_path(configured_path, root=parsed.root, label=label)
+            _validate_configured_path(
+                configured_path,
+                root=parsed.root,
+                root_identity=parsed.root_identity,
+                label=label,
+            )
         return parsed
     except ConfigError as exc:
         raise ConfigError(f"{config_path}: {exc}") from exc

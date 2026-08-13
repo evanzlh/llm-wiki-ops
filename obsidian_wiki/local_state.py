@@ -18,6 +18,7 @@ from .config import PortableConfig
 from .frontmatter import parse_frontmatter
 from .git_support import discover_git_root, git_branch_id
 from .operations import OperationError, validate_operation_text
+from .safe_files import stable_directory_identity
 from .transaction_validation import (
     parse_date_or_aware_timestamp,
     validate_page_metadata,
@@ -191,7 +192,8 @@ def _windows_directory_guard(
 
 
 def _contained_relative(root: Path, path: Path, label: str) -> PurePosixPath:
-    root = root.resolve(strict=False)
+    root = Path(os.path.abspath(os.fspath(root)))
+    path = Path(os.path.abspath(os.fspath(path)))
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
@@ -231,10 +233,24 @@ def _open_directory_at(parent_fd: int | None, path: str | Path) -> int:
     return descriptor
 
 
-def _open_bound_directory(root: Path, path: Path, *, create: bool = False) -> int:
+def _open_bound_directory(
+    root: Path,
+    path: Path,
+    *,
+    create: bool = False,
+    expected_root_identity: tuple[int, ...] | None = None,
+) -> int:
     relative = _contained_relative(root, path, "bound directory")
     descriptor = _open_directory_at(None, root)
     try:
+        if (
+            expected_root_identity is not None
+            and stable_directory_identity(os.fstat(descriptor))
+            != expected_root_identity
+        ):
+            raise LocalStateError(
+                "configured repository root changed since configuration was read"
+            )
         for part in relative.parts:
             if create:
                 try:
@@ -280,17 +296,30 @@ def _verify_directory_identities(
 
 
 def _validate_vault(config: PortableConfig) -> None:
-    root = config.root.resolve(strict=False)
+    root = config.root
+    descriptor = _open_directory_at(None, root)
+    try:
+        if stable_directory_identity(os.fstat(descriptor)) != config.root_identity:
+            raise LocalStateError(
+                "configured repository root changed since configuration was read"
+            )
+    finally:
+        os.close(descriptor)
     _require_ordinary_directory(root, "portable repository root")
     _contained_relative(root, config.vault, "vault")
     _require_ordinary_directory(config.vault, "vault")
 
 
 def _ensure_local_state(config: PortableConfig) -> Path:
-    root = config.root.resolve(strict=False)
+    root = config.root
     relative = _contained_relative(root, config.local_state, "local state")
     if _SUPPORTS_BOUND_DIRECTORIES:
-        descriptor = _open_bound_directory(root, config.local_state, create=True)
+        descriptor = _open_bound_directory(
+            root,
+            config.local_state,
+            create=True,
+            expected_root_identity=config.root_identity,
+        )
         os.close(descriptor)
         return config.local_state
     if os.name == "nt":
@@ -818,7 +847,11 @@ def _hot_metadata(config: PortableConfig) -> os.stat_result | None:
     windows_handles: list[int] = []
     try:
         if _SUPPORTS_BOUND_DIRECTORIES:
-            vault_fd = _open_bound_directory(config.root, config.vault)
+            vault_fd = _open_bound_directory(
+                config.root,
+                config.vault,
+                expected_root_identity=config.root_identity,
+            )
             return os.stat(_HOT_NAME, dir_fd=vault_fd, follow_symlinks=False)
         if os.name == "nt":
             windows_handles = _windows_directory_guard(config.root, (config.vault,))
@@ -964,10 +997,18 @@ def _invalidate_hot(config: PortableConfig, expected: _FileIdentity) -> None:
     _ensure_local_state(config)
     tombstone = _invalidated_name()
     if _SUPPORTS_BOUND_DIRECTORIES:
-        vault_fd = _open_bound_directory(config.root, config.vault)
+        vault_fd = _open_bound_directory(
+            config.root,
+            config.vault,
+            expected_root_identity=config.root_identity,
+        )
         local_fd: int | None = None
         try:
-            local_fd = _open_bound_directory(config.root, config.local_state)
+            local_fd = _open_bound_directory(
+                config.root,
+                config.local_state,
+                expected_root_identity=config.root_identity,
+            )
             vault_identities = _directory_identities(config.root, config.vault)
             local_identities = _directory_identities(config.root, config.local_state)
             if _identity(os.fstat(vault_fd)) != vault_identities[-1][1]:
@@ -1097,7 +1138,11 @@ def _write_sidecar(config: PortableConfig, payload: dict[str, str]) -> None:
     sidecar = local_state / _SIDECAR_NAME
     data = _canonical_sidecar(payload)
     if _SUPPORTS_BOUND_DIRECTORIES:
-        directory = _open_bound_directory(config.root, local_state)
+        directory = _open_bound_directory(
+            config.root,
+            local_state,
+            expected_root_identity=config.root_identity,
+        )
         try:
             identities = _directory_identities(config.root, local_state)
         except BaseException:

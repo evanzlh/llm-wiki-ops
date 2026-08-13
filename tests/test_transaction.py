@@ -86,6 +86,21 @@ def add_source(root: Path, name: str = "a.md") -> Path:
     return source
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX repository rebinding safety")
+def test_begin_rejects_ordinary_repository_rebound(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    root.rename(tmp_path / "original-knowledge")
+    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / "wiki/concepts").mkdir(parents=True)
+    (root / "sources").mkdir()
+
+    with pytest.raises(TransactionError, match="repository root changed"):
+        manager.begin([], transaction_id="rebound")
+
+    assert not config.local_state.exists()
+
+
 @pytest.fixture
 def operation_writer():
     calls: list[object] = []

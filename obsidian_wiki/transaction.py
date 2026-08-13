@@ -19,6 +19,7 @@ from typing import Callable
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import FrontmatterError, parse_frontmatter
 from obsidian_wiki.operations import OperationChange, write_operation
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.portable_manifest import (
     ManifestError,
     ManifestPreconditionError,
@@ -231,6 +232,7 @@ class TransactionManager:
         transaction_id: str | None = None,
         started_at: str | None = None,
     ) -> TransactionRecord:
+        self._verify_repository_identity()
         resolved_started_at = started_at or self._utc_now()
         self._validate_started_at(resolved_started_at)
         resolved_id = transaction_id or self._generated_id()
@@ -386,6 +388,7 @@ class TransactionManager:
         return report
 
     def abort(self, transaction_id: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status == "promoting":
@@ -417,6 +420,7 @@ class TransactionManager:
                 self._unlink_owned_lock(transaction_id, expected_identity=lock_identity)
 
     def mark_delete(self, transaction_id: str, relative_path: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status != "active":
@@ -441,6 +445,7 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status != "active":
@@ -461,6 +466,7 @@ class TransactionManager:
         *,
         completed_at: str | None = None,
     ) -> CommitResult:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status != "failed":
@@ -541,6 +547,7 @@ class TransactionManager:
                 raise
 
     def restore(self, transaction_id: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             record = self.load(transaction_id)
             if record.status not in {"promoting", "failed", "complete", "restored"}:
@@ -629,6 +636,7 @@ class TransactionManager:
                     )
 
     def discard(self, transaction_id: str) -> None:
+        self._verify_repository_identity()
         with self._action_lock():
             workspace = self._workspace_path(transaction_id)
             if not workspace.exists() and not workspace.is_symlink():
@@ -2066,6 +2074,7 @@ class TransactionManager:
         *,
         before_replace: Callable[[], None] | None = None,
     ) -> None:
+        self._verify_repository_identity()
         self._require_ordinary_directory(target.parent, "atomic write directory")
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.", dir=target.parent
@@ -2996,6 +3005,7 @@ class TransactionManager:
                 os.close(directory_fd)
 
     def _ensure_directory(self, path: Path) -> None:
+        self._verify_repository_identity()
         self._require_contained(path, self.config.root, "local transaction directory")
         try:
             relative = path.relative_to(self.config.root)
@@ -3016,6 +3026,21 @@ class TransactionManager:
                         f"cannot create local transaction directory: {current}"
                     ) from exc
             self._require_ordinary_directory(current, "local transaction directory")
+
+    def _verify_repository_identity(self) -> None:
+        descriptor = self._open_directory(
+            self.config.root, "portable repository root"
+        )
+        try:
+            if (
+                stable_directory_identity(os.fstat(descriptor))
+                != self.config.root_identity
+            ):
+                raise TransactionError(
+                    "configured repository root changed since configuration was read"
+                )
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _require_ordinary_directory(path: Path, label: str) -> None:

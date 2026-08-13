@@ -31,6 +31,7 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
+from obsidian_wiki.safe_files import validate_safe_relative_directory_path
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     LegacyManagedSkillsInventory,
@@ -4836,10 +4837,19 @@ def _recover_skill_operations(
 
 
 def recover_portable_skill_operations(
-    root: Path, *, version: str, source_skills: Path
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    expected_root_identity: tuple[int, ...] | None = None,
 ) -> None:
     """Recover pending replacements before a read-oriented CLI operation."""
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    if expected_root_identity is not None:
+        validate_safe_relative_directory_path(
+            root, root, expected_root_identity=expected_root_identity
+        )
+    root = _safe_root(root)
     source, current_names = _discover_source_skills(source_skills)
     with _portable_skills_lock(root):
         _recover_skill_operations(
@@ -5264,10 +5274,18 @@ def _stage_complete_agent_mirrors(
 
 
 def sync_portable_skill_mirrors(
-    root: Path, *, apply: bool
+    root: Path,
+    *,
+    apply: bool,
+    expected_root_identity: tuple[int, ...] | None = None,
 ) -> SkillSyncReport:
     """Check or transactionally rebuild all derived agent skill mirrors."""
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    if expected_root_identity is not None:
+        validate_safe_relative_directory_path(
+            root, root, expected_root_identity=expected_root_identity
+        )
+    root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):
@@ -5336,6 +5354,7 @@ def upgrade_portable_skills(
     version: str,
     source_skills: Path,
     warning_sink: list[dict[str, str]] | None = None,
+    expected_root_identity: tuple[int, ...] | None = None,
 ) -> tuple[str, ...]:
     """Upgrade managed canonical skills, full mirrors, and bootstrap blocks.
 
@@ -5343,7 +5362,12 @@ def upgrade_portable_skills(
     adopted, replaced, or removed, and the new inventory is committed last.
     """
     compatible_cli_spec(version)
-    root = _safe_root(Path(root))
+    root = Path(os.path.abspath(os.fspath(root)))
+    if expected_root_identity is not None:
+        validate_safe_relative_directory_path(
+            root, root, expected_root_identity=expected_root_identity
+        )
+    root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):

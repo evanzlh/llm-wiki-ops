@@ -805,6 +805,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             runtime.root,
             version=__version__,
             source_skills=skills_dir(),
+            expected_root_identity=runtime.root_identity,
         )
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1502,7 +1503,13 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
             )
             requested = {Path(raw).as_posix().removeprefix("./") for raw in args.page}
             recorded_pages = len(requested.intersection(ledger["pages"]))
-        write_trust_ledger(path, ledger, vault=vault)
+        write_trust_ledger(
+            path,
+            ledger,
+            vault=vault,
+            repository_root=runtime.root,
+            root_identity=runtime.root_identity,
+        )
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1796,6 +1803,7 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
             version=__version__,
             source_skills=skills_dir(),
             warning_sink=warnings,
+            expected_root_identity=resolved.root_identity,
         )
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1818,7 +1826,11 @@ def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
             implementation=IMPLEMENTATION_ID,
         )
         root = resolved.root
-        report = sync_portable_skill_mirrors(root, apply=args.apply)
+        report = sync_portable_skill_mirrors(
+            root,
+            apply=args.apply,
+            expected_root_identity=resolved.root_identity,
+        )
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         error = str(exc)
         if root is not None:

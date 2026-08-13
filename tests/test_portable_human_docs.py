@@ -10,6 +10,7 @@ from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.portable import render_portable_config
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.safe_files import stable_directory_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -196,6 +197,7 @@ def test_architecture_layout_and_source_shard_example_match_runtime(
     )
     config = PortableConfig(
         root=root,
+        root_identity=stable_directory_identity(root.stat()),
         path=root / ".obsidian-wiki/config.toml",
         schema_version=1,
         implementation=IMPLEMENTATION_ID,

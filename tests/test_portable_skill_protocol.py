@@ -11,6 +11,7 @@ from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.graph_analysis import analyse_vault
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.safe_files import stable_directory_identity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -702,6 +703,7 @@ def test_status_contract_matches_real_graph_and_portable_manifest_layout(
     source.write_text("evidence\n", encoding="utf-8")
     config = PortableConfig(
         root=root,
+        root_identity=stable_directory_identity(root.stat()),
         path=root / ".obsidian-wiki/config.toml",
         schema_version=1,
         implementation="obsidian-wiki",
