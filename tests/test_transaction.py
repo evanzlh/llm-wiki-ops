@@ -2780,6 +2780,31 @@ def test_log_writer_chmod_side_effect_is_rolled_back(tmp_path: Path) -> None:
     assert unrelated.read_text(encoding="utf-8") == PAGE
 
 
+def test_log_writer_vault_root_chmod_is_rolled_back(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    config.vault.chmod(0o750)
+    original_log = (config.vault / "log.md").read_bytes()
+    original_manifest = (config.vault / ".manifest.json").read_bytes()
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        config.vault.chmod(0o700)
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-root-mode")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-root-mode", completed_at="2026-08-07T01:00:00Z")
+
+    assert stat.S_IMODE(config.vault.stat().st_mode) == 0o750
+    assert (config.vault / "log.md").read_bytes() == original_log
+    assert (config.vault / ".manifest.json").read_bytes() == original_manifest
+    assert not (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is None
+
+
 def test_log_writer_nested_nonempty_directory_side_effect_is_rolled_back(
     tmp_path: Path,
 ) -> None:

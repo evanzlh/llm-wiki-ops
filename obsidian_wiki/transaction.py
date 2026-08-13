@@ -55,6 +55,7 @@ _SUPPORTS_REPLACE_DIR_FD = os.rename in os.supports_dir_fd
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
 _SUPPORTS_SAFE_RMTREE = bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
 _TOMBSTONE_PREFIX = ".tombstone-"
+_WRITER_ROOT_KEY = ""
 
 
 class TransactionError(RuntimeError):
@@ -1571,6 +1572,13 @@ class TransactionManager:
         before: dict[str, _WriterEntry],
         after: dict[str, _WriterEntry],
     ) -> None:
+        cleanup = dict(cleanup)
+        if _WRITER_ROOT_KEY in cleanup:
+            expected_root = before.get(_WRITER_ROOT_KEY)
+            if expected_root is None:
+                raise TransactionError("writer rollback vault root state is missing")
+            self._restore_writer_root(expected_root, after.get(_WRITER_ROOT_KEY))
+            cleanup.pop(_WRITER_ROOT_KEY)
         directory_paths = {
             relative
             for relative in cleanup
@@ -1645,6 +1653,30 @@ class TransactionManager:
             if expected is None or expected.kind != "directory":
                 raise TransactionError(f"writer rollback directory changed: {relative}")
             self._quarantine_added_path(record, relative, target, expected)
+
+    def _restore_writer_root(
+        self,
+        expected: _WriterEntry,
+        observed: _WriterEntry | None,
+    ) -> None:
+        try:
+            metadata = self.config.vault.lstat()
+        except OSError as exc:
+            raise TransactionError("writer rollback vault root is missing") from exc
+        if (
+            expected.kind != "root"
+            or not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or not self._writer_identity_matches(metadata, expected)
+        ):
+            raise TransactionError("writer changed or replaced the portable vault root")
+        if observed is None or observed.kind != "root":
+            raise TransactionError("writer vault root result is invalid")
+        try:
+            self.config.vault.chmod(expected.mode)
+            self._fsync_directory(self.config.vault)
+        except OSError as exc:
+            raise TransactionError("cannot restore portable vault root mode") from exc
 
     @staticmethod
     def _writer_identity_matches(
@@ -1736,6 +1768,8 @@ class TransactionManager:
         snapshots = record.workspace / "snapshots"
         recovered: dict[str, bytes | None] = {}
         for relative, stored in sorted(cleanup.items()):
+            if relative == _WRITER_ROOT_KEY:
+                continue
             if stored is None:
                 recovered[relative] = None
                 continue
@@ -1779,7 +1813,7 @@ class TransactionManager:
                 self._writer_guard_diff(
                     writer_before,
                     writer_after,
-                    {relative: snapshot_index[relative] for relative in writer_before},
+                    {relative: snapshot_index.get(relative) for relative in writer_before},
                     restorable=True,
                 )
             )
@@ -1807,6 +1841,8 @@ class TransactionManager:
                     restorable=True,
                 )
             )
+            if _WRITER_ROOT_KEY in changed:
+                raise TransactionError("writer vault root residual state is unsafe")
             for relative in changed - base_affected:
                 residual[relative] = self._current_writer_state_hash(relative)
         for relative in sorted(base_affected - rollback_exclusions):
@@ -2118,6 +2154,8 @@ class TransactionManager:
         index: dict[str, str | None] = {}
         originals = record.workspace / "snapshots" / "originals"
         for relative in sorted(state):
+            if relative == _WRITER_ROOT_KEY:
+                continue
             if state[relative].kind == "directory":
                 index[relative] = None
                 continue
@@ -2145,7 +2183,7 @@ class TransactionManager:
         restorable: bool = False,
     ) -> dict[str, str | None]:
         changed = {
-            relative: before_index[relative]
+            relative: before_index.get(relative)
             for relative, entry in before.items()
             if not TransactionManager._writer_entries_equal(
                 entry, after.get(relative), restorable=restorable
@@ -2163,6 +2201,18 @@ class TransactionManager:
     ) -> bool:
         if after is None:
             return False
+        if before.kind == "root" or after.kind == "root":
+            return (
+                before.kind,
+                before.mode,
+                before.device,
+                before.inode,
+            ) == (
+                after.kind,
+                after.mode,
+                after.device,
+                after.inode,
+            )
         if not restorable:
             return before == after
         return (
@@ -2189,7 +2239,10 @@ class TransactionManager:
         except ValueError:
             pass
 
-        result: dict[str, _WriterEntry] = {}
+        root_metadata = self.config.vault.lstat()
+        result: dict[str, _WriterEntry] = {
+            _WRITER_ROOT_KEY: self._writer_entry(root_metadata, kind="root")
+        }
         for directory, dirnames, filenames in os.walk(
             self.config.vault, topdown=True, followlinks=False
         ):
@@ -2289,7 +2342,9 @@ class TransactionManager:
 
     @staticmethod
     def _writer_state_hash(entry: _WriterEntry) -> str:
-        if entry.kind == "directory":
+        if entry.kind == "root":
+            state = (entry.kind, entry.mode, entry.device, entry.inode)
+        elif entry.kind == "directory":
             state = (entry.kind, entry.mode)
         else:
             state = (
@@ -2471,7 +2526,7 @@ class TransactionManager:
         writer_guard = self._load_writer_guard(payload["writer_guard"])
         writer_prepared = payload["writer_prepared"]
         allowed = base_affected
-        guard_paths = set(writer_guard)
+        guard_paths = set(writer_guard) - {_WRITER_ROOT_KEY}
         snapshot_allowed = allowed | guard_paths
         snapshots = self._load_snapshot_index(
             payload["snapshot_index"], workspace=workspace
@@ -2511,8 +2566,13 @@ class TransactionManager:
         expected_snapshot_hashes = {
             relative: preimages.get(relative) for relative in base_affected
         }
-        for relative, entry in writer_guard.items():
+        for relative in guard_paths:
+            entry = writer_guard[relative]
             expected_snapshot_hashes.setdefault(relative, entry.content_hash)
+        if writer_prepared and _WRITER_ROOT_KEY not in writer_guard:
+            raise TransactionError(
+                "prepared transaction writer guard is missing the vault root"
+            )
         if not set(snapshots) <= snapshot_allowed:
             raise TransactionError(
                 "transaction snapshot target is outside the affected set"
@@ -2656,12 +2716,21 @@ class TransactionManager:
         for relative, encoded in raw.items():
             if not isinstance(relative, str) or not isinstance(encoded, str):
                 raise TransactionError("transaction writer guard entry is invalid")
-            self._validate_writer_guard_path(relative)
             parts = encoded.split("|")
-            if len(parts) != 9 or parts[1] not in {"file", "directory"}:
+            if len(parts) != 9:
                 raise TransactionError("transaction writer guard entry is invalid")
-            content_hash = parts[0] if parts[1] == "file" else None
-            if parts[1] == "file" and _HASH_RE.fullmatch(parts[0]) is None:
+            kind = parts[1]
+            if relative == _WRITER_ROOT_KEY:
+                if kind != "root":
+                    raise TransactionError("transaction writer guard root is invalid")
+            else:
+                self._validate_writer_guard_path(relative)
+                if kind not in {"file", "directory"}:
+                    raise TransactionError("transaction writer guard entry is invalid")
+            if kind != "file" and parts[0] != kind:
+                raise TransactionError("transaction writer guard entry is invalid")
+            content_hash = parts[0] if kind == "file" else None
+            if kind == "file" and _HASH_RE.fullmatch(parts[0]) is None:
                 raise TransactionError("transaction writer guard hash is invalid")
             try:
                 numbers = tuple(int(value) for value in parts[2:])
@@ -2672,7 +2741,7 @@ class TransactionManager:
             if any(value < 0 for value in numbers):
                 raise TransactionError("transaction writer guard metadata is invalid")
             guard[relative] = _WriterEntry(
-                parts[1], *numbers, content_hash=content_hash
+                kind, *numbers, content_hash=content_hash
             )
         return guard
 
