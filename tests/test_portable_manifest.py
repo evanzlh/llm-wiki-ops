@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -143,21 +144,27 @@ def test_upsert_syncs_each_new_shard_directory_parent(
     source = root / "sources/design/architecture.md"
     source.write_text("body", encoding="utf-8")
     store = ShardedManifest(config)
-    synced: list[Path] = []
-    original_sync = store._fsync_directory
+    synced: set[tuple[int, int]] = set()
+    original_sync = portable_manifest_module.os.fsync
 
-    def record_sync(path: Path) -> None:
-        synced.append(path)
-        original_sync(path)
+    def record_sync(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            synced.add((metadata.st_dev, metadata.st_ino))
+        original_sync(descriptor)
 
-    monkeypatch.setattr(store, "_fsync_directory", record_sync)
+    monkeypatch.setattr(portable_manifest_module.os, "fsync", record_sync)
 
     store.upsert(source)
 
-    assert config.vault in synced
-    assert config.vault / ".manifest" in synced
-    assert config.vault / ".manifest/sources" in synced
-    assert config.vault / ".manifest/sources/design" in synced
+    for directory in (
+        config.vault,
+        config.vault / ".manifest",
+        config.vault / ".manifest/sources",
+        config.vault / ".manifest/sources/design",
+    ):
+        metadata = directory.stat()
+        assert (metadata.st_dev, metadata.st_ino) in synced
 
 
 @pytest.mark.parametrize("failure_kind", ["file", "directory"])
@@ -450,3 +457,355 @@ def test_upsert_rejects_hardlinked_source_files(tmp_path: Path) -> None:
 
     with pytest.raises(ManifestError, match="ordinary file|hard link|single link"):
         ShardedManifest(config).upsert(source)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root descriptor binding")
+def test_upsert_rejects_root_rebinding_without_writing_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_repo(tmp_path / "original")
+    replacement, _replacement_config = make_repo(tmp_path / "replacement")
+    detached = tmp_path / "detached-original"
+    source = root / "sources/design/a.md"
+    source.write_text("original", encoding="utf-8")
+    (replacement / "sources/design/a.md").write_text(
+        "replacement", encoding="utf-8"
+    )
+    store = ShardedManifest(config)
+    real_compute_hash = portable_manifest_module.compute_hash
+    replacement_before = tuple(
+        (path.relative_to(replacement).as_posix(), path.read_bytes())
+        for path in sorted(replacement.rglob("*"))
+        if path.is_file()
+    )
+    swapped = False
+
+    def swap_after_hash(path: Path) -> str:
+        nonlocal swapped
+        result = real_compute_hash(path)
+        if not swapped:
+            root.rename(detached)
+            replacement.rename(root)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(portable_manifest_module, "compute_hash", swap_after_hash)
+
+    with pytest.raises(ManifestError, match="changed|unsafe"):
+        store.upsert(source)
+
+    assert swapped
+    replacement_after = tuple(
+        (path.relative_to(root).as_posix(), path.read_bytes())
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
+    assert replacement_after == replacement_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root descriptor binding")
+def test_remove_rejects_root_rebinding_without_unlinking_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_repo(tmp_path / "original")
+    replacement, replacement_config = make_repo(tmp_path / "replacement")
+    detached = tmp_path / "detached-original"
+    source_id = "sources/design/a.md"
+    for repository, repository_config in (
+        (root, config),
+        (replacement, replacement_config),
+    ):
+        source = repository / "sources/design/a.md"
+        source.write_text(repository.name, encoding="utf-8")
+        ShardedManifest(repository_config).upsert(source)
+    store = ShardedManifest(config)
+    replacement_shard = ShardedManifest(replacement_config).entry_path(source_id)
+    replacement_bytes = replacement_shard.read_bytes()
+    real_entry_path = store.entry_path
+    swapped = False
+
+    def swap_after_path(value: str) -> Path:
+        nonlocal swapped
+        result = real_entry_path(value)
+        if not swapped:
+            root.rename(detached)
+            replacement.rename(root)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(store, "entry_path", swap_after_path)
+
+    with pytest.raises(ManifestError, match="changed|unsafe"):
+        store.remove(source_id)
+
+    assert swapped
+    assert (root / replacement_shard.relative_to(replacement)).read_bytes() == replacement_bytes
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory identity binding")
+@pytest.mark.parametrize("operation", ["upsert", "remove"])
+def test_manifest_mutator_rejects_vault_rebinding_without_touching_replacement(
+    operation: str, tmp_path: Path
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    source_id = "sources/design/a.md"
+    if operation == "remove":
+        store.upsert(source)
+    vault = root / "wiki"
+    detached = root / "detached-wiki"
+    replacement = root / "replacement-wiki"
+    replacement.mkdir()
+    (replacement / ".manifest.json").write_text(
+        '{"schema_version":2,"storage":"sharded","entries":".manifest/sources"}\n',
+        encoding="utf-8",
+    )
+    replacement_shard = replacement / ".manifest/sources/design/a.md.json"
+    replacement_shard.parent.mkdir(parents=True)
+    replacement_shard.write_text("owner replacement\n", encoding="utf-8")
+    replacement_before = replacement_shard.read_bytes()
+    vault.rename(detached)
+    replacement.rename(vault)
+
+    with pytest.raises(ManifestError, match="changed|unsafe"):
+        if operation == "upsert":
+            store.upsert(source)
+        else:
+            store.remove(source_id)
+
+    assert (vault / ".manifest/sources/design/a.md.json").read_bytes() == replacement_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory identity binding")
+def test_upsert_rejects_shard_parent_aba_during_child_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
+    live = root / "wiki/.manifest/sources"
+    detached = root / "wiki/.manifest/detached-sources"
+    external = root / "wiki/.manifest/external-sources"
+    external_shard = external / "design/a.md.json"
+    external_shard.parent.mkdir(parents=True)
+    external_shard.write_text("owner external\n", encoding="utf-8")
+    live_shard = live / "design/a.md.json"
+    live_before = live_shard.read_bytes()
+    external_before = external_shard.read_bytes()
+    real_open = portable_manifest_module.os.open
+    swapped = False
+
+    monkeypatch.setattr(
+        portable_manifest_module, "_manifest_dirfd_supported", lambda: True
+    )
+
+    def swap_restore_around_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "sources" and kwargs.get("dir_fd") is not None and not swapped:
+            live.rename(detached)
+            external.rename(live)
+            descriptor = real_open(path, flags, *args, **kwargs)
+            live.rename(external)
+            detached.rename(live)
+            swapped = True
+            return descriptor
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "open", swap_restore_around_open)
+
+    with pytest.raises(ManifestError, match="changed|unsafe|ordinary"):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+
+    assert swapped
+    assert live_shard.read_bytes() == live_before
+    assert external_shard.read_bytes() == external_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX target reservation")
+def test_upsert_preserves_concurrent_target_replaced_at_preimage_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
+    target = store.entry_path(entry.source_id)
+    expected = "sha256:" + __import__("hashlib").sha256(target.read_bytes()).hexdigest()
+    concurrent = b"concurrent owner bytes\n"
+    real_rename = portable_manifest_module.os.rename
+    interposed = False
+
+    def replace_before_rename(source_name, target_name, *args, **kwargs):
+        nonlocal interposed
+        if (
+            (source_name == target.name or target_name == target.name)
+            and kwargs.get("src_dir_fd") is not None
+            and not interposed
+        ):
+            target.write_bytes(concurrent)
+            interposed = True
+        return real_rename(source_name, target_name, *args, **kwargs)
+
+    monkeypatch.setattr(portable_manifest_module.os, "rename", replace_before_rename)
+    monkeypatch.setattr(
+        portable_manifest_module, "_manifest_dirfd_supported", lambda: True
+    )
+
+    with pytest.raises(ManifestError, match="changed|preimage|concurrent"):
+        store.upsert(
+            source,
+            compiled_at="2026-08-08T00:00:01Z",
+            expected_preimage=expected,
+        )
+
+    assert interposed
+    assert not target.exists()
+    assert concurrent in {
+        path.read_bytes() for path in root.rglob("*.reserved-*") if path.is_file()
+    }
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX target reservation")
+def test_remove_preserves_target_replaced_at_unlink_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source)
+    target = store.entry_path(entry.source_id)
+    concurrent = b"concurrent owner bytes\n"
+    real_rename = portable_manifest_module.os.rename
+    interposed = False
+
+    def replace_before_reservation(source_name, target_name, *args, **kwargs):
+        nonlocal interposed
+        if (
+            source_name == target.name
+            and kwargs.get("src_dir_fd") is not None
+            and not interposed
+        ):
+            target.write_bytes(concurrent)
+            interposed = True
+        return real_rename(source_name, target_name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        portable_manifest_module.os, "rename", replace_before_reservation
+    )
+    monkeypatch.setattr(
+        portable_manifest_module, "_manifest_dirfd_supported", lambda: True
+    )
+
+    with pytest.raises(ManifestError, match="changed|concurrent"):
+        store.remove(entry.source_id)
+
+    assert interposed
+    assert not target.exists()
+    assert concurrent in {
+        path.read_bytes() for path in root.rglob("*.reserved-*") if path.is_file()
+    }
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX reservation quarantine")
+@pytest.mark.parametrize("operation", ["upsert", "remove"])
+def test_manifest_mutator_quarantines_reservation_changed_before_consumption(
+    operation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source)
+    target = store.entry_path(entry.source_id)
+    concurrent = b"concurrent reservation bytes\n"
+    original_move = portable_manifest_module._rename_noreplace
+    interposed = False
+
+    def change_reservation_before_archive(
+        source_name: str,
+        target_name: str,
+        *,
+        source_fd: int,
+        target_fd: int,
+    ) -> None:
+        nonlocal interposed
+        if source_name.startswith(f".{target.name}.reserved-") and not interposed:
+            descriptor = os.open(source_name, os.O_WRONLY, dir_fd=source_fd)
+            try:
+                os.ftruncate(descriptor, 0)
+                os.write(descriptor, concurrent)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            interposed = True
+        original_move(
+            source_name,
+            target_name,
+            source_fd=source_fd,
+            target_fd=target_fd,
+        )
+
+    monkeypatch.setattr(
+        portable_manifest_module,
+        "_rename_noreplace",
+        change_reservation_before_archive,
+    )
+
+    with pytest.raises(ManifestError, match="reservation.*changed|evidence"):
+        if operation == "upsert":
+            store.upsert(source)
+        else:
+            store.remove(entry.source_id)
+
+    assert interposed
+    evidence = list(
+        (root / ".obsidian-wiki/local/manifest-reservations").glob("shard-*")
+    )
+    assert evidence
+    assert concurrent in {path.read_bytes() for path in evidence}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX no-replace capability")
+@pytest.mark.parametrize("operation", ["upsert", "remove"])
+def test_manifest_mutator_checks_noreplace_before_live_mutation(
+    operation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    entry = store.upsert(source)
+    target = store.entry_path(entry.source_id)
+    before = target.read_bytes()
+    real_move = portable_manifest_module._rename_noreplace
+
+    def unavailable(source_name, target_name, *, source_fd, target_fd):
+        if source_name.startswith(".noreplace-probe-"):
+            raise OSError(errno.ENOTSUP, "unsupported")
+        return real_move(
+            source_name,
+            target_name,
+            source_fd=source_fd,
+            target_fd=target_fd,
+        )
+
+    monkeypatch.setattr(portable_manifest_module, "_rename_noreplace", unavailable)
+
+    with pytest.raises(ManifestError, match="no-replace.*unavailable"):
+        if operation == "upsert":
+            store.upsert(source)
+        else:
+            store.remove(entry.source_id)
+
+    assert target.read_bytes() == before
+    assert not list(target.parent.glob(f".{target.name}.reserved-*"))

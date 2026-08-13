@@ -33,10 +33,11 @@ from obsidian_wiki.portable import (
     render_portable_gitattributes,
     setup_portable_repo,
 )
-from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable import (
-    upgrade_portable_skills as _upgrade_portable_skills,
+    upgrade_portable_skills as _upgrade_portable_skills_impl,
 )
+from obsidian_wiki.portable_check import check_portable_repo
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     LegacyManagedSkillsInventory,
     ManagedSkillsInventory,
@@ -148,6 +149,36 @@ def snapshot_tree(root: Path) -> tuple[tuple[str, str, bytes | str], ...]:
         else:
             entries.append((relative, "file", path.read_bytes()))
     return tuple(entries)
+
+
+def portable_root_identity(root: Path) -> tuple[int, int]:
+    return stable_directory_identity(root.stat())
+
+
+def _upgrade_portable_skills(
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    warning_sink: list[dict[str, str]] | None = None,
+) -> tuple[str, ...]:
+    return _upgrade_portable_skills_impl(
+        root,
+        version=version,
+        source_skills=source_skills,
+        expected_root_identity=portable_root_identity(root),
+        warning_sink=warning_sink,
+    )
+
+
+def _sync_portable_skill_mirrors(
+    root: Path, *, apply: bool
+) -> portable.SkillSyncReport:
+    return portable.sync_portable_skill_mirrors(
+        root,
+        apply=apply,
+        expected_root_identity=portable_root_identity(root),
+    )
 
 
 def make_skill_source(root: Path, name: str = "wiki-ingest") -> Path:
@@ -890,7 +921,7 @@ def test_skill_sync_apply_recreates_a_missing_agent_parent(
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     shutil.rmtree(root / ".cursor")
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == "applied"
     assert_all_agent_mirrors_match(root)
@@ -913,7 +944,7 @@ def test_skill_sync_staging_failure_rolls_back_a_created_agent_parent(
     monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", fail_after_staging)
 
     with pytest.raises(OSError, match="staging failure"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert not (root / ".cursor").exists()
     assert not (root / portable.SYNC_OPERATION.transactions_relative).exists()
@@ -1297,21 +1328,21 @@ def test_sync_skills_dry_run_apply_and_clean_preserve_authoritative_state(
     inventory = root / ".obsidian-wiki/managed-skills.json"
     inventory_before = inventory.read_bytes()
 
-    dry = portable.sync_portable_skill_mirrors(root, apply=False)
+    dry = _sync_portable_skill_mirrors(root, apply=False)
 
     assert dry.status == "drift"
     assert owner_only.is_file()
     assert snapshot_tree(root / ".skills") == canonical_before
     assert inventory.read_bytes() == inventory_before
 
-    applied = portable.sync_portable_skill_mirrors(root, apply=True)
+    applied = _sync_portable_skill_mirrors(root, apply=True)
 
     assert applied.status == "applied"
     assert_all_agent_mirrors_match(root)
     assert not owner_only.exists()
     assert snapshot_tree(root / ".skills") == canonical_before
     assert inventory.read_bytes() == inventory_before
-    assert portable.sync_portable_skill_mirrors(root, apply=False).status == "clean"
+    assert _sync_portable_skill_mirrors(root, apply=False).status == "clean"
 
 
 def test_sync_skills_preserves_existing_mirror_root_mode(
@@ -1323,7 +1354,7 @@ def test_sync_skills_preserves_existing_mirror_root_mode(
     os.chmod(target, 0o700)
     _add_custom_canonical_skill(root)
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == "applied"
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
@@ -1452,7 +1483,7 @@ def test_sync_skills_fails_fast_while_repository_lock_is_held_without_writes(
     before = snapshot_tree(root)
     try:
         with pytest.raises(ValueError, match="locked|another"):
-            portable.sync_portable_skill_mirrors(root, apply=True)
+            _sync_portable_skill_mirrors(root, apply=True)
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -1508,7 +1539,7 @@ def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
         portable, "_apply_journaled_replacements", interrupt_after_target_swaps
     )
     with pytest.raises(OSError, match="interruption"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     journals = list(
         (root / portable.SYNC_OPERATION.transactions_relative).glob("*/journal.json")
@@ -1519,7 +1550,7 @@ def test_sync_recovery_after_every_target_swap_never_accepts_partial_mirrors(
         assert plan_portable_skill_sync(root).status == "drift"
 
     monkeypatch.setattr(portable, "_apply_journaled_replacements", original_apply)
-    recovered = portable.sync_portable_skill_mirrors(root, apply=True)
+    recovered = _sync_portable_skill_mirrors(root, apply=True)
 
     assert recovered.status == "applied"
     assert_all_agent_mirrors_match(root)
@@ -1559,7 +1590,7 @@ def test_sync_rollback_failure_preserves_evidence_for_next_recovery(
 
     monkeypatch.setattr(portable, "_rename_sync_path", fail_forward_and_restore)
     with pytest.raises(OSError, match="rollback|evidence|preserved"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     journals = list(
         (root / portable.SYNC_OPERATION.transactions_relative).glob("*/journal.json")
@@ -1568,7 +1599,7 @@ def test_sync_rollback_failure_preserves_evidence_for_next_recovery(
     assert any((journals[0].parent / "backups").iterdir())
 
     monkeypatch.setattr(portable, "_rename_sync_path", original_rename)
-    recovered = portable.sync_portable_skill_mirrors(root, apply=True)
+    recovered = _sync_portable_skill_mirrors(root, apply=True)
     assert recovered.status == "applied"
     assert_all_agent_mirrors_match(root)
     assert not journals[0].exists()
@@ -1890,7 +1921,7 @@ def test_sync_apply_binds_live_parent_before_ordinary_swap(
     monkeypatch.setattr(portable, "_rename_sync_path", swap_before_first_live_rename)
 
     with pytest.raises(ValueError, match="changed|identity|bound|directory"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert swapped
     assert snapshot_tree(outside) == before
@@ -1937,7 +1968,7 @@ def test_sync_apply_binds_live_parent_before_staging(
     monkeypatch.setattr(portable, "_stage_complete_agent_mirrors", swap_before_staging)
 
     with pytest.raises(ValueError, match="changed|identity|bound|directory"):
-        portable.sync_portable_skill_mirrors(root, apply=True)
+        _sync_portable_skill_mirrors(root, apply=True)
 
     assert swapped
     assert snapshot_tree(outside) == before
@@ -2083,11 +2114,90 @@ def test_sync_recovery_rejects_transaction_swap_after_authorization(
     monkeypatch.setattr(portable, "_authorize_sync_recovery", swap_after_authorization)
 
     with pytest.raises(ValueError, match="transaction.*changed|identity"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert swapped
     assert (transaction / "replacement-marker").is_file()
     assert (detached / "journal.json").is_file()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root descriptor binding")
+@pytest.mark.parametrize("operation", ["recover", "sync", "upgrade"])
+def test_public_skill_mutator_rejects_root_rebinding_before_lock_without_touching_replacement(
+    operation: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    replacement = tmp_path / "replacement"
+    detached = tmp_path / "detached-original"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    setup_portable_repo(
+        replacement, version="2026.8.3", source_skills=tiny_skills
+    )
+    if operation == "sync":
+        _add_custom_canonical_skill(replacement)
+    expected_identity = portable_root_identity(root)
+    original_lock = portable._portable_skills_lock
+    replacement_before = snapshot_tree(replacement)
+    original_before = snapshot_tree(root)
+    swapped = False
+
+    def swap_before_lock(repository: Path):
+        nonlocal swapped
+        assert repository == root
+        if not swapped:
+            root.rename(detached)
+            replacement.rename(root)
+            swapped = True
+        return original_lock(repository)
+
+    monkeypatch.setattr(portable, "_portable_skills_lock", swap_before_lock)
+
+    with pytest.raises(ValueError, match="changed|identity|detached"):
+        if operation == "recover":
+            portable.recover_portable_skill_operations(
+                root,
+                version="2026.8.3",
+                source_skills=tiny_skills,
+                expected_root_identity=expected_identity,
+            )
+        elif operation == "sync":
+            portable.sync_portable_skill_mirrors(
+                root,
+                apply=True,
+                expected_root_identity=expected_identity,
+            )
+        else:
+            portable.upgrade_portable_skills(
+                root,
+                version="2026.8.4",
+                source_skills=tiny_skills,
+                expected_root_identity=expected_identity,
+            )
+
+    assert swapped
+    assert snapshot_tree(root) == replacement_before
+    assert snapshot_tree(detached) == original_before
+
+
+def test_public_skill_mutators_require_loaded_root_identity(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.recover_portable_skill_operations(
+            root, version="2026.8.3", source_skills=tiny_skills
+        )
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.sync_portable_skill_mirrors(root, apply=False)
+    with pytest.raises(TypeError, match="expected_root_identity"):
+        portable.upgrade_portable_skills(
+            root, version="2026.8.4", source_skills=tiny_skills
+        )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX transaction identity binding")
@@ -2184,7 +2294,7 @@ def test_sync_recovers_each_journal_status(
             (transaction / "journal.json").read_text(encoding="utf-8")
         )["status"] == "committed"
 
-    report = portable.sync_portable_skill_mirrors(root, apply=True)
+    report = _sync_portable_skill_mirrors(root, apply=True)
 
     assert report.status == ("applied" if status == "prepared" else "clean")
     assert_all_agent_mirrors_match(root)
@@ -2233,7 +2343,7 @@ def test_sync_recovery_rejects_unauthorized_schema_operation_or_record_plan(
     with pytest.raises(
         ValueError, match="schema-3|operation|target|record|six|duplicate"
     ):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (transaction / "journal.json").is_file()
@@ -2256,7 +2366,7 @@ def test_sync_recovery_rejects_proof_or_canonical_tampering_without_writes(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="canonical|proof|candidate|differs"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (transaction / "journal.json").is_file()
@@ -2279,7 +2389,7 @@ def test_schema4_sync_journal_is_bound_to_sync_transaction_directory(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="operation|identity|journal"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert snapshot_tree(root) == before
     assert (moved / "journal.json").is_file()
@@ -2332,7 +2442,7 @@ def test_sync_recovery_binds_proof_and_live_postimage_against_swap_restore(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="changed|unsafe|proof|postimage"):
-        portable.sync_portable_skill_mirrors(root, apply=False)
+        _sync_portable_skill_mirrors(root, apply=False)
 
     assert swapped
     assert snapshot_tree(root) == before
@@ -3101,7 +3211,7 @@ def test_v2_upgrade_preserves_custom_canonical_and_rebuilds_full_mirrors(
     (custom / "references/团队约定.md").write_text(
         "# 团队约定\n", encoding="utf-8"
     )
-    portable.sync_portable_skill_mirrors(root, apply=True)
+    _sync_portable_skill_mirrors(root, apply=True)
     custom_before = snapshot_tree(custom)
 
     (tiny_skills / "wiki-ingest/SKILL.md").write_text(

@@ -17,6 +17,7 @@ import stat
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -31,7 +32,7 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
-from obsidian_wiki.safe_files import validate_safe_relative_directory_path
+from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     LegacyManagedSkillsInventory,
@@ -44,11 +45,13 @@ from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
-    _digest as _skill_tree_digest,
     discover_anchored_skill_collection,
     discover_skill_collection,
     materialize_skill_collection,
     snapshot_ordinary_tree_with_unsafe,
+)
+from obsidian_wiki.skill_trees import (
+    _digest as _skill_tree_digest,
 )
 
 MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
@@ -217,6 +220,66 @@ def _safe_root(root: Path) -> Path:
     if requested.is_symlink():
         raise ValueError(f"portable repository root must not be a symlink: {requested}")
     return requested.resolve(strict=False)
+
+
+_ACTIVE_MUTATION_ROOTS: ContextVar[tuple[tuple[Path, int], ...]] = ContextVar(
+    "portable_active_mutation_roots", default=()
+)
+
+
+@contextmanager
+def _bound_portable_mutation_root(
+    root: Path, expected_root_identity: tuple[int, ...]
+) -> Iterator[Path]:
+    """Keep the loaded repository inode open for an entire public mutation."""
+    requested = _absolute_no_resolve(root)
+    flags = _inventory_directory_flags()
+    descriptor = -1
+    token = None
+    try:
+        descriptor = os.open(requested, flags)
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise ValueError(f"portable repository root is unsafe: {requested}: {exc}") from exc
+    if stable_directory_identity(opened) != expected_root_identity:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise ValueError(
+            "portable repository root changed since configuration was read"
+        )
+    body_error: BaseException | None = None
+    try:
+        token = _ACTIVE_MUTATION_ROOTS.set(
+            (*_ACTIVE_MUTATION_ROOTS.get(), (requested, descriptor))
+        )
+        yield requested
+    except BaseException as exc:
+        body_error = exc
+        raise
+    finally:
+        if token is not None:
+            _ACTIVE_MUTATION_ROOTS.reset(token)
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                if body_error is None:
+                    raise
+
+
+def _active_mutation_root_descriptor(root: Path) -> int | None:
+    requested = _absolute_no_resolve(root)
+    for bound_root, descriptor in reversed(_ACTIVE_MUTATION_ROOTS.get()):
+        if bound_root == requested:
+            return descriptor
+    return None
 
 
 def _assert_safe_managed_path(root: Path, path: Path) -> None:
@@ -2924,7 +2987,10 @@ def _open_sync_directory_chain(
     flags = _inventory_directory_flags()
     directories: list[_BoundDirectory] = []
     try:
-        descriptor = os.open(root, flags)
+        active_root = _active_mutation_root_descriptor(root)
+        descriptor = (
+            os.dup(active_root) if active_root is not None else os.open(root, flags)
+        )
         metadata = os.fstat(descriptor)
         directories.append((root, "", descriptor, metadata))
         current = root
@@ -4841,14 +4907,19 @@ def recover_portable_skill_operations(
     *,
     version: str,
     source_skills: Path,
-    expected_root_identity: tuple[int, ...] | None = None,
+    expected_root_identity: tuple[int, ...],
 ) -> None:
     """Recover pending replacements before a read-oriented CLI operation."""
     root = Path(os.path.abspath(os.fspath(root)))
-    if expected_root_identity is not None:
-        validate_safe_relative_directory_path(
-            root, root, expected_root_identity=expected_root_identity
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        _recover_portable_skill_operations_bound(
+            root, version=version, source_skills=source_skills
         )
+
+
+def _recover_portable_skill_operations_bound(
+    root: Path, *, version: str, source_skills: Path
+) -> None:
     root = _safe_root(root)
     source, current_names = _discover_source_skills(source_skills)
     with _portable_skills_lock(root):
@@ -5277,14 +5348,17 @@ def sync_portable_skill_mirrors(
     root: Path,
     *,
     apply: bool,
-    expected_root_identity: tuple[int, ...] | None = None,
+    expected_root_identity: tuple[int, ...],
 ) -> SkillSyncReport:
     """Check or transactionally rebuild all derived agent skill mirrors."""
     root = Path(os.path.abspath(os.fspath(root)))
-    if expected_root_identity is not None:
-        validate_safe_relative_directory_path(
-            root, root, expected_root_identity=expected_root_identity
-        )
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        return _sync_portable_skill_mirrors_bound(root, apply=apply)
+
+
+def _sync_portable_skill_mirrors_bound(
+    root: Path, *, apply: bool
+) -> SkillSyncReport:
     root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
@@ -5353,8 +5427,8 @@ def upgrade_portable_skills(
     *,
     version: str,
     source_skills: Path,
+    expected_root_identity: tuple[int, ...],
     warning_sink: list[dict[str, str]] | None = None,
-    expected_root_identity: tuple[int, ...] | None = None,
 ) -> tuple[str, ...]:
     """Upgrade managed canonical skills, full mirrors, and bootstrap blocks.
 
@@ -5363,10 +5437,22 @@ def upgrade_portable_skills(
     """
     compatible_cli_spec(version)
     root = Path(os.path.abspath(os.fspath(root)))
-    if expected_root_identity is not None:
-        validate_safe_relative_directory_path(
-            root, root, expected_root_identity=expected_root_identity
+    with _bound_portable_mutation_root(root, expected_root_identity):
+        return _upgrade_portable_skills_bound(
+            root,
+            version=version,
+            source_skills=source_skills,
+            warning_sink=warning_sink,
         )
+
+
+def _upgrade_portable_skills_bound(
+    root: Path,
+    *,
+    version: str,
+    source_skills: Path,
+    warning_sink: list[dict[str, str]] | None,
+) -> tuple[str, ...]:
     root = _safe_root(root)
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")

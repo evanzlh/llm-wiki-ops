@@ -801,7 +801,7 @@ def test_windows_reparse_attribute_is_treated_as_unsafe() -> None:
     assert TransactionManager._is_reparse_point(metadata)
 
 
-def test_transaction_lifecycle_without_posix_filesystem_capabilities(
+def test_transaction_manifest_mutation_fails_closed_without_posix_capabilities(
     tmp_path: Path,
     operation_writer,
     monkeypatch: pytest.MonkeyPatch,
@@ -851,8 +851,9 @@ def test_transaction_lifecycle_without_posix_filesystem_capabilities(
     candidate_page(record, "concepts/a.md")
     manager.mark_delete("tx-1", "concepts/deleted.md")
 
-    manager.commit("tx-1")
-    manager.restore("tx-1")
+    with pytest.raises(TransactionError, match="safe manifest mutation requires"):
+        manager.commit("tx-1")
+
     manager.discard("tx-1")
 
     assert deleted.read_text(encoding="utf-8") == PAGE
