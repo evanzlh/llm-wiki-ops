@@ -1434,7 +1434,6 @@ def test_manifest_legacy_operation_page_is_invalid_without_inspection(
     payload["pages"] = ["journal/operations/legacy.md"]
     entry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     legacy = config.vault / "journal" / "operations"
-    legacy.rmdir()
     external = tmp_path / "external-legacy"
     external.mkdir()
     _symlink_or_skip(legacy, external, directory=True)
@@ -1457,7 +1456,6 @@ def test_knowledge_scan_prunes_legacy_subtree_before_inspection(
 ) -> None:
     _, config, _, _, _ = valid_repo(tmp_path)
     legacy = config.vault / "journal" / "operations"
-    legacy.rmdir()
     external = tmp_path / "external-legacy"
     external.mkdir()
     _symlink_or_skip(legacy, external, directory=True)
@@ -1608,7 +1606,6 @@ def test_legacy_operation_subtree_is_ignored(
     _, config, _, _, _ = valid_repo(tmp_path)
     legacy = config.vault / "journal" / "operations"
     legacy.parent.mkdir(exist_ok=True)
-    legacy.rmdir()
     if kind == "ordinary":
         legacy.mkdir()
         (legacy / "malformed.md").write_text(
