@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Optional, Tuple
+from typing import Callable, Iterator, Optional, Tuple
 
 try:
     import fcntl as _fcntl
@@ -612,8 +612,48 @@ def _unlock_descriptor(descriptor: int) -> None:
         _fcntl.flock(descriptor, _fcntl.LOCK_UN)
 
 
+def _stat_lock_name(
+    lock_path: Path, name: str, parent_descriptor: Optional[int]
+) -> os.stat_result:
+    if parent_descriptor is None:
+        return lock_path.lstat()
+    return os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+
+
+def _verify_operation_lock(
+    lock_path: Path,
+    name: str,
+    parent_descriptor: Optional[int],
+    parent_identity: _FileIdentity,
+    descriptor: int,
+    lock_identity: _FileIdentity,
+) -> None:
+    try:
+        lexical = _stat_lock_name(lock_path, name, parent_descriptor)
+        opened = os.fstat(descriptor)
+        parent_lexical = lock_path.parent.lstat()
+        parent_opened = (
+            os.fstat(parent_descriptor)
+            if parent_descriptor is not None
+            else parent_lexical
+        )
+    except OSError as exc:
+        raise OperationError("operation log lock changed during append") from exc
+    if (
+        not _ordinary_single_file(lexical)
+        or not _ordinary_single_file(opened)
+        or (lexical.st_dev, lexical.st_ino) != lock_identity
+        or (opened.st_dev, opened.st_ino) != lock_identity
+        or not _ordinary_directory(parent_lexical)
+        or not _ordinary_directory(parent_opened)
+        or (parent_lexical.st_dev, parent_lexical.st_ino) != parent_identity
+        or (parent_opened.st_dev, parent_opened.st_ino) != parent_identity
+    ):
+        raise OperationError("operation log lock changed during append")
+
+
 @contextmanager
-def _operation_lock(lock_path: Path, root: Path):
+def _operation_lock(lock_path: Path, root: Path) -> Iterator[Callable[[], None]]:
     lock_path = Path(lock_path)
     if not lock_path.is_absolute() or not root.is_absolute():
         raise OperationError("operation log root and lock path must be absolute")
@@ -626,45 +666,107 @@ def _operation_lock(lock_path: Path, root: Path):
         parent_resolved / lock_path.name, root_resolved
     ):
         raise OperationError("operation log lock must be outside the vault root")
+    parent_descriptor: Optional[int] = None
     try:
         parent_before = lock_path.parent.lstat()
+        if not _ordinary_directory(parent_before):
+            raise OperationError(
+                "operation log lock parent must be an ordinary directory"
+            )
+        parent_identity = (parent_before.st_dev, parent_before.st_ino)
+        if os.name != "nt":
+            parent_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            parent_descriptor = os.open(lock_path.parent, parent_flags)
+            opened_parent = os.fstat(parent_descriptor)
+            if (
+                not _ordinary_directory(opened_parent)
+                or (opened_parent.st_dev, opened_parent.st_ino) != parent_identity
+            ):
+                raise OperationError("operation log lock parent changed while opening")
+    except OperationError:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        raise
     except OSError as exc:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
         raise OperationError("operation log lock parent is unsafe or unreadable") from exc
-    if not _ordinary_directory(parent_before):
-        raise OperationError("operation log lock parent must be an ordinary directory")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = None
     locked = False
+    lock_identity: Optional[_FileIdentity] = None
+    primary_error: Optional[BaseException] = None
+    name = lock_path.name
     try:
-        descriptor = os.open(lock_path, flags, 0o600)
-        lexical = lock_path.lstat()
+        if parent_descriptor is None:
+            descriptor = os.open(lock_path, flags, 0o600)
+        else:
+            descriptor = os.open(name, flags, 0o600, dir_fd=parent_descriptor)
+        lexical = _stat_lock_name(lock_path, name, parent_descriptor)
         opened = os.fstat(descriptor)
-        parent_after = lock_path.parent.lstat()
         if (
             not _ordinary_single_file(lexical)
             or not _ordinary_single_file(opened)
             or (lexical.st_dev, lexical.st_ino) != (opened.st_dev, opened.st_ino)
-            or (parent_before.st_dev, parent_before.st_ino)
-            != (parent_after.st_dev, parent_after.st_ino)
         ):
             raise OperationError(
                 "operation log lock must be a single-link ordinary file"
             )
         _lock_descriptor(descriptor)
         locked = True
-        yield
-    except OperationError:
+        stable_lock_identity = (opened.st_dev, opened.st_ino)
+        lock_identity = stable_lock_identity
+
+        def verify() -> None:
+            _verify_operation_lock(
+                lock_path,
+                name,
+                parent_descriptor,
+                parent_identity,
+                descriptor,
+                stable_lock_identity,
+            )
+
+        verify()
+        yield verify
+    except BaseException as exc:
+        primary_error = exc
         raise
-    except OSError as exc:
-        raise OperationError("cannot open operation log lock") from exc
     finally:
+        cleanup_error: Optional[BaseException] = None
         if descriptor is not None:
             try:
-                if locked:
-                    _unlock_descriptor(descriptor)
+                if locked and lock_identity is not None:
+                    try:
+                        _verify_operation_lock(
+                            lock_path,
+                            name,
+                            parent_descriptor,
+                            parent_identity,
+                            descriptor,
+                            lock_identity,
+                        )
+                        _unlock_descriptor(descriptor)
+                    except Exception as exc:
+                        cleanup_error = exc
             finally:
-                os.close(descriptor)
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    cleanup_error = cleanup_error or exc
+        if parent_descriptor is not None:
+            try:
+                os.close(parent_descriptor)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
+        if cleanup_error is not None and primary_error is None:
+            raise OperationError("cannot release operation log lock safely") from cleanup_error
 
 
 def _verify_installed(
@@ -725,12 +827,23 @@ def append_operation(
     if path != root / "log.md":
         raise OperationError("operation log path must be exactly root/log.md")
 
-    with _operation_lock(Path(lock_path), root):
-        return _append_operation_locked(path, change, root=root)
+    try:
+        with _operation_lock(Path(lock_path), root) as verify_lock:
+            return _append_operation_locked(
+                path, change, root=root, verify_lock=verify_lock
+            )
+    except OperationError:
+        raise
+    except OSError as exc:
+        raise OperationError("cannot open operation log lock") from exc
 
 
 def _append_operation_locked(
-    path: Path, change: OperationChange, *, root: Path
+    path: Path,
+    change: OperationChange,
+    *,
+    root: Path,
+    verify_lock: Callable[[], None],
 ) -> Path:
     parent_descriptor: Optional[int] = None
     preimage_descriptor: Optional[int] = None
@@ -740,6 +853,7 @@ def _append_operation_locked(
     temp_identity: Optional[_StableIdentity] = None
     replaced = False
     try:
+        verify_lock()
         parent_descriptor, parent_identity = _open_parent(root)
         (
             preimage_descriptor,
@@ -784,6 +898,7 @@ def _append_operation_locked(
             updated,
             mode,
         )
+        verify_lock()
 
         # Windows generally prevents replacing an open file. Both exact identities
         # were checked immediately above, so close only for the replacement syscall.
@@ -796,6 +911,7 @@ def _append_operation_locked(
         replaced = True
         _sync_parent(parent_descriptor)
         _verify_installed(path, temp_descriptor, updated, mode)
+        verify_lock()
         return path
     except OperationError:
         raise

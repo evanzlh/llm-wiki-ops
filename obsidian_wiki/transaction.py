@@ -605,6 +605,12 @@ class TransactionManager:
                 raise TransactionError(
                     f"cannot restore {record.status} transaction {transaction_id}"
                 )
+            if record.status == "promoting":
+                promoting_payload = self._read_metadata_payload(record.workspace)
+                if promoting_payload["writer_prepared"]:
+                    raise TransactionError(
+                        "prepared promoting transaction requires manual intervention"
+                    )
             if self.lock_path.exists() or self.lock_path.is_symlink():
                 lock_identity = self._require_owned_lock(transaction_id)
             else:
@@ -736,6 +742,9 @@ class TransactionManager:
         rollback_exclusion_paths: set[str] = set()
         rollback_exclusions: dict[str, str | None] | None = {}
         manual_recovery_required = False
+        writer_invoked = False
+        log_preimage: bytes | None = None
+        expected_log_data: bytes | None = None
         try:
             candidates, validation = self._validate_record(
                 record, preflight_candidates
@@ -868,6 +877,7 @@ class TransactionManager:
                 }
             )
             self._write_metadata(record.workspace, payload)
+            writer_invoked = True
             log_path = Path(self.log_writer(change))
             self._validate_log_result(log_path, change, expected_log_data)
             writer_after = self._writer_guard_state(allow_unsafe=True)
@@ -961,7 +971,32 @@ class TransactionManager:
                     return False
                 return True
 
-            if writer_before is not None and root_is_safe():
+            if (
+                writer_invoked
+                and log_preimage is not None
+                and expected_log_data is not None
+            ):
+                try:
+                    live_log = self._read_single_link_bytes(
+                        self.config.vault / "log.md", "operation log"
+                    )
+                except (OSError, TransactionError):
+                    manual_recovery_required = True
+                else:
+                    if live_log not in {log_preimage, expected_log_data}:
+                        manual_recovery_required = True
+                if manual_recovery_required:
+                    rollback_exclusion_paths.update(affected)
+                    for relative in sorted(affected):
+                        rollback_exclusions = self._capture_rollback_exclusion(
+                            rollback_exclusions, relative
+                        )
+
+            if (
+                not manual_recovery_required
+                and writer_before is not None
+                and root_is_safe()
+            ):
                 try:
                     writer_after = self._writer_guard_state(allow_unsafe=True)
                     writer_rollback.update(
@@ -1021,11 +1056,16 @@ class TransactionManager:
                     "status": "failed",
                 }
             )
+            metadata_written = False
             try:
                 self._write_metadata(record.workspace, payload)
+                metadata_written = True
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"metadata failed: {rollback_exc}")
-            if self.lock_path.exists() or self.lock_path.is_symlink():
+            if (
+                (not manual_recovery_required or metadata_written)
+                and (self.lock_path.exists() or self.lock_path.is_symlink())
+            ):
                 try:
                     self._unlink_owned_lock(
                         record.transaction_id, expected_identity=lock_identity

@@ -1818,12 +1818,11 @@ def test_log_writer_partial_creation_is_removed_on_failure(
     assert not (config.vault / "concepts/a.md").exists()
 
 
-def test_log_writer_malformed_installed_log_rolls_back_exact_preimage(
+def test_log_writer_malformed_installed_log_requires_manual_recovery(
     tmp_path: Path,
 ) -> None:
     root, config = make_config(tmp_path)
     log = config.vault / "log.md"
-    original = log.read_bytes()
 
     def writer(_change):
         log.write_text("malformed log\n", encoding="utf-8")
@@ -1833,14 +1832,14 @@ def test_log_writer_malformed_installed_log_rolls_back_exact_preimage(
     record = manager.begin([add_source(root)], transaction_id="tx-malformed-log")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back.*invalid log"):
+    with pytest.raises(TransactionError, match="requires manual recovery.*invalid log"):
         manager.commit("tx-malformed-log", completed_at="2026-08-07T01:00:00Z")
 
-    assert log.read_bytes() == original
-    assert not (config.vault / "concepts/a.md").exists()
+    assert log.read_text(encoding="utf-8") == "malformed log\n"
+    assert (config.vault / "concepts/a.md").exists()
 
 
-def test_log_writer_wrong_last_record_rolls_back(tmp_path: Path) -> None:
+def test_log_writer_wrong_last_record_requires_manual_recovery(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     log = config.vault / "log.md"
 
@@ -1859,10 +1858,13 @@ def test_log_writer_wrong_last_record_rolls_back(tmp_path: Path) -> None:
     record = manager.begin([add_source(root)], transaction_id="tx-wrong-tail")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back.*intended"):
+    with pytest.raises(TransactionError, match="requires manual recovery.*intended"):
         manager.commit("tx-wrong-tail", completed_at="2026-08-07T01:00:00Z")
 
-    assert log.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert parse_operation_log(log.read_text(encoding="utf-8"))[0].transaction_id == (
+        "different-transaction"
+    )
+    assert (config.vault / "concepts/a.md").exists()
 
 
 def test_log_writer_cannot_replace_valid_history_before_intended_tail(
@@ -1879,7 +1881,6 @@ def test_log_writer_cannot_replace_valid_history_before_intended_tail(
         (),
     )
     append_operation(log, original_record, root=config.vault, lock_path=config.root.parent / ".operation-log.lock")
-    original = log.read_bytes()
 
     def writer(change):
         replacement = OperationChange(
@@ -1900,11 +1901,16 @@ def test_log_writer_cannot_replace_valid_history_before_intended_tail(
     record = manager.begin([add_source(root)], transaction_id="tx-history")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back.*exact expected log"):
+    with pytest.raises(
+        TransactionError, match="requires manual recovery.*exact expected log"
+    ):
         manager.commit("tx-history", completed_at="2026-08-07T01:00:00Z")
 
-    assert log.read_bytes() == original
-    assert not (config.vault / "concepts/a.md").exists()
+    assert [item.transaction_id for item in parse_operation_log(log.read_text())] == [
+        "replacement-history",
+        "tx-history",
+    ]
+    assert (config.vault / "concepts/a.md").exists()
 
 
 def test_log_drift_after_initial_writer_validation_requires_manual_recovery(
@@ -1973,6 +1979,110 @@ def test_log_drift_after_initial_writer_validation_requires_manual_recovery(
             action("tx-final-log-check")
         assert log.read_bytes() == live_log
         assert page.read_bytes() == live_page
+
+
+def test_owner_append_before_writer_validation_requires_manual_recovery(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    log = config.vault / "log.md"
+    lock_path = config.local_state / "operation-log.lock"
+
+    def writer(change):
+        result = append_operation(
+            log, change, root=config.vault, lock_path=lock_path
+        )
+        append_operation(
+            log,
+            OperationChange(
+                "owner-before-validation",
+                "2026-08-07T02:00:00Z",
+                ("sources/a.md",),
+                (),
+                (),
+                (),
+            ),
+            root=config.vault,
+            lock_path=lock_path,
+        )
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin(
+        [add_source(root)], transaction_id="tx-owner-before-validation"
+    )
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="requires manual recovery"):
+        manager.commit(
+            "tx-owner-before-validation", completed_at="2026-08-07T01:00:00Z"
+        )
+
+    assert [item.transaction_id for item in parse_operation_log(log.read_text())] == [
+        "tx-owner-before-validation",
+        "owner-before-validation",
+    ]
+    assert (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is not None
+    payload = json.loads((record.workspace / "metadata.json").read_text())
+    assert payload["status"] == "failed"
+    assert payload["residual_postimages"] is None
+
+
+def test_manual_recovery_metadata_failure_retains_lock_and_blocks_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = make_config(tmp_path)
+    log = config.vault / "log.md"
+    operation_lock = config.local_state / "operation-log.lock"
+
+    def writer(change):
+        result = append_operation(
+            log, change, root=config.vault, lock_path=operation_lock
+        )
+        append_operation(
+            log,
+            OperationChange(
+                "owner-after-main",
+                "2026-08-07T02:00:00Z",
+                ("sources/a.md",),
+                (),
+                (),
+                (),
+            ),
+            root=config.vault,
+            lock_path=operation_lock,
+        )
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-metadata-failure")
+    candidate_page(record, "concepts/a.md")
+    original_write = manager._write_metadata
+
+    def fail_failed_metadata(workspace, payload):
+        if payload.get("status") == "failed":
+            raise TransactionError("simulated failed metadata write")
+        return original_write(workspace, payload)
+
+    monkeypatch.setattr(manager, "_write_metadata", fail_failed_metadata)
+
+    with pytest.raises(TransactionError, match="metadata failed"):
+        manager.commit(
+            "tx-metadata-failure", completed_at="2026-08-07T01:00:00Z"
+        )
+
+    live_log = log.read_bytes()
+    live_page = (config.vault / "concepts/a.md").read_bytes()
+    assert manager.load("tx-metadata-failure").status == "promoting"
+    assert (config.local_state / "write.lock").exists()
+
+    with pytest.raises(TransactionError, match="manual intervention"):
+        manager.restore("tx-metadata-failure")
+
+    assert log.read_bytes() == live_log
+    assert (config.vault / "concepts/a.md").read_bytes() == live_page
+    assert (config.local_state / "write.lock").exists()
 
 
 def test_duplicate_transaction_in_log_is_rejected_and_preserved(
@@ -2058,12 +2168,11 @@ def test_commit_revalidates_tampered_deletions_file(
     )
 
 
-def test_log_writer_overwrite_then_return_restores_existing_page(
+def test_log_writer_overwrite_then_return_requires_manual_recovery(
     tmp_path: Path,
 ) -> None:
     root, config = make_config(tmp_path)
     operation = config.vault / "log.md"
-    original = operation.read_bytes()
 
     def writer(_change):
         operation.write_text("corrupted operation\n", encoding="utf-8")
@@ -2073,20 +2182,19 @@ def test_log_writer_overwrite_then_return_restores_existing_page(
     record = manager.begin([add_source(root)], transaction_id="tx-1")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back"):
+    with pytest.raises(TransactionError, match="requires manual recovery"):
         manager.commit("tx-1")
 
-    assert operation.read_bytes() == original
-    assert not (config.vault / "concepts/a.md").exists()
+    assert operation.read_text() == "corrupted operation\n"
+    assert (config.vault / "concepts/a.md").exists()
     assert manager.load("tx-1").status == "failed"
 
 
-def test_log_writer_overwrite_then_raise_restores_existing_page(
+def test_log_writer_overwrite_then_raise_requires_manual_recovery(
     tmp_path: Path,
 ) -> None:
     root, config = make_config(tmp_path)
     operation = config.vault / "log.md"
-    original = operation.read_bytes()
 
     def writer(_change):
         operation.write_text("corrupted operation\n", encoding="utf-8")
@@ -2096,11 +2204,13 @@ def test_log_writer_overwrite_then_raise_restores_existing_page(
     record = manager.begin([add_source(root)], transaction_id="tx-1")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back.*writer failed"):
+    with pytest.raises(
+        TransactionError, match="requires manual recovery.*writer failed"
+    ):
         manager.commit("tx-1")
 
-    assert operation.read_bytes() == original
-    assert not (config.vault / "concepts/a.md").exists()
+    assert operation.read_text() == "corrupted operation\n"
+    assert (config.vault / "concepts/a.md").exists()
 
 
 def test_log_writer_extra_page_then_return_rolls_back_all_new_pages(
@@ -2404,7 +2514,7 @@ def test_restore_recovers_promoting_transaction_after_manifest_replace_crash(
     assert not recovering.lock_path.exists()
 
 
-def test_persistent_failed_status_write_leaves_promoting_recoverable(
+def test_persistent_failed_status_write_leaves_prepared_promoting_manual(
     tmp_path: Path,
     log_writer,
     monkeypatch: pytest.MonkeyPatch,
@@ -2430,10 +2540,9 @@ def test_persistent_failed_status_write_leaves_promoting_recoverable(
     assert not manager.lock_path.exists()
     recovering = TransactionManager(config, log_writer=log_writer(config))
     assert recovering.load("tx-1").status == "promoting"
-    recovering.restore("tx-1")
-    assert not (config.vault / "concepts/a.md").exists()
-    assert ShardedManifest(config).load("sources/a.md") is None
-    assert recovering.load("tx-1").status == "restored"
+    with pytest.raises(TransactionError, match="manual intervention"):
+        recovering.restore("tx-1")
+    assert recovering.load("tx-1").status == "promoting"
 
 
 @pytest.mark.parametrize(
@@ -3179,15 +3288,14 @@ def test_restore_uses_persisted_writer_guard_after_writer_crash(
         assert (record.workspace / "snapshots" / backing).is_file()
 
     recovering = TransactionManager(config, log_writer=writer)
-    recovering.restore("tx-1")
+    with pytest.raises(TransactionError, match="manual intervention"):
+        recovering.restore("tx-1")
 
-    assert modified.read_bytes() == original_modified
-    assert removed.read_bytes() == original_removed
-    assert not extra.exists()
-    assert operation.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-    assert not (config.vault / "concepts/a.md").exists()
-    assert ShardedManifest(config).load("sources/a.md") is None
-    assert recovering.load("tx-1").status == "restored"
+    assert modified.read_text() == "writer corruption\n"
+    assert not removed.exists()
+    assert extra.exists()
+    assert (config.vault / "concepts/a.md").exists()
+    assert recovering.load("tx-1").status == "promoting"
 
 
 def test_restore_retries_persisted_writer_guard_after_cleanup_crash(
@@ -3228,13 +3336,9 @@ def test_restore_retries_persisted_writer_guard_after_cleanup_crash(
     assert cleanup_started
 
     recovering = TransactionManager(config, log_writer=writer)
-    recovering.restore("tx-1")
-
-    assert unrelated.read_bytes() == original
-    assert operation.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
-    assert not (config.vault / "concepts/a.md").exists()
-    assert ShardedManifest(config).load("sources/a.md") is None
-    assert recovering.load("tx-1").status == "restored"
+    with pytest.raises(TransactionError, match="manual intervention"):
+        recovering.restore("tx-1")
+    assert recovering.load("tx-1").status == "promoting"
 
 
 def test_load_rejects_persisted_writer_guard_outside_authoritative_vault(
@@ -3291,12 +3395,13 @@ def test_writer_guard_preserves_unrelated_changes_made_after_begin(
 
     recovering = TransactionManager(config, log_writer=writer)
     assert recovering.load("tx-1").status == "promoting"
-    recovering.restore("tx-1")
+    with pytest.raises(TransactionError, match="manual intervention"):
+        recovering.restore("tx-1")
 
     assert added.read_bytes() == added_bytes
     assert not removed.exists()
-    assert not (config.vault / "concepts/a.md").exists()
-    assert ShardedManifest(config).load("sources/a.md") is None
+    assert (config.vault / "concepts/a.md").exists()
+    assert ShardedManifest(config).load("sources/a.md") is not None
 
 
 def test_retry_cleans_persisted_writer_additions_before_new_attempt(

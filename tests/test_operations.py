@@ -254,6 +254,91 @@ def test_nested_public_append_is_rejected_without_losing_outer_update(
     assert lock_path.stat().st_nlink == 1
 
 
+def test_lock_name_substitution_is_detected_before_log_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    local = tmp_path / "local"
+    local.mkdir()
+    lock_path = local / "operation-log.lock"
+    replacement = tmp_path / "replacement.lock"
+    replacement.write_bytes(b"replacement")
+    original_verify = operations._verify_preimage
+
+    def substitute_lock(*args) -> None:
+        original_verify(*args)
+        lock_path.rename(local / "held-lock")
+        replacement.rename(lock_path)
+
+    monkeypatch.setattr(operations, "_verify_preimage", substitute_lock)
+
+    with pytest.raises(OperationError, match="lock changed"):
+        append_operation(target, change(), root=root, lock_path=lock_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert lock_path.read_bytes() == b"replacement"
+
+
+def test_unlock_failure_does_not_hide_primary_append_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    local = tmp_path / "local"
+    local.mkdir()
+    monkeypatch.setattr(
+        operations,
+        "_append_operation_locked",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OperationError("primary append failure")
+        ),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_unlock_descriptor",
+        lambda descriptor: (_ for _ in ()).throw(OSError("unlock failure")),
+    )
+
+    with pytest.raises(OperationError, match="primary append failure"):
+        append_operation(
+            target,
+            change(),
+            root=root,
+            lock_path=local / "operation-log.lock",
+        )
+
+
+def test_unlock_failure_after_success_is_wrapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    local = tmp_path / "local"
+    local.mkdir()
+    monkeypatch.setattr(
+        operations,
+        "_unlock_descriptor",
+        lambda descriptor: (_ for _ in ()).throw(OSError("unlock failure")),
+    )
+
+    with pytest.raises(OperationError, match="release operation log lock"):
+        append_operation(
+            target,
+            change(),
+            root=root,
+            lock_path=local / "operation-log.lock",
+        )
+
+    assert parse_operation_log(target.read_text()) == (change(),)
+
+
 @pytest.mark.parametrize("kind", ["inside", "symlink", "hardlink", "directory"])
 def test_append_rejects_unsafe_operation_lock(tmp_path: Path, kind: str) -> None:
     root = tmp_path / "vault"
