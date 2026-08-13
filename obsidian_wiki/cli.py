@@ -1223,10 +1223,7 @@ def cmd_transaction_abort(args: argparse.Namespace) -> int:
 def cmd_hot_status(args: argparse.Namespace) -> int:
     from obsidian_wiki.local_state import hot_status
 
-    status = hot_status(
-        _portable_command_config("hot status"),
-        invalidate=True,
-    )
+    status = hot_status(_portable_command_config("hot status"))
     if args.json:
         _json_print(status, pretty=args.pretty)
     else:
@@ -2127,7 +2124,7 @@ def build_parser() -> argparse.ArgumentParser:
     hot = sub.add_parser("hot", help="inspect local derived hot.md state")
     hot_sub = hot.add_subparsers(dest="hot_command", required=True)
     hot_status_parser = hot_sub.add_parser(
-        "status", help="report hot.md freshness and remove it when stale"
+        "status", help="report hot.md freshness"
     )
     _add_json_args(hot_status_parser)
     hot_status_parser.set_defaults(func=cmd_hot_status)

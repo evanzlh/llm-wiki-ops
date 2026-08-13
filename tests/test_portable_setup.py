@@ -36,6 +36,11 @@ from obsidian_wiki.portable import (
 from obsidian_wiki.portable import (
     upgrade_portable_skills as _upgrade_portable_skills_impl,
 )
+from obsidian_wiki.operations import (
+    EMPTY_OPERATION_LOG,
+    OperationChange,
+    render_operation_log,
+)
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
@@ -56,15 +61,13 @@ path:"concepts" OR path:"entities" OR path:"skills" OR path:"references" OR path
 ```
 '''
 
-LOG_BYTES = b'''---
-title: Wiki Operation Log
+LOG_BYTES = EMPTY_OPERATION_LOG.encode("utf-8")
+
+HOT_BYTES = b'''---
+title: Wiki Hot View
 ---
 
-# Wiki Operation Log
-
-```query
-path:"journal/operations"
-```
+# Wiki Hot View
 '''
 
 WIKI_INGEST_ADAPTER = '''---
@@ -472,11 +475,11 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     assert (target / "sources").is_dir()
     assert (target / "wiki/concepts").is_dir()
     assert json.loads((target / "wiki/.manifest.json").read_text()) == MANIFEST_MARKER
-    assert not (target / "wiki/hot.md").exists()
+    assert (target / "wiki/hot.md").read_bytes() == HOT_BYTES
     assert not (target / ".venv").exists()
     assert not (target / "obsidian_wiki").exists()
     assert not (target / ".git").exists()
-    assert "wiki/hot.md" in (target / ".gitignore").read_text().splitlines()
+    assert "wiki/hot.md" not in (target / ".gitignore").read_text().splitlines()
     assert "* -text" in (target / ".gitattributes").read_text().splitlines()
     assert (target / ".skills/wiki-ingest/SKILL.md").read_bytes() == (
         cli.skills_dir() / "wiki-ingest/SKILL.md"
@@ -574,14 +577,35 @@ def test_stable_vault_files_are_exact_and_second_setup_preserves_them_and_owner_
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     index = root / "wiki/index.md"
     log = root / "wiki/log.md"
+    hot = root / "wiki/hot.md"
     assert index.read_bytes() == INDEX_BYTES
     assert log.read_bytes() == LOG_BYTES
+    assert hot.read_bytes() == HOT_BYTES
     assert not index.read_bytes().endswith(b"\n\n")
     assert not log.read_bytes().endswith(b"\n\n")
 
+    log.write_text(
+        render_operation_log(
+            (
+                OperationChange(
+                    transaction_id="tx-owner",
+                    completed_at="2026-08-13T00:00:00Z",
+                    source_ids=("sources/input.md",),
+                    created=("concepts/owner.md",),
+                    updated=(),
+                    removed=(),
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+    hot.write_text("# Owner hot view\n", encoding="utf-8")
+    gitignore = root / ".gitignore"
+    gitignore.write_text(gitignore.read_text() + "wiki/hot.md\n", encoding="utf-8")
     fixed_time = 1_700_000_000_000_000_000
     os.utime(index, ns=(fixed_time, fixed_time))
     os.utime(log, ns=(fixed_time, fixed_time))
+    os.utime(hot, ns=(fixed_time, fixed_time))
     agents = root / "AGENTS.md"
     agents.write_text(agents.read_text() + "\nOwner terminology: use garden.\n")
 
@@ -589,8 +613,11 @@ def test_stable_vault_files_are_exact_and_second_setup_preserves_them_and_owner_
 
     assert index.stat().st_mtime_ns == fixed_time
     assert log.stat().st_mtime_ns == fixed_time
+    assert hot.stat().st_mtime_ns == fixed_time
     assert index.read_bytes() == INDEX_BYTES
-    assert log.read_bytes() == LOG_BYTES
+    assert log.read_text(encoding="utf-8") != EMPTY_OPERATION_LOG
+    assert hot.read_text(encoding="utf-8") == "# Owner hot view\n"
+    assert "wiki/hot.md" in gitignore.read_text(encoding="utf-8").splitlines()
     assert "Owner terminology: use garden." in agents.read_text()
     assert agents.read_text().count(MANAGED_START) == 1
     assert agents.read_text().count(MANAGED_END) == 1
@@ -611,7 +638,9 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     assert "OBSIDIAN_RAW_DIR" not in (
         root / ".obsidian-wiki/config.toml"
     ).read_text(encoding="utf-8")
-    assert not (vault / "hot.md").exists()
+    assert (vault / "hot.md").read_bytes() == HOT_BYTES
+    assert (vault / "journal").is_dir()
+    assert not (vault / "journal/operations").exists()
     assert json.loads((vault / ".manifest.json").read_text()) == {
         "schema_version": 2,
         "storage": "sharded",
@@ -686,7 +715,6 @@ def test_gitignore_preserves_owner_entries_and_adds_portable_state_idempotently(
         "*.pyc",
         "owner-cache/",
         *PORTABLE_ROOT_IGNORE,
-        "notes/brain/hot.md",
         "notes/brain/.obsidian/",
         "notes/brain/.trash/",
     ]
@@ -4967,7 +4995,7 @@ def test_invalid_existing_portable_config_fails_before_any_write(
     assert snapshot_tree(root) == before
 
 
-@pytest.mark.parametrize("broken", ["index", "log", "manifest", "directory"])
+@pytest.mark.parametrize("broken", ["index", "log", "hot", "manifest", "directory"])
 def test_invalid_existing_portable_artifact_fails_before_any_write(
     broken: str, tmp_path: Path, tiny_skills: Path
 ) -> None:
@@ -4977,6 +5005,8 @@ def test_invalid_existing_portable_artifact_fails_before_any_write(
         (root / "wiki/index.md").write_text("wrong\n", encoding="utf-8")
     elif broken == "log":
         (root / "wiki/log.md").write_text("wrong\n", encoding="utf-8")
+    elif broken == "hot":
+        (root / "wiki/hot.md").unlink()
     elif broken == "manifest":
         (root / "wiki/.manifest.json").write_text("{}\n", encoding="utf-8")
     else:
@@ -4985,6 +5015,41 @@ def test_invalid_existing_portable_artifact_fails_before_any_write(
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="portable"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_existing_portable_rejects_non_utf8_hot_before_any_write(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    (root / "wiki/hot.md").write_bytes(b"\xff")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="hot view.*invalid"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert snapshot_tree(root) == before
+
+
+def test_existing_portable_rejects_symlinked_hot_before_any_write(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    hot = root / "wiki/hot.md"
+    external = tmp_path / "external-hot.md"
+    external.write_text("external\n", encoding="utf-8")
+    hot.unlink()
+    try:
+        hot.symlink_to(external)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match="symlink|ordinary file"):
         setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
     assert snapshot_tree(root) == before
@@ -5061,7 +5126,7 @@ def test_gitignore_uses_lf_and_escapes_literal_vault_path(
 
     data = (root / ".gitignore").read_bytes()
     assert b"\r" not in data
-    assert b"\\#team\\ notes/\\[draft\\]\\*\\?\\!/hot.md\n" in data
+    assert b"\\#team\\ notes/\\[draft\\]\\*\\?\\!/hot.md\n" not in data
 
 
 @pytest.mark.parametrize("operation", ["setup", "upgrade"])
@@ -5198,7 +5263,7 @@ def test_rerun_replaces_hard_linked_gitignore_without_mutating_external_inode(
     assert gitignore.stat().st_ino != external.stat().st_ino
     lines = gitignore.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "owner-cache/"
-    assert "wiki/hot.md" in lines
+    assert "wiki/hot.md" not in lines
 
 
 @pytest.mark.parametrize("hard_link_location", ["nested", "skill-file"])

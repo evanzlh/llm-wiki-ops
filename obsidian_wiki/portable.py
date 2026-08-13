@@ -32,6 +32,11 @@ from packaging.version import InvalidVersion, Version
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
 from obsidian_wiki.config import PortableConfig, load_portable_config
+from obsidian_wiki.operations import (
+    EMPTY_OPERATION_LOG,
+    OperationError,
+    parse_operation_log,
+)
 from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
@@ -81,7 +86,7 @@ PORTABLE_VAULT_DIRS = (
     "skills",
     "references",
     "synthesis",
-    "journal/operations",
+    "journal",
     "projects",
     "_meta",
     ".obsidian",
@@ -151,15 +156,11 @@ path:"concepts" OR path:"entities" OR path:"skills" OR path:"references" OR path
 ```
 '''
 
-_LOG = '''---
-title: Wiki Operation Log
+_HOT = '''---
+title: Wiki Hot View
 ---
 
-# Wiki Operation Log
-
-```query
-path:"journal/operations"
-```
+# Wiki Hot View
 '''
 
 _TEAM_CONVENTIONS = """## Team conventions
@@ -1108,7 +1109,7 @@ def render_stable_index() -> str:
 
 def render_stable_log() -> str:
     """Render the clone-stable operation log."""
-    return _LOG
+    return EMPTY_OPERATION_LOG
 
 
 def render_manifest_marker() -> str:
@@ -1211,6 +1212,7 @@ def scaffold_portable_vault(vault: Path) -> None:
 
     _write_text_if_missing(vault / "index.md", render_stable_index(), root=vault)
     _write_text_if_missing(vault / "log.md", render_stable_log(), root=vault)
+    _write_text_if_missing(vault / "hot.md", _HOT, root=vault)
     _write_text_if_missing(
         vault / ".manifest.json",
         render_manifest_marker(),
@@ -2026,7 +2028,6 @@ def render_portable_gitignore(existing: str, vault_relative: str = "wiki") -> st
     prefix = "" if escaped_vault == "." else f"{escaped_vault}/"
     required = (
         *PORTABLE_ROOT_IGNORE,
-        f"{prefix}hot.md",
         f"{prefix}.obsidian/",
         f"{prefix}.trash/",
     )
@@ -2149,14 +2150,24 @@ def _preflight_existing_portable(
     for directory in required_directories:
         _assert_directory(root, directory, "structural path")
 
-    stable_files = {
-        root / "wiki/index.md": _INDEX.encode("utf-8"),
-        root / "wiki/log.md": _LOG.encode("utf-8"),
-    }
-    for path, expected in stable_files.items():
-        _assert_ordinary_file(root, path, path.name)
-        if path.read_bytes() != expected:
-            raise ValueError(f"portable stable file has unexpected content: {path}")
+    index = root / "wiki/index.md"
+    _assert_single_link_ordinary_file(root, index, index.name)
+    if index.read_bytes() != _INDEX.encode("utf-8"):
+        raise ValueError(f"portable stable file has unexpected content: {index}")
+
+    log = root / "wiki/log.md"
+    _assert_single_link_ordinary_file(root, log, log.name)
+    try:
+        parse_operation_log(log.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, OperationError) as exc:
+        raise ValueError(f"portable operation log is invalid: {log}: {exc}") from exc
+
+    hot = root / "wiki/hot.md"
+    _assert_single_link_ordinary_file(root, hot, hot.name)
+    try:
+        hot.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"portable hot view is invalid: {hot}: {exc}") from exc
 
     manifest_path = root / "wiki/.manifest.json"
     _assert_ordinary_file(root, manifest_path, "manifest marker")

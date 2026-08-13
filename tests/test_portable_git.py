@@ -81,6 +81,24 @@ def test_tracked_paths_without_git_are_empty(tmp_path: Path) -> None:
     assert tracked_paths(tmp_path) == ()
 
 
+def test_fresh_portable_repo_tracks_hot_view(
+    tmp_path: Path,
+) -> None:
+    source_skills = tmp_path / "source-skills"
+    skill = source_skills / "wiki-query"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: wiki-query\ndescription: Query the portable wiki.\n---\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "knowledge"
+    setup_portable_repo(root, version=__version__, source_skills=source_skills)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+
+    assert "wiki/hot.md" in tracked_paths(root)
+
+
 def test_authoritative_fingerprint_includes_read_only_branch_identity(
     tmp_path: Path,
 ) -> None:

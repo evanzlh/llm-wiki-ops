@@ -143,7 +143,9 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[int, int, int, bytes | None]]:
 
 def test_hot_is_stale_until_marked(config_fixture: PortableConfig) -> None:
     config = config_fixture
+    before = _tree_snapshot(config.root)
     assert hot_status(config)["stale"] is True
+    assert _tree_snapshot(config.root) == before
     config.vault.joinpath("hot.md").write_text("# Hot\n", encoding="utf-8")
 
     mark_hot_current(config)
@@ -157,7 +159,7 @@ def test_hot_is_stale_until_marked(config_fixture: PortableConfig) -> None:
     assert payload["hot_hash"].startswith("sha256:")
 
 
-def test_page_change_invalidates_and_removes_hot(
+def test_page_change_reports_stale_without_mutating_hot_or_tree(
     config_fixture: PortableConfig,
 ) -> None:
     config = config_fixture
@@ -167,11 +169,13 @@ def test_page_change_invalidates_and_removes_hot(
     page = config.vault / "concepts" / "a.md"
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text("# changed\n", encoding="utf-8")
+    before = _tree_snapshot(config.root)
 
-    status = hot_status(config, invalidate=True)
+    status = hot_status(config)
 
     assert status["stale"] is True
-    assert not hot.exists()
+    assert status["reason"] == "authoritative-state-changed"
+    assert _tree_snapshot(config.root) == before
 
 
 def test_manifest_operation_and_branch_changes_are_authoritative(
@@ -272,7 +276,7 @@ def test_legacy_operation_subtree_is_not_authoritative(
     assert hot_inputs(config_fixture) == before_inputs
 
 
-def test_changed_hot_hash_is_stale_and_invalidated(
+def test_changed_hot_hash_is_stale_without_mutating_hot_or_tree(
     config_fixture: PortableConfig,
 ) -> None:
     config = config_fixture
@@ -280,11 +284,27 @@ def test_changed_hot_hash_is_stale_and_invalidated(
     hot.write_text("first\n", encoding="utf-8")
     mark_hot_current(config)
     hot.write_text("changed\n", encoding="utf-8")
+    before = _tree_snapshot(config.root)
 
-    status = hot_status(config, invalidate=True)
+    status = hot_status(config)
 
     assert status["stale"] is True
-    assert not hot.exists()
+    assert status["reason"] == "hot-changed"
+    assert _tree_snapshot(config.root) == before
+
+
+def test_missing_sidecar_reports_stale_without_mutating_hot_or_tree(
+    config_fixture: PortableConfig,
+) -> None:
+    hot = config_fixture.vault / "hot.md"
+    hot.write_text("# Hot\n", encoding="utf-8")
+    before = _tree_snapshot(config_fixture.root)
+
+    status = hot_status(config_fixture)
+
+    assert status["stale"] is True
+    assert status["reason"] == "sidecar-missing-or-invalid"
+    assert _tree_snapshot(config_fixture.root) == before
 
 
 def test_mark_requires_an_existing_ordinary_hot_file(
@@ -303,7 +323,7 @@ def test_mark_requires_an_existing_ordinary_hot_file(
         mark_hot_current(config_fixture)
 
 
-def test_invalid_sidecar_fails_closed_without_deleting_unrelated_files(
+def test_invalid_sidecar_reports_stale_without_mutating_tree(
     config_fixture: PortableConfig,
 ) -> None:
     config = config_fixture
@@ -312,13 +332,36 @@ def test_invalid_sidecar_fails_closed_without_deleting_unrelated_files(
     config.local_state.mkdir(parents=True)
     sidecar = config.local_state / "hot-state.json"
     sidecar.write_text("not json\n", encoding="utf-8")
+    before = _tree_snapshot(config.root)
 
-    assert hot_status(config, invalidate=True)["stale"] is True
-    assert not hot.exists()
-    assert sidecar.read_text(encoding="utf-8") == "not json\n"
+    status = hot_status(config)
+
+    assert status["stale"] is True
+    assert status["reason"] == "sidecar-missing-or-invalid"
+    assert _tree_snapshot(config.root) == before
 
 
-def test_concurrent_hot_replacement_is_not_invalidated(
+def test_unsafe_hot_reports_stale_without_mutating_symlink(
+    config_fixture: PortableConfig, tmp_path: Path
+) -> None:
+    hot = config_fixture.vault / "hot.md"
+    external = tmp_path / "external-hot.md"
+    external.write_text("external\n", encoding="utf-8")
+    try:
+        hot.symlink_to(external)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+    before = _tree_snapshot(config_fixture.root)
+
+    status = hot_status(config_fixture)
+
+    assert status["stale"] is True
+    assert status["reason"] == "hot-unsafe"
+    assert hot.is_symlink()
+    assert _tree_snapshot(config_fixture.root) == before
+
+
+def test_concurrent_hot_replacement_is_preserved_by_status(
     config_fixture: PortableConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = config_fixture
@@ -348,17 +391,15 @@ def test_concurrent_hot_replacement_is_not_invalidated(
         replace_after_second_fingerprint,
     )
 
-    status = hot_status(config, invalidate=True)
+    status = hot_status(config)
 
     assert status["stale"] is True
     assert hot.read_text(encoding="utf-8") == "new hot\n"
 
 
-def test_replacement_during_bound_invalidation_is_restored(
+def test_stale_status_does_not_attempt_to_rename_hot(
     config_fixture: PortableConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if not local_state_module._SUPPORTS_BOUND_DIRECTORIES:
-        pytest.skip("bound directory descriptors are unavailable")
     config = config_fixture
     hot = config.vault / "hot.md"
     hot.write_text("old hot\n", encoding="utf-8")
@@ -366,35 +407,17 @@ def test_replacement_during_bound_invalidation_is_restored(
     page = config.vault / "concepts" / "changed.md"
     page.parent.mkdir()
     page.write_text("authoritative change\n", encoding="utf-8")
-    real_rename = local_state_module.os.rename
-    replaced = False
+    before = _tree_snapshot(config.root)
 
-    def replace_before_rename(
-        source: str,
-        target: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-    ) -> None:
-        nonlocal replaced
-        if source == "hot.md" and not replaced:
-            replacement = config.vault / ".new-hot.tmp"
-            replacement.write_text("new hot\n", encoding="utf-8")
-            replacement.replace(hot)
-            replaced = True
-        real_rename(
-            source,
-            target,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-        )
+    def fail_rename(*args: object, **kwargs: object) -> None:
+        raise AssertionError("hot status must be read-only")
 
-    monkeypatch.setattr(local_state_module.os, "rename", replace_before_rename)
+    monkeypatch.setattr(local_state_module.os, "rename", fail_rename)
 
-    status = hot_status(config, invalidate=True)
+    status = hot_status(config)
 
     assert status["stale"] is True
-    assert hot.read_text(encoding="utf-8") == "new hot\n"
+    assert _tree_snapshot(config.root) == before
 
 
 def test_sidecar_write_stays_bound_to_opened_local_directory(
@@ -453,7 +476,7 @@ def test_parent_git_repository_does_not_supply_branch_identity(
     assert hot_status(config)["stale"] is False
 
 
-def test_detached_head_identity_invalidates_hot(config_fixture: PortableConfig) -> None:
+def test_detached_head_identity_makes_hot_stale(config_fixture: PortableConfig) -> None:
     config = config_fixture
     subprocess.run(["git", "init", "-q", str(config.root)], check=True)
     subprocess.run(
@@ -479,7 +502,7 @@ def test_detached_head_identity_invalidates_hot(config_fixture: PortableConfig) 
     assert hot_status(config)["stale"] is True
 
 
-def test_hot_cli_marks_reports_and_invalidates_local_state(
+def test_hot_cli_marks_and_reports_without_mutating_stale_hot(
     config_fixture: PortableConfig, tmp_path: Path
 ) -> None:
     config = config_fixture
@@ -499,10 +522,11 @@ def test_hot_cli_marks_reports_and_invalidates_local_state(
     page = config.vault / "concepts" / "changed.md"
     page.parent.mkdir()
     page.write_text("changed\n", encoding="utf-8")
+    before = _tree_snapshot(config.root)
     stale = run_cli(home, config.root, "hot", "status", "--json")
     assert stale.returncode == 0, stale.stderr
     assert json.loads(stale.stdout)["stale"] is True
-    assert not hot.exists()
+    assert _tree_snapshot(config.root) == before
 
 
 @pytest.mark.parametrize(
