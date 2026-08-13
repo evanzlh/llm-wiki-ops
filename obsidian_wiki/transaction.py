@@ -68,6 +68,7 @@ class TransactionRecord:
     candidate_vault: Path
     preimages: dict[str, str | None]
     deletions: tuple[str, ...]
+    legacy_source_preimages: bool = False
 
 
 @dataclass(frozen=True)
@@ -330,7 +331,9 @@ class TransactionManager:
         started_at = payload.get("started_at")
         self._validate_started_at(started_at)
         source_ids = self._load_source_ids(payload.get("source_ids"))
-        self._load_source_preimages(payload.get("source_preimages"), source_ids)
+        legacy_source_preimages = payload.get("source_preimages") is None
+        if not legacy_source_preimages:
+            self._load_source_preimages(payload.get("source_preimages"), source_ids)
         preimages = self._load_image_map(
             payload.get("preimages"), "transaction preimages"
         )
@@ -359,6 +362,7 @@ class TransactionManager:
             candidate_vault=candidate_vault,
             preimages=preimages,
             deletions=deletions,
+            legacy_source_preimages=legacy_source_preimages,
         )
 
     def list_transactions(self) -> list[TransactionRecord]:
@@ -460,6 +464,10 @@ class TransactionManager:
         try:
             with self._action_lock(manifest=True):
                 record = self.load(transaction_id)
+                if record.legacy_source_preimages:
+                    raise TransactionError(
+                        "legacy transaction has no frozen source hashes; abort and restart"
+                    )
                 if record.status != "active":
                     raise TransactionError(
                         f"only an active transaction can commit, not {record.status}"
@@ -493,6 +501,10 @@ class TransactionManager:
         self._verify_repository_identity()
         with self._action_lock(manifest=True):
             record = self.load(transaction_id)
+            if record.legacy_source_preimages:
+                raise TransactionError(
+                    "legacy transaction has no frozen source hashes; restore or discard it"
+                )
             if record.status != "failed":
                 raise TransactionError(
                     f"only a failed transaction can retry, not {record.status}"
@@ -2207,8 +2219,14 @@ class TransactionManager:
         payload = self._read_json_file(
             workspace / "metadata.json", "transaction metadata"
         )
-        if not isinstance(payload, dict) or set(payload) != _METADATA_FIELDS:
+        legacy_fields = _METADATA_FIELDS - {"source_preimages"}
+        if not isinstance(payload, dict) or set(payload) not in {
+            _METADATA_FIELDS,
+            legacy_fields,
+        }:
             raise TransactionError("transaction metadata has invalid fields")
+        if "source_preimages" not in payload:
+            payload["source_preimages"] = None
         self._validate_recovery_metadata(payload, workspace)
         return payload
 

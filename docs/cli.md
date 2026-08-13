@@ -61,6 +61,20 @@ obsidian-wiki transaction abort TRANSACTION_ID [--json] [--pretty]
 
 Failures retain recovery state when a safe next action is possible. Use `list` to inspect it; then follow the reported `retry`, `restore`, `discard`, or `abort` action. Transaction commands do not perform Git publication.
 
+Legacy retained transactions without frozen source hashes remain listable and can be
+restored, aborted, or discarded, but cannot be committed or retried. Restart them to
+bind current source bytes.
+
+## Manifest conflict reconciliation
+
+```bash
+obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
+```
+
+After inspecting the live shard and recovery evidence, an owner can explicitly keep
+the live version. Cleanup is resumable after interruption and removes only fixed
+artifacts whose recorded identity and content still match.
+
 ## Local hot state
 
 ```bash

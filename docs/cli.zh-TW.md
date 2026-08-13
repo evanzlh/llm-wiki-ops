@@ -38,6 +38,16 @@ obsidian-wiki transaction list --json --pretty
 
 代理程式只在 `begin` 回傳的 `candidate_vault` 中寫候選頁。`validate` 在提升前檢查預期知識庫；交易審查確認候選、刪除與報告後，才執行 `transaction commit`。若保留復原狀態，依回報使用 `retry`、`restore`、`discard` 或 `abort`。
 
+缺少凍結來源雜湊的舊版保留交易仍可列出、還原、中止或捨棄，但不可 commit 或 retry；請重新開始交易以綁定目前來源內容。
+
+## Manifest 衝突調解
+
+```bash
+obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
+```
+
+所有者檢查 live 分片與復原證據後，可以明確保留 live 版本。清理在中斷後可重入，且只移除記錄身份與內容仍相符的固定工件。
+
 ## 本機近期狀態
 
 ```bash

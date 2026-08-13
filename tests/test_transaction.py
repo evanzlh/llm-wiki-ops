@@ -137,6 +137,69 @@ def test_commit_rejects_source_drift_from_operation_writer(tmp_path: Path) -> No
     assert ShardedManifest(config).load("sources/a.md") is None
     assert not (config.vault / "journal/operations/tx-writer-drift.md").exists()
 
+
+def _remove_source_preimages_for_legacy_fixture(workspace: Path) -> None:
+    metadata = workspace / "metadata.json"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    payload.pop("source_preimages")
+    metadata.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_legacy_active_transaction_can_list_and_abort_but_not_commit(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, operation_writer=operation_writer(config))
+    record = manager.begin([add_source(root)], transaction_id="legacy-active")
+    candidate_page(record, "concepts/a.md")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+
+    loaded = manager.list_transactions()[0]
+    assert loaded.legacy_source_preimages
+    with pytest.raises(TransactionError, match="legacy.*restart"):
+        manager.commit("legacy-active")
+    manager.abort("legacy-active")
+    assert not record.workspace.exists()
+
+
+def test_legacy_failed_transaction_can_restore_and_discard(
+    tmp_path: Path, operation_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(
+        config, operation_writer=operation_writer(config, fail=True)
+    )
+    record = manager.begin([add_source(root)], transaction_id="legacy-failed")
+    candidate_page(record, "concepts/a.md")
+    with pytest.raises(TransactionError):
+        manager.commit("legacy-failed")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+
+    with pytest.raises(TransactionError, match="legacy.*restore|legacy.*discard"):
+        manager.retry("legacy-failed")
+    manager.restore("legacy-failed")
+    assert manager.load("legacy-failed").status == "restored"
+    manager.discard("legacy-failed")
+
+
+def test_legacy_transaction_cli_lists_and_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config)
+    record = manager.begin([add_source(root)], transaction_id="legacy-cli")
+    _remove_source_preimages_for_legacy_fixture(record.workspace)
+    monkeypatch.chdir(root)
+
+    assert cli_module.main(["transaction", "list", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["transaction_id"] == "legacy-cli"
+    assert cli_module.main(
+        ["transaction", "abort", "legacy-cli", "--json"]
+    ) == 0
+    capsys.readouterr()
+    assert not record.workspace.exists()
+
 PAGE = """---
 title: A
 category: concepts

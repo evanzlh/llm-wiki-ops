@@ -1130,7 +1130,7 @@ def test_target_filesystem_capability_failure_precedes_wal_and_live(
     real_link = portable_manifest_module.os.link
 
     def fail_probe(source_name, target_name, *args, **kwargs):
-        if str(source_name).startswith(".manifest-capability-"):
+        if source_name == "probe-source":
             raise OSError(portable_manifest_module.errno.ENOTSUP, "unsupported")
         return real_link(source_name, target_name, *args, **kwargs)
 
@@ -1298,3 +1298,61 @@ def test_sidecar_fstat_failure_closes_descriptor(tmp_path: Path, monkeypatch) ->
     with pytest.raises(ManifestError):
         store.upsert(source)
     assert side_descriptors <= closed
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+@pytest.mark.parametrize("cleanup_index", range(5))
+def test_conflict_resolution_is_crash_idempotent(
+    tmp_path: Path, monkeypatch, cleanup_index: int
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+
+    def conflict(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(b"owner live\n")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", conflict)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+
+    def crash(step: str) -> None:
+        if step == f"resolution_deleted_{cleanup_index}":
+            raise SystemExit("resolution crash")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match="resolution crash"):
+        ShardedManifest(config).resolve_conflict_keep_live()
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    with ShardedManifest(config).mutation_session():
+        pass
+    assert target.read_bytes() == b"owner live\n"
+    assert not (root / ".obsidian-wiki/local/manifest-mutation/journal.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem capability")
+def test_capability_probe_crash_debris_is_bounded_and_recovered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+
+    def crash(step: str) -> None:
+        if step == "capability_linked":
+            raise SystemExit("probe crash")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match="probe crash"):
+        ShardedManifest(config).upsert(source)
+    sidecar = root / "wiki/.manifest/sources/design/.obsidian-wiki-manifest-mutation"
+    assert sorted(path.name for path in sidecar.iterdir()) == ["probe-link", "probe-source"]
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    store = ShardedManifest(config)
+    store.upsert(source)
+    assert store.load("sources/design/a.md") is not None
+    assert not sidecar.exists()

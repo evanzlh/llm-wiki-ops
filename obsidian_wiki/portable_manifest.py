@@ -207,26 +207,45 @@ class ShardedManifest:
         finally:
             self._close_fds(reopened)
 
-    @staticmethod
-    def _probe_target_filesystem(parent_fd: int) -> None:
-        token = secrets.token_hex(16)
-        source = f".manifest-capability-{token}"
-        linked = f".manifest-capability-{token}.link"
+    def _probe_target_filesystem(self, parent_fd: int) -> None:
+        source = "probe-source"
+        linked = "probe-link"
+        marker = b"obsidian-wiki manifest capability probe\n"
         descriptor = -1
+        side_fd = -1
         try:
+            side_fd, _ = self._ensure_sidecar(parent_fd)
+            for name in (source, linked):
+                proof = self._read_proof(
+                    side_fd, name, links=frozenset({1, 2})
+                )
+                if proof is None:
+                    continue
+                if proof.data != marker:
+                    raise ManifestError(
+                        "manifest capability probe debris changed; owner inspection required"
+                    )
+                os.unlink(name, dir_fd=side_fd)
+            os.fsync(side_fd)
             descriptor = os.open(
                 source,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                 0o600,
-                dir_fd=parent_fd,
+                dir_fd=side_fd,
             )
+            os.write(descriptor, marker)
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
-            os.link(source, linked, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
-            os.fsync(parent_fd)
-            os.unlink(linked, dir_fd=parent_fd)
-            os.unlink(source, dir_fd=parent_fd)
+            os.link(source, linked, src_dir_fd=side_fd, dst_dir_fd=side_fd, follow_symlinks=False)
+            os.fsync(side_fd)
+            _manifest_fault_point("capability_linked")
+            os.unlink(linked, dir_fd=side_fd)
+            os.unlink(source, dir_fd=side_fd)
+            os.fsync(side_fd)
+            os.close(side_fd)
+            side_fd = -1
+            os.rmdir(_SIDECAR, dir_fd=parent_fd)
             os.fsync(parent_fd)
         except OSError as exc:
             raise ManifestError(
@@ -238,11 +257,9 @@ class ShardedManifest:
                     os.close(descriptor)
                 except OSError:
                     pass
-            for name in (linked, source):
+            if side_fd >= 0:
                 try:
-                    os.unlink(name, dir_fd=parent_fd)
-                except FileNotFoundError:
-                    pass
+                    os.close(side_fd)
                 except OSError:
                     pass
 
@@ -794,11 +811,12 @@ class ShardedManifest:
             raise ManifestError("manifest mutation journal is invalid") from exc
         keys = {
             "schema_version", "state", "op_id", "action", "source_id", "target",
-            "sidecar", "pre", "post", "candidate_identity",
+            "sidecar", "pre", "post", "candidate_identity", "resolution",
+            "cleanup_index",
         }
         if not isinstance(payload, dict) or set(payload) != keys:
             raise ManifestError("manifest mutation journal has invalid fields")
-        if payload["schema_version"] != 1 or payload["state"] not in {"PREPARED", "APPLIED", "CONFLICT"}:
+        if payload["schema_version"] != 1 or payload["state"] not in {"PREPARED", "APPLIED", "CONFLICT", "RESOLVING"}:
             raise ManifestError("manifest mutation journal has invalid schema or state")
         if payload["action"] not in {"upsert", "remove"} or (
             not isinstance(payload["op_id"], str)
@@ -841,6 +859,11 @@ class ShardedManifest:
             raise ManifestError("manifest mutation journal action disagrees with postimage")
         if payload["state"] == "PREPARED" and payload["action"] == "remove" and candidate_identity is not None:
             raise ManifestError("remove journal cannot name a candidate")
+        if payload["state"] == "RESOLVING":
+            if payload["resolution"] != "keep-live" or type(payload["cleanup_index"]) is not int or payload["cleanup_index"] < 0:
+                raise ManifestError("manifest resolution journal is invalid")
+        elif payload["resolution"] is not None or payload["cleanup_index"] is not None:
+            raise ManifestError("manifest journal has unexpected resolution state")
         return payload
 
     def _validate_wal_directory(self) -> None:
@@ -902,7 +925,9 @@ class ShardedManifest:
             metadata = os.fstat(side_fd)
             if not stat.S_ISDIR(metadata.st_mode):
                 raise ManifestError("manifest sidecar must be an ordinary directory")
-            unknown = set(os.listdir(side_fd)) - {"candidate", "reserved"}
+            unknown = set(os.listdir(side_fd)) - {
+                "candidate", "reserved", "probe-source", "probe-link"
+            }
             if unknown:
                 raise ManifestError("manifest sidecar contains unexpected entries")
             return side_fd, created
@@ -929,6 +954,9 @@ class ShardedManifest:
             return
         if journal["state"] == "CONFLICT":
             raise ManifestPreconditionError("manifest mutation conflict requires owner resolution")
+        if journal["state"] == "RESOLVING":
+            self._resume_conflict_resolution(journal)
+            return
         if journal["state"] == "APPLIED":
             self._cleanup_applied(journal)
             return
@@ -1004,29 +1032,106 @@ class ShardedManifest:
                         )
                     wal_evidence.append((name, proof))
 
-                # Delete only after every recovery artifact has been fully validated.
-                for name, proof in side_evidence:
-                    self._unlink_matching(side_fd, name, proof, journal)
-                if side_fd >= 0:
-                    os.fsync(side_fd)
-                    try:
-                        os.rmdir(_SIDECAR, dir_fd=parent_fd)
-                        os.fsync(parent_fd)
-                    except OSError as exc:
-                        if exc.errno not in (errno.ENOENT, errno.ENOTEMPTY):
-                            raise
-                for name, proof in wal_evidence:
-                    self._unlink_matching(wal_fd, name, proof, journal)
-                os.fsync(wal_fd)
-                journal_proof = self._read_proof(wal_fd, "journal.json")
-                assert journal_proof is not None
-                self._unlink_matching(wal_fd, "journal.json", journal_proof, journal)
-                os.fsync(wal_fd)
-                return {"resolution": "keep-live", "source_id": journal["source_id"], "live": live_hash}
+                del side_evidence, wal_evidence
+                journal["state"] = "RESOLVING"
+                journal["resolution"] = "keep-live"
+                journal["cleanup_index"] = 0
+                self._write_journal(journal)
+                return self._resume_conflict_resolution(journal, live_hash=live_hash)
             finally:
                 if side_fd >= 0:
                     os.close(side_fd)
                 self._close_fds(directories)
+
+    def _resolution_items(
+        self, journal: dict[str, object]
+    ) -> list[tuple[str, str, str | None, tuple[int, int] | None]]:
+        items: list[tuple[str, str, str | None, tuple[int, int] | None]] = []
+        pre_identity = journal["pre"]["identity"]
+        if pre_identity is not None:
+            items.append(("side", "reserved", journal["pre"]["hash"], tuple(pre_identity)))
+        candidate_identity = journal["candidate_identity"]
+        if candidate_identity is not None:
+            items.append(("side", "candidate", journal["post"]["hash"], tuple(candidate_identity)))
+        items.append(("sidecar", _SIDECAR, None, None))
+        for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
+            expected = image["hash"] if image["present"] else self._digest(b"")
+            items.append(("wal", name, expected, None))
+        return items
+
+    def _resume_conflict_resolution(
+        self, journal: dict[str, object], *, live_hash: str | None = None
+    ) -> dict[str, str]:
+        assert self._session is not None
+        target, directories = self._target_directories(create=False)
+        parent_fd = directories[-1]
+        side_fd = -1
+        try:
+            self._validate_directory_chain(directories, target.parent)
+            if live_hash is None:
+                live = self._read_proof(parent_fd, target.name)
+                live_hash = live.content_hash if live else "absent"
+            items = self._resolution_items(journal)
+            index = journal["cleanup_index"]
+            if index > len(items):
+                raise ManifestError("manifest resolution cleanup index is invalid")
+            while index < len(items):
+                kind, name, expected_hash, expected_identity = items[index]
+                if kind == "side":
+                    if side_fd < 0:
+                        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                        try:
+                            side_fd = os.open(_SIDECAR, flags, dir_fd=parent_fd)
+                        except FileNotFoundError:
+                            side_fd = -1
+                    if side_fd >= 0:
+                        proof = self._read_proof(side_fd, name, links=frozenset({1, 2}))
+                        if proof is not None:
+                            if proof.identity != expected_identity or proof.content_hash != expected_hash:
+                                raise ManifestPreconditionError(
+                                    f"manifest conflict artifact {name} changed; owner inspection required"
+                                )
+                            self._unlink_matching(side_fd, name, proof, journal)
+                            os.fsync(side_fd)
+                elif kind == "sidecar":
+                    if side_fd >= 0:
+                        os.close(side_fd)
+                        side_fd = -1
+                    try:
+                        os.rmdir(_SIDECAR, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        if exc.errno == errno.ENOTEMPTY:
+                            raise ManifestPreconditionError(
+                                "manifest conflict sidecar contains owner evidence"
+                            ) from exc
+                        raise
+                else:
+                    wal_fd = self._session[1]
+                    proof = self._read_proof(wal_fd, name)
+                    if proof is not None:
+                        if proof.content_hash != expected_hash:
+                            raise ManifestPreconditionError(
+                                f"manifest conflict evidence {name} changed; owner inspection required"
+                            )
+                        self._unlink_matching(wal_fd, name, proof, journal)
+                        os.fsync(wal_fd)
+                _manifest_fault_point(f"resolution_deleted_{index}")
+                index += 1
+                journal["cleanup_index"] = index
+                self._write_journal(journal)
+            wal_fd = self._session[1]
+            journal_proof = self._read_proof(wal_fd, "journal.json")
+            assert journal_proof is not None
+            self._unlink_matching(wal_fd, "journal.json", journal_proof, journal)
+            os.fsync(wal_fd)
+            return {"resolution": "keep-live", "source_id": journal["source_id"], "live": live_hash}
+        finally:
+            if side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(directories)
 
     def _resume_prepared(self, journal: dict[str, object]) -> None:
         target, directories = self._target_directories(create=False)
@@ -1320,6 +1425,8 @@ class ShardedManifest:
                 "pre": {"present": pre is not None, "hash": pre.content_hash if pre else None, "identity": list(pre.identity) if pre else None},
                 "post": {"present": post_data is not None, "hash": self._digest(post_data) if post_data is not None else None, "identity": None},
                 "candidate_identity": None,
+                "resolution": None,
+                "cleanup_index": None,
             }
             self._write_journal(journal)
             _manifest_fault_point("prepared")
@@ -1385,6 +1492,7 @@ class ShardedManifest:
             expected_keys = {
                 "schema_version", "state", "op_id", "action", "source_id",
                 "target", "sidecar", "pre", "post", "candidate_identity",
+                "resolution", "cleanup_index",
             }
             expected_sidecar = (path.parent / _SIDECAR).relative_to(self.config.root).as_posix()
             if (
