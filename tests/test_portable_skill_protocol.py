@@ -88,6 +88,9 @@ def test_bootstraps_delegate_to_repository_authority() -> None:
         bootstrap = text(relative)
         for required in ("config.toml", "transaction"):
             assert required in bootstrap, f"{relative}: missing {required!r}"
+        assert ".skills/" in bootstrap or "AGENTS.md" in bootstrap, relative
+        for forbidden in FORBIDDEN_RUNTIME_TERMS:
+            assert forbidden not in bootstrap, f"{relative}: contains {forbidden!r}"
 
 
 def test_root_bootstrap_defines_the_single_tracked_hot_write_exception() -> None:
@@ -99,9 +102,6 @@ def test_root_bootstrap_defines_the_single_tracked_hot_write_exception() -> None
         "must not edit `wiki/log.md` directly",
     ):
         assert required in bootstrap, required
-        assert ".skills/" in bootstrap or "AGENTS.md" in bootstrap, relative
-        for forbidden in FORBIDDEN_RUNTIME_TERMS:
-            assert forbidden not in bootstrap, f"{relative}: contains {forbidden!r}"
 
 
 def test_setup_is_repository_only_and_describes_managed_assets() -> None:
