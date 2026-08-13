@@ -293,12 +293,12 @@ def test_postcheck_target_swap_is_preserved_without_overwrite(
     original_rename = operations._rename_noreplace
     swapped = False
 
-    def swap_at_boundary(parent_fd: int, source: str, destination: str) -> None:
+    def swap_at_boundary(parent_fd: int, source: str, destination: str, *bound) -> None:
         nonlocal swapped
         if source == "log.md" and not swapped:
             swapped = True
             target.write_bytes(concurrent)
-        original_rename(parent_fd, source, destination)
+        original_rename(parent_fd, source, destination, *bound)
 
     monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
     with pytest.raises(OperationError, match="changed"):
@@ -321,13 +321,13 @@ def test_postcheck_parent_swap_does_not_touch_replacement_root(
     original_rename = operations._rename_noreplace
     swapped = False
 
-    def swap_at_boundary(parent_fd: int, source: str, destination: str) -> None:
+    def swap_at_boundary(parent_fd: int, source: str, destination: str, *bound) -> None:
         nonlocal swapped
         if source == "log.md" and not swapped:
             swapped = True
             root.rename(tmp_path / "moved-vault")
             replacement.rename(root)
-        original_rename(parent_fd, source, destination)
+        original_rename(parent_fd, source, destination, *bound)
 
     monkeypatch.setattr(operations, "_rename_noreplace", swap_at_boundary)
     with pytest.raises(OperationError, match="parent changed"):
@@ -396,13 +396,13 @@ def test_cleanup_substitution_never_unlinks_collision(
     original_rename = operations._rename_noreplace
     swapped = False
 
-    def substitute(parent_fd: int, source: str, destination: str) -> None:
+    def substitute(parent_fd: int, source: str, destination: str, *bound) -> None:
         nonlocal swapped
         if source == owned.name and not swapped:
             swapped = True
             owned.rename(tmp_path / "owned-moved")
             owned.write_bytes(collision)
-        original_rename(parent_fd, source, destination)
+        original_rename(parent_fd, source, destination, *bound)
 
     monkeypatch.setattr(operations, "_rename_noreplace", substitute)
     parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -504,7 +504,7 @@ def test_installed_verification_failure_rolls_back_preimage(
     target = tmp_path / "log.md"
     target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
 
-    def fail_verification(parent_fd: int, identity) -> None:
+    def fail_verification(parent_fd: int, descriptor: int, identity, expected) -> None:
         raise OperationError("simulated installed verification failure")
 
     monkeypatch.setattr(operations, "_verify_installed", fail_verification)
@@ -525,7 +525,7 @@ def test_rollback_rejects_substituted_backup_without_installing_external(
     external = tmp_path / "external"
     external.write_bytes(b"external")
 
-    def substitute_backup(parent_fd: int, identity) -> None:
+    def substitute_backup(parent_fd: int, descriptor: int, identity, expected) -> None:
         backup = next(
             name for name in os.listdir(parent_fd) if name.startswith(".log.md.backup-")
         )
@@ -545,6 +545,135 @@ def test_rollback_rejects_substituted_backup_without_installing_external(
     assert target.read_bytes() != b"external"
     assert external.read_bytes() == b"external"
     assert (tmp_path / "owner-backup-preserved").read_text(
+        encoding="utf-8"
+    ) == EMPTY_OPERATION_LOG
+
+
+def test_backup_substitution_immediately_before_descriptor_restore_is_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+    original_restore = operations._restore_preimage_copy
+    substituted = False
+
+    def substitute_then_restore(parent_fd, descriptor, identity, expected):
+        nonlocal substituted
+        if not substituted:
+            substituted = True
+            backup = next(
+                name
+                for name in os.listdir(parent_fd)
+                if name.startswith(".log.md.backup-")
+            )
+            os.rename(
+                backup,
+                "owner-backup-preserved",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.link(external, backup, dst_dir_fd=parent_fd)
+        return original_restore(parent_fd, descriptor, identity, expected)
+
+    monkeypatch.setattr(operations, "_restore_preimage_copy", substitute_then_restore)
+    monkeypatch.setattr(
+        operations,
+        "_verify_installed",
+        lambda *args: (_ for _ in ()).throw(OperationError("verification failed")),
+    )
+    with pytest.raises(OperationError, match="verification failed"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+    assert external.read_bytes() == b"external"
+    assert (tmp_path / "owner-backup-preserved").read_text(
+        encoding="utf-8"
+    ) == EMPTY_OPERATION_LOG
+
+
+def test_postpromotion_different_canonical_bytes_roll_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original_link = operations._link_descriptor_noreplace
+
+    def mutate_after_link(parent_fd: int, descriptor: int, destination: str) -> None:
+        original_link(parent_fd, descriptor, destination)
+        replacement = render_operation_log(
+            (change(transaction_id="tx-other", completed_at="2026-08-07T08:00:00Z"),)
+        ).encode("utf-8")
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, replacement)
+
+    monkeypatch.setattr(operations, "_link_descriptor_noreplace", mutate_after_link)
+    with pytest.raises(OperationError, match="installed"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
+def test_preimage_metadata_change_at_move_boundary_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    original_rename = operations._rename_noreplace
+    changed = False
+
+    def rewrite_before_move(
+        parent_fd: int, source: str, destination: str, *bound
+    ) -> None:
+        nonlocal changed
+        if source == "log.md" and not changed:
+            changed = True
+            data = target.read_bytes()
+            target.write_bytes(data)
+            metadata = target.stat()
+            os.utime(
+                target,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns - 1),
+            )
+        original_rename(parent_fd, source, destination, *bound)
+
+    monkeypatch.setattr(operations, "_rename_noreplace", rewrite_before_move)
+    with pytest.raises(OperationError, match="changed"):
+        append_operation(target, change(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
+def test_late_root_swap_fails_and_rolls_back_displaced_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    target = root / "log.md"
+    target.write_text(EMPTY_OPERATION_LOG, encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "log.md").write_bytes(b"external\n")
+    original_verify = operations._verify_installed
+    swapped = False
+
+    def verify_then_swap(parent_fd: int, descriptor: int, identity, expected) -> None:
+        nonlocal swapped
+        result = original_verify(parent_fd, descriptor, identity, expected)
+        if not swapped:
+            swapped = True
+            root.rename(tmp_path / "moved-vault")
+            replacement.rename(root)
+        return result
+
+    monkeypatch.setattr(operations, "_verify_installed", verify_then_swap)
+    with pytest.raises(OperationError, match="parent changed"):
+        append_operation(target, change(), root=root)
+
+    assert (root / "log.md").read_bytes() == b"external\n"
+    assert (tmp_path / "moved-vault/log.md").read_text(
         encoding="utf-8"
     ) == EMPTY_OPERATION_LOG
 

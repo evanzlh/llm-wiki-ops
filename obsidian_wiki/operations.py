@@ -392,11 +392,22 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+def _rename_noreplace(
+    parent_fd: int,
+    source: str,
+    destination: str,
+    bound_descriptor: int | None = None,
+    expected_stable: _StableIdentity | None = None,
+) -> None:
     """Rename within a bound directory without replacing an existing name."""
 
     if os.name != "posix":
         raise OperationError("safe operation log replacement is unsupported")
+    if bound_descriptor is not None:
+        if expected_stable is None or _stable_identity(
+            os.fstat(bound_descriptor)
+        ) != expected_stable:
+            raise OperationError("operation log changed during append")
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
     except AttributeError as exc:
@@ -421,7 +432,7 @@ def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
         raise OSError(error, os.strerror(error), destination)
 
 
-def _link_descriptor_noreplace(
+def _link_descriptor_noreplace_exact(
     parent_fd: int, descriptor: int, destination: str
 ) -> None:
     """Install the exact open inode at an absent name in a bound directory."""
@@ -451,6 +462,12 @@ def _link_descriptor_noreplace(
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), destination)
+
+
+def _link_descriptor_noreplace(
+    parent_fd: int, descriptor: int, destination: str
+) -> None:
+    _link_descriptor_noreplace_exact(parent_fd, descriptor, destination)
 
 
 def _restore_noreplace(parent_fd: int, source: str, destination: str) -> bool:
@@ -487,9 +504,10 @@ def _verify_temp(
     descriptor: int,
     identity: _FileIdentity,
     expected: bytes,
-) -> None:
+    expected_stable: _StableIdentity | None = None,
+) -> _StableIdentity:
     try:
-        opened = os.fstat(descriptor)
+        before = os.fstat(descriptor)
         named = (
             os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             if name
@@ -502,12 +520,18 @@ def _verify_temp(
             if not chunk:
                 break
             chunks.append(chunk)
+        after = os.fstat(descriptor)
     except OSError as exc:
         raise OperationError("operation log temporary file changed") from exc
     if (
-        not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != (1 if name else 0)
-        or (opened.st_dev, opened.st_ino) != identity
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != (1 if name else 0)
+        or (before.st_dev, before.st_ino) != identity
+        or _stable_identity(after) != _stable_identity(before)
+        or (
+            expected_stable is not None
+            and _stable_identity(before) != expected_stable
+        )
         or (
             named is not None
             and (
@@ -518,6 +542,7 @@ def _verify_temp(
         or b"".join(chunks) != expected
     ):
         raise OperationError("operation log temporary file changed")
+    return _stable_identity(after)
 
 
 def _verify_moved_preimage(
@@ -526,6 +551,8 @@ def _verify_moved_preimage(
     descriptor: int,
     expected_identity: _StableIdentity,
     expected: bytes,
+    *,
+    allow_rename_ctime: bool = False,
 ) -> _FileIdentity:
     try:
         opened = os.fstat(descriptor)
@@ -540,25 +567,128 @@ def _verify_moved_preimage(
     except OSError as exc:
         raise OperationError("operation log changed during append") from exc
     identity = (opened.st_dev, opened.st_ino)
+    opened_identity = _stable_identity(opened)
+    unchanged_across_rename = (
+        opened_identity[:5] + opened_identity[6:]
+        == expected_identity[:5] + expected_identity[6:]
+    )
     if (
         not _ordinary_single_file(opened)
         or not _ordinary_single_file(named)
-        or _stable_identity(opened) != expected_identity
-        or _stable_identity(named) != expected_identity
+        or opened_identity != _stable_identity(named)
+        or (
+            opened_identity != expected_identity
+            and not (allow_rename_ctime and unchanged_across_rename)
+        )
         or b"".join(chunks) != expected
     ):
         raise OperationError("operation log changed during append")
     return identity
 
 
-def _verify_installed(parent_fd: int, identity: _FileIdentity) -> None:
-    text, descriptor, installed = _read_preimage(parent_fd)
+def _read_open_stable(descriptor: int) -> tuple[bytes, _StableIdentity]:
+    before = os.fstat(descriptor)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    after = os.fstat(descriptor)
+    if _stable_identity(after) != _stable_identity(before):
+        raise OperationError("operation file changed while being read")
+    return b"".join(chunks), _stable_identity(after)
+
+
+def _verify_installed_exact(
+    parent_fd: int,
+    descriptor: int,
+    expected_stable: _StableIdentity | None,
+    expected: bytes,
+) -> _StableIdentity:
     try:
-        if installed[:2] != identity:
-            raise OperationError("operation log target changed after replacement")
-        parse_operation_log(text)
-    finally:
-        os.close(descriptor)
+        before = os.fstat(descriptor)
+        named = os.stat("log.md", dir_fd=parent_fd, follow_symlinks=False)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise OperationError("installed operation log changed") from exc
+    installed = _stable_identity(after)
+    if (
+        not _ordinary_single_file(before)
+        or not _ordinary_single_file(named)
+        or _stable_identity(before) != installed
+        or _stable_identity(named) != installed
+        or (expected_stable is not None and installed != expected_stable)
+        or b"".join(chunks) != expected
+    ):
+        raise OperationError("installed operation log changed")
+    return installed
+
+
+def _verify_installed(
+    parent_fd: int,
+    descriptor: int,
+    expected_stable: _StableIdentity | None,
+    expected: bytes,
+) -> _StableIdentity:
+    return _verify_installed_exact(
+        parent_fd, descriptor, expected_stable, expected
+    )
+
+
+def _restore_preimage_copy(
+    parent_fd: int,
+    backup_descriptor: int,
+    backup_stable_identity: _StableIdentity,
+    backup_expected: bytes,
+) -> bool:
+    try:
+        opened = os.fstat(backup_descriptor)
+        os.lseek(backup_descriptor, 0, os.SEEK_SET)
+        data = os.read(backup_descriptor, len(backup_expected) + 1)
+        after = os.fstat(backup_descriptor)
+        if (
+            _stable_identity(opened) != backup_stable_identity
+            or _stable_identity(after) != backup_stable_identity
+            or data != backup_expected
+        ):
+            return False
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if not temporary_flag:
+            return False
+        descriptor = os.open(
+            ".",
+            os.O_RDWR | temporary_flag | getattr(os, "O_CLOEXEC", 0),
+            0o644,
+            dir_fd=parent_fd,
+        )
+        try:
+            _write_all(descriptor, backup_expected)
+            os.fsync(descriptor)
+            metadata = os.fstat(descriptor)
+            identity = (metadata.st_dev, metadata.st_ino)
+            stable = _verify_temp(
+                parent_fd, "", descriptor, identity, backup_expected
+            )
+            _link_descriptor_noreplace_exact(parent_fd, descriptor, "log.md")
+            installed = _verify_installed_exact(
+                parent_fd, descriptor, None, backup_expected
+            )
+            if installed[:2] != stable[:2]:
+                return False
+        finally:
+            os.close(descriptor)
+    except (OSError, OperationError):
+        return False
+    return True
 
 
 def _rollback_install(
@@ -567,32 +697,46 @@ def _rollback_install(
     backup_descriptor: int,
     backup_stable_identity: _StableIdentity,
     backup_expected: bytes,
-    installed_identity: _FileIdentity,
+    installed_descriptor: int,
+    installed_stable_identity: _StableIdentity,
+    installed_expected: bytes,
 ) -> bool:
+    rollback_name = ".log.md.rollback-" + secrets.token_hex(16)
+    rollback_descriptor = -1
     try:
+        _rename_noreplace(
+            parent_fd,
+            "log.md",
+            rollback_name,
+            installed_descriptor,
+            installed_stable_identity,
+        )
+        rollback_descriptor = os.open(
+            rollback_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
         _verify_moved_preimage(
             parent_fd,
-            backup_name,
-            backup_descriptor,
-            backup_stable_identity,
-            backup_expected,
+            rollback_name,
+            rollback_descriptor,
+            installed_stable_identity,
+            installed_expected,
+            allow_rename_ctime=True,
         )
-    except OperationError:
+    except (OSError, OperationError):
         return False
-    rollback_name = ".log.md.rollback-" + secrets.token_hex(16)
-    try:
-        _rename_noreplace(parent_fd, "log.md", rollback_name)
-        moved = os.stat(rollback_name, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
+    finally:
+        if rollback_descriptor >= 0:
+            os.close(rollback_descriptor)
+    if not _restore_preimage_copy(
+        parent_fd,
+        backup_descriptor,
+        backup_stable_identity,
+        backup_expected,
+    ):
         return False
-    moved_identity = (moved.st_dev, moved.st_ino)
-    if moved_identity != installed_identity:
-        _restore_noreplace(parent_fd, rollback_name, "log.md")
-        return False
-    if not _restore_noreplace(parent_fd, backup_name, "log.md"):
-        _restore_noreplace(parent_fd, rollback_name, "log.md")
-        return False
-    _cleanup_owned(parent_fd, rollback_name, installed_identity)
+    _cleanup_owned(parent_fd, rollback_name, installed_stable_identity[:2])
     return True
 
 
@@ -610,7 +754,8 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
     temp_identity: _FileIdentity | None = None
     backup_name = ".log.md.backup-" + secrets.token_hex(16)
     backup_identity: _FileIdentity | None = None
-    moved_preimage_identity: _StableIdentity | None = None
+    installed_stable_identity: _StableIdentity | None = None
+    backup_stable_identity: _StableIdentity | None = None
     promoted = False
     try:
         _verify_parent(root, parent_fd, parent_identity)
@@ -627,48 +772,97 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
             temp_identity = (temp_metadata.st_dev, temp_metadata.st_ino)
             _write_all(temp_fd, updated)
             os.fsync(temp_fd)
-            _verify_temp(parent_fd, temp_name, temp_fd, temp_identity, updated)
+            temp_stable_identity = _verify_temp(
+                parent_fd, temp_name, temp_fd, temp_identity, updated
+            )
             _verify_parent(root, parent_fd, parent_identity)
             _verify_preimage(parent_fd, preimage_fd, preimage_identity)
-            _rename_noreplace(parent_fd, "log.md", backup_name)
+            _rename_noreplace(
+                parent_fd,
+                "log.md",
+                backup_name,
+                preimage_fd,
+                preimage_identity,
+            )
             try:
-                moved_preimage_identity = _stable_identity(os.fstat(preimage_fd))
                 backup_identity = _verify_moved_preimage(
                     parent_fd,
                     backup_name,
                     preimage_fd,
-                    moved_preimage_identity,
+                    preimage_identity,
+                    preimage_bytes,
+                    allow_rename_ctime=True,
+                )
+                backup_stable_identity = _stable_identity(os.fstat(preimage_fd))
+            except OperationError:
+                _restore_preimage_copy(
+                    parent_fd,
+                    preimage_fd,
+                    backup_stable_identity,
                     preimage_bytes,
                 )
-            except OperationError:
-                _restore_noreplace(parent_fd, backup_name, "log.md")
                 backup_identity = None
                 raise
             try:
                 _verify_parent(root, parent_fd, parent_identity)
-                _verify_temp(parent_fd, temp_name, temp_fd, temp_identity, updated)
+                _verify_temp(
+                    parent_fd,
+                    temp_name,
+                    temp_fd,
+                    temp_identity,
+                    updated,
+                    temp_stable_identity,
+                )
                 _link_descriptor_noreplace(parent_fd, temp_fd, "log.md")
                 promoted = True
+                installed_stable_identity = _verify_installed(
+                    parent_fd, temp_fd, None, updated
+                )
+                os.fsync(parent_fd)
+                _verify_installed(
+                    parent_fd,
+                    temp_fd,
+                    installed_stable_identity,
+                    updated,
+                )
+                _verify_parent(root, parent_fd, parent_identity)
                 os.close(temp_fd)
                 temp_fd = -1
-                os.fsync(parent_fd)
-                _verify_installed(parent_fd, temp_identity)
             except BaseException:
                 if promoted and backup_identity is not None:
-                    if _rollback_install(
+                    try:
+                        installed_bytes, current_installed_identity = (
+                            _read_open_stable(temp_fd)
+                        )
+                    except (OSError, OperationError):
+                        installed_bytes = b""
+                        current_installed_identity = None
+                    if current_installed_identity is not None and _rollback_install(
                         parent_fd,
                         backup_name,
                         preimage_fd,
-                        moved_preimage_identity,
+                        backup_stable_identity,
                         preimage_bytes,
-                        temp_identity,
+                        temp_fd,
+                        current_installed_identity,
+                        installed_bytes,
                     ):
                         promoted = False
+                        _cleanup_owned(
+                            parent_fd, backup_name, backup_identity
+                        )
                         backup_identity = None
-                elif backup_identity is not None and _restore_noreplace(
-                    parent_fd, backup_name, "log.md"
-                ):
-                    backup_identity = None
+                elif backup_identity is not None:
+                    if _restore_preimage_copy(
+                        parent_fd,
+                        preimage_fd,
+                        backup_stable_identity,
+                        preimage_bytes,
+                    ):
+                        _cleanup_owned(
+                            parent_fd, backup_name, backup_identity
+                        )
+                        backup_identity = None
                 raise
             if backup_identity is not None:
                 _cleanup_owned(parent_fd, backup_name, backup_identity)
