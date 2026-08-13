@@ -27,6 +27,20 @@ from obsidian_wiki.trust import (
 )
 
 
+def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
+    probe = link.parent / ".symlink-probe"
+    try:
+        probe.symlink_to(target, target_is_directory=directory)
+        probe.unlink()
+        link.symlink_to(target, target_is_directory=directory)
+    except (NotImplementedError, OSError) as exc:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+
 def _portable_cli_context(
     vault: Path, settings: dict[str, str] | None = None
 ) -> Path:
@@ -173,7 +187,7 @@ def test_lint_vault_prunes_relative_subtree_without_hiding_other_findings(
         external = tmp_path / "external-legacy"
         external.mkdir()
         (external / "malformed.md").write_text("# External\n", encoding="utf-8")
-        legacy.symlink_to(external, target_is_directory=True)
+        _symlink_or_skip(legacy, external, directory=True)
 
     report = lint_vault(
         vault,

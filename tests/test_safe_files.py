@@ -13,6 +13,20 @@ from obsidian_wiki.safe_files import (
 )
 
 
+def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
+    probe = link.parent / ".symlink-probe"
+    try:
+        probe.symlink_to(target, target_is_directory=directory)
+        probe.unlink()
+        link.symlink_to(target, target_is_directory=directory)
+    except (NotImplementedError, OSError) as exc:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX bound-read capability")
 def test_safe_file_snapshot_rejects_repository_root_rebinding(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
@@ -148,7 +162,7 @@ def test_scan_markdown_files_prunes_exact_relative_subtree_before_inspection(
     elif kind == "symlink":
         external = tmp_path / "external"
         external.mkdir()
-        legacy.symlink_to(external, target_is_directory=True)
+        _symlink_or_skip(legacy, external, directory=True)
     else:
         os.mkfifo(legacy)
 
@@ -190,7 +204,7 @@ def test_scan_markdown_files_default_rejects_unsafe_unskipped_subtree(
     legacy.parent.mkdir(parents=True)
     external = tmp_path / "external"
     external.mkdir()
-    legacy.symlink_to(external, target_is_directory=True)
+    _symlink_or_skip(legacy, external, directory=True)
 
     with pytest.raises(RuntimeError, match="symlink"):
         safe_files.scan_markdown_files(vault)

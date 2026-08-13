@@ -22,6 +22,20 @@ from obsidian_wiki.trust import (
 )
 
 
+def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
+    probe = link.parent / ".symlink-probe"
+    try:
+        probe.symlink_to(target, target_is_directory=directory)
+        probe.unlink()
+        link.symlink_to(target, target_is_directory=directory)
+    except (NotImplementedError, OSError) as exc:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+
 def _page(
     vault: Path,
     relpath: str,
@@ -71,7 +85,7 @@ def test_check_trust_ledger_prunes_exact_relative_subtree(
     external.mkdir()
     legacy = vault / "journal" / "operations"
     legacy.parent.mkdir()
-    legacy.symlink_to(external, target_is_directory=True)
+    _symlink_or_skip(legacy, external, directory=True)
 
     report = check_trust_ledger(
         vault,

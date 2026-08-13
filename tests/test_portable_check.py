@@ -38,6 +38,20 @@ from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
 
 
+def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
+    probe = link.parent / ".symlink-probe"
+    try:
+        probe.symlink_to(target, target_is_directory=directory)
+        probe.unlink()
+        link.symlink_to(target, target_is_directory=directory)
+    except (NotImplementedError, OSError) as exc:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+
 def test_parse_block_sources_and_required_fields() -> None:
     page = """---
 title: Portable Repository
@@ -1423,7 +1437,7 @@ def test_manifest_legacy_operation_page_is_invalid_without_inspection(
     legacy.rmdir()
     external = tmp_path / "external-legacy"
     external.mkdir()
-    legacy.symlink_to(external, target_is_directory=True)
+    _symlink_or_skip(legacy, external, directory=True)
 
     report = check_portable_repo(config)
 
@@ -1446,7 +1460,7 @@ def test_knowledge_scan_prunes_legacy_subtree_before_inspection(
     legacy.rmdir()
     external = tmp_path / "external-legacy"
     external.mkdir()
-    legacy.symlink_to(external, target_is_directory=True)
+    _symlink_or_skip(legacy, external, directory=True)
     real_scan = portable_check_module.scan_markdown_files
     seen: list[frozenset[str]] = []
 
@@ -1606,7 +1620,7 @@ def test_legacy_operation_subtree_is_ignored(
         (external / "malformed.md").write_text(
             "# External legacy operation\n", encoding="utf-8"
         )
-        legacy.symlink_to(external, target_is_directory=True)
+        _symlink_or_skip(legacy, external, directory=True)
     page = config.vault / "concepts/a.md"
     page.write_text(
         page.read_text(encoding="utf-8") + "\n[[unrelated missing target]]\n",
