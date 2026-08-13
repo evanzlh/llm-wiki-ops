@@ -199,6 +199,20 @@ def test_trust_excludes_exact_root_views_but_includes_nested_names(
     }
 
 
+def test_trust_prunes_legacy_operations_by_default(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _page(vault, "journal/daily.md")
+    legacy = vault / "journal/operations/old.md"
+    legacy.parent.mkdir()
+    legacy.write_text("# Legacy operation without trust metadata\n", encoding="utf-8")
+
+    ledger = build_trust_ledger(
+        vault, reviewed_at="2026-07-12T17:38:39+07:00"
+    )
+
+    assert set(ledger["pages"]) == {"journal/daily.md"}
+
+
 def test_trust_ledger_rejects_external_symlink_without_leaking_content(
     tmp_path: Path,
 ) -> None:

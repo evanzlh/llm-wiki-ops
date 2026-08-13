@@ -365,6 +365,12 @@ def _scan_bound_directory(
         observed = _stat_at(descriptor, name, child_relative)
         assert observed is not None
         mode = observed.st_mode
+        if child_relative in skip_relative_files:
+            if not stat.S_ISREG(mode) or observed.st_nlink != 1:
+                raise _unsafe(
+                    child_relative, "excluded file is not a single-link ordinary file"
+                )
+            continue
         if stat.S_ISLNK(mode):
             if Path(name).suffix and not name.endswith(".md"):
                 continue
@@ -406,7 +412,7 @@ def _scan_bound_directory(
             raise _unsafe(child_relative, "special files are not allowed")
         if observed.st_nlink != 1:
             raise _unsafe(child_relative, "hard-linked files are not allowed")
-        if name in skip_files or child_relative in skip_relative_files:
+        if name in skip_files:
             continue
         content, opened = _read_bound_file(descriptor, name, child_relative, observed)
         attached = _stat_at(descriptor, name, child_relative)
@@ -445,6 +451,12 @@ def _scan_bound_headers(
         observed = _stat_at(descriptor, name, child_relative)
         assert observed is not None
         mode = observed.st_mode
+        if child_relative in skip_relative_files:
+            if not stat.S_ISREG(mode) or observed.st_nlink != 1:
+                raise _unsafe(
+                    child_relative, "excluded file is not a single-link ordinary file"
+                )
+            continue
         if stat.S_ISLNK(mode):
             if Path(name).suffix and not name.endswith(".md"):
                 continue
@@ -479,7 +491,7 @@ def _scan_bound_headers(
             continue
         if not stat.S_ISREG(mode) or observed.st_nlink != 1:
             raise _unsafe(child_relative, "file is not a single-link ordinary file")
-        if name in skip_files or child_relative in skip_relative_files:
+        if name in skip_files:
             continue
         file_descriptor = _open_at(descriptor, name, _file_flags(), child_relative)
         try:

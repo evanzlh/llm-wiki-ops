@@ -215,6 +215,26 @@ def test_scan_relative_file_pruning_defaults_to_empty(
     assert [snapshot.relative for snapshot in snapshots] == ["hot.md"]
 
 
+@pytest.mark.skipif(
+    not safe_files._SUPPORTS_BOUND_SCAN, reason="bound Markdown scan unavailable"
+)
+@pytest.mark.parametrize("scanner", ["files", "headers"])
+def test_scan_relative_file_skip_requires_an_ordinary_file(
+    tmp_path: Path, scanner: str
+) -> None:
+    vault = tmp_path / "wiki"
+    (vault / "hot.md").mkdir(parents=True)
+    (vault / "hot.md" / "nested.md").write_text("# Nested\n", encoding="utf-8")
+    scan = (
+        safe_files.scan_markdown_files
+        if scanner == "files"
+        else safe_files.scan_markdown_headers
+    )
+
+    with pytest.raises(safe_files.UnsafeVaultError, match="hot.md"):
+        scan(vault, skip_relative_files={"hot.md"})
+
+
 @pytest.mark.parametrize("kind", ["ordinary", "symlink", "fifo"])
 def test_scan_markdown_files_prunes_exact_relative_subtree_before_inspection(
     tmp_path: Path, kind: str

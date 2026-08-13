@@ -37,6 +37,7 @@ TRUST_SKIP_DIRS = frozenset(
 )
 TRUST_ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
 TRUST_RESERVED_FILES = frozenset({"_insights.md"})
+TRUST_SKIP_RELATIVE_SUBTREES = frozenset({"journal/operations"})
 ALLOWED_LIFECYCLES = frozenset({"draft", "reviewed", "verified", "disputed", "archived"})
 TRUST_REQUIRED_FIELD_ALLOWLIST = frozenset(
     {"base_confidence", "lifecycle", "lifecycle_changed", "updated"}
@@ -279,6 +280,9 @@ def _trust_snapshots(
     *,
     skip_relative_subtrees: Collection[str] = (),
 ) -> dict[str, MarkdownFile]:
+    effective_skip_subtrees = (
+        TRUST_SKIP_RELATIVE_SUBTREES | frozenset(skip_relative_subtrees)
+    )
     return {
         snapshot.relative: snapshot
         for snapshot in scan_markdown_files(
@@ -286,7 +290,7 @@ def _trust_snapshots(
             skip_dirs=TRUST_SKIP_DIRS,
             skip_files=TRUST_RESERVED_FILES,
             skip_relative_files=TRUST_ROOT_VIEW_FILES,
-            skip_relative_subtrees=skip_relative_subtrees,
+            skip_relative_subtrees=effective_skip_subtrees,
         )
     }
 
