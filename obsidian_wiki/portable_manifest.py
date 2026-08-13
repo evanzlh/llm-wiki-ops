@@ -294,24 +294,12 @@ class ShardedManifest:
 
     def load(self, source_id: str) -> ManifestEntry | None:
         path = self.entry_path(source_id)
-        if not path.exists() and not path.is_symlink():
+        proof = self._read_live_shard(source_id, path)
+        if proof is None:
             return None
         try:
-            metadata = path.lstat()
-        except OSError as exc:
-            raise ManifestError("manifest shard is unreadable") from exc
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or (
-                metadata.st_nlink != 1
-                and not self._active_link_window(source_id, path, metadata)
-            )
-        ):
-            raise ManifestError("manifest shard must be a single-link ordinary file")
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            payload = json.loads(proof.data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ManifestError(f"invalid manifest shard: {exc}") from exc
         if not isinstance(payload, dict):
             raise ManifestError("manifest shard must be an object")
@@ -546,11 +534,14 @@ class ShardedManifest:
                     raise ManifestError("manifest mutation lock must be a single-link ordinary file")
                 _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
                 self._session = (root_fd, wal_fd, directories)
+                self._validate_wal_directory()
                 self._recover_wal()
                 yield self
             except ManifestError:
                 raise
             except OSError as exc:
+                if self._session is not None:
+                    raise
                 raise ManifestError("cannot safely lock manifest mutations") from exc
             finally:
                 self._session = None
@@ -575,7 +566,11 @@ class ShardedManifest:
 
     @staticmethod
     def _read_proof(
-        parent_fd: int, name: str, *, links: frozenset[int] = frozenset({1})
+        parent_fd: int,
+        name: str,
+        *,
+        links: frozenset[int] = frozenset({1}),
+        size_limit: int = _MAX_SHARD_BYTES,
     ) -> _FileProof | None:
         descriptor = -1
         try:
@@ -594,18 +589,18 @@ class ShardedManifest:
                 not stat.S_ISREG(opened.st_mode)
                 or opened.st_nlink not in links
                 or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
-                or opened.st_size > _MAX_SHARD_BYTES
+                or opened.st_size > size_limit
             ):
                 raise ManifestError("manifest artifact changed while being read")
             chunks: list[bytes] = []
             total = 0
             while True:
-                chunk = os.read(descriptor, min(65536, _MAX_SHARD_BYTES + 1 - total))
+                chunk = os.read(descriptor, min(65536, size_limit + 1 - total))
                 if not chunk:
                     break
                 chunks.append(chunk)
                 total += len(chunk)
-                if total > _MAX_SHARD_BYTES:
+                if total > size_limit:
                     raise ManifestError("manifest artifact exceeds the size limit")
             final = os.fstat(descriptor)
             stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
@@ -651,7 +646,9 @@ class ShardedManifest:
 
     def _journal(self) -> dict[str, object] | None:
         assert self._session is not None
-        proof = self._read_proof(self._session[1], "journal.json")
+        proof = self._read_proof(
+            self._session[1], "journal.json", size_limit=64 * 1024
+        )
         if proof is None:
             self._clean_idle_wal()
             return None
@@ -667,7 +664,10 @@ class ShardedManifest:
             raise ManifestError("manifest mutation journal has invalid fields")
         if payload["schema_version"] != 1 or payload["state"] not in {"PREPARED", "APPLIED", "CONFLICT"}:
             raise ManifestError("manifest mutation journal has invalid schema or state")
-        if payload["action"] not in {"upsert", "remove"} or not isinstance(payload["op_id"], str):
+        if payload["action"] not in {"upsert", "remove"} or (
+            not isinstance(payload["op_id"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", payload["op_id"]) is None
+        ):
             raise ManifestError("manifest mutation journal has invalid operation")
         source_id = payload["source_id"]
         if not isinstance(source_id, str):
@@ -689,15 +689,37 @@ class ShardedManifest:
                 raise ManifestError("manifest mutation journal has invalid absent image")
             identity = image["identity"]
             if identity is not None and (
-                not isinstance(identity, list) or len(identity) != 2 or any(not isinstance(value, int) for value in identity)
+                not isinstance(identity, list)
+                or len(identity) != 2
+                or any(type(value) is not int or value < 0 for value in identity)
             ):
                 raise ManifestError("manifest mutation journal has invalid image identity")
         candidate_identity = payload["candidate_identity"]
         if candidate_identity is not None and (
-            not isinstance(candidate_identity, list) or len(candidate_identity) != 2 or any(not isinstance(value, int) for value in candidate_identity)
+            not isinstance(candidate_identity, list)
+            or len(candidate_identity) != 2
+            or any(type(value) is not int or value < 0 for value in candidate_identity)
         ):
             raise ManifestError("manifest mutation journal has invalid candidate identity")
+        if (payload["action"] == "upsert") != bool(payload["post"]["present"]):
+            raise ManifestError("manifest mutation journal action disagrees with postimage")
+        if payload["state"] == "PREPARED" and payload["action"] == "remove" and candidate_identity is not None:
+            raise ManifestError("remove journal cannot name a candidate")
         return payload
+
+    def _validate_wal_directory(self) -> None:
+        assert self._session is not None
+        try:
+            names = set(os.listdir(self._session[1]))
+        except OSError as exc:
+            raise ManifestError("manifest WAL directory is unreadable") from exc
+        allowed = _WAL_FILES | {"manifest.lock"}
+        if names - allowed:
+            raise ManifestError("manifest WAL directory contains unexpected entries")
+        for name in names:
+            metadata = os.stat(name, dir_fd=self._session[1], follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ManifestError("manifest WAL entries must be single-link ordinary files")
 
     def _clean_idle_wal(self) -> None:
         assert self._session is not None
@@ -760,10 +782,10 @@ class ShardedManifest:
             return
         if journal["state"] == "CONFLICT":
             raise ManifestPreconditionError("manifest mutation conflict requires owner resolution")
-        self._validate_wal_blobs(journal)
         if journal["state"] == "APPLIED":
             self._cleanup_applied(journal)
             return
+        self._validate_wal_blobs(journal)
         self._resume_prepared(journal)
 
     def _validate_wal_blobs(self, journal: dict[str, object]) -> None:
@@ -850,9 +872,31 @@ class ShardedManifest:
                 live = self._read_proof(parent_fd, target_name)
                 if not self._matches(live, pre):
                     self._conflict(journal, "manifest shard changed before reservation")
-                os.rename(target_name, "reserved", src_dir_fd=parent_fd, dst_dir_fd=side_fd)
+                self._validate_root_attachment(self._session[0])
+                try:
+                    os.link(
+                        target_name,
+                        "reserved",
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=side_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    self._conflict(journal, "manifest reservation conflicts with concurrent owner")
+                linked = self._read_proof(side_fd, "reserved", links=frozenset({2}))
+                current = self._read_proof(parent_fd, target_name, links=frozenset({2}))
+                if (
+                    linked is None
+                    or current is None
+                    or linked.identity != current.identity
+                    or not self._matches(linked, pre)
+                ):
+                    self._conflict(journal, "manifest shard changed while being reserved")
+                self._validate_root_attachment(self._session[0])
+                os.unlink(target_name, dir_fd=parent_fd)
                 os.fsync(parent_fd)
                 os.fsync(side_fd)
+                self._validate_root_attachment(self._session[0])
                 reserved = self._read_proof(side_fd, "reserved")
                 if not self._matches(reserved, pre):
                     if reserved is not None:
@@ -868,11 +912,13 @@ class ShardedManifest:
                 self._conflict(journal, "manifest target was created concurrently")
             _manifest_fault_point("reserved")
             if journal["action"] == "upsert":
+                self._validate_root_attachment(self._session[0])
                 try:
                     os.link("candidate", target_name, src_dir_fd=side_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
                 except FileExistsError:
                     self._conflict(journal, "manifest target was created concurrently")
                 os.fsync(parent_fd)
+                self._validate_root_attachment(self._session[0])
                 _manifest_fault_point("linked")
                 os.unlink("candidate", dir_fd=side_fd)
                 os.fsync(side_fd)
@@ -884,6 +930,7 @@ class ShardedManifest:
             self._write_journal(journal)
             _manifest_fault_point("applied")
             self._cleanup_applied(journal, side_fd=side_fd, parent_fd=parent_fd)
+            self._validate_root_attachment(self._session[0])
         finally:
             if close_side:
                 os.close(side_fd)
@@ -922,7 +969,7 @@ class ShardedManifest:
                         continue
                     if proof.content_hash != image["hash"]:
                         self._conflict(journal, "manifest cleanup artifact conflicts with WAL")
-                    os.unlink(name, dir_fd=side_fd)
+                    self._unlink_matching(side_fd, name, proof, journal)
                 os.fsync(side_fd)
                 try:
                     os.rmdir(_SIDECAR, dir_fd=parent_fd)
@@ -932,11 +979,14 @@ class ShardedManifest:
                         raise
             assert self._session is not None
             wal_fd = self._session[1]
-            for name in ("pre.bin", "post.bin"):
+            for name, image in (("pre.bin", journal["pre"]), ("post.bin", journal["post"])):
                 proof = self._read_proof(wal_fd, name)
                 if proof is None:
-                    self._conflict(journal, "manifest WAL cleanup artifact is missing")
-                os.unlink(name, dir_fd=wal_fd)
+                    continue
+                expected = image["hash"] if image["present"] else self._digest(b"")
+                if proof.content_hash != expected:
+                    self._conflict(journal, "manifest WAL cleanup artifact conflicts with journal")
+                self._unlink_matching(wal_fd, name, proof, journal)
             os.fsync(wal_fd)
             os.unlink("journal.json", dir_fd=wal_fd)
             os.fsync(wal_fd)
@@ -945,6 +995,23 @@ class ShardedManifest:
             if own_side and side_fd >= 0:
                 os.close(side_fd)
             self._close_fds(own_descriptors)
+
+    def _unlink_matching(
+        self,
+        parent_fd: int,
+        name: str,
+        expected: _FileProof,
+        journal: dict[str, object],
+    ) -> None:
+        """Best-effort conditional cleanup; a changed path becomes fixed conflict evidence."""
+        current = self._read_proof(parent_fd, name, links=frozenset({1, 2}))
+        if current is None:
+            return
+        if current.identity != expected.identity or current.content_hash != expected.content_hash:
+            self._conflict(journal, "manifest cleanup artifact changed concurrently")
+        assert self._session is not None
+        self._validate_root_attachment(self._session[0])
+        os.unlink(name, dir_fd=parent_fd)
 
     def _abort_wal(self, side_fd: int, parent_fd: int) -> None:
         candidate = self._read_proof(side_fd, "candidate", links=frozenset({1, 2}))
@@ -1007,38 +1074,82 @@ class ShardedManifest:
         finally:
             self._close_fds(directories)
 
-    def _active_link_window(
-        self, source_id: str, path: Path, metadata: os.stat_result
+    def _read_live_shard(self, source_id: str, path: Path) -> _FileProof | None:
+        if not _manifest_mutation_supported():
+            if not path.exists() and not path.is_symlink():
+                return None
+            try:
+                metadata = path.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise ManifestError("manifest shard must be a single-link ordinary file")
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ManifestError("manifest shard is unreadable") from exc
+            return _FileProof(self._digest(data), (metadata.st_dev, metadata.st_ino), 1, data)
+        if not path.parent.exists():
+            return None
+        with self._bound_repository_root() as root_fd:
+            directories = self._open_directory(root_fd, path.parent, create=False)
+            try:
+                parent_fd = directories[-1]
+                proof = self._read_proof(parent_fd, path.name, links=frozenset({1, 2}))
+                if proof is None:
+                    return None
+                if proof.links == 1:
+                    return proof
+                if self._link_window_matches_fd(root_fd, parent_fd, source_id, path, proof):
+                    return proof
+                raise ManifestError("manifest shard must be a single-link ordinary file")
+            finally:
+                self._close_fds(directories)
+
+    def _link_window_matches_fd(
+        self,
+        root_fd: int,
+        parent_fd: int,
+        source_id: str,
+        path: Path,
+        target: _FileProof,
     ) -> bool:
-        if metadata.st_nlink != 2 or os.name != "posix":
-            return False
-        journal_path = self.wal_root / "journal.json"
+        wal_descriptors: list[int] = []
+        side_fd = -1
         try:
-            journal_metadata = journal_path.lstat()
-            if not stat.S_ISREG(journal_metadata.st_mode) or journal_metadata.st_nlink != 1 or journal_metadata.st_size > 65536:
+            wal_descriptors = self._open_directory(root_fd, self.wal_root, create=False)
+            journal = self._read_proof(
+                wal_descriptors[-1], "journal.json", size_limit=64 * 1024
+            )
+            if journal is None:
                 return False
-            payload = json.loads(journal_path.read_text(encoding="utf-8"))
+            payload = json.loads(journal.data.decode("utf-8"))
+            expected_keys = {
+                "schema_version", "state", "op_id", "action", "source_id",
+                "target", "sidecar", "pre", "post", "candidate_identity",
+            }
+            expected_sidecar = (path.parent / _SIDECAR).relative_to(self.config.root).as_posix()
             if (
-                payload.get("schema_version") != 1
+                not isinstance(payload, dict)
+                or set(payload) != expected_keys
+                or payload.get("schema_version") != 1
                 or payload.get("state") != "PREPARED"
                 or payload.get("action") != "upsert"
                 or payload.get("source_id") != source_id
                 or payload.get("target") != path.relative_to(self.config.root).as_posix()
+                or payload.get("sidecar") != expected_sidecar
+                or payload.get("candidate_identity") != list(target.identity)
+                or not isinstance(payload.get("post"), dict)
+                or payload["post"].get("hash") != target.content_hash
             ):
                 return False
-            candidate = path.parent / _SIDECAR / "candidate"
-            candidate_metadata = candidate.lstat()
-            if (
-                not stat.S_ISREG(candidate_metadata.st_mode)
-                or candidate_metadata.st_nlink != 2
-                or (candidate_metadata.st_dev, candidate_metadata.st_ino) != (metadata.st_dev, metadata.st_ino)
-            ):
-                return False
-            target_hash = "sha256:" + compute_hash(path)
-            candidate_hash = "sha256:" + compute_hash(candidate)
-            return target_hash == candidate_hash == payload.get("post", {}).get("hash")
-        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            side_fd = os.open(_SIDECAR, flags, dir_fd=parent_fd)
+            candidate = self._read_proof(side_fd, "candidate", links=frozenset({2}))
+            return candidate is not None and candidate.identity == target.identity and candidate.content_hash == target.content_hash
+        except (OSError, ManifestError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return False
+        finally:
+            if side_fd >= 0:
+                os.close(side_fd)
+            self._close_fds(wal_descriptors)
 
     @staticmethod
     def _validate_source_file(source_path: Path) -> None:

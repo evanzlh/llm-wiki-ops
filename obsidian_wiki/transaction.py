@@ -223,6 +223,7 @@ class TransactionManager:
                 cleanup_root=self.local_state,
             )
         )
+        self._action_manifest: ShardedManifest | None = None
         self._require_contained(self.local_state, self.config.root, "local state")
 
     def begin(
@@ -446,24 +447,23 @@ class TransactionManager:
         completed_at: str | None = None,
     ) -> CommitResult:
         self._verify_repository_identity()
-        with self._action_lock():
-            manifest = ShardedManifest(self.config)
-            try:
-                with manifest.mutation_session():
-                    record = self.load(transaction_id)
-                    if record.status != "active":
-                        raise TransactionError(
-                            f"only an active transaction can commit, not {record.status}"
-                        )
-                    lock_identity = self._require_owned_lock(transaction_id)
-                    return self._commit_record(
-                        record,
-                        completed_at=completed_at,
-                        lock_identity=lock_identity,
-                        release_pre_snapshot_failure=False,
-                        manifest=manifest,
+        try:
+            with self._action_lock(manifest=True):
+                record = self.load(transaction_id)
+                if record.status != "active":
+                    raise TransactionError(
+                        f"only an active transaction can commit, not {record.status}"
                     )
-            except ManifestError as exc:
+                lock_identity = self._require_owned_lock(transaction_id)
+                return self._commit_record(
+                    record,
+                    completed_at=completed_at,
+                    lock_identity=lock_identity,
+                    release_pre_snapshot_failure=False,
+                    manifest=self._action_manifest,
+                )
+        except TransactionError as exc:
+            if "safe manifest mutation requires" in str(exc):
                 record = self.load(transaction_id)
                 payload = self._read_metadata_payload(record.workspace)
                 payload["status"] = "failed"
@@ -472,7 +472,7 @@ class TransactionManager:
                 self._write_metadata(record.workspace, payload)
                 if self.lock_path.exists() or self.lock_path.is_symlink():
                     self._unlink_owned_lock(transaction_id)
-                raise TransactionError(str(exc)) from exc
+            raise
 
     def retry(
         self,
@@ -481,9 +481,7 @@ class TransactionManager:
         completed_at: str | None = None,
     ) -> CommitResult:
         self._verify_repository_identity()
-        with self._action_lock():
-            with ShardedManifest(self.config).mutation_session():
-                pass
+        with self._action_lock(manifest=True):
             record = self.load(transaction_id)
             if record.status != "failed":
                 raise TransactionError(
@@ -551,6 +549,7 @@ class TransactionManager:
                     lock_identity=lock_identity,
                     release_pre_snapshot_failure=True,
                     preflight_candidates=candidates,
+                    manifest=self._action_manifest,
                 )
             except Exception:
                 if self.lock_path.exists() or self.lock_path.is_symlink():
@@ -564,9 +563,7 @@ class TransactionManager:
 
     def restore(self, transaction_id: str) -> None:
         self._verify_repository_identity()
-        with self._action_lock():
-            with ShardedManifest(self.config).mutation_session():
-                pass
+        with self._action_lock(manifest=True):
             record = self.load(transaction_id)
             if record.status not in {"promoting", "failed", "complete", "restored"}:
                 raise TransactionError(
@@ -985,7 +982,7 @@ class TransactionManager:
             raise TransactionError(detail) from exc
 
     @contextmanager
-    def _action_lock(self) -> Iterator[None]:
+    def _action_lock(self, *, manifest: bool = False) -> Iterator[None]:
         self._ensure_directory(self.local_state)
         self._require_contained(
             self.action_lock_path,
@@ -1008,7 +1005,18 @@ class TransactionManager:
                 )
             self._lock_action_descriptor(descriptor)
             locked = True
-            yield
+            if manifest:
+                store = ShardedManifest(self.config)
+                try:
+                    with store.mutation_session():
+                        self._action_manifest = store
+                        yield
+                except ManifestError as exc:
+                    raise TransactionError(str(exc)) from exc
+                finally:
+                    self._action_manifest = None
+            else:
+                yield
         finally:
             try:
                 if locked:
