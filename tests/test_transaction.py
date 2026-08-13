@@ -2706,9 +2706,7 @@ def test_failed_restore_rejects_deleted_rollback_exclusion(
     assert manager.load("tx-1").status == "failed"
 
 
-@pytest.mark.parametrize(
-    "target_kind", ["page", "manifest-marker", "hot", "obsidian"]
-)
+@pytest.mark.parametrize("target_kind", ["page", "manifest-marker"])
 def test_log_writer_vault_side_effect_is_rolled_back(
     tmp_path: Path,
     target_kind: str,
@@ -2719,15 +2717,8 @@ def test_log_writer_vault_side_effect_is_rolled_back(
         unrelated = config.vault / "references/unrelated.md"
         unrelated.parent.mkdir(parents=True)
         unrelated.write_text(PAGE, encoding="utf-8")
-    elif target_kind == "manifest-marker":
-        unrelated = config.vault / ".manifest.json"
-    elif target_kind == "hot":
-        unrelated = config.vault / "hot.md"
-        unrelated.write_text("derived\n", encoding="utf-8")
     else:
-        unrelated = config.vault / ".obsidian/workspace.json"
-        unrelated.parent.mkdir()
-        unrelated.write_text("personal\n", encoding="utf-8")
+        unrelated = config.vault / ".manifest.json"
     original = unrelated.read_bytes()
 
     def writer(change):
@@ -2747,6 +2738,99 @@ def test_log_writer_vault_side_effect_is_rolled_back(
     assert unrelated.read_bytes() == original
     assert not (config.vault / "concepts/a.md").exists()
     assert (config.vault / "log.md").read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
+@pytest.mark.parametrize("target_kind", ["hot", "obsidian"])
+def test_log_writer_may_refresh_writer_guard_exclusions(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    root, config = make_config(tmp_path)
+    if target_kind == "hot":
+        target = config.vault / "hot.md"
+    else:
+        target = config.vault / ".obsidian/workspace.json"
+        target.parent.mkdir()
+    target.write_text("before\n", encoding="utf-8")
+
+    def writer(change):
+        operation = append_operation(
+            config.vault / "log.md", change, root=config.vault
+        )
+        target.write_text("refreshed\n", encoding="utf-8")
+        return operation
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    result = manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert result.transaction_id == "tx-1"
+    assert target.read_text(encoding="utf-8") == "refreshed\n"
+    assert (config.vault / "concepts/a.md").read_text(encoding="utf-8") == PAGE
+
+
+def test_log_writer_nested_hot_page_side_effect_is_rolled_back(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    nested_hot = config.vault / "concepts/hot.md"
+    nested_hot.write_text(PAGE, encoding="utf-8")
+    original = nested_hot.read_bytes()
+
+    def writer(change):
+        operation = append_operation(
+            config.vault / "log.md", change, root=config.vault
+        )
+        nested_hot.write_text("unauthorized writer side effect\n", encoding="utf-8")
+        return operation
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*unauthorized"):
+        manager.commit("tx-1")
+
+    assert nested_hot.read_bytes() == original
+    assert not (config.vault / "concepts/a.md").exists()
+
+
+def test_writer_guard_prunes_root_exclusions_before_metadata_or_content_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, config = make_config(tmp_path)
+    root_hot = config.vault / "hot.md"
+    root_hot.write_text("derived\n", encoding="utf-8")
+    editor_state = config.vault / ".obsidian"
+    editor_state.mkdir()
+    (editor_state / "workspace.json").write_text("personal\n", encoding="utf-8")
+    nested_hot = config.vault / "concepts/hot.md"
+    nested_hot.write_text(PAGE, encoding="utf-8")
+    manager = TransactionManager(config)
+    original_lstat = Path.lstat
+    original_hash = manager._hash_single_link_file
+
+    def guarded_lstat(path: Path):
+        if path == root_hot or path == editor_state or editor_state in path.parents:
+            raise AssertionError(f"writer guard inspected excluded path: {path}")
+        return original_lstat(path)
+
+    hashed: list[str] = []
+
+    def tracked_hash(path: Path, label: str) -> str:
+        hashed.append(path.relative_to(config.vault).as_posix())
+        return original_hash(path, label)
+
+    monkeypatch.setattr(Path, "lstat", guarded_lstat)
+    monkeypatch.setattr(manager, "_hash_single_link_file", tracked_hash)
+
+    state = manager._writer_guard_state()
+
+    assert "hot.md" not in state
+    assert all(not relative.startswith(".obsidian") for relative in state)
+    assert "concepts/hot.md" in state
+    assert "concepts/hot.md" in hashed
 
 
 def test_log_writer_empty_directory_side_effect_is_rolled_back(

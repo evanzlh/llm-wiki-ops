@@ -2282,6 +2282,8 @@ class TransactionManager:
             kept_directories: list[str] = []
             for name in sorted(dirnames):
                 relative = relative_directory / name
+                if relative.parts and relative.parts[0] == ".obsidian":
+                    continue
                 if excluded_local is not None and (
                     relative == excluded_local or excluded_local in relative.parents
                 ):
@@ -2307,7 +2309,9 @@ class TransactionManager:
             for name in sorted(filenames):
                 relative = relative_directory / name
                 relative_key = relative.as_posix()
-                if relative_key == "log.md":
+                if relative_key in {"hot.md", "log.md"}:
+                    continue
+                if relative.parts and relative.parts[0] == ".obsidian":
                     continue
                 if excluded_local is not None and (
                     relative == excluded_local or excluded_local in relative.parents
