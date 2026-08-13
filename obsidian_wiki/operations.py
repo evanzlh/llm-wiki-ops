@@ -470,9 +470,28 @@ def _link_descriptor_noreplace(
     _link_descriptor_noreplace_exact(parent_fd, descriptor, destination)
 
 
-def _exchange_names(parent_fd: int, first: str, second: str) -> None:
+def _exchange_names(
+    parent_fd: int,
+    first: str,
+    second: str,
+    bound_descriptor: int | None = None,
+    expected_stable: _StableIdentity | None = None,
+) -> None:
     if os.name != "posix":
         raise OperationError("safe operation log replacement is unsupported")
+    if bound_descriptor is not None:
+        if expected_stable is None:
+            raise OperationError("operation restore source changed")
+        try:
+            named = os.stat(first, dir_fd=parent_fd, follow_symlinks=False)
+            opened = os.fstat(bound_descriptor)
+        except OSError as exc:
+            raise OperationError("operation restore source changed") from exc
+        if (
+            _stable_identity(opened) != expected_stable
+            or _stable_identity(named) != expected_stable
+        ):
+            raise OperationError("operation restore source changed")
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
     except AttributeError as exc:
@@ -629,6 +648,25 @@ def _read_open_stable(descriptor: int) -> tuple[bytes, _StableIdentity]:
     return b"".join(chunks), _stable_identity(after)
 
 
+def _read_exact_open_stable(
+    descriptor: int, size: int
+) -> tuple[bytes, _StableIdentity]:
+    before = os.fstat(descriptor)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    remaining = size + 1
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    after = os.fstat(descriptor)
+    if _stable_identity(after) != _stable_identity(before):
+        raise OperationError("operation file changed while being read")
+    return b"".join(chunks), _stable_identity(after)
+
+
 def _verify_installed_exact(
     parent_fd: int,
     descriptor: int,
@@ -697,13 +735,11 @@ def _restore_preimage_copy(
     backup_expected: bytes,
 ) -> bool:
     try:
-        opened = os.fstat(backup_descriptor)
-        os.lseek(backup_descriptor, 0, os.SEEK_SET)
-        data = os.read(backup_descriptor, len(backup_expected) + 1)
-        after = os.fstat(backup_descriptor)
+        data, current = _read_exact_open_stable(
+            backup_descriptor, len(backup_expected)
+        )
         if (
-            _stable_identity(opened) != backup_stable_identity
-            or _stable_identity(after) != backup_stable_identity
+            current != backup_stable_identity
             or data != backup_expected
         ):
             return False
@@ -745,7 +781,7 @@ def _verified_renamed_identity(
     expected: bytes,
 ) -> _StableIdentity | None:
     try:
-        data, current = _read_open_stable(descriptor)
+        data, current = _read_exact_open_stable(descriptor, len(expected))
     except (OSError, OperationError):
         return None
     if (
@@ -754,6 +790,22 @@ def _verified_renamed_identity(
     ):
         return None
     return current
+
+
+def _restore_from_initial_preimage(
+    parent_fd: int,
+    descriptor: int,
+    original: _StableIdentity,
+    expected: bytes,
+) -> bool:
+    try:
+        data, current = _read_open_stable(descriptor)
+    except (OSError, OperationError):
+        return False
+    unchanged = current[:5] + current[6:] == original[:5] + original[6:]
+    if data != expected or not unchanged:
+        return False
+    return _restore_preimage_copy(parent_fd, descriptor, current, expected)
 
 
 def _rollback_install(
@@ -767,7 +819,9 @@ def _rollback_install(
     installed_expected: bytes,
 ) -> bool:
     try:
-        backup_data, backup_current = _read_open_stable(backup_descriptor)
+        backup_data, backup_current = _read_exact_open_stable(
+            backup_descriptor, len(backup_expected)
+        )
         if (
             backup_data != backup_expected
             or backup_current != backup_stable_identity
@@ -796,11 +850,25 @@ def _rollback_install(
             _link_descriptor_noreplace_exact(
                 parent_fd, restored_fd, restore_name
             )
-            _exchange_names(parent_fd, restore_name, "log.md")
+            linked_restore = _stable_identity(os.fstat(restored_fd))
+            valid_link = (
+                linked_restore[:5] == restored[:5]
+                and restored[6] == 0
+                and linked_restore[6] == 1
+            )
+            if not valid_link:
+                return False
+            _exchange_names(
+                parent_fd,
+                restore_name,
+                "log.md",
+                restored_fd,
+                linked_restore,
+            )
             _verify_installed_exact(
                 parent_fd,
                 restored_fd,
-                None,
+                linked_restore,
                 backup_expected,
             )
         finally:
@@ -865,16 +933,14 @@ def append_operation(path: Path, change: OperationChange, *, root: Path) -> Path
                 )
                 backup_identity = backup_stable_identity[:2]
             except OperationError:
-                recovery_identity = _verified_renamed_identity(
-                    preimage_fd, preimage_identity, preimage_bytes
+                recovered = _restore_from_initial_preimage(
+                    parent_fd, preimage_fd, preimage_identity, preimage_bytes
                 )
-                _restore_preimage_copy(
-                    parent_fd,
-                    preimage_fd,
-                    recovery_identity,
-                    preimage_bytes,
-                ) if recovery_identity is not None else False
                 backup_identity = None
+                if not recovered:
+                    raise OperationError(
+                        "operation log recovery failed after moved verification"
+                    )
                 raise
             try:
                 _verify_parent(root, parent_fd, parent_identity)
