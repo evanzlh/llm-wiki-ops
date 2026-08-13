@@ -1565,10 +1565,15 @@ class ShardedManifest:
             legacy_keys = expected_keys - {
                 "resolution", "cleanup_index", "selected_live"
             }
+            unbound_resolution_keys = expected_keys - {"selected_live"}
             expected_sidecar = (path.parent / _SIDECAR).relative_to(self.config.root).as_posix()
             if (
                 not isinstance(payload, dict)
-                or (set(payload) != expected_keys and set(payload) != legacy_keys)
+                or (
+                    set(payload) != expected_keys
+                    and set(payload) != legacy_keys
+                    and set(payload) != unbound_resolution_keys
+                )
                 or payload.get("schema_version") != 1
                 or payload.get("state") != "PREPARED"
                 or payload.get("action") != "upsert"

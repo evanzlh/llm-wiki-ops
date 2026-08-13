@@ -1400,7 +1400,10 @@ def test_legacy_schema_one_conflict_can_be_resolved(tmp_path: Path, monkeypatch)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL upgrade")
-def test_legacy_schema_one_link_window_remains_readable(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("journal_shape", ["legacy", "unbound-resolution"])
+def test_legacy_schema_one_link_window_remains_readable(
+    tmp_path: Path, monkeypatch, journal_shape: str
+) -> None:
     root, config = make_repo(tmp_path)
     source = root / "sources/design/a.md"
     source.write_text("source", encoding="utf-8")
@@ -1412,9 +1415,11 @@ def test_legacy_schema_one_link_window_remains_readable(tmp_path: Path, monkeypa
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
     with pytest.raises(SystemExit, match="linked"):
         ShardedManifest(config).upsert(source)
-    _strip_resolution_fields(
-        root / ".obsidian-wiki/local/manifest-mutation/journal.json"
-    )
+    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    if journal_shape == "legacy":
+        _strip_resolution_fields(journal)
+    else:
+        _strip_selected_live(journal)
     assert ShardedManifest(config).load("sources/design/a.md") is not None
 
 
