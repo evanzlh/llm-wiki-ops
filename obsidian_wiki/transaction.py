@@ -92,6 +92,19 @@ class _Candidate:
     data: bytes
 
 
+@dataclass(frozen=True)
+class _WriterEntry:
+    kind: str
+    mode: int
+    device: int
+    inode: int
+    links: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+    content_hash: str | None = None
+
+
 _TRANSACTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _HASH_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _STATUSES = frozenset({"active", "promoting", "failed", "complete", "restored"})
@@ -658,7 +671,8 @@ class TransactionManager:
                     {
                         relative: stored
                         for relative, stored in snapshot_index.items()
-                        if relative not in rollback_exclusions
+                        if relative in base_affected
+                        and relative not in rollback_exclusions
                     },
                 )
                 payload["status"] = "restored"
@@ -713,7 +727,7 @@ class TransactionManager:
         payload = self._read_metadata_payload(record.workspace)
         self._verify_source_preimages(payload, record.source_ids)
         snapshot_index: dict[str, str | None] = {}
-        writer_before: dict[str, str] | None = None
+        writer_before: dict[str, _WriterEntry] | None = None
         writer_before_index: dict[str, str | None] = {}
         writer_rollback: dict[str, str | None] = {}
         rollback_exclusion_paths: set[str] = set()
@@ -831,7 +845,7 @@ class TransactionManager:
             payload.update(
                 {
                     "snapshot_index": dict(sorted(snapshot_index.items())),
-                    "writer_guard": writer_before,
+                    "writer_guard": self._dump_writer_guard(writer_before),
                     "writer_prepared": True,
                 }
             )
@@ -908,7 +922,12 @@ class TransactionManager:
                         f"writer cleanup discovery failed: {rollback_exc}"
                     )
             try:
-                self._restore_snapshot_index(record, writer_rollback)
+                self._restore_writer_guard_changes(
+                    record,
+                    writer_rollback,
+                    writer_before or {},
+                    writer_after if writer_before is not None else {},
+                )
             except (OSError, TransactionError) as rollback_exc:
                 rollback_errors.append(f"writer restore failed: {rollback_exc}")
             try:
@@ -917,7 +936,8 @@ class TransactionManager:
                     {
                         relative: stored
                         for relative, stored in snapshot_index.items()
-                        if relative not in rollback_exclusion_paths
+                        if relative in set(affected)
+                        and relative not in rollback_exclusion_paths
                     },
                 )
             except (OSError, TransactionError) as rollback_exc:
@@ -1506,7 +1526,126 @@ class TransactionManager:
                 base_affected=base_affected,
                 rollback_exclusions=rollback_exclusions or set(),
             )
-        self._restore_snapshot_index(record, resolved_cleanup)
+        before = self._load_writer_guard(payload["writer_guard"])
+        after = self._writer_guard_state(allow_unsafe=True)
+        self._restore_writer_guard_changes(
+            record, resolved_cleanup, before, after
+        )
+
+    def _restore_writer_guard_changes(
+        self,
+        record: TransactionRecord,
+        cleanup: dict[str, str | None],
+        before: dict[str, _WriterEntry],
+        after: dict[str, _WriterEntry],
+    ) -> None:
+        unsafe_additions = {
+            relative
+            for relative in cleanup
+            if relative not in before
+            and after.get(relative) is not None
+            and after[relative].kind == "unsafe"
+        }
+        for relative in sorted(unsafe_additions):
+            target = self._writer_lexical_path(relative)
+            if not target.exists() and not target.is_symlink():
+                continue
+            metadata = target.lstat()
+            if not self._writer_identity_matches(metadata, after[relative]):
+                raise TransactionError(f"writer rollback target changed: {relative}")
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                target.rmdir()
+            else:
+                target.unlink()
+            self._fsync_directory(target.parent)
+        directory_paths = {
+            relative
+            for relative in cleanup
+            if (before.get(relative) or after.get(relative)) is not None
+            and (before.get(relative) or after.get(relative)).kind == "directory"
+        }
+        self._restore_snapshot_index(
+            record,
+            {
+                relative: stored
+                for relative, stored in cleanup.items()
+                if relative not in directory_paths | unsafe_additions
+            },
+        )
+        for relative in sorted(
+            set(before) & directory_paths,
+            key=lambda value: (len(PurePosixPath(value).parts), value),
+        ):
+            target = self._writer_lexical_path(relative)
+            expected = before[relative]
+            if target.exists() or target.is_symlink():
+                metadata = target.lstat()
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    observed = after.get(relative)
+                    if observed is None or not self._writer_identity_matches(
+                        metadata, observed
+                    ):
+                        raise TransactionError(
+                            f"writer rollback target changed: {relative}"
+                        )
+                    target.unlink()
+            if not target.exists():
+                self._ensure_contained_directory(target.parent, self.config.vault)
+                target.mkdir(mode=expected.mode)
+                self._fsync_directory(target.parent)
+            self._require_ordinary_directory(target, "writer rollback directory")
+            target.chmod(expected.mode)
+
+        for relative, entry in before.items():
+            if relative not in cleanup or entry.kind != "file":
+                continue
+            target = self._writer_lexical_path(relative)
+            if not target.exists() and not target.is_symlink():
+                continue
+            self._require_ordinary_file(target, "writer rollback file")
+            target.chmod(entry.mode)
+
+        for relative in sorted(
+            directory_paths - set(before),
+            key=lambda value: (-len(PurePosixPath(value).parts), value),
+        ):
+            target = self._writer_lexical_path(relative)
+            if not target.exists() and not target.is_symlink():
+                continue
+            metadata = target.lstat()
+            expected = after.get(relative)
+            if (
+                expected is None
+                or expected.kind != "directory"
+                or not self._writer_identity_matches(metadata, expected)
+            ):
+                raise TransactionError(f"writer rollback directory changed: {relative}")
+            try:
+                target.rmdir()
+                self._fsync_directory(target.parent)
+            except OSError as exc:
+                raise TransactionError(
+                    f"writer rollback directory is not empty: {relative}"
+                ) from exc
+
+    @staticmethod
+    def _writer_identity_matches(
+        metadata: os.stat_result, expected: _WriterEntry
+    ) -> bool:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+        ) == (expected.device, expected.inode)
+
+    def _writer_lexical_path(self, relative: str) -> Path:
+        self._validate_relative_path(relative, "writer rollback path")
+        target = self.config.vault.joinpath(*PurePosixPath(relative).parts)
+        self._require_contained(
+            target.parent,
+            self.config.vault,
+            "writer rollback parent",
+        )
+        return target
 
     def _virtual_recovered_files(
         self,
@@ -1542,15 +1681,15 @@ class TransactionManager:
         if payload["writer_prepared"]:
             excluded = base_affected | rollback_exclusions
             writer_before = {
-                relative: content_hash
-                for relative, content_hash in self._load_writer_guard(
+                relative: entry
+                for relative, entry in self._load_writer_guard(
                     payload["writer_guard"]
                 ).items()
                 if relative not in excluded
             }
             writer_after = {
-                relative: content_hash
-                for relative, content_hash in self._writer_guard_state(
+                relative: entry
+                for relative, entry in self._writer_guard_state(
                     allow_unsafe=True
                 ).items()
                 if relative not in excluded
@@ -1560,6 +1699,7 @@ class TransactionManager:
                     writer_before,
                     writer_after,
                     {relative: snapshot_index[relative] for relative in writer_before},
+                    restorable=True,
                 )
             )
         for relative in sorted(base_affected - rollback_exclusions):
@@ -1570,7 +1710,7 @@ class TransactionManager:
     def _failed_residual_postimages(
         self,
         record: TransactionRecord,
-        writer_before: dict[str, str] | None,
+        writer_before: dict[str, _WriterEntry] | None,
         *,
         base_affected: set[str],
         rollback_exclusions: set[str],
@@ -1578,14 +1718,16 @@ class TransactionManager:
         residual: dict[str, str | None] = {}
         if writer_before is not None:
             writer_after = self._writer_guard_state(allow_unsafe=True)
-            changed = {
-                relative
-                for relative, content_hash in writer_before.items()
-                if writer_after.get(relative) != content_hash
-            }
-            changed.update(set(writer_after) - set(writer_before))
+            changed = set(
+                self._writer_guard_diff(
+                    writer_before,
+                    writer_after,
+                    {relative: None for relative in writer_before},
+                    restorable=True,
+                )
+            )
             for relative in changed - base_affected:
-                residual[relative] = self._current_vault_hash(relative)
+                residual[relative] = self._current_writer_state_hash(relative)
         for relative in sorted(base_affected - rollback_exclusions):
             current = self._current_vault_hash(relative)
             if current != record.preimages.get(relative):
@@ -1609,7 +1751,11 @@ class TransactionManager:
         actual: dict[str, str | None] = {}
         for relative in cleanup:
             try:
-                actual[relative] = self._current_vault_hash(relative)
+                actual[relative] = (
+                    self._current_vault_hash(relative)
+                    if relative in base_affected
+                    else self._current_writer_state_hash(relative)
+                )
             except TransactionError as exc:
                 raise TransactionError(
                     "failed transaction residual changed after lock release: "
@@ -1631,8 +1777,8 @@ class TransactionManager:
         }
         baselines.update(
             {
-                relative: content_hash
-                for relative, content_hash in self._load_writer_guard(
+                relative: self._writer_state_hash(entry)
+                for relative, entry in self._load_writer_guard(
                     payload["writer_guard"]
                 ).items()
                 if relative not in base_affected | rollback_exclusions
@@ -1640,7 +1786,11 @@ class TransactionManager:
         )
         for relative in set(residuals) - set(actual):
             try:
-                current = self._current_vault_hash(relative)
+                current = (
+                    self._current_vault_hash(relative)
+                    if relative in base_affected
+                    else self._current_writer_state_hash(relative)
+                )
             except TransactionError as exc:
                 raise TransactionError(
                     "failed transaction residual changed after lock release: "
@@ -1851,11 +2001,14 @@ class TransactionManager:
         self,
         record: TransactionRecord,
         reusable_index: dict[str, str | None],
-    ) -> tuple[dict[str, str], dict[str, str | None]]:
+    ) -> tuple[dict[str, _WriterEntry], dict[str, str | None]]:
         state = self._writer_guard_state()
         index: dict[str, str | None] = {}
         originals = record.workspace / "snapshots" / "originals"
         for relative in sorted(state):
+            if state[relative].kind == "directory":
+                index[relative] = None
+                continue
             if relative in reusable_index:
                 index[relative] = reusable_index[relative]
                 continue
@@ -1873,21 +2026,50 @@ class TransactionManager:
 
     @staticmethod
     def _writer_guard_diff(
-        before: dict[str, str],
-        after: dict[str, str | None],
+        before: dict[str, _WriterEntry],
+        after: dict[str, _WriterEntry],
         before_index: dict[str, str | None],
+        *,
+        restorable: bool = False,
     ) -> dict[str, str | None]:
         changed = {
             relative: before_index[relative]
-            for relative, content_hash in before.items()
-            if after.get(relative) != content_hash
+            for relative, entry in before.items()
+            if not TransactionManager._writer_entries_equal(
+                entry, after.get(relative), restorable=restorable
+            )
         }
         changed.update({relative: None for relative in set(after) - set(before)})
         return dict(sorted(changed.items()))
 
+    @staticmethod
+    def _writer_entries_equal(
+        before: _WriterEntry,
+        after: _WriterEntry | None,
+        *,
+        restorable: bool,
+    ) -> bool:
+        if after is None:
+            return False
+        if not restorable:
+            return before == after
+        return (
+            before.kind,
+            before.mode,
+            before.links,
+            before.size if before.kind == "file" else None,
+            before.content_hash,
+        ) == (
+            after.kind,
+            after.mode,
+            after.links,
+            after.size if after.kind == "file" else None,
+            after.content_hash,
+        )
+
     def _writer_guard_state(
         self, *, allow_unsafe: bool = False
-    ) -> dict[str, str | None]:
+    ) -> dict[str, _WriterEntry]:
         self._require_ordinary_directory(self.config.vault, "portable vault")
         excluded_local: Path | None = None
         try:
@@ -1895,7 +2077,7 @@ class TransactionManager:
         except ValueError:
             pass
 
-        result: dict[str, str | None] = {}
+        result: dict[str, _WriterEntry] = {}
         for directory, dirnames, filenames in os.walk(
             self.config.vault, topdown=True, followlinks=False
         ):
@@ -1910,7 +2092,20 @@ class TransactionManager:
                 ):
                     continue
                 child = current / name
-                self._require_ordinary_directory(child, "vault directory")
+                metadata = None
+                try:
+                    metadata = child.lstat()
+                    self._require_ordinary_directory(child, "vault directory")
+                except (OSError, TransactionError):
+                    if not allow_unsafe:
+                        raise
+                    result[relative.as_posix()] = self._writer_entry(
+                        metadata, kind="unsafe"
+                    )
+                    continue
+                result[relative.as_posix()] = self._writer_entry(
+                    metadata, kind="directory"
+                )
                 kept_directories.append(name)
             dirnames[:] = kept_directories
 
@@ -1924,15 +2119,43 @@ class TransactionManager:
                 ):
                     continue
                 target = current / name
+                metadata = None
                 try:
-                    result[relative_key] = self._hash_single_link_file(
+                    metadata = target.lstat()
+                    content_hash = self._hash_single_link_file(
                         target, "writer guard target"
                     )
-                except TransactionError:
+                    result[relative_key] = self._writer_entry(
+                        metadata, kind="file", content_hash=content_hash
+                    )
+                except (OSError, TransactionError):
                     if not allow_unsafe:
                         raise
-                    result[relative_key] = None
+                    result[relative_key] = self._writer_entry(
+                        metadata, kind="unsafe"
+                    )
         return dict(sorted(result.items()))
+
+    @staticmethod
+    def _writer_entry(
+        metadata: os.stat_result | None,
+        *,
+        kind: str,
+        content_hash: str | None = None,
+    ) -> _WriterEntry:
+        if metadata is None:
+            return _WriterEntry(kind, 0, 0, 0, 0, 0, 0, 0, content_hash)
+        return _WriterEntry(
+            kind,
+            stat.S_IMODE(metadata.st_mode),
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_nlink,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+            content_hash,
+        )
 
     def _vault_path(self, relative: str) -> Path:
         self._validate_relative_path(relative, "vault-relative path")
@@ -1947,6 +2170,25 @@ class TransactionManager:
         if not target.exists() and not target.is_symlink():
             return None
         return self._hash_single_link_file(target, "transaction target")
+
+    def _current_writer_state_hash(self, relative: str) -> str | None:
+        entry = self._writer_guard_state(allow_unsafe=True).get(relative)
+        return None if entry is None else self._writer_state_hash(entry)
+
+    @staticmethod
+    def _writer_state_hash(entry: _WriterEntry) -> str:
+        if entry.kind == "directory":
+            state = (entry.kind, entry.mode)
+        else:
+            state = (
+                entry.kind,
+                entry.mode,
+                entry.links,
+                entry.size,
+                entry.content_hash,
+            )
+        encoded = repr(state).encode("utf-8")
+        return TransactionManager._hash_bytes(encoded)
 
     def _ensure_contained_directory(self, path: Path, root: Path) -> None:
         self._require_contained(path, root, "transaction directory")
@@ -2157,8 +2399,8 @@ class TransactionManager:
         expected_snapshot_hashes = {
             relative: preimages.get(relative) for relative in base_affected
         }
-        for relative, content_hash in writer_guard.items():
-            expected_snapshot_hashes.setdefault(relative, content_hash)
+        for relative, entry in writer_guard.items():
+            expected_snapshot_hashes.setdefault(relative, entry.content_hash)
         if not set(snapshots) <= snapshot_allowed:
             raise TransactionError(
                 "transaction snapshot target is outside the affected set"
@@ -2175,7 +2417,8 @@ class TransactionManager:
             missing_backings = {
                 relative
                 for relative in guard_paths - base_affected
-                if snapshots[relative] is None
+                if writer_guard[relative].kind == "file"
+                and snapshots[relative] is None
             }
             if missing_backings:
                 raise TransactionError(
@@ -2266,10 +2509,59 @@ class TransactionManager:
         ):
             raise TransactionError("restored transaction recovery fields are invalid")
 
-    def _load_writer_guard(self, raw: object) -> dict[str, str]:
-        guard = self._load_guard_hashes(raw, "transaction writer guard")
-        for relative in guard:
+    @staticmethod
+    def _dump_writer_guard(
+        guard: dict[str, _WriterEntry]
+    ) -> dict[str, str]:
+        return {
+            relative: TransactionManager._encode_writer_entry(entry)
+            for relative, entry in sorted(guard.items())
+        }
+
+    @staticmethod
+    def _encode_writer_entry(entry: _WriterEntry) -> str:
+        prefix = entry.content_hash or entry.kind
+        return "|".join(
+            (
+                prefix,
+                entry.kind,
+                str(entry.mode),
+                str(entry.device),
+                str(entry.inode),
+                str(entry.links),
+                str(entry.size),
+                str(entry.modified_ns),
+                str(entry.changed_ns),
+            )
+        )
+
+    def _load_writer_guard(self, raw: object) -> dict[str, _WriterEntry]:
+        if not isinstance(raw, dict):
+            raise TransactionError("transaction writer guard must be an object")
+        guard: dict[str, _WriterEntry] = {}
+        if list(raw) != sorted(raw):
+            raise TransactionError("transaction writer guard paths must be sorted")
+        for relative, encoded in raw.items():
+            if not isinstance(relative, str) or not isinstance(encoded, str):
+                raise TransactionError("transaction writer guard entry is invalid")
             self._validate_writer_guard_path(relative)
+            parts = encoded.split("|")
+            if len(parts) != 9 or parts[1] not in {"file", "directory"}:
+                raise TransactionError("transaction writer guard entry is invalid")
+            content_hash = parts[0] if parts[1] == "file" else None
+            if parts[1] == "file" and _HASH_RE.fullmatch(parts[0]) is None:
+                raise TransactionError("transaction writer guard hash is invalid")
+            try:
+                numbers = tuple(int(value) for value in parts[2:])
+            except ValueError as exc:
+                raise TransactionError(
+                    "transaction writer guard metadata is invalid"
+                ) from exc
+            if any(value < 0 for value in numbers):
+                raise TransactionError("transaction writer guard metadata is invalid")
+            guard[relative] = _WriterEntry(
+                parts[1], *numbers, content_hash=content_hash
+            )
         return guard
 
     def _load_residual_postimages(self, raw: object) -> dict[str, str | None] | None:
@@ -2285,16 +2577,6 @@ class TransactionManager:
         if raw is None:
             return None
         return self._load_image_map(raw, "transaction rollback exclusions")
-
-    def _load_guard_hashes(self, raw: object, label: str) -> dict[str, str]:
-        loaded = self._load_image_map(raw, label)
-        if any(content_hash is None for content_hash in loaded.values()):
-            raise TransactionError(f"{label} hashes cannot be null")
-        return {
-            relative: content_hash
-            for relative, content_hash in loaded.items()
-            if content_hash is not None
-        }
 
     def _validate_writer_guard_path(self, relative: str) -> None:
         self._validate_relative_path(relative, "transaction writer guard path")

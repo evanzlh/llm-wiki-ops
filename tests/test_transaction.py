@@ -2650,6 +2650,102 @@ def test_log_writer_vault_side_effect_is_rolled_back(
     assert (config.vault / "log.md").read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
 
 
+def test_log_writer_empty_directory_side_effect_is_rolled_back(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    side_effect = config.vault / "references/writer-empty"
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        side_effect.mkdir(parents=True)
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert not side_effect.exists()
+    assert (config.vault / "log.md").read_text(encoding="utf-8") == EMPTY_OPERATION_LOG
+
+
+def test_log_writer_chmod_side_effect_is_rolled_back(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    unrelated = config.vault / "references/unrelated.md"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text(PAGE, encoding="utf-8")
+    unrelated.chmod(0o640)
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        unrelated.chmod(0o600)
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o640
+    assert unrelated.read_text(encoding="utf-8") == PAGE
+
+
+def test_log_writer_nested_nonempty_directory_side_effect_is_rolled_back(
+    tmp_path: Path,
+) -> None:
+    root, config = make_config(tmp_path)
+    side_effect = config.vault / "writer-tree/nested"
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        side_effect.mkdir(parents=True)
+        (side_effect / "artifact.txt").write_text("writer data\n", encoding="utf-8")
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert not (config.vault / "writer-tree").exists()
+
+
+@pytest.mark.parametrize("replace", [False, True], ids=["removed", "replaced"])
+def test_log_writer_restores_preexisting_empty_directory(
+    tmp_path: Path,
+    replace: bool,
+) -> None:
+    root, config = make_config(tmp_path)
+    directory = config.vault / "references/owner-empty"
+    directory.mkdir(parents=True)
+    directory.chmod(0o750)
+
+    def writer(change):
+        result = append_operation(config.vault / "log.md", change, root=config.vault)
+        directory.rmdir()
+        if replace:
+            directory.write_text("replacement\n", encoding="utf-8")
+        return result
+
+    manager = TransactionManager(config, log_writer=writer)
+    record = manager.begin([add_source(root)], transaction_id="tx-1")
+    candidate_page(record, "concepts/a.md")
+
+    with pytest.raises(TransactionError, match="rolled back.*side effect"):
+        manager.commit("tx-1", completed_at="2026-08-07T01:00:00Z")
+
+    assert directory.is_dir()
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o750
+    assert list(directory.iterdir()) == []
+
+
 def test_restore_uses_persisted_writer_guard_after_writer_crash(
     tmp_path: Path,
 ) -> None:
@@ -3085,7 +3181,7 @@ def test_failed_restore_recovers_recorded_partial_base_rollback(
     assert manager.load("tx-1").status == "restored"
 
 
-def test_unknown_failed_residual_state_is_persisted_and_recovery_refuses(
+def test_writer_added_symlink_is_identity_checked_and_rolled_back(
     tmp_path: Path,
 ) -> None:
     root, config = make_config(tmp_path)
@@ -3103,23 +3199,14 @@ def test_unknown_failed_residual_state_is_persisted_and_recovery_refuses(
     record = manager.begin([add_source(root)], transaction_id="tx-1")
     candidate_page(record, "concepts/a.md")
 
-    with pytest.raises(TransactionError, match="rolled back.*residual discovery"):
+    with pytest.raises(TransactionError, match="rolled back.*writer failed"):
         manager.commit("tx-1")
 
     payload = json.loads((record.workspace / "metadata.json").read_text())
     assert payload["status"] == "failed"
-    assert payload["residual_postimages"] is None
+    assert payload["residual_postimages"] == {}
     assert not manager.lock_path.exists()
-    assert unsafe.is_symlink()
-
-    for action in (manager.retry, manager.restore):
-        with pytest.raises(TransactionError, match="residual state is unknown"):
-            action("tx-1")
-        assert unsafe.is_symlink()
-
-    manager.discard("tx-1")
-    assert not record.workspace.exists()
-    assert unsafe.is_symlink()
+    assert not unsafe.exists() and not unsafe.is_symlink()
 
 
 @pytest.mark.parametrize("snapshot_kind", ["base", "writer", "log"])
