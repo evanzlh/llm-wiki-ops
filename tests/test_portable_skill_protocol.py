@@ -331,8 +331,9 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
         "obsidian-wiki hot status --json",
         "selected page repair",
         "does not change knowledge pages, sources, manifest shards, or transactions",
-        "local derived-state housekeeping",
-        "may invalidate and remove a stale ignored `hot.md` artifact",
+        "read-only",
+        "must not remove",
+        "tracked `hot.md`",
         "`transaction list` and `cache-check` are read-only",
     ):
         assert required in flat
@@ -353,18 +354,19 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
     flat = " ".join(contents.split())
     for required in (
         "sharded manifest",
-        "operation records",
+        "canonical operation blocks",
         "retained transactions",
         "graph",
         "freshness",
         "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
         "synthesis/wiki-insights.md",
         "does not change knowledge pages, sources, manifest shards, or transactions",
-        "local derived-state housekeeping",
-        "may invalidate and remove a stale ignored `hot.md` artifact",
+        "read-only",
+        "must not remove",
+        "tracked `hot.md`",
         "`transaction list` and `cache-check` are read-only",
         "page count only from `stats.pages`",
-        "<vault>/journal/operations/**/*.md",
+        "<vault>/log.md",
         "<vault>/.manifest/sources/**/*.json",
         "Label the origin of every reported count",
     ):
@@ -729,7 +731,7 @@ def test_status_contract_matches_real_graph_and_portable_manifest_layout(
         "`surprising_connections`",
         "`dead_ends`",
         "`isolated`",
-        "<vault>/journal/operations/**/*.md",
+        "<vault>/log.md",
         "<vault>/.manifest/sources/**/*.json",
         "validate each shard schema",
         "duplicate Source IDs",
@@ -744,6 +746,20 @@ def test_status_contract_matches_real_graph_and_portable_manifest_layout(
         "tier changes",
     ):
         assert unsupported not in flat
+
+
+def test_active_operation_runtime_contract_has_no_operation_pages() -> None:
+    paths = (
+        CANONICAL,
+        "obsidian_wiki/_data/bootstrap/AGENTS.md",
+        "obsidian_wiki/_data/skills/daily-update/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-digest/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-narrate/SKILL.md",
+        "obsidian_wiki/_data/skills/wiki-status/SKILL.md",
+    )
+    combined = "\n".join(text(path) for path in paths)
+    assert "journal/operations" not in combined
+    assert "operation_path" not in combined
 
 
 def test_dedup_bounds_candidate_generation_before_similarity_scoring() -> None:

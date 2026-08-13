@@ -55,11 +55,11 @@ Integration policy is commonly summarized as CLI flags > resolved environment/co
 
 ## Tracked and ignored state
 
-Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and immutable operation records.
+Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and the tracked authoritative operation log `wiki/log.md`.
 
-Ignored local state includes `.obsidian-wiki/local/`, transaction workspaces and recovery copies, and `wiki/hot.md`. The hot page is derived from bounded deterministic inputs and can be regenerated.
+Ignored local state includes `.obsidian-wiki/local/`, transaction workspaces, and recovery copies. `wiki/hot.md` is instead a tracked derived semantic view; `hot status` is read-only and must not remove it.
 
-A transaction commit owns affected manifest shards but never modifies tracked source snapshots. Agents must never edit manifest shards directly. Stable `wiki/index.md` and `wiki/log.md` are not ordinary write targets.
+A transaction commit owns affected manifest shards and appends one canonical block to `wiki/log.md` last, but never modifies tracked source snapshots. Its JSON output returns `log_path`. Agents must never edit manifest shards directly and must not edit `log.md` directly. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
 
 Manifest v2 consists of the tracked `wiki/.manifest.json` marker and shards below `wiki/.manifest/sources/`.
 

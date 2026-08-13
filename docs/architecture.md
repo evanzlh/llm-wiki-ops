@@ -20,10 +20,10 @@ team-knowledge/
 └── wiki/
     ├── .manifest.json         # tracked manifest v2 marker
     ├── .manifest/sources/     # tracked manifest v2 shards
-    ├── journal/operations/    # immutable operation records
-    ├── index.md               # stable
-    ├── log.md                 # stable
-    └── hot.md                 # ignored derived view
+    ├── concepts/ entities/ skills/ references/ synthesis/ journal/ projects/
+    ├── index.md          # tracked control view
+    ├── log.md            # tracked authoritative operation log
+    └── hot.md            # tracked derived semantic view
 ```
 
 Bootstrap instructions at the repository root direct supported agents to the canonical skill tree. Mirrors contain ordinary files so clones do not depend on links or machine-global installation.
@@ -42,14 +42,14 @@ The write lifecycle is:
 2. The agent writes complete candidate pages only inside the returned workspace.
 3. `transaction validate` checks the prospective vault, including candidate-to-candidate and candidate-to-live links.
 4. Human or agent transaction review inspects the candidate diff and validation report.
-5. `transaction commit` revalidates, creates recovery material, promotes reviewed candidate pages, upserts affected manifest shards, and writes one immutable page under `journal/operations/`. It never changes tracked source snapshots.
+5. `transaction commit` revalidates, creates recovery material, promotes reviewed candidate pages, upserts affected manifest shards, and appends one canonical operation block to `wiki/log.md` last. Its JSON result returns `log_path`. It never changes tracked source snapshots.
 6. The owner reviews `git diff` and handles Git publication outside the CLI.
 
 Failed promotion retains status-aware recovery state. `transaction retry`, `restore`, `discard`, and `abort` make each next action explicit. Owner changes are never silently overwritten.
 
-## Stable and derived views
+## Control, log, and derived views
 
-Ordinary knowledge writes keep stable `wiki/index.md` and `wiki/log.md`; consumers derive navigation from page metadata and operation records. Ignored `wiki/hot.md` is a semantic recent-activity view. `hot status` detects staleness, `hot inputs` supplies bounded deterministic input, and `hot mark-current` records the regenerated view's fingerprint.
+`wiki/index.md` is the tracked control view. `wiki/log.md` is the tracked authoritative operation log, parsed as canonical blocks rather than as graph pages. `wiki/hot.md` is a tracked derived semantic recent-activity view. `hot status` detects staleness without modifying or deleting the file; `hot inputs` supplies bounded deterministic input, and `hot mark-current` records the regenerated view's fingerprint. Owners resolve ordinary Git conflicts in both tracked views.
 
 ## Manifest v2
 

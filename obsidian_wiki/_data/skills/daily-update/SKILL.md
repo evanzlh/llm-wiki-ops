@@ -43,19 +43,18 @@ obsidian-wiki cache-check <source1> [source2 ...] --json --pretty
 obsidian-wiki hot status --json
 ```
 
-`transaction list` and `cache-check` are read-only. `hot status` is local
-derived-state housekeeping: it may invalidate and remove a stale ignored `hot.md`
-artifact. That side effect does not change knowledge pages, sources, manifest
-shards, transactions, or source authority.
+`transaction list` and `cache-check` are read-only. `hot status` is also read-only.
+The tracked `hot.md` is a derived semantic view; status reports whether it is stale
+and must not remove it.
 
 Report retained transaction IDs, statuses, `recommended_action`, and
 `allowed_actions`; report the cache result's exact `missing`, `new`, `modified`, and
 `unchanged` Source IDs; and report hot freshness. Missing sources or an ambiguous
 retained outcome stop the run. Do not treat missing-only results as no work.
 
-If no repair is selected, return the audit and housekeeping result. Do not run
-`hot inputs` or `hot mark-current` merely because status invalidated stale local
-state, and do not manufacture a knowledge-page change to refresh it.
+If no repair is selected, return the audit result. Do not run `hot inputs` or
+`hot mark-current` merely because status reported stale tracked state, and do not
+manufacture a knowledge-page change to refresh it.
 
 For a selected page repair, first identify the exact final page set, supporting
 sources, intended replacements or creations, and reviewed removals. Complete this
@@ -96,10 +95,13 @@ read-only inventory and intent confirmation before mutation.
 7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
    `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
-   candidate as a local derived artifact, then run
+   candidate as the tracked derived semantic `hot.md` view, then run
    `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 
-Do not edit manifest shards, operation records, stable `index.md`, or stable
-`log.md`; do not run Git publication commands or write unsupported control paths.
+Do not edit manifest shards, `index.md`, or `log.md`; transaction commit owns
+`log.md`, appends one canonical block last, and returns `log_path`. Treat the
+post-commit `hot.md` refresh as a tracked diff. Repository owners resolve ordinary
+Git conflicts in `log.md` and `hot.md`; do not run Git publication commands or
+write unsupported control paths.
 Do not commit, push, or open a pull request.

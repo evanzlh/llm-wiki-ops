@@ -123,12 +123,20 @@ def test_current_docs_cover_the_portable_only_contract() -> None:
         "tracked source snapshots",
         "transaction review",
         "recovery",
-        "stable `wiki/index.md` and `wiki/log.md`",
-        "ignored `wiki/hot.md`",
+        "tracked authoritative operation log",
+        "tracked derived semantic view",
+        "log_path",
+        "must not remove",
         "Git publication",
         "Dashboard",
     ):
         assert required in combined, required
+
+
+def test_active_docs_drop_operation_pages_and_ignored_hot_contract() -> None:
+    combined = "\n".join(_text(relative) for relative in CURRENT_DOCS)
+    for forbidden in ("journal/operations", "operation_path", "ignored `wiki/hot.md`"):
+        assert forbidden not in combined, forbidden
 
 
 def test_each_authoritative_page_documents_its_role() -> None:
@@ -234,7 +242,8 @@ def test_readmes_define_source_and_transaction_ownership() -> None:
             "tracked before `transaction begin`",
             "promotes candidate pages",
             "upserts manifest shards",
-            "writes an operation record",
+            "appends one canonical block",
+            "`log_path`",
             "never modifies tracked source snapshots",
         ),
         "README_ZH.md": (
@@ -242,7 +251,8 @@ def test_readmes_define_source_and_transaction_ownership() -> None:
             "在 `transaction begin` 之前纳入版本管理",
             "提升候选页面",
             "更新 manifest 分片",
-            "写入操作记录",
+            "追加一个规范区块",
+            "`log_path`",
             "绝不会修改受版本管理的来源快照",
         ),
     }

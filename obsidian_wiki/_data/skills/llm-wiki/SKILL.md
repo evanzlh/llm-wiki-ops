@@ -46,9 +46,9 @@ frontmatter only to close an update or deletion over the authoritative tracked
 files. Do not cite a compiled page as its own source.
 
 The repository uses manifest v2 with sharded entries and exactly one configured source root.
-The `obsidian-wiki transaction commit` command owns shard mutation and the
-immutable operation record. Agents never edit manifest shards directly and
-never rewrite stable `index.md` or `log.md` during ordinary operations.
+The `obsidian-wiki transaction commit` command owns shard mutation and the tracked
+authoritative operation log at `wiki/log.md`. It appends one canonical block last
+and returns `log_path`. Agents never edit manifest shards or `log.md` directly.
 
 ## Knowledge write protocol
 
@@ -75,8 +75,8 @@ repository root as the command working directory throughout.
 3. **Write final candidates.** Read `candidate_vault` and `started_at` from the
    begin result. Write only final Markdown paths beneath `concepts/`,
    `entities/`, `skills/`, `references/`, `synthesis/`, `journal/`, or
-   `projects/` in that directory; `journal/operations/` and control paths are
-   not candidate paths. Do not `cd` into `candidate_vault`.
+   `projects/` in that directory; control paths are not candidate paths. Do not
+   `cd` into `candidate_vault`.
 
    Every candidate requires `title`, `category`, `tags`, `sources`, `created`,
    and `updated` frontmatter. Its `sources` must be a non-empty subset of the
@@ -95,8 +95,9 @@ repository root as the command working directory throughout.
 
 6. **Review and commit.** Review the complete candidate diff and deletion set.
    When correct, run `obsidian-wiki transaction commit <id> --json --pretty`.
-   The CLI promotes validated pages and records manifest v2 ownership. Do not
-   commit, push, or open a pull request; those are separate user-controlled Git
+   The CLI promotes validated pages, records manifest v2 ownership, and appends
+   one canonical operation block to `log.md` last. Read `log_path` from the
+   result. Do not commit, push, or open a pull request; those are separate user-controlled Git
    actions.
 
 7. **Recover failures explicitly.** Save the failed command envelope before
@@ -120,20 +121,23 @@ repository root as the command working directory throughout.
    work; `transaction discard` removes retained recovery state. Only a
    successful `transaction commit` or `transaction retry` is a knowledge commit.
 
-8. **Refresh bounded local context after success.** Only after a successful
+8. **Refresh bounded tracked context after success.** Only after a successful
    knowledge commit, run `obsidian-wiki hot status --json`.
    If stale, obtain bounded inputs with `obsidian-wiki hot inputs --json --pretty`,
-   let the agent write only the requested local derived hot
-   artifact, and finish with `obsidian-wiki hot mark-current --json`. Hot-state
+   let the agent write only the requested tracked derived semantic `hot.md`
+   view, and finish with `obsidian-wiki hot mark-current --json`. `hot status`
+   is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.
 
 ## Operational boundaries
 
 The CLI manages deterministic validation, promotion, manifest shards, recovery,
-and local freshness bookkeeping. Do not commit, push, or open a pull request as
+and freshness bookkeeping. Do not commit, push, or open a pull request as
 part of wiki runtime work. Agents never edit manifest shards directly and never
-rewrite stable `index.md` or `log.md` during ordinary operations.
+edit `log.md` directly; transaction commit owns `log.md`. Its result includes
+`log_path`. Repository owners resolve ordinary Git conflicts in `log.md` and
+`hot.md`.
 
 Read operations may inspect only the configured repository, vault, and bounded
 inputs permitted by the owner instructions. Any requested content that lacks a

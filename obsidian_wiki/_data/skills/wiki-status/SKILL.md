@@ -35,7 +35,7 @@ and lint commands use this safe walker internally.
 ## Status inventory
 
 After authority preflight, inspect the manifest-v2 marker and sharded manifest,
-immutable operation records, retained transactions, knowledge graph, and source and
+canonical operation blocks, retained transactions, knowledge graph, and source and
 hot freshness. Use each surface only for the data it actually returns:
 
 ```bash
@@ -46,10 +46,9 @@ obsidian-wiki graph-analyse --pretty
 obsidian-wiki hot status --json
 ```
 
-`transaction list` and `cache-check` are read-only. `hot status` is local
-derived-state housekeeping: it may invalidate and remove a stale ignored `hot.md`
-artifact. That side effect does not change knowledge pages, sources, manifest
-shards, transactions, or source authority.
+`transaction list` and `cache-check` are read-only. `hot status` is also read-only.
+The tracked `hot.md` is a derived semantic view; status reports whether it is stale
+and must not remove it.
 
 Pass explicitly selected Source IDs to the positional cache command. Do not infer
 freshness from modification time alone.
@@ -66,10 +65,10 @@ Report only its real top-level fields: `god_nodes`, `communities`,
 and `communities`). Take retained transaction state only from `transaction list`,
 and hot state only from the local-state command.
 
-Resolve `<vault>` from the nearest portable config. Select operation snapshots only
-at `<vault>/journal/operations/**/*.md` from the safe Markdown walker, then validate
-their canonical immutable operation frontmatter, path, filename timestamp, and body
-schema before counting or reporting them. Do not guess another journal path.
+Resolve `<vault>` from the nearest portable config. Safely read exactly
+`<vault>/log.md`, then validate its canonical operation blocks before counting or
+reporting them. Do not guess another operation-log path or treat blocks as graph
+pages.
 
 The manifest-v2 marker fixes the shard root at
 `<vault>/.manifest/sources/**/*.json`; it is not configurable independently of the
@@ -132,10 +131,13 @@ change. Without valid source authority, return the analysis only.
 7. Only after a successful `transaction commit` or `transaction retry`, run
    `obsidian-wiki hot status --json`. If stale, run
    `obsidian-wiki hot inputs --json --pretty`, write only the requested bounded hot
-   candidate as a local derived artifact, then run
+   candidate as the tracked derived semantic `hot.md` view, then run
    `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 
-Do not edit manifest shards, operation records, stable `index.md`, or stable
-`log.md`; do not run Git publication commands or write unsupported control paths.
+Do not edit manifest shards, `index.md`, or `log.md`; transaction commit owns
+`log.md`, appends one canonical block last, and returns `log_path`. Treat the
+post-commit `hot.md` refresh as a tracked diff. Repository owners resolve ordinary
+Git conflicts in `log.md` and `hot.md`; do not run Git publication commands or
+write unsupported control paths.
 Do not commit, push, or open a pull request.

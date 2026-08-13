@@ -10,7 +10,10 @@ and read this file before wiki work. If config is absent, use
 `.skills/<task>/SKILL.md`. If a task skill conflicts with the canonical
 protocol, the canonical protocol takes precedence. All knowledge writes use CLI
 transactions; direct vault, manifest, index, or log mutation is outside agent
-authority.
+authority. Transaction commit owns the tracked authoritative `wiki/log.md` and
+appends its canonical operation block last. The tracked `wiki/hot.md` is a derived
+semantic view; freshness status is read-only and must not remove it.
 
 Treat owner changes as authoritative. The CLI does not perform Git publication;
 commits, pushes, and pull requests require a separate owner decision.
+Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.

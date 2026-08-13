@@ -31,3 +31,5 @@ def test_docs_define_tracked_and_derived_manifest_state() -> None:
     assert "wiki/.manifest/sources/" in text
     assert "tracked source snapshots" in text
     assert "ignored local transaction workspaces" in text
+    assert "log.md            # tracked authoritative operation log" in text
+    assert "hot.md            # tracked derived semantic view" in text

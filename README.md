@@ -8,7 +8,7 @@ A portable, Git-native framework for compiling tracked sources into an AI-mainta
 
 ## Product model
 
-Every knowledge base has one repository layout, one repository-relative configuration, and one tracked skill tree. Sources, source snapshots, manifest v2 shards, generated pages, and agent instructions travel together through branches and pull requests. Local transaction workspaces and `wiki/hot.md` stay ignored.
+Every knowledge base has one repository layout, one repository-relative configuration, and one tracked skill tree. Sources, source snapshots, manifest v2 shards, generated pages, the authoritative `wiki/log.md`, the derived `wiki/hot.md`, and agent instructions travel together through branches and pull requests. Only local transaction and recovery state stays ignored.
 
 ## Install
 
@@ -40,7 +40,7 @@ Setup does not initialize Git. Before collaboration, the owner initializes the k
 
 ## Collaborate safely
 
-Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and writes an operation record while keeping stable `wiki/index.md` and `wiki/log.md`. A transaction never modifies tracked source snapshots. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff and handle Git publication externally.
+Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and finally appends one canonical block to the tracked authoritative operation log at `wiki/log.md`; JSON output returns its `log_path`. A transaction never modifies tracked source snapshots. The tracked `wiki/hot.md` is a derived semantic view: `hot status` is read-only and must not remove it. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff, resolve ordinary Git conflicts in `log.md` and `hot.md`, and handle Git publication externally.
 
 Manifest shard updates use a repository-local lock and bounded recovery journal. Every
 writer in the same working tree must cooperate by using the repository transaction

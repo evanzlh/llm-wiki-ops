@@ -39,6 +39,9 @@ class WikiNarrateDocsTest(unittest.TestCase):
         self.assertNotIn("_readouts", skill)
         self.assertNotIn("transaction begin", skill)
         self.assertNotIn("append to `log.md`", skill)
+        self.assertIn("<vault>/log.md", skill)
+        self.assertIn("canonical", skill)
+        self.assertIn("must not remove", skill)
 
     def test_voice_reference_has_exactly_the_three_first_release_voices(self) -> None:
         voices = self.read("obsidian_wiki/_data/skills/wiki-narrate/references/voices.md")

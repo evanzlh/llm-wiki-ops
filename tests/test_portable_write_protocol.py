@@ -222,7 +222,9 @@ def test_cli_ownership_and_git_boundary_are_explicit() -> None:
     for required in (
         "Do not commit, push, or open a pull request",
         "never edit manifest shards directly",
-        "never rewrite stable `index.md` or `log.md`",
+        "transaction commit owns `log.md`",
+        "`log_path`",
+        "owners resolve ordinary Git conflicts",
     ):
         assert required in text
 

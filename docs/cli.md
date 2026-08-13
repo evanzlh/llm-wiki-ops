@@ -57,7 +57,7 @@ obsidian-wiki transaction discard TRANSACTION_ID [--json] [--pretty]
 obsidian-wiki transaction abort TRANSACTION_ID [--json] [--pretty]
 ```
 
-`begin` accepts one or more authoritative source paths and returns an ID plus a runtime `candidate_vault`. Agents write candidates only there. `delete` declares a vault-relative knowledge-page removal. `validate` checks the full prospective vault without promotion. Transaction review inspects candidates, deletions, and the report before `commit` revalidates and promotes.
+`begin` accepts one or more authoritative source paths and returns an ID plus a runtime `candidate_vault`. Agents write candidates only there. `delete` declares a vault-relative knowledge-page removal. `validate` checks the full prospective vault without promotion. Transaction review inspects candidates, deletions, and the report before `commit` revalidates, promotes pages, updates manifest shards, and appends one canonical block to the tracked authoritative operation log `wiki/log.md` last. JSON commit and retry outputs return `log_path`.
 
 Failures retain recovery state when a safe next action is possible. Use `list` to inspect it; then follow the reported `retry`, `restore`, `discard`, or `abort` action. Transaction commands do not perform Git publication.
 
@@ -77,7 +77,7 @@ artifacts whose recorded identity and content still match. If the live shard cha
 between attempts, automatic recovery stops and the owner must rerun the command to
 confirm the current live version.
 
-## Local hot state
+## Tracked hot view
 
 ```bash
 obsidian-wiki hot status [--json] [--pretty]
@@ -85,7 +85,7 @@ obsidian-wiki hot inputs [--pages PAGES] [--operations OPERATIONS] [--json] [--p
 obsidian-wiki hot mark-current [--json] [--pretty]
 ```
 
-`status` reports freshness and removes a stale ignored `wiki/hot.md`. `inputs` emits bounded page summaries and operation records; defaults are 50 pages and 10 operations. After an agent semantically rewrites the view, `mark-current` records its fingerprint. Stable `wiki/index.md` and `wiki/log.md` remain unchanged.
+`status` reports freshness read-only and must not remove the tracked `wiki/hot.md`. `inputs` emits bounded page summaries and canonical operation blocks parsed from `wiki/log.md`; defaults are 50 pages and 10 operations. After an agent semantically rewrites the tracked derived semantic view, `mark-current` records its fingerprint. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
 
 ## Query and context
 
