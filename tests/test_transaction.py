@@ -2315,7 +2315,6 @@ def test_restore_prepared_promoting_before_writer_touch_succeeds(
 
     assert manager.load("tx-before-writer-touch").status == "restored"
     assert not (config.vault / "concepts/a.md").exists()
-    assert not (config.vault / "concepts/a.md").exists()
 
 
 def test_a_only_transaction_cannot_update_existing_a_b_page(
