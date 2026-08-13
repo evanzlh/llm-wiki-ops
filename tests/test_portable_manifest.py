@@ -1334,6 +1334,183 @@ def test_conflict_resolution_is_crash_idempotent(
     assert not (root / ".obsidian-wiki/local/manifest-mutation/journal.json").exists()
 
 
+def _strip_resolution_fields(journal: Path) -> None:
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    payload.pop("resolution")
+    payload.pop("cleanup_index")
+    payload.pop("selected_live", None)
+    journal.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def _strip_selected_live(journal: Path) -> None:
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    payload.pop("selected_live")
+    journal.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL upgrade")
+@pytest.mark.parametrize("step", ["prepared", "applied"])
+def test_legacy_schema_one_journal_recovers(
+    tmp_path: Path, monkeypatch, step: str
+) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+
+    def crash(current: str) -> None:
+        if current == step:
+            raise SystemExit(f"crash at {step}")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match=step):
+        ShardedManifest(config).upsert(source)
+    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    _strip_resolution_fields(journal)
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    with ShardedManifest(config).mutation_session():
+        pass
+    assert ShardedManifest(config).load("sources/design/a.md") is not None
+    assert not journal.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL upgrade")
+def test_legacy_schema_one_conflict_can_be_resolved(tmp_path: Path, monkeypatch) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+
+    def conflict(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(b"owner live\n")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", conflict)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    _strip_resolution_fields(journal)
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    assert ShardedManifest(config).resolve_conflict_keep_live()["live"] != "absent"
+    assert target.read_bytes() == b"owner live\n"
+    assert not journal.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL upgrade")
+def test_legacy_schema_one_link_window_remains_readable(tmp_path: Path, monkeypatch) -> None:
+    root, config = make_repo(tmp_path)
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+
+    def crash(step: str) -> None:
+        if step == "linked":
+            raise SystemExit("linked")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match="linked"):
+        ShardedManifest(config).upsert(source)
+    _strip_resolution_fields(
+        root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    )
+    assert ShardedManifest(config).load("sources/design/a.md") is not None
+
+
+def _create_interrupted_resolution(
+    root: Path, config, monkeypatch, *, select_absent: bool = False
+) -> tuple[Path, Path]:
+    source = root / "sources/design/a.md"
+    source.write_text("source", encoding="utf-8")
+    store = ShardedManifest(config)
+    store.upsert(source)
+    target = store.entry_path("sources/design/a.md")
+
+    def conflict(step: str) -> None:
+        if step == "reserved":
+            target.write_bytes(b"owner-v1\n")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", conflict)
+    with pytest.raises(ManifestPreconditionError):
+        store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
+    if select_absent:
+        target.unlink()
+
+    def crash(step: str) -> None:
+        if step == "resolution_deleted_0":
+            raise SystemExit("resolution crash")
+
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
+    with pytest.raises(SystemExit, match="resolution crash"):
+        ShardedManifest(config).resolve_conflict_keep_live()
+    monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
+    return target, root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+@pytest.mark.parametrize("change", ["replace", "remove"])
+def test_resolution_recovery_rejects_changed_selected_live(
+    tmp_path: Path, monkeypatch, change: str
+) -> None:
+    root, config = make_repo(tmp_path)
+    target, journal = _create_interrupted_resolution(root, config, monkeypatch)
+    if change == "replace":
+        target.write_bytes(b"owner-v2\n")
+    else:
+        target.unlink()
+
+    with pytest.raises(ManifestPreconditionError, match="selected live|reconfirm"):
+        with ShardedManifest(config).mutation_session():
+            pass
+    assert journal.exists()
+
+    result = ShardedManifest(config).resolve_conflict_keep_live()
+    expected_live = (
+        "absent"
+        if change == "remove"
+        else portable_manifest_module.ShardedManifest._digest(b"owner-v2\n")
+    )
+    assert result["live"] == expected_live
+    assert not journal.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
+def test_resolution_recovery_rejects_live_created_after_absent_selection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    target, journal = _create_interrupted_resolution(
+        root, config, monkeypatch, select_absent=True
+    )
+    target.write_bytes(b"owner-created\n")
+
+    with pytest.raises(ManifestPreconditionError, match="selected live|reconfirm"):
+        with ShardedManifest(config).mutation_session():
+            pass
+    assert journal.exists()
+    assert ShardedManifest(config).resolve_conflict_keep_live()["live"] != "absent"
+    assert target.read_bytes() == b"owner-created\n"
+    assert not journal.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL upgrade")
+def test_unbound_legacy_resolution_requires_owner_reconfirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, config = make_repo(tmp_path)
+    target, journal = _create_interrupted_resolution(root, config, monkeypatch)
+    _strip_selected_live(journal)
+
+    with pytest.raises(ManifestPreconditionError, match="reconfirm"):
+        with ShardedManifest(config).mutation_session():
+            pass
+    assert journal.exists()
+    assert ShardedManifest(config).resolve_conflict_keep_live()["live"] != "absent"
+    assert target.read_bytes() == b"owner-v1\n"
+    assert not journal.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem capability")
 def test_capability_probe_crash_debris_is_bounded_and_recovered(
     tmp_path: Path, monkeypatch

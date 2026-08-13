@@ -73,7 +73,9 @@ obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
 
 After inspecting the live shard and recovery evidence, an owner can explicitly keep
 the live version. Cleanup is resumable after interruption and removes only fixed
-artifacts whose recorded identity and content still match.
+artifacts whose recorded identity and content still match. If the live shard changes
+between attempts, automatic recovery stops and the owner must rerun the command to
+confirm the current live version.
 
 ## Local hot state
 

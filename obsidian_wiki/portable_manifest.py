@@ -233,7 +233,12 @@ class ShardedManifest:
                 0o600,
                 dir_fd=side_fd,
             )
-            os.write(descriptor, marker)
+            view = memoryview(marker)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short write during manifest capability probe")
+                view = view[written:]
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
@@ -813,9 +818,22 @@ class ShardedManifest:
             "schema_version", "state", "op_id", "action", "source_id", "target",
             "sidecar", "pre", "post", "candidate_identity", "resolution",
             "cleanup_index",
+            "selected_live",
         }
-        if not isinstance(payload, dict) or set(payload) != keys:
+        legacy_keys = keys - {"resolution", "cleanup_index", "selected_live"}
+        unbound_resolution_keys = keys - {"selected_live"}
+        if not isinstance(payload, dict) or (
+            set(payload) != keys
+            and set(payload) != legacy_keys
+            and set(payload) != unbound_resolution_keys
+        ):
             raise ManifestError("manifest mutation journal has invalid fields")
+        if set(payload) == legacy_keys:
+            payload["resolution"] = None
+            payload["cleanup_index"] = None
+            payload["selected_live"] = None
+        elif set(payload) == unbound_resolution_keys:
+            payload["selected_live"] = None
         if payload["schema_version"] != 1 or payload["state"] not in {"PREPARED", "APPLIED", "CONFLICT", "RESOLVING"}:
             raise ManifestError("manifest mutation journal has invalid schema or state")
         if payload["action"] not in {"upsert", "remove"} or (
@@ -862,7 +880,22 @@ class ShardedManifest:
         if payload["state"] == "RESOLVING":
             if payload["resolution"] != "keep-live" or type(payload["cleanup_index"]) is not int or payload["cleanup_index"] < 0:
                 raise ManifestError("manifest resolution journal is invalid")
-        elif payload["resolution"] is not None or payload["cleanup_index"] is not None:
+            selected = payload["selected_live"]
+            if selected is None:
+                return payload
+            if not isinstance(selected, dict) or set(selected) != {"present", "hash", "identity"}:
+                raise ManifestError("manifest selected live proof is invalid")
+            if not isinstance(selected["present"], bool):
+                raise ManifestError("manifest selected live presence is invalid")
+            if selected["present"]:
+                if not isinstance(selected["hash"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", selected["hash"]) is None:
+                    raise ManifestError("manifest selected live hash is invalid")
+                identity = selected["identity"]
+                if not isinstance(identity, list) or len(identity) != 2 or any(type(value) is not int or value < 0 for value in identity):
+                    raise ManifestError("manifest selected live identity is invalid")
+            elif selected["hash"] is not None or selected["identity"] is not None:
+                raise ManifestError("manifest absent selected live proof is invalid")
+        elif payload["resolution"] is not None or payload["cleanup_index"] is not None or payload["selected_live"] is not None:
             raise ManifestError("manifest journal has unexpected resolution state")
         return payload
 
@@ -980,7 +1013,7 @@ class ShardedManifest:
         """Keep the current live shard and remove only identity-bound WAL artifacts."""
         with self.mutation_session(recover=False):
             journal = self._journal()
-            if journal is None or journal["state"] != "CONFLICT":
+            if journal is None or journal["state"] not in {"CONFLICT", "RESOLVING"}:
                 raise ManifestError("no manifest conflict is awaiting reconciliation")
             target, directories = self._target_directories(create=False)
             parent_fd = directories[-1]
@@ -989,6 +1022,17 @@ class ShardedManifest:
                 self._validate_directory_chain(directories, target.parent)
                 live = self._read_proof(parent_fd, target.name)
                 live_hash = live.content_hash if live else "absent"
+                selected_live = {
+                    "present": live is not None,
+                    "hash": live.content_hash if live else None,
+                    "identity": list(live.identity) if live else None,
+                }
+                if journal["state"] == "RESOLVING":
+                    journal["selected_live"] = selected_live
+                    self._write_journal(journal)
+                    return self._resume_conflict_resolution(
+                        journal, live_hash=live_hash
+                    )
                 try:
                     side_fd, _ = self._ensure_sidecar(parent_fd)
                 except FileNotFoundError:
@@ -1036,6 +1080,7 @@ class ShardedManifest:
                 journal["state"] = "RESOLVING"
                 journal["resolution"] = "keep-live"
                 journal["cleanup_index"] = 0
+                journal["selected_live"] = selected_live
                 self._write_journal(journal)
                 return self._resume_conflict_resolution(journal, live_hash=live_hash)
             finally:
@@ -1071,6 +1116,17 @@ class ShardedManifest:
             if live_hash is None:
                 live = self._read_proof(parent_fd, target.name)
                 live_hash = live.content_hash if live else "absent"
+            else:
+                live = self._read_proof(parent_fd, target.name)
+            selected = journal["selected_live"]
+            if selected is None:
+                raise ManifestPreconditionError(
+                    "manifest conflict resolution predates live binding; owner must reconfirm"
+                )
+            if not self._matches(live, selected):
+                raise ManifestPreconditionError(
+                    "owner-selected live manifest changed during conflict resolution; inspect and reconfirm"
+                )
             items = self._resolution_items(journal)
             index = journal["cleanup_index"]
             if index > len(items):
@@ -1119,12 +1175,22 @@ class ShardedManifest:
                         self._unlink_matching(wal_fd, name, proof, journal)
                         os.fsync(wal_fd)
                 _manifest_fault_point(f"resolution_deleted_{index}")
+                live = self._read_proof(parent_fd, target.name)
+                if not self._matches(live, selected):
+                    raise ManifestPreconditionError(
+                        "owner-selected live manifest changed during conflict resolution; inspect and reconfirm"
+                    )
                 index += 1
                 journal["cleanup_index"] = index
                 self._write_journal(journal)
             wal_fd = self._session[1]
             journal_proof = self._read_proof(wal_fd, "journal.json")
             assert journal_proof is not None
+            live = self._read_proof(parent_fd, target.name)
+            if not self._matches(live, selected):
+                raise ManifestPreconditionError(
+                    "owner-selected live manifest changed before resolution completed"
+                )
             self._unlink_matching(wal_fd, "journal.json", journal_proof, journal)
             os.fsync(wal_fd)
             return {"resolution": "keep-live", "source_id": journal["source_id"], "live": live_hash}
@@ -1427,6 +1493,7 @@ class ShardedManifest:
                 "candidate_identity": None,
                 "resolution": None,
                 "cleanup_index": None,
+                "selected_live": None,
             }
             self._write_journal(journal)
             _manifest_fault_point("prepared")
@@ -1493,11 +1560,15 @@ class ShardedManifest:
                 "schema_version", "state", "op_id", "action", "source_id",
                 "target", "sidecar", "pre", "post", "candidate_identity",
                 "resolution", "cleanup_index",
+                "selected_live",
+            }
+            legacy_keys = expected_keys - {
+                "resolution", "cleanup_index", "selected_live"
             }
             expected_sidecar = (path.parent / _SIDECAR).relative_to(self.config.root).as_posix()
             if (
                 not isinstance(payload, dict)
-                or set(payload) != expected_keys
+                or (set(payload) != expected_keys and set(payload) != legacy_keys)
                 or payload.get("schema_version") != 1
                 or payload.get("state") != "PREPARED"
                 or payload.get("action") != "upsert"

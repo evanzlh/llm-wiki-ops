@@ -46,7 +46,7 @@ obsidian-wiki transaction list --json --pretty
 obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
 ```
 
-所有者檢查 live 分片與復原證據後，可以明確保留 live 版本。清理在中斷後可重入，且只移除記錄身份與內容仍相符的固定工件。
+所有者檢查 live 分片與復原證據後，可以明確保留 live 版本。清理在中斷後可重入，且只移除記錄身份與內容仍相符的固定工件。若兩次嘗試之間 live 分片發生變更，自動復原會停止，直到所有者重新執行命令確認目前的 live 版本。
 
 ## 本機近期狀態
 
