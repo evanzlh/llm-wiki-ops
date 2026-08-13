@@ -14,6 +14,7 @@ from obsidian_wiki.config import (
     load_portable_config,
     resolve_config,
 )
+from obsidian_wiki.safe_files import stable_directory_identity
 
 
 def write_portable(root: Path, body: str | None = None) -> Path:
@@ -424,15 +425,25 @@ def test_configured_paths_never_bind_to_aba_replacement_repository(
 
     monkeypatch.setattr(config_module, "_parse_portable_config", parse_during_aba)
 
-    config = load_portable_config(
-        path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
-    )
+    try:
+        config = load_portable_config(
+            path, installed_version="2026.8", implementation=IMPLEMENTATION_ID
+        )
+    except ConfigError as exc:
+        message = str(exc)
+        assert "root changed" in message or "unsafe portable configuration" in message
+        return
 
     assert config.root == repository
+    assert config.root_identity == stable_directory_identity(repository.stat())
     assert config.vault == repository / "wiki"
     assert config.sources == (repository / "sources",)
     assert config.skills == repository / ".skills"
     assert config.local_state == repository / ".obsidian-wiki/local"
+    assert replacement not in config.vault.parents
+    assert all(replacement not in path.parents for path in config.sources)
+    assert replacement not in config.skills.parents
+    assert replacement not in config.local_state.parents
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX bound path validation")
