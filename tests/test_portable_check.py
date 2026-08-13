@@ -1646,7 +1646,7 @@ def test_hot_view_must_be_safe_utf8_markdown(
     elif mutation == "symlink":
         external = tmp_path / "external-hot.md"
         external.write_text("# External\n", encoding="utf-8")
-        hot.symlink_to(external)
+        _symlink_or_skip(hot, external)
 
     report = check_portable_repo(config)
 
