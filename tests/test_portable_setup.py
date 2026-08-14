@@ -4970,7 +4970,7 @@ def test_upgrade_recovery_rejects_install_candidate_diverging_from_proof(
 @pytest.mark.parametrize(
     ("old", "new", "error_match"),
     [
-        ('implementation = "evanzlh/obsidian-wiki"', 'implementation = "other/wiki"', "implementation"),
+        (f'implementation = "{IMPLEMENTATION_ID}"', 'implementation = "other/wiki"', "implementation"),
         ('requires_cli = ">=2026.8,<2026.9"', 'requires_cli = ">=2099"', "requires CLI"),
         ('vault = "wiki"', 'vault = "notes"', "canonical portable paths"),
         ("schema_version = 1", "schema_version = [", "invalid portable configuration"),

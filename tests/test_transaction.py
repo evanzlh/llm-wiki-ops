@@ -3213,7 +3213,7 @@ def test_log_writer_vault_root_substitution_preserves_replacement(
     assert listed[0]["transaction_id"] == "tx-root-replaced"
     assert listed[0]["status"] == "failed"
     assert listed[0]["recommended_action"]["command"] == (
-        "obsidian-wiki transaction retry tx-root-replaced"
+        "llmwikiops transaction retry tx-root-replaced"
     )
     assert tree_state(config.vault) == replacement_state
 
@@ -4082,7 +4082,7 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert listed_payload[0]["status"] == "active"
     assert listed_payload[0]["workspace"]
     assert listed_payload[0]["recommended_action"] == {
-        "command": f"obsidian-wiki transaction commit {transaction_id}",
+        "command": f"llmwikiops transaction commit {transaction_id}",
         "reason": "commit after fixing the original cause and reviewing the candidate",
         "requires": [
             "the original failure cause is removed",
@@ -4092,7 +4092,7 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert listed_payload[0]["allowed_actions"] == [
         listed_payload[0]["recommended_action"],
         {
-            "command": f"obsidian-wiki transaction abort {transaction_id}",
+            "command": f"llmwikiops transaction abort {transaction_id}",
             "reason": "abandon the active staged work",
             "requires": ["the candidate is no longer needed"],
         },
@@ -4103,7 +4103,7 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert human_listed.returncode == 0, human_listed.stderr
     assert human_listed.stdout == (
         f"{transaction_id}\tactive\t"
-        f"obsidian-wiki transaction commit {transaction_id}\t"
+        f"llmwikiops transaction commit {transaction_id}\t"
         f"{candidate_vault.parent}\n"
     )
 
@@ -4299,7 +4299,7 @@ def test_transaction_validate_cli_invalid_id_uses_structured_error_envelope(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "obsidian-wiki transaction list --json",
+            "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4331,7 +4331,7 @@ def test_transaction_cli_human_list_computes_guidance_once_per_record(
 
     assert result == 0
     assert calls == ["tx-1"]
-    assert "\tobsidian-wiki transaction commit tx-1\t" in capsys.readouterr().out
+    assert "\tllmwikiops transaction commit tx-1\t" in capsys.readouterr().out
 
 
 def test_transaction_cli_retries_a_retained_failed_transaction(
@@ -4407,7 +4407,7 @@ def test_transaction_cli_json_failures_outside_portable_mode_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "obsidian-wiki transaction list --json",
+            "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4490,7 +4490,7 @@ def test_transaction_cli_active_commit_failure_reports_trusted_guidance(
     assert payload["recovery"]["transaction_id"] == "tx-1"
     assert payload["recovery"]["transaction_status"] == "active"
     assert payload["recovery"]["preferred_action"]["command"] == (
-        "obsidian-wiki transaction commit tx-1"
+        "llmwikiops transaction commit tx-1"
     )
     assert manager.load("tx-1").status == "active"
 
@@ -4515,7 +4515,7 @@ def test_transaction_cli_corrupt_record_only_reports_inspection_guidance(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "obsidian-wiki transaction list --json",
+            "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4554,7 +4554,7 @@ def test_transaction_cli_corrupt_manifest_marker_reports_manifest_error(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "obsidian-wiki transaction list --json",
+            "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4679,10 +4679,10 @@ def test_transaction_human_failure_escapes_terminal_control_characters(
     assert [
         line for line in captured.err.splitlines() if line.startswith("preferred:")
     ] == [
-        "preferred: obsidian-wiki transaction commit tx-1 — "
+        "preferred: llmwikiops transaction commit tx-1 — "
         "commit after fixing the original cause and reviewing the candidate"
     ]
-    assert "inspect: obsidian-wiki transaction list --json" in captured.err
+    assert "inspect: llmwikiops transaction list --json" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -4710,7 +4710,7 @@ def test_transaction_cli_json_parse_errors_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "obsidian-wiki transaction list --json",
+            "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4732,7 +4732,7 @@ def test_transaction_cli_rejects_long_option_abbreviations(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.startswith("usage: obsidian-wiki")
+    assert result.stderr.startswith("usage: llmwikiops")
     assert f"unrecognized arguments: {abbreviation}" in result.stderr
 
 
@@ -4771,12 +4771,12 @@ def test_long_option_abbreviation_remains_enabled_outside_transaction() -> None:
     [
         (
             ["transaction", "commit"],
-            "obsidian-wiki transaction commit",
+            "llmwikiops transaction commit",
             "the following arguments are required: transaction_id",
         ),
         (
             ["transaction", "bogus"],
-            "obsidian-wiki transaction",
+            "llmwikiops transaction",
             "invalid choice: 'bogus'",
         ),
     ],
@@ -4826,7 +4826,7 @@ def test_transaction_cli_human_parse_error_keeps_argparse_usage(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.startswith("usage: obsidian-wiki transaction commit")
+    assert result.stderr.startswith("usage: llmwikiops transaction commit")
     assert "the following arguments are required: transaction_id" in result.stderr
 
 
@@ -4840,8 +4840,8 @@ def test_transaction_cli_unknown_human_error_uses_transaction_parser_prog(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.startswith("usage: obsidian-wiki transaction")
-    assert "obsidian-wiki transaction: error: argument transaction_command" in (
+    assert result.stderr.startswith("usage: llmwikiops transaction")
+    assert "llmwikiops transaction: error: argument transaction_command" in (
         result.stderr
     )
 
@@ -4979,7 +4979,7 @@ def test_transaction_cli_unknown_subcommand_intent_is_order_independent(
         assert expected_mode == "human-error"
         assert result.returncode == 2
         assert result.stdout == ""
-        assert result.stderr.startswith("usage: obsidian-wiki")
+        assert result.stderr.startswith("usage: llmwikiops")
 
 
 @pytest.mark.parametrize(
@@ -5034,12 +5034,12 @@ def test_transaction_cli_nested_separator_parse_matrix(
     elif expected_mode == "human-error":
         assert result.returncode == 2
         assert result.stdout == ""
-        assert result.stderr.startswith("usage: obsidian-wiki")
+        assert result.stderr.startswith("usage: llmwikiops")
     else:
         assert expected_mode == "help"
         assert result.returncode == 0
         assert result.stderr == ""
-        assert result.stdout.startswith("usage: obsidian-wiki")
+        assert result.stdout.startswith("usage: llmwikiops")
 
 
 def test_transaction_cli_post_separator_json_keeps_human_argparse_error(
@@ -5061,7 +5061,7 @@ def test_transaction_cli_post_separator_json_keeps_human_argparse_error(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.startswith("usage: obsidian-wiki")
+    assert result.stderr.startswith("usage: llmwikiops")
     assert "unrecognized arguments" in result.stderr
 
 
@@ -5080,7 +5080,7 @@ def test_transaction_cli_json_help_keeps_argparse_success(tmp_path: Path) -> Non
 
     assert result.returncode == 0
     assert result.stderr == ""
-    assert result.stdout.startswith("usage: obsidian-wiki transaction commit")
+    assert result.stdout.startswith("usage: llmwikiops transaction commit")
     assert "transaction_id" in result.stdout
 
 
@@ -5136,7 +5136,7 @@ def test_transaction_cli_human_missing_transaction_is_stderr_only(
     assert result.returncode == 1
     assert result.stdout == ""
     assert "error:" in result.stderr
-    assert "inspect: obsidian-wiki transaction list --json" in result.stderr
+    assert "inspect: llmwikiops transaction list --json" in result.stderr
     assert "preferred:" not in result.stderr
     assert "alternative:" not in result.stderr
 
@@ -5156,9 +5156,9 @@ def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
     assert result.stdout == ""
     assert "error:" in result.stderr
     assert "transaction status: active" in result.stderr
-    assert "inspect: obsidian-wiki transaction list --json" in result.stderr
-    assert "preferred: obsidian-wiki transaction commit tx-1 — " in result.stderr
-    assert "alternative: obsidian-wiki transaction abort tx-1 — " in result.stderr
+    assert "inspect: llmwikiops transaction list --json" in result.stderr
+    assert "preferred: llmwikiops transaction commit tx-1 — " in result.stderr
+    assert "alternative: llmwikiops transaction abort tx-1 — " in result.stderr
     assert "requires: the original failure cause is removed" in result.stderr
     assert "requires: the candidate vault has been reviewed" in result.stderr
     assert "requires: the candidate is no longer needed" in result.stderr

@@ -680,7 +680,22 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         check=True,
         timeout=30,
     )
-    assert "evanzlh/llm-wiki-ops" in result.stdout
+    interpreter = Path(executable).read_text(encoding="utf-8").splitlines()[0][2:]
+    installed_version = subprocess.run(
+        [
+            interpreter,
+            "-c",
+            "from importlib.metadata import version; print(version('llm-wiki-ops'))",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    ).stdout.strip()
+    assert installed_version != "0.0.0+dev"
+    assert result.stdout == f"llmwikiops {installed_version} (evanzlh/llm-wiki-ops)\n"
     info = subprocess.run(
         [executable, "info"],
         cwd=tmp_path,
