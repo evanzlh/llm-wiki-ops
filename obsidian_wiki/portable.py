@@ -7,6 +7,7 @@ configuration or Git side effects.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import posixpath
@@ -5764,6 +5765,222 @@ def _owner_seed_identity_from_stat(metadata: os.stat_result) -> tuple[int, int]:
 _OwnerSeedAttachment = tuple[int, str, tuple[int, int], tuple[str, ...]]
 
 
+@dataclass(frozen=True)
+class _OwnerSeedFilePreimage:
+    identity: tuple[int, int]
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    digest: str
+
+
+@dataclass(frozen=True)
+class _OwnerSeedCreatedFile:
+    relative: tuple[str, ...]
+    parent_identity: tuple[int, int]
+    preimage: _OwnerSeedFilePreimage
+
+
+def _owner_seed_directory_flags() -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    return flags | getattr(os, "O_CLOEXEC", 0)
+
+
+def _close_owner_seed_descriptors(descriptors: Iterable[int]) -> tuple[str, ...]:
+    errors: list[str] = []
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            errors.append(f"fd {descriptor}: {exc}")
+    return tuple(errors)
+
+
+def _owner_seed_file_digest(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _owner_seed_file_preimage(
+    parent_descriptor: int,
+    name: str,
+    relative: tuple[str, ...],
+) -> _OwnerSeedFilePreimage:
+    metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(
+            "portable staging contains unsafe entry: " + "/".join(relative)
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        if _owner_seed_identity_from_stat(opened) != _owner_seed_identity_from_stat(
+            metadata
+        ):
+            raise OSError(
+                "portable staging changed while opening " + "/".join(relative)
+            )
+        digest = _owner_seed_file_digest(descriptor)
+        final = os.fstat(descriptor)
+        if (
+            _owner_seed_identity_from_stat(final)
+            != _owner_seed_identity_from_stat(opened)
+            or stat.S_IMODE(final.st_mode) != stat.S_IMODE(opened.st_mode)
+            or final.st_size != opened.st_size
+            or final.st_mtime_ns != opened.st_mtime_ns
+            or final.st_ctime_ns != opened.st_ctime_ns
+        ):
+            raise OSError(
+                "portable staging changed while reading " + "/".join(relative)
+            )
+    finally:
+        errors = _close_owner_seed_descriptors((descriptor,))
+        if errors:
+            raise OSError(
+                "portable staging descriptor close failed: " + "; ".join(errors)
+            )
+    return _OwnerSeedFilePreimage(
+        identity=_owner_seed_identity_from_stat(opened),
+        mode=stat.S_IMODE(opened.st_mode),
+        size=opened.st_size,
+        mtime_ns=opened.st_mtime_ns,
+        ctime_ns=opened.st_ctime_ns,
+        digest=digest,
+    )
+
+
+def _verify_owner_seed_file_preimage(
+    parent_descriptor: int,
+    name: str,
+    preimage: _OwnerSeedFilePreimage,
+    relative: tuple[str, ...],
+) -> None:
+    metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or _owner_seed_identity_from_stat(metadata) != preimage.identity
+        or stat.S_IMODE(metadata.st_mode) != preimage.mode
+        or metadata.st_size != preimage.size
+        or metadata.st_mtime_ns != preimage.mtime_ns
+    ):
+        raise OSError("portable owner seed file changed at " + "/".join(relative))
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            _owner_seed_identity_from_stat(opened) != preimage.identity
+            or stat.S_IMODE(opened.st_mode) != preimage.mode
+            or opened.st_size != preimage.size
+            or opened.st_mtime_ns != preimage.mtime_ns
+            or _owner_seed_file_digest(descriptor) != preimage.digest
+        ):
+            raise OSError(
+                "portable owner seed file changed at " + "/".join(relative)
+            )
+        final = os.fstat(descriptor)
+        if (
+            _owner_seed_identity_from_stat(final) != preimage.identity
+            or final.st_size != preimage.size
+            or final.st_mtime_ns != preimage.mtime_ns
+        ):
+            raise OSError("portable owner seed file changed at " + "/".join(relative))
+    finally:
+        errors = _close_owner_seed_descriptors((descriptor,))
+        if errors:
+            raise OSError(
+                "portable owner seed descriptor close failed: " + "; ".join(errors)
+            )
+
+
+def _open_owner_seed_ancestor_chain(
+    parent: Path,
+) -> tuple[int, tuple[_OwnerSeedAttachment, ...], tuple[int, ...]]:
+    flags = _owner_seed_directory_flags()
+    anchor = Path(parent.anchor)
+    descriptor = os.open(anchor, flags)
+    descriptors = [descriptor]
+    attachments: list[_OwnerSeedAttachment] = []
+    relative: tuple[str, ...] = ()
+    try:
+        for name in parent.parts[1:]:
+            metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError(
+                    "portable owner seed ancestor changed at " + "/".join(relative)
+                )
+            child = os.open(name, flags, dir_fd=descriptor)
+            try:
+                identity = _owner_seed_identity_from_stat(os.fstat(child))
+                if identity != _owner_seed_identity_from_stat(metadata):
+                    raise OSError(
+                        "portable owner seed ancestor changed at " + "/".join(relative)
+                    )
+                relative = (*relative, name)
+                attachment: _OwnerSeedAttachment = (
+                    descriptor,
+                    name,
+                    identity,
+                    relative,
+                )
+                _assert_owner_seed_attachments((*attachments, attachment))
+            except BaseException as exc:
+                close_errors = _close_owner_seed_descriptors((child,))
+                if close_errors:
+                    raise OSError(
+                        "portable owner seed ancestor descriptor cleanup failed: "
+                        + "; ".join(close_errors)
+                    ) from exc
+                raise
+            attachments.append(attachment)
+            descriptors.append(child)
+            descriptor = child
+    except BaseException:
+        _close_owner_seed_descriptors(reversed(descriptors))
+        raise
+    return descriptor, tuple(attachments), tuple(descriptors)
+
+
+def _verify_owner_seed_created_files(
+    root_descriptor: int,
+    target_attachments: tuple[_OwnerSeedAttachment, ...],
+    created_files: Iterable[_OwnerSeedCreatedFile],
+) -> None:
+    flags = _owner_seed_directory_flags()
+    for created in created_files:
+        _assert_owner_seed_attachments(target_attachments)
+        descriptor = root_descriptor
+        opened: list[int] = []
+        try:
+            for name in created.relative[:-1]:
+                child = os.open(name, flags, dir_fd=descriptor)
+                opened.append(child)
+                descriptor = child
+            if (
+                _owner_seed_identity_from_stat(os.fstat(descriptor))
+                != created.parent_identity
+            ):
+                raise OSError(
+                    "portable owner seed directory changed at "
+                    + "/".join(created.relative[:-1])
+                )
+            _verify_owner_seed_file_preimage(
+                descriptor,
+                created.relative[-1],
+                created.preimage,
+                created.relative,
+            )
+        finally:
+            _close_owner_seed_descriptors(reversed(opened))
+
+
 def _preflight_staged_owner_seed_tree(
     source: Path,
     target: Path,
@@ -5848,7 +6065,7 @@ def _open_owner_seed_directory(
         )
         _assert_owner_seed_attachments((*attachments, attachment))
     except BaseException:
-        os.close(descriptor)
+        _close_owner_seed_descriptors((descriptor,))
         raise
     return descriptor, attachment
 
@@ -5901,6 +6118,7 @@ def _install_staged_owner_seed_tree(
     existing_directories: Mapping[tuple[str, ...], tuple[int, int]],
     source_attachments: tuple[_OwnerSeedAttachment, ...],
     target_attachments: tuple[_OwnerSeedAttachment, ...],
+    created_files: list[_OwnerSeedCreatedFile],
 ) -> None:
     _assert_owner_seed_installation_attachments(
         source_attachments, target_attachments
@@ -5939,6 +6157,7 @@ def _install_staged_owner_seed_tree(
                         existing_directories,
                         (*source_attachments, source_child_attachment),
                         (*target_attachments, child_attachment),
+                        created_files,
                     )
                 finally:
                     try:
@@ -5947,7 +6166,7 @@ def _install_staged_owner_seed_tree(
                             (*target_attachments, child_attachment),
                         )
                     finally:
-                        os.close(child_descriptor)
+                        _close_owner_seed_descriptors((child_descriptor,))
                 _assert_owner_seed_installation_attachments(
                     (*source_attachments, source_child_attachment),
                     target_attachments,
@@ -5957,7 +6176,7 @@ def _install_staged_owner_seed_tree(
                     source_attachments, target_attachments
                 )
             finally:
-                os.close(source_child_descriptor)
+                _close_owner_seed_descriptors((source_child_descriptor,))
             continue
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError(
@@ -5965,6 +6184,9 @@ def _install_staged_owner_seed_tree(
             )
         _assert_owner_seed_installation_attachments(
             source_attachments, target_attachments
+        )
+        preimage = _owner_seed_file_preimage(
+            source_descriptor, staged_name, child_relative
         )
         try:
             os.link(
@@ -5981,6 +6203,21 @@ def _install_staged_owner_seed_tree(
             ) from exc
         _assert_owner_seed_installation_attachments(
             source_attachments, target_attachments
+        )
+        _verify_owner_seed_file_preimage(
+            source_descriptor, staged_name, preimage, child_relative
+        )
+        _verify_owner_seed_file_preimage(
+            target_descriptor, staged_name, preimage, child_relative
+        )
+        created_files.append(
+            _OwnerSeedCreatedFile(
+                relative=child_relative,
+                parent_identity=_owner_seed_identity_from_stat(
+                    os.fstat(target_descriptor)
+                ),
+                preimage=preimage,
+            )
         )
         os.unlink(staged_name, dir_fd=source_descriptor)
 
@@ -6023,67 +6260,83 @@ def _commit_staged_owner_seed_repo(
     _preflight_staged_owner_seed_tree(
         staging, root, (), existing_directories
     )
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    grandparent_descriptor = os.open(parent.parent, flags)
     parent_descriptor: int | None = None
     source_descriptor: int | None = None
     target_descriptor: int | None = None
+    ancestor_descriptors: tuple[int, ...] = ()
+    created_files: list[_OwnerSeedCreatedFile] = []
+    failure: BaseException | None = None
+    close_errors: tuple[str, ...] = ()
     try:
-        parent_descriptor = os.open(parent.name, flags, dir_fd=grandparent_descriptor)
+        parent_descriptor, ancestor_attachments, ancestor_descriptors = (
+            _open_owner_seed_ancestor_chain(parent)
+        )
         parent_actual_identity = _owner_seed_identity_from_stat(
             os.fstat(parent_descriptor)
         )
         if parent_actual_identity != parent_identity:
             raise OSError("portable owner seed parent changed during installation")
-        parent_attachment: _OwnerSeedAttachment = (
-            grandparent_descriptor,
-            parent.name,
-            parent_identity,
-            (parent.name,),
-        )
-        _assert_owner_seed_attachments((parent_attachment,))
+        _assert_owner_seed_attachments(ancestor_attachments)
         source_descriptor, staging_attachment = _open_owner_seed_directory(
             parent_descriptor,
             staging.name,
             staging_identity,
             (staging.name,),
-            (parent_attachment,),
+            ancestor_attachments,
         )
         target_descriptor, root_attachment = _open_owner_seed_directory(
             parent_descriptor,
             root.name,
             root_identity,
             (root.name,),
-            (parent_attachment,),
+            ancestor_attachments,
         )
         _install_staged_owner_seed_tree(
             source_descriptor,
             target_descriptor,
             (),
             existing_directories,
-            (parent_attachment, staging_attachment),
-            (parent_attachment, root_attachment),
+            (*ancestor_attachments, staging_attachment),
+            (*ancestor_attachments, root_attachment),
+            created_files,
         )
         _assert_owner_seed_installation_attachments(
-            (parent_attachment, staging_attachment),
-            (parent_attachment, root_attachment),
+            (*ancestor_attachments, staging_attachment),
+            (*ancestor_attachments, root_attachment),
+        )
+        _verify_owner_seed_created_files(
+            target_descriptor,
+            (*ancestor_attachments, root_attachment),
+            created_files,
         )
         os.rmdir(staging.name, dir_fd=parent_descriptor)
-        _assert_owner_seed_attachments((parent_attachment, root_attachment))
+        _assert_owner_seed_attachments((*ancestor_attachments, root_attachment))
     except BaseException as exc:
+        failure = exc
+    finally:
+        descriptors = [
+            descriptor
+            for descriptor in (target_descriptor, source_descriptor)
+            if descriptor is not None
+        ]
+        descriptors.extend(reversed(ancestor_descriptors))
+        close_errors = _close_owner_seed_descriptors(descriptors)
+    if failure is not None:
+        cleanup_detail = (
+            "; descriptor cleanup failed: " + "; ".join(close_errors)
+            if close_errors
+            else ""
+        )
         raise _PortableSetupRollbackError(
             "portable owner-seed installation incomplete; preserved installed paths "
-            f"and staged evidence at {staging}: {exc}"
-        ) from exc
-    finally:
-        if target_descriptor is not None:
-            os.close(target_descriptor)
-        if source_descriptor is not None:
-            os.close(source_descriptor)
-        if parent_descriptor is not None:
-            os.close(parent_descriptor)
-        os.close(grandparent_descriptor)
+            f"and staged evidence at {staging}: {failure}{cleanup_detail}"
+        ) from failure
+    if close_errors:
+        raise _PortableSetupRollbackError(
+            "portable owner-seed descriptor cleanup is incomplete; preserved "
+            "staged evidence at "
+            f"{staging}: {'; '.join(close_errors)}"
+        )
 
 
 def setup_portable_repo(
@@ -6170,6 +6423,7 @@ def setup_portable_repo(
     )
     staging_identity = _owner_seed_identity_from_stat(staging.lstat())
     removed_empty_target = False
+    owner_seed_commit_started = False
     try:
         _populate_portable_repo(
             staging,
@@ -6180,6 +6434,7 @@ def setup_portable_repo(
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)
         elif target_is_owner_seed:
+            owner_seed_commit_started = True
             _commit_staged_owner_seed_repo(root, staging, staging_identity)
         else:
             if target_is_empty:
@@ -6189,6 +6444,11 @@ def setup_portable_repo(
     except _PortableSetupRollbackError:
         raise
     except BaseException as original_error:
+        if target_is_owner_seed and owner_seed_commit_started:
+            raise _PortableSetupRollbackError(
+                "portable owner-seed installation incomplete; preserved staged evidence at "
+                f"{staging}: {original_error}"
+            ) from original_error
         cleanup_errors: list[str] = []
         if staging.exists() and staging.parent == root.parent:
             try:

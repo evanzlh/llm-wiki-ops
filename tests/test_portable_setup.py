@@ -566,7 +566,7 @@ def test_owner_seed_collision_rolls_back_only_setup_created_paths(
     legacy_inode = (legacy.stat().st_dev, legacy.stat().st_ino)
     collision_inode = (collision.stat().st_dev, collision.stat().st_ino)
 
-    with pytest.raises(FileExistsError, match="collides with owner seed"):
+    with pytest.raises(OSError, match="incomplete.*collides with owner seed"):
         setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
     assert root.exists()
@@ -820,25 +820,25 @@ def test_owner_seed_parent_namespace_swap_preserves_bound_staging_evidence(
     legacy.write_bytes(b"owner legacy rule")
     moved_parent = tmp_path.parent / "owner-parent"
     original_open = portable.os.open
+    original_preflight = portable._preflight_staged_owner_seed_tree
+    after_preflight = False
     swapped = False
     staging_name: str | None = None
-    grandparent_descriptor: int | None = None
+
+    def mark_preflight_complete(*args: object, **kwargs: object) -> None:
+        nonlocal after_preflight
+        original_preflight(*args, **kwargs)
+        after_preflight = True
 
     def open_then_swap_parent(
         path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
     ) -> int:
-        nonlocal swapped, staging_name, grandparent_descriptor
+        nonlocal swapped, staging_name
         descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
-        if path == root.parent.parent and dir_fd is None:
-            grandparent_descriptor = descriptor
         if (
-            (
-                (path == root.parent and dir_fd is None)
-                or (
-                    path == root.parent.name
-                    and dir_fd == grandparent_descriptor
-                )
-            )
+            after_preflight
+            and path == root.parent.name
+            and dir_fd is not None
             and not swapped
         ):
             swapped = True
@@ -851,6 +851,9 @@ def test_owner_seed_parent_namespace_swap_preserves_bound_staging_evidence(
             (root.parent / staging_name).mkdir()
         return descriptor
 
+    monkeypatch.setattr(
+        portable, "_preflight_staged_owner_seed_tree", mark_preflight_complete
+    )
     monkeypatch.setattr(portable.os, "open", open_then_swap_parent)
 
     with pytest.raises(OSError, match="incomplete.*preserved.*evidence"):
@@ -859,6 +862,139 @@ def test_owner_seed_parent_namespace_swap_preserves_bound_staging_evidence(
     assert swapped
     assert staging_name is not None
     assert not any((root.parent / root.name).iterdir())
+    assert not any((root.parent / staging_name).iterdir())
+    original_staging = moved_parent / staging_name
+    assert original_staging.is_dir()
+    assert any(original_staging.iterdir())
+
+
+def test_owner_seed_grandparent_replacement_does_not_initialize_moved_tree(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    grandparent = root.parent.parent
+    moved_grandparent = grandparent.parent / f"{grandparent.name}-owner"
+    original_open = portable.os.open
+    original_preflight = portable._preflight_staged_owner_seed_tree
+    after_preflight = False
+    swapped = False
+    staging_name: str | None = None
+
+    def mark_preflight_complete(*args: object, **kwargs: object) -> None:
+        nonlocal after_preflight
+        original_preflight(*args, **kwargs)
+        after_preflight = True
+
+    def open_then_swap_grandparent(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped, staging_name
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            after_preflight
+            and not swapped
+            and (
+                (path == grandparent and dir_fd is None)
+                or (path == grandparent.name and dir_fd is not None)
+            )
+        ):
+            swapped = True
+            staged = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
+            assert len(staged) == 1
+            staging_name = staged[0].name
+            grandparent.rename(moved_grandparent)
+            grandparent.mkdir()
+            replacement_parent = grandparent / root.parent.name
+            replacement_parent.mkdir()
+            (replacement_parent / root.name).mkdir()
+            (replacement_parent / staging_name).mkdir()
+            assert not any((replacement_parent / root.name).iterdir())
+        return descriptor
+
+    monkeypatch.setattr(
+        portable, "_preflight_staged_owner_seed_tree", mark_preflight_complete
+    )
+    monkeypatch.setattr(portable.os, "open", open_then_swap_grandparent)
+
+    with pytest.raises(OSError, match="incomplete.*preserved.*evidence"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert swapped
+    assert staging_name is not None
+    replacement_parent = grandparent / root.parent.name
+    assert not any((replacement_parent / root.name).iterdir())
+    assert not any((replacement_parent / staging_name).iterdir())
+    moved_parent = moved_grandparent / root.parent.name
+    assert not (moved_parent / root.name / ".llmwikiops/config.toml").exists()
+    assert (moved_parent / staging_name).is_dir()
+    assert any((moved_parent / staging_name).iterdir())
+
+
+def test_owner_seed_link_rewrite_without_collision_is_never_reported_success(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    owner_bytes = b"owner rewrote managed config\n"
+    original_link = portable.os.link
+    rewritten = False
+
+    def link_then_rewrite(source: object, destination: object, **kwargs: object) -> None:
+        nonlocal rewritten
+        original_link(source, destination, **kwargs)
+        if source == "config.toml" and not rewritten:
+            rewritten = True
+            (root / ".llmwikiops/config.toml").write_bytes(owner_bytes)
+
+    monkeypatch.setattr(portable.os, "link", link_then_rewrite)
+
+    with pytest.raises(OSError, match="incomplete.*preserved.*evidence"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert rewritten
+    assert (root / ".llmwikiops/config.toml").read_bytes() == owner_bytes
+
+
+def test_owner_seed_prebind_failure_never_cleans_replacement_staging(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    moved_parent = tmp_path.parent / "owner-parent"
+    original_preflight = portable._preflight_staged_owner_seed_tree
+    swapped = False
+    staging_name: str | None = None
+
+    def swap_then_fail(*args: object, **kwargs: object) -> None:
+        nonlocal swapped, staging_name
+        original_preflight(*args, **kwargs)
+        staged = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
+        assert len(staged) == 1
+        staging_name = staged[0].name
+        root.parent.rename(moved_parent)
+        root.parent.mkdir()
+        (root.parent / root.name).mkdir()
+        (root.parent / staging_name).mkdir()
+        swapped = True
+        raise OSError("simulated prebind failure")
+
+    monkeypatch.setattr(
+        portable, "_preflight_staged_owner_seed_tree", swap_then_fail
+    )
+
+    with pytest.raises(OSError, match="incomplete.*preserved.*evidence"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert swapped
+    assert staging_name is not None
+    assert (root.parent / staging_name).is_dir()
     assert not any((root.parent / staging_name).iterdir())
     original_staging = moved_parent / staging_name
     assert original_staging.is_dir()
@@ -908,6 +1044,44 @@ def test_owner_seed_root_fstat_failure_does_not_leak_open_descriptors(
         assert root_descriptor is not None
 
     assert len(list(Path("/proc/self/fd").iterdir())) == descriptor_count
+
+
+def test_owner_seed_close_failure_still_attempts_remaining_descriptors(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    original_close = portable.os.close
+    original_preflight = portable._preflight_staged_owner_seed_tree
+    closed: list[int] = []
+    injected = False
+    enabled = False
+
+    def enable_close_failure(*args: object, **kwargs: object) -> None:
+        nonlocal enabled
+        original_preflight(*args, **kwargs)
+        enabled = True
+
+    def close_once_then_fail(descriptor: int) -> None:
+        nonlocal injected
+        closed.append(descriptor)
+        original_close(descriptor)
+        if enabled and not injected:
+            injected = True
+            raise OSError("simulated descriptor close failure")
+
+    monkeypatch.setattr(
+        portable, "_preflight_staged_owner_seed_tree", enable_close_failure
+    )
+    monkeypatch.setattr(portable.os, "close", close_once_then_fail)
+
+    with pytest.raises(OSError, match="descriptor.*close.*failure|incomplete"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert injected
+    assert len(closed) > 1
 
 
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
