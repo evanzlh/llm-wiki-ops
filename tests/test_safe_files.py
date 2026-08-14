@@ -30,7 +30,7 @@ def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> No
 @pytest.mark.skipif(os.name != "posix", reason="POSIX bound-read capability")
 def test_safe_file_snapshot_rejects_repository_root_rebinding(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
-    configuration = repository / ".obsidian-wiki" / "config.toml"
+    configuration = repository / ".llmwikiops" / "config.toml"
     configuration.parent.mkdir(parents=True)
     configuration.write_text("original", encoding="utf-8")
     snapshot = read_safe_file_snapshot(repository, configuration)
@@ -38,7 +38,7 @@ def test_safe_file_snapshot_rejects_repository_root_rebinding(tmp_path: Path) ->
 
     moved = tmp_path / "original-repository"
     repository.rename(moved)
-    replacement = repository / ".obsidian-wiki" / "config.toml"
+    replacement = repository / ".llmwikiops" / "config.toml"
     replacement.parent.mkdir(parents=True)
     replacement.write_text("replacement", encoding="utf-8")
 

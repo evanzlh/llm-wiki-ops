@@ -39,6 +39,7 @@ from obsidian_wiki.portable import (
     sync_portable_skill_mirrors,
     upgrade_portable_skills,
 )
+from obsidian_wiki.protocol import CONFIG_RELATIVE, LLMWIKIOPS_REPO_ENV
 SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/llm-wiki-ops, then run "
     f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
@@ -130,7 +131,7 @@ def _config_values(config: PortableConfig) -> dict[str, str]:
     values = {
         "OBSIDIAN_VAULT_PATH": str(config.vault),
         "OBSIDIAN_SOURCES_DIR": ",".join(str(path) for path in config.sources),
-        "OBSIDIAN_WIKI_REPO": str(config.root),
+        LLMWIKIOPS_REPO_ENV: str(config.root),
     }
     values.update(config.settings)
     return values
@@ -218,7 +219,7 @@ def _portable_lexical_paths(
     portable: PortableConfig,
 ) -> tuple[Path, Path, Path, tuple[Path, ...]]:
     """Re-read validated path strings without resolving away symlink evidence."""
-    config_path = portable.root / ".obsidian-wiki/config.toml"
+    config_path = portable.root / CONFIG_RELATIVE
     try:
         data = tomllib.loads(config_path.read_text(encoding="utf-8"))
         paths = data["paths"]
@@ -270,7 +271,7 @@ def _assert_optional_portable_directory(root: Path, path: Path, label: str) -> N
 
 def _validate_portable_paths(portable: PortableConfig) -> str:
     root = portable.root
-    expected_config = root / ".obsidian-wiki/config.toml"
+    expected_config = root / CONFIG_RELATIVE
     if portable.path != expected_config:
         raise ValueError(
             f"portable configuration path contains a symlink or escapes the repository: "
@@ -366,13 +367,13 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
     checks: list[dict[str, str]] = []
     try:
         loaded = load_portable_config(
-            portable.root / ".obsidian-wiki/config.toml",
+            portable.root / CONFIG_RELATIVE,
             installed_version=__version__,
             implementation=IMPLEMENTATION_ID,
         )
         _assert_single_link_ordinary_file(
             portable.root,
-            portable.root / ".obsidian-wiki/config.toml",
+            portable.root / CONFIG_RELATIVE,
             "portable configuration",
         )
     except (ConfigError, ValueError, OSError) as exc:
@@ -459,13 +460,13 @@ def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
     candidate = None
     try:
         for ancestor in (current, *current.parents):
-            path = ancestor / ".obsidian-wiki/config.toml"
+            path = ancestor / CONFIG_RELATIVE
             if path.exists() or path.is_symlink():
                 candidate = path
                 break
     except OSError as exc:
         return _portable_doctor_error(
-            current / ".obsidian-wiki/config.toml",
+            current / CONFIG_RELATIVE,
             f"portable configuration inspection failed: {exc}",
         )
     if candidate is not None:

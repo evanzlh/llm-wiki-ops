@@ -14,7 +14,7 @@ from obsidian_wiki import IMPLEMENTATION_ID
 
 
 def write_portable(root: Path, body: str | None = None) -> Path:
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(
         body
@@ -26,7 +26,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -121,7 +121,7 @@ def test_info_json_reports_repository_local_runtime(tmp_path: Path) -> None:
         "vault": str(wiki),
         "sources": [str(repository / "sources")],
         "skills": str(repository / ".skills"),
-        "local_state": str(repository / ".obsidian-wiki/local"),
+        "local_state": str(repository / ".llmwikiops/local"),
     }
     assert "global_config" not in data["installation"]
     assert "agents" not in data["installation"]
@@ -167,7 +167,7 @@ def test_info_json_rejects_symlinked_repository_config(tmp_path: Path) -> None:
     home = tmp_path / "home"
     repository = tmp_path / "repository"
     real = write_portable(tmp_path / "real")
-    linked = repository / ".obsidian-wiki" / "config.toml"
+    linked = repository / ".llmwikiops" / "config.toml"
     linked.parent.mkdir(parents=True)
     linked.symlink_to(real)
 
@@ -215,7 +215,7 @@ def test_info_human_output_has_repository_local_sections(tmp_path: Path) -> None
         f"  vault: {repository / 'wiki'}",
         f"  source: {repository / 'sources'}",
         f"  skills: {repository / '.skills'}",
-        f"  local state: {repository / '.obsidian-wiki/local'}",
+        f"  local state: {repository / '.llmwikiops/local'}",
     ]
     assert "CLI installation" in lines
     assert "agent installs:" not in result.stdout

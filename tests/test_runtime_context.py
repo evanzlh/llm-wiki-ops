@@ -14,7 +14,7 @@ from obsidian_wiki.runtime_context import (
 
 
 def write_portable(root: Path, body: str | None = None) -> Path:
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(
         body
@@ -26,7 +26,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -34,7 +34,7 @@ local_state = ".obsidian-wiki/local"
 
 
 def write_dangling_portable(root: Path) -> Path:
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.symlink_to(root / "missing.toml")
     return config
@@ -103,7 +103,7 @@ def test_nearest_portable_config_discovers_files_and_symlinks(
     root = tmp_path / "project"
     cwd = root / "nested"
     cwd.mkdir(parents=True)
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     config.parent.mkdir()
     if kind == "file":
         config.write_text("", encoding="utf-8")
@@ -128,7 +128,7 @@ def test_runtime_inspection_classifies_discovery_error(
 ) -> None:
     cwd = tmp_path / "project"
     cwd.mkdir()
-    candidate = cwd / ".obsidian-wiki" / "config.toml"
+    candidate = cwd / ".llmwikiops" / "config.toml"
     candidate.parent.mkdir()
     original_lstat = Path.lstat
 

@@ -20,6 +20,7 @@ from obsidian_wiki.safe_files import (
     validate_safe_relative_directory_path,
     verify_safe_file_snapshot,
 )
+from obsidian_wiki.protocol import CONFIG_RELATIVE, LOCAL_STATE_RELATIVE
 
 
 class ConfigError(ValueError):
@@ -164,6 +165,10 @@ def _parse_portable_config(
     vault_raw = _required_string(paths, "vault", "paths")
     skills_raw = _required_string(paths, "skills", "paths")
     local_state_raw = _required_string(paths, "local_state", "paths")
+    if local_state_raw != LOCAL_STATE_RELATIVE:
+        raise ConfigError(
+            f"paths.local_state must be exactly {LOCAL_STATE_RELATIVE}"
+        )
     sources_raw = paths.get("sources")
     if (
         not isinstance(sources_raw, list)
@@ -296,7 +301,7 @@ def resolve_config(
     current_dir = Path.cwd() if cwd is None else Path(cwd)
 
     for ancestor in _ancestors(current_dir):
-        portable_path = ancestor / ".obsidian-wiki" / "config.toml"
+        portable_path = ancestor / CONFIG_RELATIVE
         if _is_portable_config_candidate(portable_path):
             return load_portable_config(
                 portable_path,

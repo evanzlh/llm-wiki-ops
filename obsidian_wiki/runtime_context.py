@@ -10,6 +10,7 @@ from .config import (
     _is_portable_config_candidate,
     resolve_config,
 )
+from .protocol import CONFIG_RELATIVE
 
 
 RuntimeStatus = Literal["resolved", "unconfigured", "error"]
@@ -37,7 +38,7 @@ def _absolute(path: Path) -> Path:
 def nearest_portable_config(cwd: Path) -> Path | None:
     current = _absolute(cwd)
     while True:
-        candidate = current / ".obsidian-wiki" / "config.toml"
+        candidate = current / CONFIG_RELATIVE
         if _is_portable_config_candidate(candidate):
             return candidate
         parent = current.parent

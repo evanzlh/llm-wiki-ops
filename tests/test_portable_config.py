@@ -18,7 +18,7 @@ from obsidian_wiki.safe_files import stable_directory_identity
 
 
 def write_portable(root: Path, body: str | None = None) -> Path:
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(
         body
@@ -30,7 +30,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 
 [settings]
 OBSIDIAN_LINK_FORMAT = "wikilink"
@@ -62,7 +62,7 @@ requires_cli = ">=0"
 vault = "{value}"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
     )
     with pytest.raises(ConfigError, match="repository-relative"):
@@ -84,7 +84,7 @@ requires_cli = ">=0"
 vault = "{value}"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
     )
 
@@ -104,7 +104,7 @@ requires_cli = ">=0"
 vault = 'wiki\\nested'
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
     )
     with pytest.raises(ConfigError, match="forward-slash"):
@@ -131,7 +131,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
     )
     with pytest.raises(ConfigError, match="schema_version must be the integer 1"):
@@ -150,7 +150,7 @@ requires_cli = ">=0"
 vault = "sources/wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
     )
     with pytest.raises(ConfigError, match="must not overlap"):
@@ -195,7 +195,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 CLAUDE_HISTORY_PATH = "/tmp/claude"
 ''',
@@ -218,7 +218,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 OBSIDIAN_ALLOWED_LIFECYCLES = [{{name = "active"}}]
 ''',
@@ -240,7 +240,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 OBSIDIAN_ALLOWED_LIFECYCLES = [true, false]
 ''',
@@ -290,7 +290,7 @@ def test_legacy_files_do_not_configure_a_repository(tmp_path: Path) -> None:
         'OBSIDIAN_VAULT_PATH="legacy-vault"\n', encoding="utf-8"
     )
     home = tmp_path / "home"
-    global_config = home / ".obsidian-wiki" / "config"
+    global_config = home / ".llmwikiops" / "config"
     global_config.parent.mkdir(parents=True)
     global_config.write_text(
         'OBSIDIAN_VAULT_PATH="global-vault"\n', encoding="utf-8"
@@ -320,7 +320,7 @@ def test_invalid_nearest_config_fails_closed(tmp_path: Path) -> None:
         )
 
     assert str(invalid.resolve()) in str(exc_info.value)
-    assert str(outer / ".obsidian-wiki" / "config.toml") not in str(exc_info.value)
+    assert str(outer / ".llmwikiops" / "config.toml") not in str(exc_info.value)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
@@ -331,7 +331,7 @@ def test_resolve_config_rejects_linked_config_files(
     repository = tmp_path / "repository"
     real = tmp_path / "real.toml"
     write_portable(tmp_path / "template").replace(real)
-    candidate = repository / ".obsidian-wiki" / "config.toml"
+    candidate = repository / ".llmwikiops" / "config.toml"
     candidate.parent.mkdir(parents=True)
     if link_kind == "symbolic":
         candidate.symlink_to(real)
@@ -355,7 +355,7 @@ def test_resolve_config_rejects_linked_configuration_directory(tmp_path: Path) -
         real_directory / "config.toml"
     )
     repository.mkdir()
-    (repository / ".obsidian-wiki").symlink_to(real_directory, target_is_directory=True)
+    (repository / ".llmwikiops").symlink_to(real_directory, target_is_directory=True)
 
     with pytest.raises(ConfigError, match="symlink"):
         resolve_config(
@@ -368,7 +368,7 @@ def test_resolve_config_rejects_linked_configuration_directory(tmp_path: Path) -
 @pytest.mark.skipif(os.name != "posix", reason="POSIX special-file safety contract")
 def test_resolve_config_rejects_special_config_file(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
-    candidate = repository / ".obsidian-wiki" / "config.toml"
+    candidate = repository / ".llmwikiops" / "config.toml"
     candidate.parent.mkdir(parents=True)
     os.mkfifo(candidate)
 
@@ -439,7 +439,7 @@ def test_configured_paths_never_bind_to_aba_replacement_repository(
     assert config.vault == repository / "wiki"
     assert config.sources == (repository / "sources",)
     assert config.skills == repository / ".skills"
-    assert config.local_state == repository / ".obsidian-wiki/local"
+    assert config.local_state == repository / ".llmwikiops/local"
     assert replacement not in config.vault.parents
     assert all(replacement not in path.parents for path in config.sources)
     assert replacement not in config.skills.parents
@@ -459,7 +459,7 @@ def test_load_config_rejects_configured_directory_symlink_escape(
         "vault": repository / "wiki",
         "source": repository / "sources",
         "skills": repository / ".skills",
-        "local_state": repository / ".obsidian-wiki/local",
+        "local_state": repository / ".llmwikiops/local",
     }
     target = targets[configured]
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -476,7 +476,7 @@ def test_repository_discovery_error_is_a_path_qualified_config_error(
 ) -> None:
     cwd = tmp_path / "project"
     cwd.mkdir()
-    candidate = cwd / ".obsidian-wiki" / "config.toml"
+    candidate = cwd / ".llmwikiops" / "config.toml"
     candidate.parent.mkdir()
     original_lstat = Path.lstat
 

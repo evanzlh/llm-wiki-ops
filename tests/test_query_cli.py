@@ -50,11 +50,11 @@ def _run(
 def _portable_root(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "knowledge"
     vault = root / "wiki"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     vault.mkdir()
     (root / ".skills").mkdir()
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -62,7 +62,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -111,7 +111,7 @@ def test_query_cli_prefers_portable_vault_from_nested_cwd(tmp_path: Path) -> Non
         title="Runtime Resolver",
         summary="Global vault result.",
     )
-    config = home / ".obsidian-wiki/config"
+    config = home / ".llmwikiops/config"
     config.parent.mkdir(parents=True)
     config.write_text(f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8")
     nested = root / "work/nested"
@@ -131,7 +131,7 @@ def test_query_cli_invalid_portable_config_never_falls_back_global(
 ) -> None:
     home = tmp_path / "home"
     root, portable_vault = _portable_root(tmp_path)
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
             IMPLEMENTATION_ID, "Ar9av/obsidian-wiki"
@@ -145,7 +145,7 @@ def test_query_cli_invalid_portable_config_never_falls_back_global(
         title="Runtime Resolver",
         summary="Must not be used.",
     )
-    global_config = home / ".obsidian-wiki/config"
+    global_config = home / ".llmwikiops/config"
     global_config.parent.mkdir(parents=True)
     global_config.write_text(
         f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
