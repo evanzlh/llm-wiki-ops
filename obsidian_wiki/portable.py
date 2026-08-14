@@ -5797,6 +5797,26 @@ def _close_owner_seed_descriptors(descriptors: Iterable[int]) -> tuple[str, ...]
     return tuple(errors)
 
 
+def _finish_owner_seed_descriptor_scope(
+    descriptors: Iterable[int],
+    context: str,
+    failure: BaseException | None = None,
+) -> None:
+    """Close every descriptor and preserve any preceding failure as the cause."""
+    errors = _close_owner_seed_descriptors(descriptors)
+    if failure is not None:
+        if errors:
+            raise OSError(
+                f"portable {context} descriptor cleanup failed while preserving "
+                f"{failure}: {'; '.join(errors)}"
+            ) from failure
+        raise failure
+    if errors:
+        raise OSError(
+            f"portable {context} descriptor cleanup failed: {'; '.join(errors)}"
+        )
+
+
 def _owner_seed_file_digest(descriptor: int) -> str:
     digest = hashlib.sha256()
     while chunk := os.read(descriptor, 1024 * 1024):
@@ -5817,6 +5837,7 @@ def _owner_seed_file_preimage(
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    failure: BaseException | None = None
     try:
         opened = os.fstat(descriptor)
         if _owner_seed_identity_from_stat(opened) != _owner_seed_identity_from_stat(
@@ -5838,12 +5859,11 @@ def _owner_seed_file_preimage(
             raise OSError(
                 "portable staging changed while reading " + "/".join(relative)
             )
-    finally:
-        errors = _close_owner_seed_descriptors((descriptor,))
-        if errors:
-            raise OSError(
-                "portable staging descriptor close failed: " + "; ".join(errors)
-            )
+    except BaseException as exc:
+        failure = exc
+    _finish_owner_seed_descriptor_scope(
+        (descriptor,), "staging", failure
+    )
     return _OwnerSeedFilePreimage(
         identity=_owner_seed_identity_from_stat(opened),
         mode=stat.S_IMODE(opened.st_mode),
@@ -5873,6 +5893,7 @@ def _verify_owner_seed_file_preimage(
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    failure: BaseException | None = None
     try:
         opened = os.fstat(descriptor)
         if (
@@ -5892,12 +5913,11 @@ def _verify_owner_seed_file_preimage(
             or final.st_mtime_ns != preimage.mtime_ns
         ):
             raise OSError("portable owner seed file changed at " + "/".join(relative))
-    finally:
-        errors = _close_owner_seed_descriptors((descriptor,))
-        if errors:
-            raise OSError(
-                "portable owner seed descriptor close failed: " + "; ".join(errors)
-            )
+    except BaseException as exc:
+        failure = exc
+    _finish_owner_seed_descriptor_scope(
+        (descriptor,), "owner seed file", failure
+    )
 
 
 def _open_owner_seed_ancestor_chain(
@@ -5932,19 +5952,16 @@ def _open_owner_seed_ancestor_chain(
                 )
                 _assert_owner_seed_attachments((*attachments, attachment))
             except BaseException as exc:
-                close_errors = _close_owner_seed_descriptors((child,))
-                if close_errors:
-                    raise OSError(
-                        "portable owner seed ancestor descriptor cleanup failed: "
-                        + "; ".join(close_errors)
-                    ) from exc
-                raise
+                _finish_owner_seed_descriptor_scope(
+                    (child,), "owner seed ancestor", exc
+                )
             attachments.append(attachment)
             descriptors.append(child)
             descriptor = child
-    except BaseException:
-        _close_owner_seed_descriptors(reversed(descriptors))
-        raise
+    except BaseException as exc:
+        _finish_owner_seed_descriptor_scope(
+            reversed(descriptors), "owner seed ancestor", exc
+        )
     return descriptor, tuple(attachments), tuple(descriptors)
 
 
@@ -5958,6 +5975,7 @@ def _verify_owner_seed_created_files(
         _assert_owner_seed_attachments(target_attachments)
         descriptor = root_descriptor
         opened: list[int] = []
+        failure: BaseException | None = None
         try:
             for name in created.relative[:-1]:
                 child = os.open(name, flags, dir_fd=descriptor)
@@ -5977,8 +5995,11 @@ def _verify_owner_seed_created_files(
                 created.preimage,
                 created.relative,
             )
-        finally:
-            _close_owner_seed_descriptors(reversed(opened))
+        except BaseException as exc:
+            failure = exc
+        _finish_owner_seed_descriptor_scope(
+            reversed(opened), "owner seed created-file verification", failure
+        )
 
 
 def _preflight_staged_owner_seed_tree(
@@ -6064,9 +6085,10 @@ def _open_owner_seed_directory(
             relative,
         )
         _assert_owner_seed_attachments((*attachments, attachment))
-    except BaseException:
-        _close_owner_seed_descriptors((descriptor,))
-        raise
+    except BaseException as exc:
+        _finish_owner_seed_descriptor_scope(
+            (descriptor,), "owner seed directory", exc
+        )
     return descriptor, attachment
 
 
@@ -6141,6 +6163,7 @@ def _install_staged_owner_seed_tree(
                     source_attachments,
                 )
             )
+            source_failure: BaseException | None = None
             try:
                 child_descriptor, child_attachment = _open_owner_seed_directory(
                     target_descriptor,
@@ -6149,6 +6172,7 @@ def _install_staged_owner_seed_tree(
                     child_relative,
                     target_attachments,
                 )
+                child_failure: BaseException | None = None
                 try:
                     _install_staged_owner_seed_tree(
                         source_child_descriptor,
@@ -6159,14 +6183,15 @@ def _install_staged_owner_seed_tree(
                         (*target_attachments, child_attachment),
                         created_files,
                     )
-                finally:
-                    try:
-                        _assert_owner_seed_installation_attachments(
-                            (*source_attachments, source_child_attachment),
-                            (*target_attachments, child_attachment),
-                        )
-                    finally:
-                        _close_owner_seed_descriptors((child_descriptor,))
+                    _assert_owner_seed_installation_attachments(
+                        (*source_attachments, source_child_attachment),
+                        (*target_attachments, child_attachment),
+                    )
+                except BaseException as exc:
+                    child_failure = exc
+                _finish_owner_seed_descriptor_scope(
+                    (child_descriptor,), "owner seed target child", child_failure
+                )
                 _assert_owner_seed_installation_attachments(
                     (*source_attachments, source_child_attachment),
                     target_attachments,
@@ -6175,8 +6200,11 @@ def _install_staged_owner_seed_tree(
                 _assert_owner_seed_installation_attachments(
                     source_attachments, target_attachments
                 )
-            finally:
-                _close_owner_seed_descriptors((source_child_descriptor,))
+            except BaseException as exc:
+                source_failure = exc
+            _finish_owner_seed_descriptor_scope(
+                (source_child_descriptor,), "owner seed staging child", source_failure
+            )
             continue
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError(
@@ -6423,7 +6451,11 @@ def setup_portable_repo(
     )
     staging_identity = _owner_seed_identity_from_stat(staging.lstat())
     removed_empty_target = False
-    owner_seed_commit_started = False
+    # Owner-seed staging is created beside owner content.  Once it exists, a
+    # path-based cleanup could be redirected by a parent namespace swap, so
+    # preserve it as evidence for every failure, including population and
+    # staging preflight failures before descriptor-bound commit begins.
+    preserve_owner_seed_evidence = target_is_owner_seed
     try:
         _populate_portable_repo(
             staging,
@@ -6434,7 +6466,6 @@ def setup_portable_repo(
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)
         elif target_is_owner_seed:
-            owner_seed_commit_started = True
             _commit_staged_owner_seed_repo(root, staging, staging_identity)
         else:
             if target_is_empty:
@@ -6444,7 +6475,7 @@ def setup_portable_repo(
     except _PortableSetupRollbackError:
         raise
     except BaseException as original_error:
-        if target_is_owner_seed and owner_seed_commit_started:
+        if preserve_owner_seed_evidence:
             raise _PortableSetupRollbackError(
                 "portable owner-seed installation incomplete; preserved staged evidence at "
                 f"{staging}: {original_error}"

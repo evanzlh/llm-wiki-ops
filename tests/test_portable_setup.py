@@ -1001,6 +1001,78 @@ def test_owner_seed_prebind_failure_never_cleans_replacement_staging(
     assert any(original_staging.iterdir())
 
 
+def test_owner_seed_populate_failure_preserves_replacement_staging_evidence(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    moved_parent = tmp_path.parent / "owner-populate-parent"
+    original_populate = portable._populate_portable_repo
+    staging_name: str | None = None
+    decoy = b"replacement staging must survive\n"
+
+    def populate_then_swap(*args: object, **kwargs: object) -> None:
+        nonlocal staging_name
+        original_populate(*args, **kwargs)
+        staged = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
+        assert len(staged) == 1
+        staging_name = staged[0].name
+        root.parent.rename(moved_parent)
+        root.parent.mkdir()
+        (root.parent / root.name).mkdir()
+        (root.parent / staging_name).write_bytes(decoy)
+        raise OSError("simulated populate failure")
+
+    monkeypatch.setattr(portable, "_populate_portable_repo", populate_then_swap)
+
+    with pytest.raises(OSError, match="simulated populate failure"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert staging_name is not None
+    replacement_staging = root.parent / staging_name
+    assert replacement_staging.read_bytes() == decoy
+    assert (moved_parent / staging_name).is_dir()
+    assert any((moved_parent / staging_name).iterdir())
+
+
+def test_owner_seed_staging_preflight_failure_preserves_replacement_evidence(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    moved_parent = tmp_path.parent / "owner-staging-preflight-parent"
+    original_preflight = portable._preflight_existing_portable
+    staging_name: str | None = None
+    decoy = b"replacement preflight staging must survive\n"
+
+    def preflight_then_swap(*args: object, **kwargs: object) -> None:
+        nonlocal staging_name
+        original_preflight(*args, **kwargs)
+        staged = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
+        assert len(staged) == 1
+        staging_name = staged[0].name
+        root.parent.rename(moved_parent)
+        root.parent.mkdir()
+        (root.parent / root.name).mkdir()
+        (root.parent / staging_name).write_bytes(decoy)
+        raise OSError("simulated staging preflight failure")
+
+    monkeypatch.setattr(portable, "_preflight_existing_portable", preflight_then_swap)
+
+    with pytest.raises(OSError, match="simulated staging preflight failure"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert staging_name is not None
+    replacement_staging = root.parent / staging_name
+    assert replacement_staging.read_bytes() == decoy
+    assert (moved_parent / staging_name).is_dir()
+    assert any((moved_parent / staging_name).iterdir())
+
+
 @pytest.mark.skipif(
     not Path("/proc/self/fd").is_dir(), reason="requires procfs descriptor listing"
 )
@@ -1082,6 +1154,95 @@ def test_owner_seed_close_failure_still_attempts_remaining_descriptors(
 
     assert injected
     assert len(closed) > 1
+
+
+def test_owner_seed_created_file_verification_rejects_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    rules = root / ".agent/rules"
+    rules.mkdir(parents=True)
+    (rules / "llmwikiops.md").write_bytes(b"managed rule\n")
+    flags = portable._owner_seed_directory_flags()
+    root_descriptor = os.open(root, flags)
+    agent_descriptor = os.open(".agent", flags, dir_fd=root_descriptor)
+    rules_descriptor = os.open("rules", flags, dir_fd=agent_descriptor)
+    preimage = portable._owner_seed_file_preimage(
+        rules_descriptor, "llmwikiops.md", (".agent", "rules", "llmwikiops.md")
+    )
+    created = portable._OwnerSeedCreatedFile(
+        relative=(".agent", "rules", "llmwikiops.md"),
+        parent_identity=portable._owner_seed_identity_from_stat(
+            os.fstat(rules_descriptor)
+        ),
+        preimage=preimage,
+    )
+    original_close = portable.os.close
+    original_close(rules_descriptor)
+    original_close(agent_descriptor)
+    closed: list[int] = []
+
+    def close_then_fail(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+        if len(closed) > 1:
+            raise OSError("simulated nested descriptor close failure")
+
+    monkeypatch.setattr(portable.os, "close", close_then_fail)
+    try:
+        with pytest.raises(OSError, match="descriptor cleanup failed"):
+            portable._verify_owner_seed_created_files(root_descriptor, (), (created,))
+    finally:
+        original_close(root_descriptor)
+
+    assert len(closed) == 3
+
+
+def test_owner_seed_created_file_close_failure_preserves_body_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    rules = root / ".agent/rules"
+    rules.mkdir(parents=True)
+    (rules / "llmwikiops.md").write_bytes(b"managed rule\n")
+    flags = portable._owner_seed_directory_flags()
+    root_descriptor = os.open(root, flags)
+    agent_descriptor = os.open(".agent", flags, dir_fd=root_descriptor)
+    rules_descriptor = os.open("rules", flags, dir_fd=agent_descriptor)
+    preimage = portable._owner_seed_file_preimage(
+        rules_descriptor, "llmwikiops.md", (".agent", "rules", "llmwikiops.md")
+    )
+    created = portable._OwnerSeedCreatedFile(
+        relative=(".agent", "rules", "llmwikiops.md"),
+        parent_identity=portable._owner_seed_identity_from_stat(
+            os.fstat(rules_descriptor)
+        ),
+        preimage=preimage,
+    )
+    original_close = portable.os.close
+    original_close(rules_descriptor)
+    original_close(agent_descriptor)
+
+    def close_then_fail(descriptor: int) -> None:
+        original_close(descriptor)
+        raise OSError("simulated nested descriptor close failure")
+
+    def fail_body(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated verification body failure")
+
+    monkeypatch.setattr(portable.os, "close", close_then_fail)
+    monkeypatch.setattr(portable, "_verify_owner_seed_file_preimage", fail_body)
+    try:
+        with pytest.raises(
+            OSError,
+            match="descriptor cleanup failed.*simulated verification body failure",
+        ) as raised:
+            portable._verify_owner_seed_created_files(root_descriptor, (), (created,))
+    finally:
+        original_close(root_descriptor)
+
+    assert raised.value.__cause__ is not None
+    assert "simulated verification body failure" in str(raised.value.__cause__)
 
 
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
