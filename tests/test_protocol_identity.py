@@ -25,6 +25,7 @@ from obsidian_wiki.protocol import (
     STATE_DIR_NAME,
     TEMP_PREFIX_TOKEN,
 )
+from obsidian_wiki.runtime_context import nearest_portable_config
 
 
 def _portable_config() -> str:
@@ -87,6 +88,8 @@ def test_legacy_state_config_is_not_discovered_or_modified(tmp_path: Path) -> No
     original = _portable_config().encode("utf-8")
     legacy.write_bytes(original)
 
+    assert nearest_portable_config(cwd) is None
+
     with pytest.raises(ConfigError, match="^repository not configured$"):
         resolve_config(
             cwd=cwd,
@@ -104,6 +107,7 @@ def test_legacy_state_config_is_not_discovered_or_modified(tmp_path: Path) -> No
         implementation=IMPLEMENTATION_ID,
     )
     assert resolved.path == current.resolve()
+    assert nearest_portable_config(cwd) == current.resolve()
     assert legacy.read_bytes() == original
     values = _config_values(resolved)
     assert values[LLMWIKIOPS_REPO_ENV] == str(repository)
