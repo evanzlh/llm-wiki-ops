@@ -645,6 +645,76 @@ def test_owner_seed_parent_swap_never_writes_through_external_symlink(
     )
 
 
+def test_owner_seed_root_replacement_after_preflight_is_not_initialized(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    replaced_root = tmp_path / "repo-owner"
+    original_preflight = portable._preflight_staged_owner_seed_tree
+    replaced = False
+
+    def preflight_then_replace(*args: object, **kwargs: object) -> None:
+        nonlocal replaced
+        original_preflight(*args, **kwargs)
+        if not replaced:
+            replaced = True
+            root.rename(replaced_root)
+            root.mkdir()
+
+    monkeypatch.setattr(
+        portable, "_preflight_staged_owner_seed_tree", preflight_then_replace
+    )
+
+    with pytest.raises(OSError, match="incomplete|owner seed changed"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert replaced
+    assert not any(root.iterdir())
+    assert (replaced_root / ".obsidian-wiki/config.toml").read_bytes() == (
+        b"owner legacy rule"
+    )
+
+
+def test_owner_seed_opened_parent_swap_is_not_treated_as_success(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    agent = root / ".agent"
+    legacy = agent / "rules/obsidian-wiki.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open = portable.os.open
+    swapped = False
+
+    def open_then_swap_parent(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == ".agent" and dir_fd is not None and not swapped:
+            swapped = True
+            agent.rename(root / ".agent-owner")
+            agent.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(portable.os, "open", open_then_swap_parent)
+
+    with pytest.raises(OSError, match="incomplete|owner seed changed"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert swapped
+    assert not any(outside.rglob("*"))
+    assert not (root / ".agent-owner/rules/llmwikiops.md").exists()
+    assert (root / ".agent-owner/rules/obsidian-wiki.md").read_bytes() == (
+        b"owner legacy rule"
+    )
+
+
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

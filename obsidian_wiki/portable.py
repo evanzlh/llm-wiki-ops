@@ -5809,7 +5809,7 @@ def _open_owner_seed_directory(
     name: str,
     expected_identity: tuple[int, int] | None,
     relative: tuple[str, ...],
-) -> int:
+) -> tuple[int, tuple[int, int]]:
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     if expected_identity is None:
@@ -5834,7 +5834,34 @@ def _open_owner_seed_directory(
             "portable owner seed changed during installation at "
             + "/".join(relative)
         )
-    return descriptor
+    _assert_owner_seed_attachment(
+        parent_descriptor, name, actual_identity, relative
+    )
+    return descriptor, actual_identity
+
+
+def _assert_owner_seed_attachment(
+    parent_descriptor: int,
+    name: str,
+    expected_identity: tuple[int, int],
+    relative: tuple[str, ...],
+) -> None:
+    try:
+        metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        raise OSError(
+            "portable owner seed changed during installation at "
+            + "/".join(relative)
+        ) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or _owner_seed_identity_from_stat(metadata) != expected_identity
+    ):
+        raise OSError(
+            "portable owner seed changed during installation at "
+            + "/".join(relative)
+        )
 
 
 def _install_staged_owner_seed_tree(
@@ -5842,12 +5869,18 @@ def _install_staged_owner_seed_tree(
     target_descriptor: int,
     relative: tuple[str, ...],
     existing_directories: Mapping[tuple[str, ...], tuple[int, int]],
+    attachment: tuple[int, str, tuple[int, int]] | None,
 ) -> None:
     for staged in sorted(source.iterdir(), key=lambda path: path.name):
+        if attachment is not None:
+            parent_descriptor, name, expected_identity = attachment
+            _assert_owner_seed_attachment(
+                parent_descriptor, name, expected_identity, relative
+            )
         metadata = staged.lstat()
         child_relative = (*relative, staged.name)
         if stat.S_ISDIR(metadata.st_mode):
-            child_descriptor = _open_owner_seed_directory(
+            child_descriptor, child_identity = _open_owner_seed_directory(
                 target_descriptor,
                 staged.name,
                 existing_directories.get(child_relative),
@@ -5855,9 +5888,16 @@ def _install_staged_owner_seed_tree(
             )
             try:
                 _install_staged_owner_seed_tree(
-                    staged, child_descriptor, child_relative, existing_directories
+                    staged,
+                    child_descriptor,
+                    child_relative,
+                    existing_directories,
+                    (target_descriptor, staged.name, child_identity),
                 )
             finally:
+                _assert_owner_seed_attachment(
+                    target_descriptor, staged.name, child_identity, child_relative
+                )
                 os.close(child_descriptor)
             continue
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
@@ -5886,16 +5926,39 @@ def _commit_staged_owner_seed_repo(root: Path, staging: Path) -> None:
     """
     if not _is_safe_owner_seed_tree(root):
         raise ValueError(f"portable owner seed changed before staged commit: {root}")
+    root_identity = _owner_seed_identity_from_stat(root.lstat())
     existing_directories: dict[tuple[str, ...], tuple[int, int]] = {}
     _preflight_staged_owner_seed_tree(
         staging, root, (), existing_directories
     )
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(root, flags)
+    parent_descriptor = os.open(root.parent, flags)
+    try:
+        descriptor = os.open(root.name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        os.close(parent_descriptor)
+        raise _PortableSetupRollbackError(
+            "portable owner-seed installation incomplete; preserved staged evidence at "
+            f"{staging}: portable owner seed changed before installation"
+        ) from exc
+    if _owner_seed_identity_from_stat(os.fstat(descriptor)) != root_identity:
+        os.close(descriptor)
+        os.close(parent_descriptor)
+        raise _PortableSetupRollbackError(
+            "portable owner-seed installation incomplete; preserved staged evidence at "
+            f"{staging}: portable owner seed changed before installation"
+        )
     try:
         _install_staged_owner_seed_tree(
-            staging, descriptor, (), existing_directories
+            staging,
+            descriptor,
+            (),
+            existing_directories,
+            (parent_descriptor, root.name, root_identity),
+        )
+        _assert_owner_seed_attachment(
+            parent_descriptor, root.name, root_identity, (root.name,)
         )
     except BaseException as exc:
         raise _PortableSetupRollbackError(
@@ -5904,6 +5967,7 @@ def _commit_staged_owner_seed_repo(root: Path, staging: Path) -> None:
         ) from exc
     finally:
         os.close(descriptor)
+        os.close(parent_descriptor)
     try:
         shutil.rmtree(staging)
     except OSError as exc:
