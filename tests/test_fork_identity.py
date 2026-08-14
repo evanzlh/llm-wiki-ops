@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -23,6 +24,16 @@ FORMER_EXTERNAL_PROTOCOL = re.compile(
     r"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
 UPSTREAM_ATTRIBUTION = "https://github.com/Ar9av/obsidian-wiki"
+OTHER_NON_TEXT_ALLOWLIST = frozenset(
+    {
+        Path("LICENSE"),
+        Path("extensions/brain-capture/assets/icon-128.png"),
+        Path("extensions/brain-capture/assets/icon-16.png"),
+        Path("extensions/brain-capture/assets/icon-48.png"),
+        Path("extensions/brain-capture/assets/obsidian-brain.png"),
+        Path("extensions/brain-capture/assets/store-screenshot-1280x800.png"),
+    }
+)
 
 TRACKED_CATEGORIES = frozenset(
     {"production", "docs", "tests", "package-resource", "other"}
@@ -55,29 +66,146 @@ HISTORICAL_DOCUMENTS = frozenset(
         Path("docs/superpowers/specs/2026-08-14-llmwikiops-protocol-rename-design.md"),
     }
 )
-TEST_PROTOCOL_GUARDS = frozenset(
+NEGATIVE_TEST_MODULE_CONSTANTS = {
+    Path("tests/test_asset_artifact_parity.py"): frozenset(
+        {"REMOVED_DISTRIBUTION_PATHS", "FORMER_PROTOCOL_RESOURCE"}
+    ),
+    Path("tests/test_installation_policy.py"): frozenset(
+        {"FORMER_PROTOCOL_RESOURCE"}
+    ),
+    Path("tests/test_portable_human_docs.py"): frozenset(
+        {"FORMER_EXTERNAL_PROTOCOL"}
+    ),
+    Path("tests/test_portable_setup.py"): frozenset({"LEGACY_REFERENCE_BOOTSTRAP"}),
+    Path("tests/test_portable_skill_protocol.py"): frozenset(
+        {"FORBIDDEN_RUNTIME_TERMS", "LEGACY_RUNTIME_IDENTITY"}
+    ),
+    Path("tests/test_scripts_packaging.py"): frozenset(
+        {"REMOVED_SCHEDULER_ARTIFACTS"}
+    ),
+}
+NEGATIVE_TEST_FUNCTIONS = {
+    Path("tests/test_asset_artifact_parity.py"): frozenset(
+        {"test_distribution_assets_exactly_match_canonical_package_data"}
+    ),
+    Path("tests/test_context_pack_docs.py"): frozenset(
+        {"test_context_skill_uses_repo_discovery_and_requires_installed_cli"}
+    ),
+    Path("tests/test_doctor.py"): frozenset(
+        {"test_doctor_wrong_portable_implementation_fails_without_global_fallback"}
+    ),
+    Path("tests/test_fork_identity.py"): frozenset(
+        {
+            "test_only_llmwikiops_cli_and_protocol_names_remain_supported",
+            "test_protocol_audit_rejects_mutated_allowed_contexts",
+            "test_former_protocol_detector_rejects_all_external_protocol_variants",
+            "test_former_protocol_managed_assets_are_absent_from_source_tree",
+        }
+    ),
+    Path("tests/test_installation_policy.py"): frozenset(
+        {
+            "test_build_metadata_is_retained_for_uv_source_install",
+            "test_bilingual_readmes_disclose_the_fork_and_only_source_install",
+            "test_agents_routes_repository_authority_without_global_source_variables",
+            "test_factory_uses_safe_managed_validator_from_nearest_repository",
+            "test_no_unsupported_install_guidance_remains",
+            "test_no_unsupported_install_guidance_in_user_facing_tooling",
+            "test_uv_tool_install_survives_source_move",
+        }
+    ),
+    Path("tests/test_portable_config.py"): frozenset(
+        {"test_wrong_implementation_is_rejected"}
+    ),
+    Path("tests/test_portable_human_docs.py"): frozenset(
+        {
+            "test_current_docs_name_the_llmwikiops_protocol_and_hard_cutover",
+            "test_old_product_reference_detection_covers_public_boundaries",
+            "test_old_product_reference_detection_preserves_allowed_contexts",
+            "test_hard_cutover_explanation_rejects_other_former_protocol_identifiers",
+            "test_chinese_hard_cutover_explanation_rejects_other_former_protocol_identifiers",
+            "test_current_docs_use_llmwikiops_identity",
+        }
+    ),
+    Path("tests/test_portable_only_contract.py"): frozenset(
+        {
+            "test_bare_cli_prints_help_without_writing_repository_state",
+            "test_portable_info_ignores_residual_legacy_home_config",
+            "test_setup_rejects_removed_arguments",
+            "test_retired_current_surfaces_have_one_complete_removal_inventory",
+            "test_factory_uses_fresh_repository_skill_validator",
+        }
+    ),
+    Path("tests/test_portable_setup.py"): frozenset(
+        {
+            "test_setup_portable_creates_repo_without_global_side_effects",
+            "test_setup_hard_cutover_preserves_legacy_protocol_owner_content",
+            "test_owner_seed_collision_rolls_back_only_setup_created_paths",
+            "test_owner_seed_late_owner_write_is_preserved_after_partial_install",
+            "test_owner_seed_parent_swap_never_writes_through_external_symlink",
+            "test_owner_seed_root_replacement_after_preflight_is_not_initialized",
+            "test_owner_seed_opened_parent_swap_is_not_treated_as_success",
+            "test_owner_seed_attachment_failure_does_not_leak_recursive_descriptors",
+            "test_owner_seed_parent_namespace_swap_preserves_bound_staging_evidence",
+            "test_owner_seed_grandparent_replacement_does_not_initialize_moved_tree",
+            "test_owner_seed_link_rewrite_without_collision_is_never_reported_success",
+            "test_owner_seed_prebind_failure_never_cleans_replacement_staging",
+            "test_owner_seed_populate_failure_preserves_replacement_staging_evidence",
+            "test_owner_seed_staging_preflight_failure_preserves_replacement_evidence",
+            "test_owner_seed_root_fstat_failure_does_not_leak_open_descriptors",
+            "test_owner_seed_close_failure_still_attempts_remaining_descriptors",
+            "test_former_portable_bootstrap_marker_is_owner_content_not_migration_input",
+            "test_portable_config_is_relative_minimal_and_loadable",
+        }
+    ),
+    Path("tests/test_portable_skill_protocol.py"): frozenset(
+        {
+            "test_identity_matcher_detects_disallowed_contexts",
+            "test_identity_allowlist_preserves_exact_compatibility_contexts",
+            "test_popup_keeps_the_stable_raw_picker_id_once_in_picker_options",
+            "test_identity_location_reports_path_line_and_snippet",
+            "test_maintenance_skills_are_repository_native",
+            "test_status_contract_matches_real_graph_and_portable_manifest_layout",
+        }
+    ),
+    Path("tests/test_portable_write_protocol.py"): frozenset(
+        {"test_runtime_exports_only_new_repository_variable"}
+    ),
+    Path("tests/test_protocol_identity.py"): frozenset(
+        {
+            "test_legacy_state_config_is_not_discovered_or_modified",
+            "test_local_state_must_use_the_canonical_protocol_path",
+        }
+    ),
+    Path("tests/test_query_cli.py"): frozenset(
+        {"test_query_cli_invalid_portable_config_never_falls_back_global"}
+    ),
+    Path("tests/test_transaction.py"): frozenset(
+        {"test_transaction_excludes_llmwikiops_protocol_directory"}
+    ),
+}
+AUDIT_HELPERS = frozenset(
     {
-        Path("tests/test_asset_artifact_parity.py"),
-        Path("tests/test_context_pack_docs.py"),
-        Path("tests/test_doctor.py"),
-        Path("tests/test_fork_identity.py"),
-        Path("tests/test_installation_policy.py"),
-        Path("tests/test_portable_config.py"),
-        Path("tests/test_portable_human_docs.py"),
-        Path("tests/test_portable_only_contract.py"),
-        Path("tests/test_portable_setup.py"),
-        Path("tests/test_portable_skill_protocol.py"),
-        Path("tests/test_portable_write_protocol.py"),
-        Path("tests/test_protocol_identity.py"),
-        Path("tests/test_query_cli.py"),
-        Path("tests/test_scripts_packaging.py"),
-        Path("tests/test_transaction.py"),
+        "_is_allowed_current_document_match",
+        "_is_explicit_negative_test_match",
     }
 )
+NEGATIVE_TEST_HELPERS = {
+    Path("tests/test_portable_human_docs.py"): frozenset(
+        {"_is_upstream_attribution", "_is_hard_cutover_explanation"}
+    ),
+    Path("tests/test_portable_skill_protocol.py"): frozenset(
+        {"_is_ar9av_attribution", "is_allowed_legacy_identity"}
+    ),
+}
 
-def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
-    """Return former external protocol names outside the exact upstream URL."""
-    violations: list[str] = []
+def _line_at(text: str, offset: int) -> str:
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _unattributed_protocol_matches(text: str) -> list[re.Match[str]]:
+    matches: list[re.Match[str]] = []
     for match in FORMER_EXTERNAL_PROTOCOL.finditer(text):
         start = match.start()
         attribution_starts = [
@@ -86,6 +214,9 @@ def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
             if text.startswith(UPSTREAM_ATTRIBUTION, index)
         ]
         inside_exact_upstream = any(
+            text[attribution_start - 1 : attribution_start]
+            in {"", " ", "\n", "\t", "'", '"', "(", "[", "<"}
+            and
             attribution_start <= start < attribution_start + len(UPSTREAM_ATTRIBUTION)
             and text[
                 attribution_start + len(UPSTREAM_ATTRIBUTION) : attribution_start
@@ -95,12 +226,91 @@ def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
             in {"", " ", "\n", "\t", "'", '"', ")", "]", ">", ","}
             for attribution_start in attribution_starts
         )
-        if match.group() == "obsidian_wiki_cwd":
-            continue
         if not inside_exact_upstream:
-            line = text.count("\n", 0, start) + 1
-            violations.append(f"{path}:{line}: {match.group()}")
-    return violations
+            matches.append(match)
+    return matches
+
+
+def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
+    """Return former external protocol names outside the exact upstream URL."""
+    return [
+        f"{path}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
+        for match in _unattributed_protocol_matches(text)
+    ]
+
+
+def _is_allowed_current_document_match(
+    relative: Path, text: str, match: re.Match[str]
+) -> bool:
+    line = _line_at(text, match.start())
+    if relative == Path("docs/fork.md"):
+        return line.startswith("LLMWikiOps is independently maintained at ")
+    if relative == Path("README.md"):
+        return line.startswith("LLMWikiOps is independently maintained at ") or line.startswith(
+            "**Protocol incompatibility.** The former `.obsidian-wiki/` state"
+        )
+    if relative == Path("README_ZH.md"):
+        return line.startswith("LLMWikiOps 在 ") or line.startswith(
+            "**协议不兼容。** 旧的 `.obsidian-wiki/` 状态"
+        )
+    return False
+
+
+def _is_explicit_negative_test_match(
+    relative: Path, text: str, match: re.Match[str]
+) -> bool:
+    raw_line = _line_at(text, match.start())
+    if raw_line.strip() == '_portable_config().replace(".llmwikiops/local", ".obsidian-wiki/local"),':
+        return True
+    if raw_line.strip() in {
+        '"scripts/com.obsidian-wiki.daily-update.plist",',
+        '"com.obsidian-wiki.daily-update.plist",',
+        'r"~[\\\\/]\\.obsidian-wiki[\\\\/]config\\b",',
+    }:
+        return True
+    line_number = text.count("\n", 0, match.start()) + 1
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        first_line = min(
+            [node.lineno] + [decorator.lineno for decorator in node.decorator_list]
+        )
+        if (
+            node.name in NEGATIVE_TEST_FUNCTIONS.get(relative, frozenset())
+            and first_line <= line_number <= node.end_lineno
+        ):
+            return True
+        if (
+            relative == Path("tests/test_fork_identity.py")
+            and node.name in AUDIT_HELPERS
+            and first_line <= line_number <= node.end_lineno
+        ):
+            return True
+        if (
+            node.name in NEGATIVE_TEST_HELPERS.get(relative, frozenset())
+            and first_line <= line_number <= node.end_lineno
+        ):
+            return True
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else (node.target,)
+        )
+        names = {target.id for target in targets if isinstance(target, ast.Name)}
+        if (
+            names & NEGATIVE_TEST_MODULE_CONSTANTS.get(relative, frozenset())
+            and node.lineno <= line_number <= node.end_lineno
+        ):
+            return True
+        if (
+            relative == Path("tests/test_fork_identity.py")
+            and "FORMER_EXTERNAL_PROTOCOL" in names
+            and node.lineno <= line_number <= node.end_lineno
+        ):
+            return True
+    return False
 
 
 def _tracked_manifest() -> frozenset[Path]:
@@ -306,34 +516,57 @@ def test_tracked_docs_tests_and_resources_have_dedicated_protocol_guards() -> No
     }
 
     assert HISTORICAL_DOCUMENTS <= docs
-    assert TEST_PROTOCOL_GUARDS <= tests
     assert Path("obsidian_wiki/_data/legacy-skill-digests-v1.json") in resources
 
+    # Historical specs/plans are retained records on an exact path allowlist.
+    # Every current documentation path is still scanned match-by-match.
     for relative in docs - HISTORICAL_DOCUMENTS:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        if relative == Path("docs/fork.md"):
-            assert "https://github.com/Ar9av/obsidian-wiki" in text
-            assert "https://github.com/evanzlh/obsidian-wiki" not in text
-            continue
-        if relative == Path("README.md"):
-            assert "https://github.com/Ar9av/obsidian-wiki" in text
-            assert "The former `.obsidian-wiki/` state is not detected" in text
-            continue
-        if relative == Path("README_ZH.md"):
-            assert "https://github.com/Ar9av/obsidian-wiki" in text
-            assert "旧的 `.obsidian-wiki/` 状态不会检测、读取、迁移或删除" in text
-            continue
-        violations = disallowed_protocol_matches(relative, text)
-        assert not violations, violations
+        disallowed = [
+            match
+            for match in _unattributed_protocol_matches(text)
+            if not _is_allowed_current_document_match(relative, text, match)
+        ]
+        assert not disallowed, [
+            f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
+            for match in disallowed
+        ]
     for relative in resources:
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert not disallowed_protocol_matches(relative, text), relative
-    test_references = {
-        relative
-        for relative in tests
-        if FORMER_EXTERNAL_PROTOCOL.search((ROOT / relative).read_text(encoding="utf-8"))
-    }
-    assert test_references <= TEST_PROTOCOL_GUARDS
+    for relative in tests:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        disallowed = [
+            match
+            for match in _unattributed_protocol_matches(text)
+            if not _is_explicit_negative_test_match(relative, text, match)
+        ]
+        assert not disallowed, [
+            f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
+            for match in disallowed
+        ]
+    others = {path for path in manifest if classify_tracked_path(path) == "other"}
+    assert others == OTHER_NON_TEXT_ALLOWLIST
+    for relative in others - OTHER_NON_TEXT_ALLOWLIST:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert not disallowed_protocol_matches(relative, text), relative
+
+
+def test_protocol_audit_rejects_mutated_allowed_contexts() -> None:
+    for relative, text in (
+        (Path("README.md"), "# note\nobsidian-wiki command\n"),
+        (Path("docs/fork.md"), "# note\nobsidian-wiki command\n"),
+        (Path("tests/test_fixture.py"), "def test_regular():\n    value = 'obsidian-wiki'\n"),
+        (Path("LICENSE"), "license note\nobsidian-wiki command\n"),
+    ):
+        matches = _unattributed_protocol_matches(text)
+        assert matches
+        if relative.parts[:1] == ("tests",):
+            assert not _is_explicit_negative_test_match(relative, text, matches[0])
+        elif relative == Path("LICENSE"):
+            assert disallowed_protocol_matches(relative, text)
+        else:
+            assert not _is_allowed_current_document_match(relative, text, matches[0])
 
 
 @pytest.mark.parametrize(
@@ -351,6 +584,10 @@ def test_tracked_docs_tests_and_resources_have_dedicated_protocol_guards() -> No
         ("# Obsidian Wiki Agent Instructions", ["Obsidian Wiki"]),
         ("https://github.com/evanzlh/obsidian-wiki", ["obsidian-wiki"]),
         ("https://github.com/Ar9av/obsidian-wiki.evil", ["obsidian-wiki"]),
+        (
+            "evilhttps://github.com/Ar9av/obsidian-wiki",
+            ["obsidian-wiki"],
+        ),
         ("ObSiDiAn-WiKi setup", ["ObSiDiAn-WiKi"]),
         (
             "https://github.com/Ar9av/obsidian-wiki\n"

@@ -1827,6 +1827,46 @@ def test_sync_cleanup_rejects_recursive_child_swap_before_purge(
     assert (evidence / "journal.json").read_bytes() == b"disposable child evidence\n"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO cleanup safety")
+def test_sync_cleanup_rejects_nested_fifo_without_removing_evidence(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    victim = root / "disposable"
+    nested = victim / "nested"
+    fifo = nested / "owner.fifo"
+    evidence = nested / "journal.json"
+    nested.mkdir(parents=True)
+    evidence.write_bytes(b"disposable evidence remains\n")
+    os.mkfifo(fifo)
+    fifo_identity = (fifo.stat().st_dev, fifo.stat().st_ino)
+
+    with pytest.raises(ValueError, match="unsafe entry"):
+        portable._remove_sync_path(root, victim)
+
+    assert (fifo.stat().st_dev, fifo.stat().st_ino) == fifo_identity
+    assert evidence.read_bytes() == b"disposable evidence remains\n"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
+def test_sync_cleanup_unlinks_internal_symlink_without_following_owner_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    victim = root / "disposable"
+    owner = tmp_path / "owner"
+    precious = owner / "precious.md"
+    victim.mkdir(parents=True)
+    owner.mkdir()
+    precious.write_bytes(b"owner bytes must survive\n")
+    (victim / "owner-link").symlink_to(owner, target_is_directory=True)
+
+    portable._remove_sync_path(root, victim)
+
+    assert not victim.exists()
+    assert precious.read_bytes() == b"owner bytes must survive\n"
+
+
 def test_skill_sync_plan_classifies_changed_removed_and_ordinary_invalid_extra(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

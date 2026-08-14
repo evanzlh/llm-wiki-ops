@@ -119,7 +119,7 @@ def _resolve_runtime(
         except OSError as exc:
             error = ConfigError(f"repository resolution failed: {exc}")
             error.__cause__ = exc
-        error._obsidian_wiki_cwd = cwd  # type: ignore[attr-defined]
+        error._llmwikiops_cwd = cwd  # type: ignore[attr-defined]
 
     if error_sink is not None:
         error_sink.append(error)
@@ -444,7 +444,7 @@ def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
         return _run_portable_doctor(runtime)
 
     error = errors[0] if errors else ConfigError("repository not configured")
-    current = getattr(error, "_obsidian_wiki_cwd", None)
+    current = getattr(error, "_llmwikiops_cwd", None)
     if current is None:
         checks: list[dict[str, str]] = []
         _doctor_add(

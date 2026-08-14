@@ -4423,7 +4423,7 @@ def test_transaction_begin_json_unknown_user_source_is_structured(
     tmp_path: Path,
 ) -> None:
     root, _config = make_config(tmp_path)
-    missing_user = f"~obsidian_wiki_no_such_user_{os.getpid()}/file.md"
+    missing_user = f"~llmwikiops_no_such_user_{os.getpid()}/file.md"
 
     result = run_cli(
         tmp_path / "home",
