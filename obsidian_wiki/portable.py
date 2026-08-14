@@ -1820,6 +1820,9 @@ def _bootstrap_body(relative_agents: str) -> str:
     )
 
 
+_LEGACY_BOOTSTRAP_HEADING = "# Obsidian Wiki Agent Instructions\n\n"
+
+
 def _bootstrap_source(source_bootstrap: Path | None) -> Path:
     source = _absolute_no_resolve(source_bootstrap or _BUNDLED_BOOTSTRAP_DIR)
     try:
@@ -1895,7 +1898,11 @@ def _render_asset_bootstrap(asset: str, existing: str) -> str:
 
 
 def _legacy_bootstrap_text(relative_agents: str) -> str:
-    return "<!-- obsidian-wiki:portable-bootstrap -->\n" + _bootstrap_body(relative_agents)
+    return (
+        "<!-- obsidian-wiki:portable-bootstrap -->\n"
+        + _LEGACY_BOOTSTRAP_HEADING
+        + f"Read and follow `{relative_agents}` from this repository.\n"
+    )
 
 
 def _planned_reference_bootstrap_text(existing: str, relative_agents: str) -> str | None:

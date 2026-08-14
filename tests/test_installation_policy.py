@@ -218,9 +218,10 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
     ]
     wheels = [path for path in artifacts if path.suffix == ".whl"]
     sdists = [path for path in artifacts if path.name.endswith(".tar.gz")]
+    non_artifact_files = [path for path in output_files if path not in artifacts]
     assert len(wheels) == 1
     assert len(sdists) == 1
-    assert artifacts == sorted([*wheels, *sdists])
+    assert non_artifact_files == [output / ".gitignore"]
     assert not [
         path for path in output_files if path.name.startswith("obsidian_wiki-")
     ]
@@ -272,13 +273,18 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
                     "LLM-oriented operational framework for durable Markdown "
                     "knowledge bases"
                 )
-                assert metadata.get_all("Project-URL") == [
-                    "Homepage, https://github.com/evanzlh/llm-wiki-ops",
-                    "Repository, https://github.com/evanzlh/llm-wiki-ops",
-                    "Issues, https://github.com/evanzlh/llm-wiki-ops/issues",
-                    "Changelog, https://github.com/evanzlh/llm-wiki-ops/releases",
-                    "Upstream, https://github.com/Ar9av/obsidian-wiki",
-                ]
+                project_urls = {
+                    name: url
+                    for value in metadata.get_all("Project-URL", [])
+                    for name, url in [value.split(", ", 1)]
+                }
+                assert project_urls == {
+                    "Homepage": "https://github.com/evanzlh/llm-wiki-ops",
+                    "Repository": "https://github.com/evanzlh/llm-wiki-ops",
+                    "Issues": "https://github.com/evanzlh/llm-wiki-ops/issues",
+                    "Changelog": "https://github.com/evanzlh/llm-wiki-ops/releases",
+                    "Upstream": "https://github.com/Ar9av/obsidian-wiki",
+                }
                 assert entry_points.defaults() == {}
                 assert entry_points.sections() == ["console_scripts"]
                 assert dict(entry_points["console_scripts"]) == {

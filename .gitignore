@@ -18,9 +18,8 @@ __pycache__/
 # Packed browser extension (rebuildable from extensions/brain-capture/)
 extensions/brain-capture/*.zip
 
-# Agent skill symlinks are just pointers to .skills/. We track them so cloners
-# get the symlinks too; relative adapters are created by
-# Create one with: `llmwikiops setup [DIR]`.
+# This framework source checkout does not track portable repository-local agent mirrors.
+# Create an initialized repository with: `llmwikiops setup [DIR]`.
 
 # Local isolated development worktrees
 /.worktrees/

@@ -93,6 +93,12 @@ BUNDLED_BOOTSTRAP_TARGETS = {
     ".github/copilot-instructions.md": "github/copilot-instructions.md",
 }
 
+LEGACY_REFERENCE_BOOTSTRAP = (
+    "<!-- obsidian-wiki:portable-bootstrap -->\n"
+    "# Obsidian Wiki Agent Instructions\n\n"
+    "Read and follow `AGENTS.md` from this repository.\n"
+)
+
 
 def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -3167,6 +3173,23 @@ def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_reru
     assert rerun.count(MANAGED_START) == 1
     assert rerun.count(MANAGED_END) == 1
     assert "Owner alias convention." in rerun
+
+
+def test_setup_migrates_the_exact_legacy_reference_bootstrap(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    alias = root / "CLAUDE.md"
+    alias.write_text(LEGACY_REFERENCE_BOOTSTRAP, encoding="utf-8")
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    upgraded = alias.read_text(encoding="utf-8")
+    assert LEGACY_REFERENCE_BOOTSTRAP not in upgraded
+    assert "# LLMWikiOps Agent Instructions\n\n" in upgraded
+    assert upgraded.count(MANAGED_START) == 1
+    assert upgraded.count(MANAGED_END) == 1
 
 
 def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> None:
