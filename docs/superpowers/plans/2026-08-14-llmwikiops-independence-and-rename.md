@@ -203,13 +203,13 @@ Use these titles and summaries:
 ```markdown
 # LLMWikiOps
 
-> A deterministic, repository-native implementation of the LLM Wiki pattern.
+> LLM-oriented operational framework for durable Markdown knowledge bases.
 ```
 
 ```markdown
 # LLMWikiOps
 
-> 一种确定性、仓库原生的 LLM Wiki 实现。
+> 面向持久 Markdown 知识库的 LLM 运维框架。
 ```
 
 Use this identical install block in both:
