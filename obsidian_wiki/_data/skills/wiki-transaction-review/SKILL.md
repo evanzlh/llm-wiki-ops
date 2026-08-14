@@ -17,7 +17,7 @@ present, then this task skill. The canonical protocol wins any conflict.
 
 ## Inspect the returned record
 
-Run `obsidian-wiki transaction list --json --pretty`. Do not infer a
+Run `llmwikiops transaction list --json --pretty`. Do not infer a
 transaction or directory from a filesystem scan, prior message, or remembered
 identifier. Select only a returned retained record, including when its status
 is `active`, `promoting`, `failed`, `complete`, or `restored`.
@@ -29,7 +29,7 @@ The list record has no candidate-page inventory. Display each action's
 
 ## Validate and build the sparse diff
 
-For an active record under candidate review, run `obsidian-wiki transaction
+For an active record under candidate review, run `llmwikiops transaction
 validate <id> --json --pretty`. Require the report to match the trusted ID and
 record deletions, and report every issue and warning. Only the validation
 report's `candidate_pages` is authoritative for candidate review. The candidate
@@ -57,7 +57,7 @@ with the same ID; require its status, `source_ids`, `candidate_vault`,
 the commit action in `allowed_actions`, show its reason, and satisfy every
 string in its `requires`. If anything changed or is ambiguous, stop and
 re-review. With no intervening work, immediately run
-`obsidian-wiki transaction commit <id> --json --pretty`. The CLI revalidates,
+`llmwikiops transaction commit <id> --json --pretty`. The CLI revalidates,
 but user approval is not digest-bound; do not claim a stronger guarantee.
 
 For rejection, first show all reported actions and requirements. A generic

@@ -9,7 +9,7 @@ Use [Hermes data format](references/hermes-data-format.md) for schemas and [sour
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed.
+Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed.
 
 Resolve the transient root from non-empty absolute `HERMES_HOME` when set, otherwise absolute `~/.hermes`; reject an empty or relative override/root. Do not use obsolete alternate history variables.
 
@@ -31,7 +31,7 @@ Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical 
 
 Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; without one recovery is inspection-only. Require exactly one list record with same ID and status, choose only `allowed_actions`, agree with `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
-Only a successful `transaction commit` or `transaction retry` allows `obsidian-wiki hot status --json`; when stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
+Only a successful `transaction commit` or `transaction retry` allows `llmwikiops hot status --json`; when stale run `llmwikiops hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `llmwikiops hot mark-current --json`. The agent must not mark stale inputs current directly.
 
 ## Discovery and parsing
 
@@ -60,15 +60,15 @@ For an existing target, complete the pre-write owner preservation gate before an
 
 Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
-After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
+After snapshot owner review and the Git gate, run `llmwikiops cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
 An absolute cache path is transient and never snapshot or page provenance.
 
 1. Parent creates each bounded reviewable UTF-8 Markdown snapshot under `sources/history/<tool>/` (`sources/history/hermes/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant data.
 2. Validate every Unicode Source ID as non-empty POSIX repository-relative configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty output. Tracked alone is insufficient: stop for owner review, stage, and commit externally, then rerun.
 3. Parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure.
-4. Parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
+4. Parent runs `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty` once.
 5. Parent alone writes final candidates under the runtime candidate vault with non-empty source subsets; use CLI deletion declarations.
-6. Parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews warnings/diff, and runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
-7. Parent refreshes `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
-8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only the bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report sessions, Source IDs, omissions, changes, and recovery. Do not commit, push, or open a pull request.
+6. Parent runs `llmwikiops transaction validate <id> --json --pretty`, reviews warnings/diff, and runs `llmwikiops transaction commit <id> --json --pretty` only on pass.
+7. Parent refreshes `llmwikiops transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `llmwikiops hot status --json`; if stale, run `llmwikiops hot inputs --json --pretty`, write only the bounded requested artifact, then `llmwikiops hot mark-current --json`. Report sessions, Source IDs, omissions, changes, and recovery. Do not commit, push, or open a pull request.

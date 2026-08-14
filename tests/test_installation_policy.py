@@ -417,7 +417,7 @@ def test_factory_uses_safe_managed_validator_from_nearest_repository(
     )
     assert "$OBSIDIAN_WIKI_REPO" not in factory
     assert ".skills/skill-creator/scripts/quick_validate.py" in factory
-    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert "llmwikiops repo sync-skills --json --pretty" in factory
     assert 'status: "clean"' in factory
     assert "Do not use `--apply`" in factory
     assert "uv run --with" not in factory
@@ -772,7 +772,7 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
     canonical_query = portable / ".skills/wiki-query/SKILL.md"
     query_bytes = canonical_query.read_bytes()
-    assert b"Answer questions by searching the compiled Obsidian wiki" in query_bytes
+    assert b"Answer questions by searching the compiled LLMWikiOps" in query_bytes
     for agent_relative, _label in PROJECT_AGENT_DIRS:
         mirrored = portable / agent_relative / "wiki-query/SKILL.md"
         assert mirrored.read_bytes() == query_bytes

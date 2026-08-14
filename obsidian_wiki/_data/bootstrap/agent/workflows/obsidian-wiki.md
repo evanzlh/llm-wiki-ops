@@ -1,5 +1,5 @@
 ---
-name: obsidian-wiki
+name: llmwikiops
 description: Delegate wiki workflows to repository-owned skills.
 commands:
   - name: wiki-query
@@ -12,7 +12,7 @@ commands:
     skill: .skills/wiki-status/SKILL.md
 ---
 
-# Obsidian Wiki Workflow Registry
+# LLMWikiOps Workflow Registry
 
 Resolve `.obsidian-wiki/config.toml` and read `AGENTS.md`. First load the
 canonical transaction protocol in `.skills/llm-wiki/SKILL.md`, then load the

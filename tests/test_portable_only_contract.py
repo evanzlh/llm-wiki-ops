@@ -1016,9 +1016,9 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     digest = _special_skill("wiki-digest")
 
     assert "nearest ancestor `.obsidian-wiki/config.toml`" in query
-    assert 'obsidian-wiki query "<question>" --json --pretty' in query
-    assert 'obsidian-wiki context-pack "<topic>" --budget 8000' in context
-    assert "obsidian-wiki hot status --json" in digest
+    assert 'llmwikiops query "<question>" --json --pretty' in query
+    assert 'llmwikiops context-pack "<topic>" --budget 8000' in context
+    assert "llmwikiops hot status --json" in digest
     assert "Read `hot.md` only when `stale` is `false`" in " ".join(digest.split())
     for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
         text = _special_skill(name)
@@ -1069,7 +1069,7 @@ def test_obsidian_config_edits_are_explicitly_not_knowledge_transactions() -> No
     for name in ("graph-colorize", "obsidian-layout-adjustment"):
         text = _special_skill(name)
         assert "not a knowledge transaction" in text, name
-        assert "Do not run `obsidian-wiki transaction begin`" in text, name
+        assert "Do not run `llmwikiops transaction begin`" in text, name
         assert "manifest" in text.lower(), name
 
 
@@ -1080,7 +1080,7 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     assert "`sys.executable`" in factory
     assert "absolute interpreter" in factory
     assert "without a shell" in factory
-    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert "llmwikiops repo sync-skills --json --pretty" in factory
     assert "Do not use `--apply`" in factory
     assert "`sys.executable`, `-c`, `import yaml`" in factory
     assert "dynamically resolve or download" in factory
@@ -1147,7 +1147,7 @@ def test_local_review_workflows_document_complete_safety_state_machines() -> Non
         "excluded identities/paths/counts",
     ):
         assert phrase in export_flat
-    assert "obsidian-wiki repo sync-skills --json --pretty" in factory
+    assert "llmwikiops repo sync-skills --json --pretty" in factory
     assert 'status: "clean"' in factory
     assert "validator checks only `SKILL.md` frontmatter" in factory
     for phrase in (

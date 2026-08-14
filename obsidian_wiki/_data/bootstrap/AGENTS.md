@@ -1,9 +1,9 @@
-# Obsidian Wiki — Repository Authority
+# LLMWikiOps — Repository Authority
 
 The Config Resolution Protocol is repository-only: resolve the nearest ancestor
 `.obsidian-wiki/config.toml`, keep its repository root as the working directory,
 and read this file before wiki work. If config is absent, use
-`obsidian-wiki setup [DIR]`; invalid config fails closed.
+`llmwikiops setup [DIR]`; invalid config fails closed.
 
 `.skills/` is the canonical skill tree. First load
 `.skills/llm-wiki/SKILL.md` as the canonical protocol, then load the applicable

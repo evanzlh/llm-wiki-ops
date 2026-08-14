@@ -185,31 +185,31 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    commit externally, then rerun. The framework and agent must not run
    `git add`, `git commit`, or `git push`. Continue only with the verified Source ID.
 4. **Check source cache.** Run
-   `obsidian-wiki cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
+   `llmwikiops cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
    A `missing` result means stop. Continue with `new` and `modified`; skip
    `unchanged` unless Full processing was explicitly selected. If all selected
    sources are skipped, report and stop.
 5. **Close sources and begin once.** Build the complete source closure from
    selected IDs and every existing Source ID of pages that may change or be
    deleted. Run exactly one
-   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty`.
 6. **Write final candidates.** Materialize the selected graph/OKF plan only
    below returned `candidate_vault`. Every final candidate has a non-empty
    `sources` subset containing only repository-relative IDs from the frozen
    closure. Preserve still-supporting IDs and register approved removals with
-   `obsidian-wiki transaction delete <id> <vault-relative-page> --json --pretty`.
+   `llmwikiops transaction delete <id> <vault-relative-page> --json --pretty`.
 7. **Validate, review, commit, or recover.** Run
-   `obsidian-wiki transaction validate <id> --json --pretty` until passing.
+   `llmwikiops transaction validate <id> --json --pretty` until passing.
    Review the complete candidate diff and deletions, then run
-   `obsidian-wiki transaction commit <id> --json --pretty`. For reported
+   `llmwikiops transaction commit <id> --json --pretty`. For reported
    recovery, save the envelope, inspect
-   `obsidian-wiki transaction list --json --pretty`, require one exact record,
+   `llmwikiops transaction list --json --pretty`, require one exact record,
    satisfy `requires`, and stop on ambiguity.
 8. **Refresh bounded context after success.** Only after a successful
    `transaction commit` or `transaction retry`, run
-   `obsidian-wiki hot status --json`. If stale, use
-   `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked
-   `hot.md` working-tree diff, and run `obsidian-wiki hot mark-current --json`.
+   `llmwikiops hot status --json`. If stale, use
+   `llmwikiops hot inputs --json --pretty`, write only the requested tracked
+   `hot.md` working-tree diff, and run `llmwikiops hot mark-current --json`.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
 owns the canonical log append. Do not commit, push, or open a pull request.

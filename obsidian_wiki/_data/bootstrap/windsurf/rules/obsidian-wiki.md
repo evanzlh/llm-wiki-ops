@@ -1,9 +1,9 @@
 ---
-name: "Obsidian Wiki"
+name: "LLMWikiOps"
 activation: "always-on"
 ---
 
-# Obsidian Wiki Repository Rules
+# LLMWikiOps Repository Rules
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`, then read repository
 `AGENTS.md`. First load `.skills/llm-wiki/SKILL.md` as the canonical transaction

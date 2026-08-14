@@ -1,9 +1,9 @@
 ---
 alwaysApply: true
-description: Delegate Obsidian Wiki work to the repository runtime authority.
+description: Delegate LLMWikiOps work to the repository runtime authority.
 ---
 
-# Obsidian Wiki Repository Rules
+# LLMWikiOps Repository Rules
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`, then read repository
 `AGENTS.md`. First load `.skills/llm-wiki/SKILL.md` as the canonical protocol,

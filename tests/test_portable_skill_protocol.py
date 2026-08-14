@@ -67,6 +67,22 @@ MAINTENANCE_SKILLS = (
     "wiki-synthesize",
     "wiki-update",
 )
+PACKAGED_GUIDANCE_ROOTS = (
+    ROOT / "obsidian_wiki/_data/skills",
+    ROOT / "obsidian_wiki/_data/bootstrap",
+    ROOT / "extensions/brain-capture",
+)
+MANAGED_BOOTSTRAP_RELATIVES = (
+    "agent/rules/obsidian-wiki.md",
+    "agent/workflows/obsidian-wiki.md",
+    "cursor/rules/obsidian-wiki.mdc",
+    "kiro/steering/obsidian-wiki.md",
+    "windsurf/rules/obsidian-wiki.md",
+)
+LEGACY_RUNTIME_IDENTITY = re.compile(
+    r"evanzlh/obsidian-wiki|(?<![./\w-])obsidian(?:-|\s+)wiki(?![\w.-])",
+    re.IGNORECASE,
+)
 
 
 def skill_text(name: str) -> str:
@@ -75,6 +91,24 @@ def skill_text(name: str) -> str:
 
 def text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_packaged_guidance_has_no_legacy_product_identity() -> None:
+    """Runtime prose may retain protocol paths, imports, and managed filenames only."""
+    guidance_paths = [
+        path
+        for root in PACKAGED_GUIDANCE_ROOTS
+        for pattern in ("*.md", "*.mdc", "*.html")
+        for path in root.rglob(pattern)
+    ]
+    guidance_paths.append(ROOT / "extensions/brain-capture/popup.js")
+
+    for relative in MANAGED_BOOTSTRAP_RELATIVES:
+        assert (ROOT / "obsidian_wiki/_data/bootstrap" / relative).is_file()
+
+    for path in guidance_paths:
+        matches = LEGACY_RUNTIME_IDENTITY.findall(path.read_text(encoding="utf-8"))
+        assert not matches, f"{path.relative_to(ROOT)}: {matches}"
 
 
 def test_canonical_runtime_has_no_mode_or_legacy_branches() -> None:
@@ -108,14 +142,14 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
     setup = text(SETUP)
     flat = " ".join(setup.split())
     for required in (
-        "obsidian-wiki setup [DIR]",
+        "llmwikiops setup [DIR]",
         "clone",
         "doctor",
         "check",
         "`.skills/`",
         "managed mirrors",
-        "obsidian-wiki repo sync-skills",
-        "obsidian-wiki repo upgrade-skills",
+        "llmwikiops repo sync-skills",
+        "llmwikiops repo upgrade-skills",
         "--apply",
         "requires_cli",
         "Git",
@@ -151,7 +185,7 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
         "root `AGENTS.md`",
         "vault `AGENTS.md`",
         "canonical `llm-wiki`",
-        "obsidian-wiki transaction list --json --pretty",
+        "llmwikiops transaction list --json --pretty",
         "Do not infer",
     ):
         assert required in flat
@@ -182,7 +216,7 @@ def test_quick_capture_is_a_snapshot_only_terminal_section() -> None:
         "exact reviewed text",
         "pending ingest",
         "stop",
-        "Do not run `obsidian-wiki transaction begin`",
+        "Do not run `llmwikiops transaction begin`",
         "write a knowledge page",
         "create a manifest entry",
         "create an operation page",
@@ -277,8 +311,8 @@ def test_maintenance_skills_are_repository_native(name: str) -> None:
         "complete source closure",
         "final candidates",
         "reviewed deletions",
-        "obsidian-wiki transaction validate <id> --json --pretty",
-        "obsidian-wiki transaction commit <id> --json --pretty",
+        "llmwikiops transaction validate <id> --json --pretty",
+        "llmwikiops transaction commit <id> --json --pretty",
         "recommended_action",
         "allowed_actions",
     ):
@@ -337,9 +371,9 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
     flat = " ".join(contents.split())
     for required in (
         "manual",
-        "obsidian-wiki transaction list --json --pretty",
-        "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
-        "obsidian-wiki hot status --json",
+        "llmwikiops transaction list --json --pretty",
+        "llmwikiops cache-check <source1> [source2 ...] --json --pretty",
+        "llmwikiops hot status --json",
         "selected page repair",
         "does not change knowledge pages, sources, manifest shards, or transactions",
         "read-only",
@@ -369,7 +403,7 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         "retained transactions",
         "graph",
         "freshness",
-        "obsidian-wiki cache-check <source1> [source2 ...] --json --pretty",
+        "llmwikiops cache-check <source1> [source2 ...] --json --pretty",
         "synthesis/wiki-insights.md",
         "does not change knowledge pages, sources, manifest shards, or transactions",
         "read-only",
@@ -442,7 +476,7 @@ def test_maintenance_inventory_uses_safe_markdown_snapshots_before_reads(
         "bounded byte snapshots",
         "fail closed before decoding or analysis",
         "must not use `read_text`, `rglob`, shell globbing, or follow links",
-        "`obsidian-wiki check` alone is not a sufficient scanner preflight",
+        "`llmwikiops check` alone is not a sufficient scanner preflight",
     ):
         assert required in flat, f"{name}: missing {required!r}"
     assert flat.index("## Mandatory authority preflight") < flat.index(
@@ -457,7 +491,7 @@ def test_maintenance_authority_preflight_has_exact_config_stop_and_precedence(
     flat = " ".join(skill_text(name).split())
     for required in (
         "If no nearest config exists, stop and recommend exactly",
-        "`obsidian-wiki setup [DIR]`",
+        "`llmwikiops setup [DIR]`",
         "If the nearest config is invalid, fail closed",
         "authority or instruction conflict",
         "canonical `llm-wiki` wins",
@@ -465,7 +499,7 @@ def test_maintenance_authority_preflight_has_exact_config_stop_and_precedence(
         assert required in flat, f"{name}: missing {required!r}"
     preflight = flat.index("## Mandatory authority preflight")
     safe_boundary = flat.index("## Safe Markdown inventory boundary")
-    assert preflight < flat.index("obsidian-wiki setup [DIR]") < safe_boundary
+    assert preflight < flat.index("llmwikiops setup [DIR]") < safe_boundary
     assert preflight < flat.index("canonical `llm-wiki` wins") < safe_boundary
 
 
@@ -787,8 +821,8 @@ def test_all_active_runtime_markdown_uses_tracked_hot_and_log_contract() -> None
         for phrase in forbidden:
             assert phrase not in contents, (path, phrase)
         if (
-            "obsidian-wiki hot inputs --json --pretty" in contents
-            and "obsidian-wiki hot mark-current --json" in contents
+            "llmwikiops hot inputs --json --pretty" in contents
+            and "llmwikiops hot mark-current --json" in contents
             and "Never directly modify" not in contents
         ):
             flat = " ".join(contents.split())

@@ -8,14 +8,14 @@ description: >
 # Obsidian Layout Adjustment
 
 This workflow explicitly edits files under `.obsidian/`; those are Obsidian
-configuration changes, not a knowledge transaction. Do not run `obsidian-wiki transaction begin`:
+configuration changes, not a knowledge transaction. Do not run `llmwikiops transaction begin`:
 these edits have no knowledge candidates and do
 not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and subjective approval
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`. If absent, stop with
-`obsidian-wiki setup [DIR]`. Read repository `AGENTS.md`, then
+`llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
 `.skills/llm-wiki/SKILL.md`, then this skill; the canonical protocol wins on conflict.
 Invalid config fails closed, and an invocation cannot select another vault.
 

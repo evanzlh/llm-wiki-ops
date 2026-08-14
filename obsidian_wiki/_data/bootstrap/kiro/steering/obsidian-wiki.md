@@ -2,7 +2,7 @@
 inclusion: always
 ---
 
-# Obsidian Wiki Repository Rules
+# LLMWikiOps Repository Rules
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml` and read repository
 `AGENTS.md`. First load `.skills/llm-wiki/SKILL.md` as the canonical transaction

@@ -27,9 +27,9 @@ def test_maintenance_resolves_nearest_repository_and_closes_sources_before_write
 
 def test_maintenance_uses_cli_transaction_validation_and_commit() -> None:
     for path, text in _skill_texts():
-        assert "obsidian-wiki transaction begin --source" in text, path
-        assert "obsidian-wiki transaction validate <id>" in text, path
-        assert "obsidian-wiki transaction commit <id>" in text, path
+        assert "llmwikiops transaction begin --source" in text, path
+        assert "llmwikiops transaction validate <id>" in text, path
+        assert "llmwikiops transaction commit <id>" in text, path
 
 
 def test_maintenance_uses_trusted_recovery_and_leaves_git_to_owner() -> None:

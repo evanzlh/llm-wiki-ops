@@ -8,14 +8,14 @@ description: >
 # Graph Colorize
 
 This workflow explicitly edits `.obsidian/graph.json`; it is an Obsidian
-configuration change, not a knowledge transaction. Do not run `obsidian-wiki transaction begin`:
+configuration change, not a knowledge transaction. Do not run `llmwikiops transaction begin`:
 this edit has no knowledge candidates and does
 not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and approval
 
 1. Resolve the nearest ancestor `.obsidian-wiki/config.toml`. If absent, stop with
-   `obsidian-wiki setup [DIR]`; invalid config fails closed.
+   `llmwikiops setup [DIR]`; invalid config fails closed.
 2. Read repository `AGENTS.md`, `.skills/llm-wiki/SKILL.md`, then this skill. The
    canonical protocol wins on conflict. Never accept another vault path.
 3. Require an existing configured-vault `.obsidian/` directory. Do not create it;

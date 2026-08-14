@@ -1,4 +1,4 @@
-# Obsidian Wiki Repository Instructions
+# LLMWikiOps Repository Instructions
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`, keep the repository
 root as the working directory, and read `AGENTS.md`. First load

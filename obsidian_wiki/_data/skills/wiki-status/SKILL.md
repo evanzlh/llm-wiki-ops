@@ -17,7 +17,7 @@ root, and keep that repository root as the command working directory. Read root
 skill. Fail closed rather than guessing configuration or authority.
 
 If no nearest config exists, stop and recommend exactly
-`obsidian-wiki setup [DIR]`. If the nearest config is invalid, fail closed. In any
+`llmwikiops setup [DIR]`. If the nearest config is invalid, fail closed. In any
 authority or instruction conflict, canonical `llm-wiki` wins.
 
 ## Safe Markdown inventory boundary
@@ -29,7 +29,7 @@ ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/ino
 identity, link count, size, and attachment before and after bounded byte snapshots.
 An unsafe entry or unavailable no-follow support must fail closed before decoding or
 analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
-links. `obsidian-wiki check` alone is not a sufficient scanner preflight. CLI graph
+links. `llmwikiops check` alone is not a sufficient scanner preflight. CLI graph
 and lint commands use this safe walker internally.
 
 ## Status inventory
@@ -39,11 +39,11 @@ canonical operation blocks, retained transactions, knowledge graph, and source a
 hot freshness. Use each surface only for the data it actually returns:
 
 ```bash
-obsidian-wiki check --json --pretty
-obsidian-wiki transaction list --json --pretty
-obsidian-wiki cache-check <source1> [source2 ...] --json --pretty
-obsidian-wiki graph-analyse --pretty
-obsidian-wiki hot status --json
+llmwikiops check --json --pretty
+llmwikiops transaction list --json --pretty
+llmwikiops cache-check <source1> [source2 ...] --json --pretty
+llmwikiops graph-analyse --pretty
+llmwikiops hot status --json
 ```
 
 `transaction list` and `cache-check` are read-only. `hot status` is also read-only.
@@ -58,7 +58,7 @@ missing/new/modified sources, hot freshness, dead-end and isolated graph nodes, 
 ranked next actions. An invalid manifest or ambiguous retained transaction is a
 reported blocker; never repair CLI-owned state manually.
 
-`obsidian-wiki graph-analyse --pretty` always emits JSON; it has no `--json` flag;
+`llmwikiops graph-analyse --pretty` always emits JSON; it has no `--json` flag;
 always parse its stdout as JSON and take the page count only from `stats.pages`.
 Report only its real top-level fields: `god_nodes`, `communities`,
 `surprising_connections`, `dead_ends`, `isolated`, and `stats` (`pages`, `edges`,
@@ -77,7 +77,7 @@ walker: every ancestor must be a real directory, and every terminal must be a
 single-link ordinary `.json` file whose device/inode identity, attachment, and size
 remain stable around the bounded byte snapshot; validate each shard schema, its
 repository-relative `source_id`, content hash, page list, filename mapping, and
-uniqueness; duplicate Source IDs fail closed. `obsidian-wiki check --json --pretty`
+uniqueness; duplicate Source IDs fail closed. `llmwikiops check --json --pretty`
 is an issues preflight only: it does not return operation records or manifest shard
 payloads. Label the origin of every reported count.
 
@@ -105,7 +105,7 @@ change. Without valid source authority, return the analysis only.
    Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
    filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
 2. Begin exactly one bounded transaction with the entire closure:
-   `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+   `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty`.
    Retain its `id` as the trusted transaction ID plus `candidate_vault` and
    `started_at`; do not change CWD.
 3. Write final candidates only at final vault-relative knowledge paths below
@@ -114,25 +114,25 @@ change. Without valid source authority, return the analysis only.
    started_at`; updates preserve `created` and set `updated = started_at`. Generate
    internal links with the resolved `OBSIDIAN_LINK_FORMAT`.
 4. Register all reviewed deletions with
-   `obsidian-wiki transaction delete <id> <vault-relative-page.md> --json --pretty`.
+   `llmwikiops transaction delete <id> <vault-relative-page.md> --json --pretty`.
    Never delete a live page directly.
-5. Run `obsidian-wiki transaction validate <id> --json --pretty`, fix every issue,
+5. Run `llmwikiops transaction validate <id> --json --pretty`, fix every issue,
    review every warning and the complete candidate/deletion diff, then run
-   `obsidian-wiki transaction commit <id> --json --pretty` only after validation
+   `llmwikiops transaction commit <id> --json --pretty` only after validation
    passes.
 6. Save the failed command envelope, including top-level `error` and `recovery`, on
    any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
-   when present, then run `obsidian-wiki transaction list --json --pretty` and
+   when present, then run `llmwikiops transaction list --json --pretty` and
    require exactly one retained record with the same ID and status. Follow only a
    reported `recommended_action` or entry in `allowed_actions`, after satisfying
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful
    `transaction commit` or `transaction retry` is a knowledge commit.
 7. Only after a successful `transaction commit` or `transaction retry`, run
-   `obsidian-wiki hot status --json`. If stale, run
-   `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked
+   `llmwikiops hot status --json`. If stale, run
+   `llmwikiops hot inputs --json --pretty`, write only the requested tracked
    `hot.md` working-tree diff, then run
-   `obsidian-wiki hot mark-current --json`. Do not refresh after abort, restore, or
+   `llmwikiops hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 
 Do not edit manifest shards, `index.md`, or `log.md`; transaction commit owns

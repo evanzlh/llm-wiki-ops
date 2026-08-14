@@ -18,7 +18,7 @@ do not continue searching after finding it. Resolve
 every configured path relative to that configuration file's repository root,
 then keep the repository root as the working directory for CLI commands.
 
-If no configuration exists, stop and recommend `obsidian-wiki setup [DIR]`. If
+If no configuration exists, stop and recommend `llmwikiops setup [DIR]`. If
 the configuration is malformed, incomplete, unsafe, or resolves outside its
 declared repository boundary, fail closed. Never guess a vault, source root, or
 fallback location.
@@ -46,7 +46,7 @@ frontmatter only to close an update or deletion over the authoritative tracked
 files. Do not cite a compiled page as its own source.
 
 The repository uses manifest v2 with sharded entries and exactly one configured source root.
-The `obsidian-wiki transaction commit` command owns shard mutation and the tracked
+The `llmwikiops transaction commit` command owns shard mutation and the tracked
 authoritative operation log at `wiki/log.md`. It appends one canonical block last
 and returns `log_path`. Agents never edit manifest shards or `log.md` directly.
 
@@ -66,7 +66,7 @@ repository root as the command working directory throughout.
    the returned identifier:
 
    ```bash
-   obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty
+   llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty
    ```
 
    Supply the complete source closure after that single option. Never substitute
@@ -86,15 +86,15 @@ repository root as the command working directory throughout.
    `OBSIDIAN_LINK_FORMAT` setting; do not force one link syntax.
 
 4. **Declare deletions.** For every obsolete compiled page, register its final
-   vault-relative path through `obsidian-wiki transaction delete <id> <path>
+   vault-relative path through `llmwikiops transaction delete <id> <path>
    --json --pretty`. Do not remove a live vault page or manifest entry by hand.
 
-5. **Validate and fix candidates.** Run `obsidian-wiki transaction validate
+5. **Validate and fix candidates.** Run `llmwikiops transaction validate
    <id> --json --pretty`. Treat validation output as authoritative, fix only the
    candidate files or declared deletions, and repeat validation until it passes.
 
 6. **Review and commit.** Review the complete candidate diff and deletion set.
-   When correct, run `obsidian-wiki transaction commit <id> --json --pretty`.
+   When correct, run `llmwikiops transaction commit <id> --json --pretty`.
    The CLI promotes validated pages, records manifest v2 ownership, and appends
    one canonical operation block to `log.md` last. Read `log_path` from the
    result. Do not commit, push, or open a pull request; those are separate user-controlled Git
@@ -105,7 +105,7 @@ repository root as the command working directory throughout.
    `recovery` holds the candidate transaction ID, status, inspection command,
    preferred action, alternatives, and each action's `requires` list.
 
-   With a trusted transaction ID from that envelope, run `obsidian-wiki
+   With a trusted transaction ID from that envelope, run `llmwikiops
    transaction list --json --pretty` and require exactly one retained record
    with the same ID and status. A list record provides `recommended_action` and
    `allowed_actions`; it does not repeat `error` or `recovery`. The selected
@@ -122,10 +122,10 @@ repository root as the command working directory throughout.
    successful `transaction commit` or `transaction retry` is a knowledge commit.
 
 8. **Refresh bounded tracked context after success.** Only after a successful
-   knowledge commit, run `obsidian-wiki hot status --json`.
-   If stale, obtain bounded inputs with `obsidian-wiki hot inputs --json --pretty`,
+   knowledge commit, run `llmwikiops hot status --json`.
+   If stale, obtain bounded inputs with `llmwikiops hot inputs --json --pretty`,
    let the agent write only the requested tracked `hot.md` working-tree diff,
-   and finish with `obsidian-wiki hot mark-current --json`. `hot status`
+   and finish with `llmwikiops hot mark-current --json`. `hot status`
    is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.

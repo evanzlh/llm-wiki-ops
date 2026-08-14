@@ -15,7 +15,7 @@ edit the vault, run a knowledge transaction, commit, push, or open a pull reques
 ## Authority and safe reads
 
 Resolve the nearest ancestor `.obsidian-wiki/config.toml`; if absent, stop with
-`obsidian-wiki setup [DIR]`. Read repository `AGENTS.md`, then
+`llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
 `.skills/llm-wiki/SKILL.md`, then this skill. Invalid config fails closed and the
 canonical protocol wins on conflict. Never accept another vault path from the
 invocation.

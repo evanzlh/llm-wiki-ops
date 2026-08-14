@@ -97,5 +97,5 @@ Obtain owner review and owner Git review. The framework and agent must not run
 Markdown file does it become tracked authority with a repository-relative
 Source ID. Then return to `wiki-ingest` for cache checking, complete closure,
 and its single transaction lifecycle beginning with
-`obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty`.
+`llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty`.
 Never cite the PDF binary or generated JSON path in candidate `sources`.

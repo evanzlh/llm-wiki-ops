@@ -13,8 +13,8 @@ def read(relative: str) -> str:
 
 def test_context_skill_uses_cli_and_is_read_only() -> None:
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
-    assert 'obsidian-wiki context-pack "<topic>" --budget 8000' in skill
-    assert "obsidian-wiki context-pack --vault" not in skill
+    assert 'llmwikiops context-pack "<topic>" --budget 8000' in skill
+    assert "llmwikiops context-pack --vault" not in skill
     assert "owning portable repository" in skill.lower()
     assert "nested" in skill.lower()
     assert "read-only" in skill.lower()
@@ -27,8 +27,8 @@ def test_context_skill_uses_repo_discovery_and_requires_installed_cli() -> None:
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
     assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' not in skill
     assert "OBSIDIAN_VAULT_PATH=" not in skill
-    assert "command -v obsidian-wiki" in skill
-    assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in skill
+    assert "command -v llmwikiops" in skill
+    assert "git clone https://github.com/evanzlh/llm-wiki-ops.git" in skill
     assert SOURCE_INSTALL_COMMAND in skill
     assert '"$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py"' not in skill
     assert "python3 -m obsidian_wiki.cli context-pack" not in skill

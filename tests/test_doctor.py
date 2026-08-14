@@ -150,7 +150,7 @@ def test_doctor_json_structures_unavailable_current_directory(
             "name": "portable-config",
             "status": "fail",
             "detail": "current working directory is unavailable: cwd deleted",
-            "hint": "run: obsidian-wiki setup [DIR]",
+            "hint": "run: llmwikiops setup [DIR]",
         }
     ]
 

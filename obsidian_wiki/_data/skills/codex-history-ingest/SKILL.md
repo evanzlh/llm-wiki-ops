@@ -9,7 +9,7 @@ Mine selected Codex sessions while keeping the cache transient. Read [Codex data
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `obsidian-wiki setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
+Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
 
 Resolve the transient root from non-empty absolute `CODEX_HOME` when set, otherwise absolute `~/.codex`; reject an empty or relative override/root. Session index, active rollouts, and archived rollouts are relative to that resolved root.
 
@@ -31,7 +31,7 @@ Before any write, encode `{tool,native_session_id,slice_descriptor}` with canoni
 
 Save the failed command envelope. Use its `error` and `recovery` for a trusted transaction ID/status; without one recovery is inspection-only. Require a list result with exactly one record of the same ID and status. Select only from `allowed_actions`, match `recommended_action` when chosen, and satisfy every `requires`. An empty, missing, mismatched, duplicated, or ambiguous result stops; never guess.
 
-Only a successful `transaction commit` or `transaction retry` permits `obsidian-wiki hot status --json`; if stale run `obsidian-wiki hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `obsidian-wiki hot mark-current --json`. The agent must not mark stale inputs current directly.
+Only a successful `transaction commit` or `transaction retry` permits `llmwikiops hot status --json`; if stale run `llmwikiops hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `llmwikiops hot mark-current --json`. The agent must not mark stale inputs current directly.
 
 ## Discovery and parsing
 
@@ -60,15 +60,15 @@ For an existing target, complete the pre-write owner preservation gate before an
 
 Snapshot identity state table: absent target -> create, so target must be absent only for initial creation. An existing hashed target may be updated only when it is ordinary single-link, Git-tracked, and its `source_tool`, `native_session_id`, and slice descriptor/logical identity exactly match the tuple; use owner-reviewed atomic replacement. Explicit ingest authorizes the parent agent to replace the source, while Git stage/commit stay owner-only. Changed append/Full reuses the same Source ID and changes `content_hash`; identity mismatch or hash collision fails closed.
 
-After snapshot owner review and the Git gate, run `obsidian-wiki cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
+After snapshot owner review and the Git gate, run `llmwikiops cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
 Every absolute cache path is transient and must never appear in snapshot or page provenance.
 
 1. Parent writes each bounded reviewable UTF-8 Markdown snapshot below `sources/history/<tool>/` (`sources/history/codex/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant material.
 2. Validate each Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics. Reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty output. Tracked is not reviewed: stop for owner review, stage, and commit externally, then rerun.
 3. The parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure and fails closed on any unsafe source.
-4. The parent runs `obsidian-wiki transaction begin --source <source1> [source2 ...] --json --pretty` once.
+4. The parent runs `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty` once.
 5. The parent alone writes final candidates below the returned candidate vault, with non-empty accepted sources, and declares deletions through the transaction CLI.
-6. The parent runs `obsidian-wiki transaction validate <id> --json --pretty`, reviews all prospective changes, then runs `obsidian-wiki transaction commit <id> --json --pretty` only on pass.
-7. On failure, refresh `obsidian-wiki transaction list --json --pretty`; with the trusted envelope ID require exactly one same-ID/same-status record and satisfy its reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
-8. After successful commit/retry only, run `obsidian-wiki hot status --json`; if stale, run `obsidian-wiki hot inputs --json --pretty`, write only its bounded requested artifact, then `obsidian-wiki hot mark-current --json`. Report sessions, snapshots, omissions, and pages. Do not commit, push, or open a pull request.
+6. The parent runs `llmwikiops transaction validate <id> --json --pretty`, reviews all prospective changes, then runs `llmwikiops transaction commit <id> --json --pretty` only on pass.
+7. On failure, refresh `llmwikiops transaction list --json --pretty`; with the trusted envelope ID require exactly one same-ID/same-status record and satisfy its reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `llmwikiops hot status --json`; if stale, run `llmwikiops hot inputs --json --pretty`, write only its bounded requested artifact, then `llmwikiops hot mark-current --json`. Report sessions, snapshots, omissions, and pages. Do not commit, push, or open a pull request.
