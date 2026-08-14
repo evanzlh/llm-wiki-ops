@@ -7,6 +7,6 @@ alwaysApply: true
 # LLMWikiOps Repository Rules
 
 Resolve the nearest ancestor `.llmwikiops/config.toml` and read `AGENTS.md`.
-First load `.skills/llm-wiki/SKILL.md` as the canonical transaction protocol,
-then load the applicable `.skills/<task>/SKILL.md`. The canonical protocol takes
-precedence over conflicts. Stop on absent or invalid configuration.
+First load the `llm-wiki` skill as the canonical transaction protocol, then load
+the applicable task skill. The canonical protocol takes precedence over
+conflicts. Stop on absent or invalid configuration.

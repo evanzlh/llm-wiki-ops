@@ -3,18 +3,17 @@ name: llmwikiops
 description: Delegate wiki workflows to repository-owned skills.
 commands:
   - name: wiki-query
-    skill: .skills/wiki-query/SKILL.md
+    skill: wiki-query
   - name: wiki-update
-    skill: .skills/wiki-update/SKILL.md
+    skill: wiki-update
   - name: wiki-ingest
-    skill: .skills/wiki-ingest/SKILL.md
+    skill: wiki-ingest
   - name: wiki-status
-    skill: .skills/wiki-status/SKILL.md
+    skill: wiki-status
 ---
 
 # LLMWikiOps Workflow Registry
 
 Resolve `.llmwikiops/config.toml` and read `AGENTS.md`. First load the
-canonical transaction protocol in `.skills/llm-wiki/SKILL.md`, then load the
-command's `.skills/<task>/SKILL.md`. The canonical protocol takes precedence
-over conflicts.
+`llm-wiki` skill as the canonical transaction protocol, then load the command's
+task skill. The canonical protocol takes precedence over conflicts.

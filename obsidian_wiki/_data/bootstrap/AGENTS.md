@@ -5,10 +5,9 @@ The Config Resolution Protocol is repository-only: resolve the nearest ancestor
 and read this file before wiki work. If config is absent, use
 `llmwikiops setup [DIR]`; invalid config fails closed.
 
-`.skills/` is the canonical skill tree. First load
-`.skills/llm-wiki/SKILL.md` as the canonical protocol, then load the applicable
-`.skills/<task>/SKILL.md`. If a task skill conflicts with the canonical
-protocol, the canonical protocol takes precedence. All knowledge writes use CLI
+First load the `llm-wiki` skill as the canonical protocol, then load the
+applicable task skill. If a task skill conflicts with the canonical protocol,
+the canonical protocol takes precedence. All knowledge writes use CLI
 transactions; direct vault, manifest, index, or log mutation is outside agent
 authority. The sole exception to the direct live-vault mutation ban is a tracked
 `wiki/hot.md` semantic refresh after a successful `transaction commit` or
