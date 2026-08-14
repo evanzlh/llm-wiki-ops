@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import pytest
 
@@ -86,7 +86,10 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
 def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
     paths = {
         "llm_wiki_ops-2026.9/obsidian_wiki/portable.py",
+        "llm_wiki_ops-2026.9.dist-info/METADATA",
         "llm_wiki_ops-2026.9/extensions/obsidian-wiki-probe.js",
+        "llm_wiki_ops-obsidian-wiki/PKG-INFO",
+        "llm_wiki_ops-2026.9-obsidian-wiki.dist-info/METADATA",
         ".agent/rules/obsidian-wiki.md.extra",
         "LICENSE.obsidian-wiki",
     }
@@ -95,6 +98,8 @@ def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
 
     assert violations == {
         "llm_wiki_ops-2026.9/extensions/obsidian-wiki-probe.js",
+        "llm_wiki_ops-obsidian-wiki/PKG-INFO",
+        "llm_wiki_ops-2026.9-obsidian-wiki.dist-info/METADATA",
         ".agent/rules/obsidian-wiki.md.extra",
         "LICENSE.obsidian-wiki",
     }
@@ -103,11 +108,7 @@ def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
 def _archive_path_protocol_violations(paths: set[str]) -> set[str]:
     violations: set[str] = set()
     for path in paths:
-        parts = PurePosixPath(path).parts
-        if parts and parts[0].startswith("llm_wiki_ops-"):
-            parts = parts[1:]
-        relative = "/".join(parts)
-        if FORMER_PROTOCOL_PATH.search(relative):
+        if FORMER_PROTOCOL_PATH.search(path):
             violations.add(path)
     return violations
 
