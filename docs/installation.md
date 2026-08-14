@@ -14,10 +14,10 @@
 Install a non-editable copy so the command remains usable if the clone moves:
 
 ```bash
-git clone https://github.com/evanzlh/obsidian-wiki.git
-cd obsidian-wiki
+git clone https://github.com/evanzlh/llm-wiki-ops.git
+cd llm-wiki-ops
 uv tool install --link-mode copy .
-obsidian-wiki --version
+llmwikiops --version
 ```
 
 Framework contributors can run commands from the checkout with `uv run python -m obsidian_wiki`.
@@ -29,7 +29,7 @@ Setup accepts an optional directory and uses the current directory when it is om
 ```bash
 mkdir ./team-knowledge
 git -C ./team-knowledge init
-obsidian-wiki setup ./team-knowledge
+llmwikiops setup ./team-knowledge
 ```
 
 From the same parent directory, the owner can review and record the scaffold explicitly:
@@ -44,8 +44,8 @@ Then enter the knowledge repository, validate it, and open `wiki/` in Obsidian:
 
 ```bash
 cd ./team-knowledge
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops doctor
+llmwikiops check
 ```
 
 Adding, committing, configuring a remote, and pushing are external Git publication steps, not framework actions.
@@ -57,8 +57,8 @@ Clone it, install a CLI version accepted by `requires_cli`, and validate before 
 ```bash
 git clone <knowledge-repository-url> team-knowledge
 cd ./team-knowledge
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops doctor
+llmwikiops check
 ```
 
 The repository contains its own configuration, source material, canonical skills, mirrors, and bootstrap instructions. It does not vendor the executable.
@@ -71,8 +71,8 @@ Use this two-step CLI and repository upgrade protocol. First create an owner-con
 
 ```bash
 cd /path/to/team-knowledge
-git switch -c upgrade-obsidian-wiki
-cd /path/to/obsidian-wiki
+git switch -c upgrade-llmwikiops
+cd /path/to/llm-wiki-ops
 git pull --ff-only
 uv tool install --force --reinstall --link-mode copy .
 ```
@@ -82,15 +82,15 @@ Return to the knowledge repository and read its tracked `requires_cli`. Resoluti
 ```bash
 cd /path/to/team-knowledge
 ${EDITOR:?} .obsidian-wiki/config.toml
-obsidian-wiki repo upgrade-skills
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops repo upgrade-skills
+llmwikiops doctor
+llmwikiops check
 git diff
-git commit -m "Upgrade obsidian-wiki"
+git commit -m "Upgrade LLMWikiOps"
 ```
 
 `repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses owner-modified managed files. Collaborators review the configuration and managed-file diff before the owner commits or publishes it.
 
 ## CI
 
-Install the same accepted release, then run `obsidian-wiki doctor --strict` and `obsidian-wiki check --strict`. Both commands are deterministic and require no model credentials.
+Install the same accepted release, then run `llmwikiops doctor --strict` and `llmwikiops check --strict`. Both commands are deterministic and require no model credentials.

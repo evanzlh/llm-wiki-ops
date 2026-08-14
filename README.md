@@ -1,6 +1,8 @@
-# obsidian-wiki
+# LLMWikiOps
 
-> An independently maintained fork of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). See the [fork rationale](docs/fork.md).
+> LLM-oriented operational framework for durable Markdown knowledge bases.
+
+LLMWikiOps is independently maintained at [evanzlh/llm-wiki-ops](https://github.com/evanzlh/llm-wiki-ops). It preserves the history and MIT license of [Ar9av/obsidian-wiki](https://github.com/Ar9av/obsidian-wiki), based on commit [`5ef66b6`](https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6bec8b26bab6594ac37fb4d8371469fbab). See the [fork rationale](docs/fork.md).
 
 [English](README.md) | [简体中文](README_ZH.md)
 
@@ -18,8 +20,8 @@ POSIX descriptor-relative filesystem operations; unsupported platforms fail clos
 Install a non-editable build from a local framework clone:
 
 ```bash
-git clone https://github.com/evanzlh/obsidian-wiki.git
-cd obsidian-wiki
+git clone https://github.com/evanzlh/llm-wiki-ops.git
+cd llm-wiki-ops
 uv tool install --link-mode copy .
 ```
 
@@ -28,10 +30,10 @@ This is a fresh install from a local clone; no package-index release is supporte
 ## Create a knowledge repository
 
 ```bash
-obsidian-wiki setup ./team-knowledge
+llmwikiops setup ./team-knowledge
 cd ./team-knowledge
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops doctor
+llmwikiops check
 ```
 
 Open `wiki/` in Obsidian. Commands resolve the nearest ancestor `.obsidian-wiki/config.toml`, so they work from the repository root or a nested directory. Setup also installs the canonical `.skills/` tree and complete agent mirrors.
@@ -54,7 +56,7 @@ guarantee.
 restart if a source changes while candidates are prepared. If a detected manifest
 conflict leaves a fixed recovery journal, inspect the live shard and working-tree diff,
 then explicitly keep that version with
-`obsidian-wiki manifest resolve-conflict --keep-live`. Only recovery artifacts whose
+`llmwikiops manifest resolve-conflict --keep-live`. Only recovery artifacts whose
 recorded identity and content still match are removed. If cleanup is interrupted and
 the live shard changes, automatic recovery stops until the owner reruns the command to
 confirm the current live version.
@@ -62,16 +64,16 @@ confirm the current live version.
 Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.obsidian-wiki/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
 
 ```bash
-git switch -c upgrade-obsidian-wiki
-cd /path/to/obsidian-wiki
+git switch -c upgrade-llmwikiops
+cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
 ${EDITOR:?} .obsidian-wiki/config.toml
-obsidian-wiki repo upgrade-skills
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops repo upgrade-skills
+llmwikiops doctor
+llmwikiops check
 git diff
-git commit -m "Upgrade obsidian-wiki"
+git commit -m "Upgrade LLMWikiOps"
 ```
 
 The current product surface is the repository workflow documented here and in `docs/`. A Dashboard is intentionally absent; any future Dashboard requires a separate design and implementation, with no placeholder in this release.

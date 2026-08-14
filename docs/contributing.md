@@ -30,7 +30,7 @@ Behavior changes require a regression test that fails before the implementation 
 uv run python tools/check_readme_sync.py
 ```
 
-Current documentation describes only the single repository product. Describe interfaces by their current names and verify CLI examples against `obsidian-wiki --help`.
+Current documentation describes only the single repository product. Describe interfaces by their current names and verify CLI examples against `llmwikiops --help`.
 
 ## Skills
 
@@ -45,9 +45,9 @@ uv tool install --force --reinstall --link-mode copy .
 disposable="$(mktemp -d)"
 mkdir "$disposable/knowledge"
 git -C "$disposable/knowledge" init
-obsidian-wiki setup "$disposable/knowledge"
-(cd "$disposable/knowledge" && obsidian-wiki check)
-(cd "$disposable/knowledge" && obsidian-wiki repo sync-skills --json --pretty)
+llmwikiops setup "$disposable/knowledge"
+(cd "$disposable/knowledge" && llmwikiops check)
+(cd "$disposable/knowledge" && llmwikiops repo sync-skills --json --pretty)
 uv run --with pytest python -m pytest tests/test_asset_artifact_parity.py tests/test_skill_trees.py -q
 ```
 
@@ -58,15 +58,15 @@ The disposable repository is the runtime fixture. Never use the framework source
 Use the same two-step CLI and repository upgrade protocol as users. On an owner branch, install the new CLI from the framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if its PEP 440 constraint excludes the new version, so explicitly review and edit the constraint before maintenance:
 
 ```bash
-git switch -c upgrade-obsidian-wiki
-cd /path/to/obsidian-wiki
+git switch -c upgrade-llmwikiops
+cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
 ${EDITOR:?} .obsidian-wiki/config.toml
-obsidian-wiki repo upgrade-skills
-obsidian-wiki check
+llmwikiops repo upgrade-skills
+llmwikiops check
 git diff
-git commit -m "Upgrade obsidian-wiki"
+git commit -m "Upgrade LLMWikiOps"
 ```
 
 The command does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.

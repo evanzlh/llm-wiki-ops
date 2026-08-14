@@ -1,6 +1,6 @@
 # Skills Reference
 
-The framework packages 36 skills. `setup` copies them into the repository's canonical `.skills/` tree and builds complete agent mirrors. Managed built-ins are upgraded with `obsidian-wiki repo upgrade-skills`; repository-authored custom skills are preserved.
+LLMWikiOps packages 36 skills. `setup` copies them into the repository's canonical `.skills/` tree and builds complete agent mirrors. Managed built-ins are upgraded with `llmwikiops repo upgrade-skills`; repository-authored custom skills are preserved.
 
 ## Canonical protocol and review
 

@@ -6,7 +6,7 @@ Knowledge repositories carry their own agent instructions and skills. No user-gl
 
 `.skills/` is the canonical tracked tree. Setup creates complete ordinary-file mirrors for Claude (`.claude/skills/`), Cursor (`.cursor/skills/`), Windsurf (`.windsurf/skills/`), Codex-compatible agents (`.agents/skills/`), Pi (`.pi/skills/`), and Kiro (`.kiro/skills/`). Root bootstrap files direct each agent to the same protocol.
 
-Edit only `.skills/`. Use `obsidian-wiki repo sync-skills` to inspect drift and `obsidian-wiki repo sync-skills --apply` to rebuild all mirrors.
+Edit only `.skills/`. Use `llmwikiops repo sync-skills` to inspect drift and `llmwikiops repo sync-skills --apply` to rebuild all mirrors.
 
 ## Authority protocol
 
@@ -29,10 +29,10 @@ Use `query`, `context-pack`, graph tools, or direct reads explicitly permitted b
 All knowledge writes use CLI transactions:
 
 ```bash
-obsidian-wiki transaction begin --source sources/example.md --json --pretty
-obsidian-wiki transaction validate <transaction-id> --json --pretty
-obsidian-wiki transaction commit <transaction-id> --json --pretty
-obsidian-wiki check
+llmwikiops transaction begin --source sources/example.md --json --pretty
+llmwikiops transaction validate <transaction-id> --json --pretty
+llmwikiops transaction commit <transaction-id> --json --pretty
+llmwikiops check
 ```
 
 Write complete candidate pages beneath the returned `candidate_vault`. Do not write the live vault, manifest shards, control files, or `wiki/log.md` directly. The sole live-vault write exception is the semantic refresh of tracked `wiki/hot.md` described below. Transaction review happens after validation and before commit. The commit appends one canonical block to the tracked authoritative operation log last and returns `log_path`. If a command retains recovery state, follow its reported `retry`, `restore`, `discard`, or `abort` action instead of starting an unrelated write.

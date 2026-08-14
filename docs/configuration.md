@@ -12,7 +12,7 @@ Setup writes a TOML document with these required fields (the `requires_cli` rang
 
 ```toml
 schema_version = 1
-implementation = "evanzlh/obsidian-wiki"
+implementation = "evanzlh/llm-wiki-ops"
 requires_cli = ">=0.1,<0.2"
 
 [paths]
@@ -76,13 +76,13 @@ race is not promised kernel-level compare-and-swap protection.
 Transaction source bytes are frozen by hash at `transaction begin`; a source change
 before commit fails closed and requires a new transaction. To reconcile a fixed
 manifest `CONFLICT`, inspect the live shard and repository diff, then run
-`obsidian-wiki manifest resolve-conflict --keep-live`. Reconciliation removes only
+`llmwikiops manifest resolve-conflict --keep-live`. Reconciliation removes only
 recovery files whose recorded inode identity and content still match; changed evidence
 remains blocked for manual inspection.
 
 ## Skill mirrors
 
-`.skills/` is canonical. The `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` directories are complete derived ordinary-file mirrors. Check drift with `obsidian-wiki repo sync-skills`; add `--apply` to rebuild them, then run `obsidian-wiki check` and review the tracked diff.
+`.skills/` is canonical. The `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` directories are complete derived ordinary-file mirrors. Check drift with `llmwikiops repo sync-skills`; add `--apply` to rebuild them, then run `llmwikiops check` and review the tracked diff.
 
 ## Git boundary
 

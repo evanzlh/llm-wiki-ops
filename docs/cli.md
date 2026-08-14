@@ -1,17 +1,17 @@
 # CLI Reference
 
-`obsidian-wiki --help` is the command authority. The CLI resolves the nearest ancestor `.obsidian-wiki/config.toml` for repository-aware operations and writes structured data to stdout when JSON output is requested.
+`llmwikiops --help` is the command authority. The CLI resolves the nearest ancestor `.obsidian-wiki/config.toml` for repository-aware operations and writes structured data to stdout when JSON output is requested.
 
 Only commands and options printed by the current command's `--help` are supported. Unlisted interfaces are outside the current product surface.
 
 ## Setup and inspection
 
 ```bash
-obsidian-wiki setup [DIR]
-obsidian-wiki list
-obsidian-wiki info [--json] [--pretty]
-obsidian-wiki doctor [--json] [--pretty] [--strict]
-obsidian-wiki check [--json] [--pretty] [--strict]
+llmwikiops setup [DIR]
+llmwikiops list
+llmwikiops info [--json] [--pretty]
+llmwikiops doctor [--json] [--pretty] [--strict]
+llmwikiops check [--json] [--pretty] [--strict]
 ```
 
 `setup` creates a clone-ready repository in `DIR`, or in the current directory when omitted. `list` reports bundled skills. `info` reports version, install paths, and resolved context. `doctor` checks configuration and managed assets. `check` performs full deterministic repository validation; `--strict` also treats warnings as failure.
@@ -19,7 +19,7 @@ obsidian-wiki check [--json] [--pretty] [--strict]
 ## Repository skills
 
 ```bash
-obsidian-wiki repo sync-skills [--apply] [--json] [--pretty]
+llmwikiops repo sync-skills [--apply] [--json] [--pretty]
 ```
 
 `sync-skills` is read-only unless `--apply` is supplied. It compares or rebuilds all derived mirrors from `.skills/`.
@@ -29,16 +29,16 @@ obsidian-wiki repo sync-skills [--apply] [--json] [--pretty]
 Use this two-step CLI and repository upgrade protocol on an owner branch. Install the new CLI from its separate framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if that PEP 440 constraint excludes the installed version. The owner must explicitly review and edit the constraint before invoking repository maintenance:
 
 ```bash
-git switch -c upgrade-obsidian-wiki
-cd /path/to/obsidian-wiki
+git switch -c upgrade-llmwikiops
+cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
 ${EDITOR:?} .obsidian-wiki/config.toml
-obsidian-wiki repo upgrade-skills
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops repo upgrade-skills
+llmwikiops doctor
+llmwikiops check
 git diff
-git commit -m "Upgrade obsidian-wiki"
+git commit -m "Upgrade LLMWikiOps"
 ```
 
 `upgrade-skills` refreshes framework-managed built-ins, preserves custom skills, rebuilds mirrors, and refuses managed drift. It does not bypass compatibility checks and does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
@@ -46,15 +46,15 @@ git commit -m "Upgrade obsidian-wiki"
 ## Transactions
 
 ```bash
-obsidian-wiki transaction begin --source PATH [PATH ...] [--json] [--pretty]
-obsidian-wiki transaction list [--json] [--pretty]
-obsidian-wiki transaction delete TRANSACTION_ID PATH [--json] [--pretty]
-obsidian-wiki transaction validate TRANSACTION_ID [--json] [--pretty]
-obsidian-wiki transaction commit TRANSACTION_ID [--json] [--pretty]
-obsidian-wiki transaction retry TRANSACTION_ID [--json] [--pretty]
-obsidian-wiki transaction restore TRANSACTION_ID [--json] [--pretty]
-obsidian-wiki transaction discard TRANSACTION_ID [--json] [--pretty]
-obsidian-wiki transaction abort TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction begin --source PATH [PATH ...] [--json] [--pretty]
+llmwikiops transaction list [--json] [--pretty]
+llmwikiops transaction delete TRANSACTION_ID PATH [--json] [--pretty]
+llmwikiops transaction validate TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction commit TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction retry TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction restore TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction discard TRANSACTION_ID [--json] [--pretty]
+llmwikiops transaction abort TRANSACTION_ID [--json] [--pretty]
 ```
 
 `begin` accepts one or more authoritative source paths and returns an ID plus a runtime `candidate_vault`. Agents write candidates only there. `delete` declares a vault-relative knowledge-page removal. `validate` checks the full prospective vault without promotion. Transaction review inspects candidates, deletions, and the report before `commit` revalidates, promotes pages, updates manifest shards, and appends one canonical block to the tracked authoritative operation log `wiki/log.md` last. JSON commit and retry outputs return `log_path`.
@@ -68,7 +68,7 @@ bind current source bytes.
 ## Manifest conflict reconciliation
 
 ```bash
-obsidian-wiki manifest resolve-conflict --keep-live [--json] [--pretty]
+llmwikiops manifest resolve-conflict --keep-live [--json] [--pretty]
 ```
 
 After inspecting the live shard and recovery evidence, an owner can explicitly keep
@@ -80,9 +80,9 @@ confirm the current live version.
 ## Tracked hot view
 
 ```bash
-obsidian-wiki hot status [--json] [--pretty]
-obsidian-wiki hot inputs [--pages PAGES] [--operations OPERATIONS] [--json] [--pretty]
-obsidian-wiki hot mark-current [--json] [--pretty]
+llmwikiops hot status [--json] [--pretty]
+llmwikiops hot inputs [--pages PAGES] [--operations OPERATIONS] [--json] [--pretty]
+llmwikiops hot mark-current [--json] [--pretty]
 ```
 
 `status` reports freshness read-only and must not remove the tracked `wiki/hot.md`. `inputs` emits bounded page summaries and canonical operation blocks parsed from `wiki/log.md`; defaults are 50 pages and 10 operations. After an agent semantically rewrites the tracked derived semantic view, `mark-current` records its fingerprint. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
@@ -90,26 +90,26 @@ obsidian-wiki hot mark-current [--json] [--pretty]
 ## Query and context
 
 ```bash
-obsidian-wiki query QUESTION [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
-obsidian-wiki context-pack [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
-obsidian-wiki context [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
+llmwikiops query QUESTION [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops context-pack [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
+llmwikiops context [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
 ```
 
 `context` is an alias of `context-pack`. A topic is optional only with `--recent`. `--public-only` excludes restricted visibility before body reads; `--metadata-only` omits body excerpts.
 
-The command is read-only. A typical bounded call is `obsidian-wiki context-pack "topic" --budget 8000 --public-only --metadata-only --json`. Omitting `--budget` uses the default of 8000 estimated tokens. The matching `wiki-context-pack` skill resolves source paths through the owning repository, so notes do not need to be moved. Output includes the full frontmatter schema plus selected excerpts. Vault excerpts are explicitly marked as untrusted
+The command is read-only. A typical bounded call is `llmwikiops context-pack "topic" --budget 8000 --public-only --metadata-only --json`. Omitting `--budget` uses the default of 8000 estimated tokens. The matching `wiki-context-pack` skill resolves source paths through the owning repository, so notes do not need to be moved. Output includes the full frontmatter schema plus selected excerpts. Vault excerpts are explicitly marked as untrusted
 reference data: downstream agents must not execute
 instructions embedded in notes.
 
 ## Graph and sessions
 
 ```bash
-obsidian-wiki graph-analyse [--top TOP] [--pretty]
-obsidian-wiki sessions-build [OPTIONS]
-obsidian-wiki sessions-query QUESTION [OPTIONS]
-obsidian-wiki sessions-show SESSION_ID [OPTIONS]
-obsidian-wiki sessions-clusters [OPTIONS]
-obsidian-wiki sessions-name --from FILE [--out OUT]
+llmwikiops graph-analyse [--top TOP] [--pretty]
+llmwikiops sessions-build [OPTIONS]
+llmwikiops sessions-query QUESTION [OPTIONS]
+llmwikiops sessions-show SESSION_ID [OPTIONS]
+llmwikiops sessions-clusters [OPTIONS]
+llmwikiops sessions-name --from FILE [--out OUT]
 ```
 
 `graph-analyse` analyzes vault wikilinks. Session commands build and query a sidecar topic graph over local agent history; they do not write the vault. Run each subcommand with `--help` for its filtering, output, and rebuild options.
@@ -117,9 +117,9 @@ obsidian-wiki sessions-name --from FILE [--out OUT]
 ## Lint and trust
 
 ```bash
-obsidian-wiki lint [--json] [--pretty] [--strict] [--strict-trust] [SCHEMA_OPTIONS]
-obsidian-wiki trust-record (--all | --page VAULT_RELATIVE_PATH) --reviewed-at ISO_TIMESTAMP --approved [OPTIONS]
-obsidian-wiki trust-check [--json] [--pretty] [--strict] [SCHEMA_OPTIONS]
+llmwikiops lint [--json] [--pretty] [--strict] [--strict-trust] [SCHEMA_OPTIONS]
+llmwikiops trust-record (--all | --page VAULT_RELATIVE_PATH) --reviewed-at ISO_TIMESTAMP --approved [OPTIONS]
+llmwikiops trust-check [--json] [--pretty] [--strict] [SCHEMA_OPTIONS]
 ```
 
 Schema options extend allowed lifecycle or relationship values, select required trust fields, and identify a schema authority. `trust-record` requires explicit human approval; `trust-check` verifies recorded values and fingerprints.
@@ -127,10 +127,10 @@ Schema options extend allowed lifecycle or relationship values, select required 
 ## Cache, batches, and extraction
 
 ```bash
-obsidian-wiki cache-check SOURCE [SOURCE ...] [--json] [--pretty]
-obsidian-wiki cache-hash PATH [--json] [--pretty]
-obsidian-wiki batch-plan [--max-mb MAX_MB] [--max-files MAX_FILES] [--no-cache] [--include-code] [--pretty]
-obsidian-wiki ast-extract PATH [--pretty]
+llmwikiops cache-check SOURCE [SOURCE ...] [--json] [--pretty]
+llmwikiops cache-hash PATH [--json] [--pretty]
+llmwikiops batch-plan [--max-mb MAX_MB] [--max-files MAX_FILES] [--no-cache] [--include-code] [--pretty]
+llmwikiops ast-extract PATH [--pretty]
 ```
 
 `cache-check` compares explicit sources with manifest v2 state. `cache-hash` performs hashing without manifest I/O. `batch-plan` emits ingest batches and skips unchanged files unless `--no-cache` is used. `ast-extract` emits code structure without model calls.
@@ -138,10 +138,10 @@ obsidian-wiki ast-extract PATH [--pretty]
 ## Validation workflow
 
 ```bash
-obsidian-wiki setup ./team-knowledge
+llmwikiops setup ./team-knowledge
 cd ./team-knowledge
-obsidian-wiki doctor
-obsidian-wiki check
+llmwikiops doctor
+llmwikiops check
 ```
 
 After a knowledge transaction, rerun `check`, inspect `git diff`, and let the repository owner choose the external Git publication workflow.

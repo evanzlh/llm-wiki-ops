@@ -26,6 +26,7 @@ CURRENT_DOCS = (
     "docs/contributing.md",
     "docs/fork.md",
     "docs/installation.md",
+    "docs/session-brain.md",
     "docs/skills.md",
 )
 
@@ -104,15 +105,26 @@ def test_current_docs_describe_only_the_current_repository_product() -> None:
 
 def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
     commands = (
-        "obsidian-wiki setup ./team-knowledge",
+        "llmwikiops setup ./team-knowledge",
         "cd ./team-knowledge",
-        "obsidian-wiki doctor",
-        "obsidian-wiki check",
-        "obsidian-wiki repo upgrade-skills",
+        "llmwikiops doctor",
+        "llmwikiops check",
+        "llmwikiops repo upgrade-skills",
     )
     for command in commands:
         assert command in _text("README.md")
         assert command in _text("README_ZH.md")
+
+
+def test_current_docs_use_llmwikiops_identity() -> None:
+    for relative in CURRENT_DOCS:
+        text = _text(relative)
+        assert "evanzlh/obsidian-wiki" not in text, relative
+        assert re.search(r"(?<![./\w-])obsidian-wiki(?=[\s`])", text) is None, relative
+    for relative in ("README.md", "README_ZH.md", "docs/fork.md"):
+        text = _text(relative)
+        assert "LLMWikiOps" in text, relative
+        assert "evanzlh/llm-wiki-ops" in text, relative
 
 
 def test_current_docs_cover_the_portable_only_contract() -> None:
@@ -146,13 +158,14 @@ def test_each_authoritative_page_documents_its_role() -> None:
         "docs/installation.md": ("does not initialize Git", "requires_cli", "doctor"),
         "docs/configuration.md": ("nearest ancestor", "schema_version", "Manifest v2"),
         "docs/architecture.md": ("wiki/.manifest.json", "ShardedManifest.entry_path", "recovery"),
-        "docs/cli.md": ("obsidian-wiki --help", "Only commands", "transaction commit"),
-        "docs/cli.zh-TW.md": ("obsidian-wiki --help", "目前支援", "transaction commit"),
+        "docs/cli.md": ("llmwikiops --help", "Only commands", "transaction commit"),
+        "docs/cli.zh-TW.md": ("llmwikiops --help", "目前支援", "transaction commit"),
         "docs/agents.md": ("canonical protocol", "candidate_vault", "Git publication"),
         "docs/skills.md": ("36 skills", "metadata-first", "never installs"),
         "docs/contributing.md": ("source checkout", "disposable", "check_readme_sync.py"),
         "docs/fork.md": ("independently", "does not track future upstream changes", "single repository product"),
         "docs/README.md": ("Installation", "Architecture", "CLI reference"),
+        "docs/session-brain.md": ("session", "llmwikiops", "sessions-build"),
     }
     assert set(required_by_page) == set(CURRENT_DOCS)
     for relative, required_phrases in required_by_page.items():
@@ -258,7 +271,7 @@ def test_installation_documents_owner_initialized_git_repository() -> None:
     installation = _text("docs/installation.md")
     assert "does not initialize Git" in installation
     initialize = installation.index("git -C ./team-knowledge init")
-    setup = installation.index("obsidian-wiki setup ./team-knowledge", initialize)
+    setup = installation.index("llmwikiops setup ./team-knowledge", initialize)
     review = installation.index("git -C ./team-knowledge status", setup)
     add = installation.index("git -C ./team-knowledge add", review)
     commit = installation.index("git -C ./team-knowledge commit", add)

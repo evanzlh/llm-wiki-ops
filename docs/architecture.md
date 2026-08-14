@@ -1,6 +1,6 @@
 # Architecture
 
-obsidian-wiki treats the knowledge base as a reproducible repository artifact. Python owns deterministic setup, validation, containment, transactions, and maintenance; tracked skills tell agents how to interpret sources and compose knowledge.
+LLMWikiOps treats the knowledge base as a reproducible repository artifact. Python owns deterministic setup, validation, containment, transactions, and maintenance; tracked skills tell agents how to interpret sources and compose knowledge.
 
 ## One repository layout
 
