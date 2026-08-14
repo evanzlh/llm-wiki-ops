@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-wiki-ops"
 dynamic = ["version"]
-description = "A deterministic, repository-native implementation of the LLM Wiki pattern."
+description = "LLM-oriented operational framework for durable Markdown knowledge bases"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -48,11 +48,11 @@ graph = ["leidenalg>=0.10", "igraph>=0.11"]
 Homepage = "https://github.com/evanzlh/llm-wiki-ops"
 Repository = "https://github.com/evanzlh/llm-wiki-ops"
 Issues = "https://github.com/evanzlh/llm-wiki-ops/issues"
+Changelog = "https://github.com/evanzlh/llm-wiki-ops/releases"
 Upstream = "https://github.com/Ar9av/obsidian-wiki"
 
 [project.scripts]
 llmwikiops = "obsidian_wiki.cli:main"
-obsidian-wiki = "obsidian_wiki.cli:main"
 
 # Version is derived from the git tag (CalVer, e.g. v2026.05.2 -> 2026.5.2),
 # matching the repo's release tags. Tagging a release is the version bump.

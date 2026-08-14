@@ -1528,7 +1528,7 @@ def _validate_v2_upgrade_repository(
     report = plan_portable_skill_sync(root)
     if report.status != "clean":
         raise ValueError(
-            "portable skill mirrors have drift; run `obsidian-wiki repo "
+            "portable skill mirrors have drift; run `llmwikiops repo "
             "sync-skills --apply` and review the result before upgrading"
         )
 
@@ -1570,14 +1570,14 @@ def _validate_agent_skill_mirrors(
             mirror = discover_anchored_skill_collection(target, anchor=root)
         except (OSError, ValueError) as exc:
             suffix = (
-                "; run `obsidian-wiki repo sync-skills --apply`" if remediation else ""
+                "; run `llmwikiops repo sync-skills --apply`" if remediation else ""
             )
             raise ValueError(
                 f"portable skill mirror is invalid at {target}: {exc}{suffix}"
             ) from exc
         if mirror != canonical:
             suffix = (
-                "; run `obsidian-wiki repo sync-skills --apply`" if remediation else ""
+                "; run `llmwikiops repo sync-skills --apply`" if remediation else ""
             )
             raise ValueError(
                 f"portable skill mirror differs from canonical .skills: {target}{suffix}"
@@ -1739,7 +1739,7 @@ def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
     if isinstance(inventory, LegacyManagedSkillsInventory):
         raise ValueError(  # noqa: TRY004 - a legacy schema is an invalid value here
             "portable managed skill inventory is legacy; run "
-            "`obsidian-wiki repo upgrade-skills`"
+            "`llmwikiops repo upgrade-skills`"
         )
     assert isinstance(inventory, ManagedSkillsInventory)
 
@@ -5777,7 +5777,7 @@ def setup_portable_repo(
                 if isinstance(inventory, LegacyManagedSkillsInventory):
                     raise ValueError(
                         "portable repository uses legacy skill adapters; run "
-                        "`obsidian-wiki repo upgrade-skills`"
+                        "`llmwikiops repo upgrade-skills`"
                     )
                 assert isinstance(inventory, ManagedSkillsInventory)
                 canonical = discover_anchored_skill_collection(
@@ -5792,7 +5792,7 @@ def setup_portable_repo(
             else:
                 raise ValueError(
                     "portable repository has no managed skill inventory; run "
-                    "`obsidian-wiki repo upgrade-skills`"
+                    "`llmwikiops repo upgrade-skills`"
                 )
         return root
 

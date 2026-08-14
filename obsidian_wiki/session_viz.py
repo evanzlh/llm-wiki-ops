@@ -122,7 +122,7 @@ _TEMPLATE = """<!DOCTYPE html>
 if (typeof vis === 'undefined') {
   document.getElementById('loading').innerHTML =
     'graph library failed to load<span>the page could not fetch vis-network. ' +
-    'Rebuild with <code>obsidian-wiki sessions-build</code> while online to embed it.</span>';
+    'Rebuild with <code>llmwikiops sessions-build</code> while online to embed it.</span>';
   throw new Error('vis-network unavailable');
 }
 

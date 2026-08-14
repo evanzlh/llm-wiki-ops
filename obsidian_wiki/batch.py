@@ -4,7 +4,7 @@ When ingesting a large folder of docs, this module splits the source list into
 batches and emits a dispatch plan the skill uses to spawn parallel Claude
 subagents — each handling one batch independently, then merging results.
 
-The agent calls `obsidian-wiki batch-plan [options]`
+The agent calls `llmwikiops batch-plan [options]`
 and gets back a JSON plan:
 
 {

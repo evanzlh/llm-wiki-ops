@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from obsidian_wiki import FORK_BASE_COMMIT, IMPLEMENTATION_ID, UPSTREAM_URL
@@ -28,11 +29,19 @@ def test_version_output_identifies_llmwikiops() -> None:
 
 def test_package_metadata_preserves_upstream_and_points_users_to_fork() -> None:
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'name = "llm-wiki-ops"' in text
+    project = tomllib.loads(text)["project"]
+    assert project["name"] == "llm-wiki-ops"
+    assert (
+        project["description"]
+        == "LLM-oriented operational framework for durable Markdown knowledge bases"
+    )
     assert 'authors = [{ name = "Ar9av" }]' in text
     assert 'maintainers = [{ name = "evanzlh" }]' in text
-    assert 'Repository = "https://github.com/evanzlh/llm-wiki-ops"' in text
-    assert 'Issues = "https://github.com/evanzlh/llm-wiki-ops/issues"' in text
-    assert 'Upstream = "https://github.com/Ar9av/obsidian-wiki"' in text
-    assert 'llmwikiops = "obsidian_wiki.cli:main"' in text
-    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in text
+    assert project["urls"] == {
+        "Homepage": "https://github.com/evanzlh/llm-wiki-ops",
+        "Repository": "https://github.com/evanzlh/llm-wiki-ops",
+        "Issues": "https://github.com/evanzlh/llm-wiki-ops/issues",
+        "Changelog": "https://github.com/evanzlh/llm-wiki-ops/releases",
+        "Upstream": "https://github.com/Ar9av/obsidian-wiki",
+    }
+    assert project["scripts"] == {"llmwikiops": "obsidian_wiki.cli:main"}

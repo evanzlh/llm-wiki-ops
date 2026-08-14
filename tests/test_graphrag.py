@@ -17,7 +17,7 @@ from obsidian_wiki.graphrag import (
 
 def test_module_docs_use_current_portable_query_command() -> None:
     assert graphrag.__doc__ is not None
-    assert 'obsidian-wiki query "<question>"' in graphrag.__doc__
+    assert 'llmwikiops query "<question>"' in graphrag.__doc__
     assert "graph-query" not in graphrag.__doc__
 
 

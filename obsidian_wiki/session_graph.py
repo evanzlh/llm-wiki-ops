@@ -399,7 +399,7 @@ def load_graph(out_dir: Path) -> tuple[dict, dict]:
     graph = _read_json(out_dir / "graph.json", None)
     if not graph:
         raise FileNotFoundError(
-            f"no session graph in {out_dir} — run `obsidian-wiki sessions-build` first")
+            f"no session graph in {out_dir} — run `llmwikiops sessions-build` first")
     return graph, _read_json(out_dir / "clusters.json", {"clusters": []})
 
 

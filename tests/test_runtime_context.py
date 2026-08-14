@@ -76,7 +76,7 @@ def test_no_config_is_unconfigured_with_exact_setup_guidance(tmp_path: Path) -> 
     assert result.config is None
     assert result.error is not None
     assert result.error.args == ("repository not configured",)
-    assert result.guidance == SETUP_GUIDANCE == "run: obsidian-wiki setup [DIR]"
+    assert result.guidance == SETUP_GUIDANCE == "run: llmwikiops setup [DIR]"
 
 
 @pytest.mark.parametrize("kind", ["invalid", "dangling"])

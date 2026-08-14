@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from obsidian_wiki.transaction import TransactionRecord
 
 
-INSPECT_COMMAND = "obsidian-wiki transaction list --json"
+INSPECT_COMMAND = "llmwikiops transaction list --json"
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ def _action(
     transaction_id: str, command: str, reason: str, *requires: str
 ) -> RecoveryAction:
     return RecoveryAction(
-        command=f"obsidian-wiki transaction {command} {transaction_id}",
+        command=f"llmwikiops transaction {command} {transaction_id}",
         reason=reason,
         requires=requires,
     )

@@ -185,7 +185,7 @@ def test_build_metadata_is_retained_for_uv_source_install() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'build-backend = "hatchling.build"' in pyproject
     assert 'llmwikiops = "obsidian_wiki.cli:main"' in pyproject
-    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in pyproject
+    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' not in pyproject
     assert '".skills" = "obsidian_wiki/_data/skills"' not in pyproject
     assert (ROOT / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md").is_file()
 
@@ -205,7 +205,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         check=True,
         timeout=180,
     )
-    artifacts = sorted(output.glob("obsidian_wiki-*"))
+    artifacts = sorted(output.glob("llm_wiki_ops-*"))
     assert {path.suffix for path in artifacts} == {".whl", ".gz"}
 
     expected_data = {
@@ -241,7 +241,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         names = {
             "/".join(Path(name).parts[1:])
             if Path(name).parts
-            and Path(name).parts[0].startswith("obsidian_wiki-")
+            and Path(name).parts[0].startswith("llm_wiki_ops-")
             else name
             for name in raw_names
         }
@@ -670,20 +670,17 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     executable = shutil.which("llmwikiops", path=str(bin_dir))
     legacy_executable = shutil.which("obsidian-wiki", path=str(bin_dir))
     assert executable is not None, f"llmwikiops was not installed in {bin_dir}"
-    assert legacy_executable is not None, (
-        f"obsidian-wiki was not installed in {bin_dir}"
+    assert legacy_executable is None, "obsidian-wiki must not be installed as an alias"
+    result = subprocess.run(
+        [executable, "--version"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
     )
-    for installed_executable in (executable, legacy_executable):
-        result = subprocess.run(
-            [installed_executable, "--version"],
-            cwd=tmp_path,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
-        assert "evanzlh/llm-wiki-ops" in result.stdout
+    assert "evanzlh/llm-wiki-ops" in result.stdout
     info = subprocess.run(
         [executable, "info"],
         cwd=tmp_path,

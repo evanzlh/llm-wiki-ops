@@ -7,7 +7,7 @@ raw files" — saves reading 10–50 pages for questions answerable from the
 graph structure.
 
 The agent calls:
-  obsidian-wiki query "<question>" [options]
+  llmwikiops query "<question>" [options]
 
 And gets back a JSON response:
 {

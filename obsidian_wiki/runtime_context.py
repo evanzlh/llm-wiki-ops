@@ -13,7 +13,7 @@ from .config import (
 
 
 RuntimeStatus = Literal["resolved", "unconfigured", "error"]
-SETUP_GUIDANCE = "run: obsidian-wiki setup [DIR]"
+SETUP_GUIDANCE = "run: llmwikiops setup [DIR]"
 
 
 @dataclass(frozen=True)

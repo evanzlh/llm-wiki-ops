@@ -31,7 +31,7 @@ def record() -> TransactionRecord:
 
 def expected_action(command: str, reason: str, *requires: str) -> RecoveryAction:
     return RecoveryAction(
-        command=f"obsidian-wiki transaction {command} tx-1",
+        command=f"llmwikiops transaction {command} tx-1",
         reason=reason,
         requires=requires,
     )
@@ -149,7 +149,7 @@ def test_inspection_only_guidance_has_no_recovery_actions() -> None:
     assert inspection_only_guidance() == RecoveryGuidance(
         transaction_id=None,
         transaction_status=None,
-        inspect_command="obsidian-wiki transaction list --json",
+        inspect_command="llmwikiops transaction list --json",
         preferred_action=None,
         alternatives=(),
     )
@@ -162,9 +162,9 @@ def test_guidance_as_dict_uses_only_public_serialized_fields(record: Transaction
     assert guidance.as_dict() == {
         "transaction_id": "tx-1",
         "transaction_status": "active",
-        "inspect_command": "obsidian-wiki transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": {
-            "command": "obsidian-wiki transaction commit tx-1",
+            "command": "llmwikiops transaction commit tx-1",
             "reason": "commit after fixing the original cause and reviewing the candidate",
             "requires": [
                 "the original failure cause is removed",
@@ -173,7 +173,7 @@ def test_guidance_as_dict_uses_only_public_serialized_fields(record: Transaction
         },
         "alternatives": [
             {
-                "command": "obsidian-wiki transaction abort tx-1",
+                "command": "llmwikiops transaction abort tx-1",
                 "reason": "abandon the active staged work",
                 "requires": ["the candidate is no longer needed"],
             }

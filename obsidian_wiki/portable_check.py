@@ -771,7 +771,7 @@ def _load_managed_inventory(
             CheckIssue(
                 "managed-skills-legacy",
                 MANAGED_SKILLS_INVENTORY,
-                "legacy managed skill adapters require `obsidian-wiki repo "
+                "legacy managed skill adapters require `llmwikiops repo "
                 "upgrade-skills`",
             )
         )
