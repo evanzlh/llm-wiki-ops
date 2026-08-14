@@ -40,12 +40,12 @@ HISTORY_ROUTER = "obsidian_wiki/_data/skills/wiki-history-ingest/SKILL.md"
 RAW_FORMAT = "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md"
 BOOTSTRAPS = (
     "obsidian_wiki/_data/bootstrap/AGENTS.md",
-    "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
-    "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md",
-    "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+    "obsidian_wiki/_data/bootstrap/agent/rules/llmwikiops.md",
+    "obsidian_wiki/_data/bootstrap/agent/workflows/llmwikiops.md",
+    "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc",
     "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
-    "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
-    "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
+    "obsidian_wiki/_data/bootstrap/kiro/steering/llmwikiops.md",
+    "obsidian_wiki/_data/bootstrap/windsurf/rules/llmwikiops.md",
 )
 FORBIDDEN_RUNTIME_TERMS = (
     "Personal mode",
@@ -74,23 +74,18 @@ PACKAGED_GUIDANCE_ROOTS = (
 )
 PACKAGED_GUIDANCE_SUFFIXES = {".html", ".js", ".json", ".md", ".mdc"}
 MANAGED_BOOTSTRAP_RELATIVES = (
-    "agent/rules/obsidian-wiki.md",
-    "agent/workflows/obsidian-wiki.md",
-    "cursor/rules/obsidian-wiki.mdc",
-    "kiro/steering/obsidian-wiki.md",
-    "windsurf/rules/obsidian-wiki.md",
-)
-MANAGED_BOOTSTRAP_PATHS = tuple(
-    f"{prefix}{relative}"
-    for prefix in ("", ".")
-    for relative in MANAGED_BOOTSTRAP_RELATIVES
+    "agent/rules/llmwikiops.md",
+    "agent/workflows/llmwikiops.md",
+    "cursor/rules/llmwikiops.mdc",
+    "kiro/steering/llmwikiops.md",
+    "windsurf/rules/llmwikiops.md",
 )
 LEGACY_RUNTIME_IDENTITY = re.compile(
     r"obsidian(?:-|\s+)wiki",
     re.IGNORECASE,
 )
 WORKFLOW_BOOTSTRAP = Path(
-    "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md"
+    "obsidian_wiki/_data/bootstrap/agent/workflows/llmwikiops.md"
 )
 RAW_HANDLE_POPUP = Path("extensions/brain-capture/popup.js")
 AR9AV_REPOSITORY_URL_PREFIX = "https://github.com/"
@@ -126,14 +121,6 @@ def format_identity_location(relative: Path, text: str, match: re.Match[str]) ->
     return f"{relative}:{line_number}: {_line_at(text, match.start()).strip()}"
 
 
-def _has_path_component_boundaries(text: str, start: int, end: int) -> bool:
-    before = " \t\r\n`'\"([{:=,"
-    after = " \t\r\n`'\"),;:!?]}"
-    return (start == 0 or text[start - 1] in before) and (
-        end == len(text) or text[end] in after
-    )
-
-
 def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
     start, end = match.span()
     if start == 0 or text[start - 1] != ".":
@@ -143,17 +130,10 @@ def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
     return end == len(text) or text[end] in "/ \t\r\n`'\"),;:!?]}"
 
 
-def _is_managed_filename(text: str, match: re.Match[str]) -> bool:
-    for managed_path in MANAGED_BOOTSTRAP_PATHS:
-        path_start = match.start() - managed_path.rfind("obsidian-wiki")
-        path_end = path_start + len(managed_path)
-        if path_start < 0:
-            continue
-        if text[path_start:path_end] != managed_path:
-            continue
-        if _has_path_component_boundaries(text, path_start, path_end):
-            return True
-    return False
+def _is_renamed_bootstrap_scope(relative: Path) -> bool:
+    return relative.as_posix().removeprefix("obsidian_wiki/_data/bootstrap/") in (
+        MANAGED_BOOTSTRAP_RELATIVES
+    )
 
 
 def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
@@ -182,13 +162,6 @@ def _is_stable_extension_id(relative: Path, text: str, match: re.Match[str]) -> 
     )
 
 
-def _is_managed_workflow_name(relative: Path, text: str, match: re.Match[str]) -> bool:
-    return (
-        relative == WORKFLOW_BOOTSTRAP
-        and _line_at(text, match.start()).strip() == "name: obsidian-wiki"
-    )
-
-
 def is_allowed_legacy_identity(
     relative: Path, text: str, match: re.Match[str]
 ) -> bool:
@@ -197,10 +170,9 @@ def is_allowed_legacy_identity(
     return any(
         (
             _is_protocol_directory(text, match),
-            _is_managed_filename(text, match),
+            _is_renamed_bootstrap_scope(relative),
             _is_ar9av_attribution(text, match),
             _is_stable_extension_id(relative, text, match),
-            _is_managed_workflow_name(relative, text, match),
         )
     )
 
@@ -260,10 +232,7 @@ def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
             Path("fixture.md"),
             "https://github.com/Ar9av/obsidian-wiki/issues",
         ),
-        (Path("fixture.md"), "agent/workflows/obsidian-wiki.md"),
-        (Path("fixture.md"), "cursor/rules/obsidian-wiki.mdc"),
         (RAW_HANDLE_POPUP, 'id: "obsidian-wiki-raw",'),
-        (WORKFLOW_BOOTSTRAP, "name: obsidian-wiki"),
     ),
 )
 def test_identity_allowlist_preserves_exact_compatibility_contexts(
@@ -280,10 +249,10 @@ def test_identity_matcher_does_not_treat_python_package_name_as_legacy_brand() -
     assert not list(LEGACY_RUNTIME_IDENTITY.finditer("from obsidian_wiki import cli"))
 
 
-def test_managed_workflow_retains_its_stable_frontmatter_name() -> None:
+def test_managed_workflow_uses_llmwikiops_frontmatter_name() -> None:
     contents = text(WORKFLOW_BOOTSTRAP.as_posix())
     supported_header = contents.partition("commands:")[0] + "---\n"
-    assert parse_frontmatter(supported_header).scalars["name"] == "obsidian-wiki"
+    assert parse_frontmatter(supported_header).scalars["name"] == "llmwikiops"
 
 
 def test_popup_keeps_the_stable_raw_picker_id_once_in_picker_options() -> None:
@@ -944,14 +913,14 @@ def test_status_contract_matches_real_graph_and_portable_manifest_layout(
     config = PortableConfig(
         root=root,
         root_identity=stable_directory_identity(root.stat()),
-        path=root / ".obsidian-wiki/config.toml",
+        path=root / ".llmwikiops/config.toml",
         schema_version=1,
         implementation="obsidian-wiki",
         requires_cli=">=0",
         vault=vault,
         sources=(source_root,),
         skills=root / ".skills",
-        local_state=root / ".obsidian-wiki/local",
+        local_state=root / ".llmwikiops/local",
         settings={},
     )
     manifest = ShardedManifest(config)

@@ -19,11 +19,11 @@ BOOTSTRAP_TARGETS = (
     "CLAUDE.md",
     "GEMINI.md",
     ".hermes.md",
-    ".agent/rules/obsidian-wiki.md",
-    ".agent/workflows/obsidian-wiki.md",
-    ".cursor/rules/obsidian-wiki.mdc",
-    ".windsurf/rules/obsidian-wiki.md",
-    ".kiro/steering/obsidian-wiki.md",
+    ".agent/rules/llmwikiops.md",
+    ".agent/workflows/llmwikiops.md",
+    ".cursor/rules/llmwikiops.mdc",
+    ".windsurf/rules/llmwikiops.md",
+    ".kiro/steering/llmwikiops.md",
     ".github/copilot-instructions.md",
 )
 CATALOG = DATA / "legacy-skill-digests-v1.json"

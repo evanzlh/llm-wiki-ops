@@ -11,11 +11,12 @@ from types import MappingProxyType
 from typing import Any, Union
 
 from . import IMPLEMENTATION_ID
+from .protocol import MANAGED_INVENTORY_RELATIVE
 from .skill_names import is_safe_skill_name
 
 SCHEMA_VERSION = 2
 MIRROR_FORMAT = "full-copy-v1"
-MANAGED_SKILLS_INVENTORY = ".obsidian-wiki/managed-skills.json"
+MANAGED_SKILLS_INVENTORY = MANAGED_INVENTORY_RELATIVE
 
 _LEGACY_FIELDS = frozenset({"implementation", "skills", "skills_version"})
 _V2_FIELDS = frozenset(

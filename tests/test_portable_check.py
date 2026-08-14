@@ -1173,7 +1173,7 @@ def test_missing_frontmatter_is_rejected() -> None:
 def valid_repo(tmp_path: Path, name: str = "knowledge"):
     root = tmp_path / name
     setup_portable_repo(root, version=__version__, source_skills=skills_dir())
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     config = load_portable_config(
         config_path,
         installed_version=__version__,
@@ -1946,7 +1946,7 @@ def test_managed_inventory_validates_implementation_version_and_digest_keys(
     tmp_path: Path, field: str
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     payload = json.loads(inventory.read_text(encoding="utf-8"))
     if field == "implementation":
         payload[field] = "wrong/implementation"
@@ -1963,7 +1963,7 @@ def test_managed_inventory_version_must_satisfy_repository_range(
     tmp_path: Path,
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     payload = json.loads(inventory.read_text(encoding="utf-8"))
     payload["skills_version"] = "1.0.0"
     inventory.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -1975,7 +1975,7 @@ def test_inventory_managed_name_must_exist_in_canonical_collection(
     tmp_path: Path,
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     payload = json.loads(inventory.read_text(encoding="utf-8"))
     payload["managed_skills"].append("missing-managed")
     payload["managed_skills"].sort()
@@ -1990,7 +1990,7 @@ def test_inventory_managed_name_must_exist_in_canonical_collection(
 
 def test_legacy_managed_inventory_has_upgrade_guidance(tmp_path: Path) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     current = json.loads(inventory.read_text(encoding="utf-8"))
     inventory.write_text(
         json.dumps(
@@ -2051,7 +2051,7 @@ def test_stable_views_must_match_portable_templates(tmp_path: Path, name: str) -
 @pytest.mark.parametrize(
     "relative",
     [
-        ".obsidian-wiki/local/cache.json",
+        ".llmwikiops/local/cache.json",
         "wiki/.locks/write.lock",
         "wiki/.snapshots/one.json",
         "wiki/.transactions/one.json",
@@ -2090,23 +2090,23 @@ def test_fixed_local_state_is_rejected_when_configured_local_path_changes(
     tmp_path: Path,
 ) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            'local_state = ".obsidian-wiki/local"',
-            'local_state = ".obsidian-wiki/runtime"',
+            'local_state = ".llmwikiops/local"',
+            'local_state = ".llmwikiops/runtime"',
         ),
         encoding="utf-8",
     )
-    local = root / ".obsidian-wiki/local/cache.json"
+    local = root / ".llmwikiops/local/cache.json"
     local.write_text("local", encoding="utf-8")
     subprocess.run(
-        ["git", "-C", str(root), "add", "-f", ".obsidian-wiki/local/cache.json"],
+        ["git", "-C", str(root), "add", "-f", ".llmwikiops/local/cache.json"],
         check=True,
         capture_output=True,
     )
 
-    assert "tracked-local-state" in issue_codes(check_portable_repo(config))
+    assert "config-invalid" in issue_codes(check_portable_repo(config))
 
 
 def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
@@ -2115,7 +2115,7 @@ def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
     root, config, _, _, _ = valid_repo(tmp_path)
     bad_name = os.fsdecode(b"bad-\xff")
     (root / bad_name).write_text("bad filename", encoding="utf-8")
-    local = root / ".obsidian-wiki/local/cache.json"
+    local = root / ".llmwikiops/local/cache.json"
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text("local", encoding="utf-8")
     subprocess.run(
@@ -2126,7 +2126,7 @@ def test_invalid_utf8_git_filename_does_not_disable_local_state_enforcement(
             b"add",
             b"-f",
             b"bad-\xff",
-            b".obsidian-wiki/local/cache.json",
+            b".llmwikiops/local/cache.json",
         ],
         check=True,
         capture_output=True,
@@ -2171,12 +2171,12 @@ def test_checker_rejects_hardlinked_managed_files(
 ) -> None:
     root, config, source, page, shard = valid_repo(tmp_path)
     targets = {
-        "config": root / ".obsidian-wiki/config.toml",
+        "config": root / ".llmwikiops/config.toml",
         "source": source,
         "page": page,
         "marker": root / "wiki/.manifest.json",
         "shard": shard,
-        "inventory": root / ".obsidian-wiki/managed-skills.json",
+        "inventory": root / ".llmwikiops/managed-skills.json",
         "mirror": root / ".claude/skills/wiki-ingest/SKILL.md",
         "bootstrap": root / "CLAUDE.md",
         "stable-view": root / "wiki/index.md",
@@ -2217,7 +2217,7 @@ def test_malformed_marker_and_config_are_reported_without_absolute_paths(
     assert "manifest-invalid" in issue_codes(report)
     assert str(root) not in json.dumps(report)
 
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
             f'implementation = "{IMPLEMENTATION_ID}"',
@@ -2324,7 +2324,7 @@ def test_cli_check_wrong_implementation_never_falls_back_to_global(
     tmp_path: Path,
 ) -> None:
     root, _, _, _, _ = valid_repo(tmp_path)
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
             IMPLEMENTATION_ID, "wrong/implementation"
@@ -2334,7 +2334,7 @@ def test_cli_check_wrong_implementation_never_falls_back_to_global(
     home = tmp_path / "home"
     global_vault = tmp_path / "global-vault"
     global_vault.mkdir()
-    global_config = home / ".obsidian-wiki/config"
+    global_config = home / ".llmwikiops/config"
     global_config.parent.mkdir(parents=True)
     global_config.write_text(
         f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
@@ -2401,7 +2401,7 @@ def test_cmd_check_handles_unavailable_current_directory(
 def test_checker_rejects_noncanonical_configured_skills_path(tmp_path: Path) -> None:
     root, config, _, _, _ = valid_repo(tmp_path)
     (root / ".skills").rename(root / "alternate-skills")
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
             'skills = ".skills"', 'skills = "alternate-skills"'

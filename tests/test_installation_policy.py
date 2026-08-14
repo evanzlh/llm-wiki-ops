@@ -398,7 +398,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
 def test_upgrade_version_transition_fails_closed_until_owner_edits_constraint(
     tmp_path: Path,
 ) -> None:
-    config_path = tmp_path / ".obsidian-wiki/config.toml"
+    config_path = tmp_path / ".llmwikiops/config.toml"
     config_path.parent.mkdir()
     config_path.write_text(
         render_portable_config(version="2026.8.3"), encoding="utf-8"
@@ -800,11 +800,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
     bootstrap_root = skills_path.parent / "bootstrap"
     expected_bootstraps = (
         "AGENTS.md",
-        "cursor/rules/obsidian-wiki.mdc",
-        "windsurf/rules/obsidian-wiki.md",
-        "kiro/steering/obsidian-wiki.md",
-        "agent/rules/obsidian-wiki.md",
-        "agent/workflows/obsidian-wiki.md",
+        "cursor/rules/llmwikiops.mdc",
+        "windsurf/rules/llmwikiops.md",
+        "kiro/steering/llmwikiops.md",
+        "agent/rules/llmwikiops.md",
+        "agent/workflows/llmwikiops.md",
         "github/copilot-instructions.md",
     )
     assert [
@@ -889,8 +889,8 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         for target in sync_payload["targets"]
     )
     assert _safe_tree_snapshot(home) == home_before
-    assert not (home / ".obsidian-wiki").exists()
-    assert not (home / ".obsidian-wiki").is_symlink()
+    assert not (home / ".llmwikiops").exists()
+    assert not (home / ".llmwikiops").is_symlink()
     assert not (portable / ".git").exists() and not (portable / ".git").is_symlink()
     for arguments in (("rev-parse", "--git-dir"), ("log", "-1"), ("remote",)):
         probe = subprocess.run(
@@ -941,8 +941,8 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         relative = os.fsdecode(encoded_relative)
         payload = (portable / relative).read_bytes()
         assert not [value for value in forbidden_paths if value in payload], relative
-    assert not (home / ".obsidian-wiki").exists()
-    assert not (home / ".obsidian-wiki").is_symlink()
+    assert not (home / ".llmwikiops").exists()
+    assert not (home / ".llmwikiops").is_symlink()
     assert not any(
         (home / agent / "skills").exists() for agent in (".claude", ".codex", ".agents")
     )

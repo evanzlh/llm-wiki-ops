@@ -24,7 +24,7 @@ REMOVED_DISTRIBUTION_PATHS = {
     "obsidian_wiki/_data/skills/wiki-capture/references/RAW-FORMAT.md",
     "obsidian_wiki/migration.py",
     "obsidian_wiki/sync.py",
-    "scripts/com.obsidian-wiki.daily-update.plist",
+    "scripts/com.llmwikiops.daily-update.plist",
     "scripts/daily-update.sh",
     "scripts/manifest.py",
     "scripts/wiki-notify.sh",

@@ -30,6 +30,7 @@ from .portable import (
     render_portable_gitattributes,
 )
 from .portable_manifest import ManifestEntry, ManifestError, ShardedManifest
+from .protocol import CONFIG_RELATIVE, LOCAL_STATE_RELATIVE
 from .safe_files import MarkdownFile, scan_markdown_files
 from .skill_inventory import (
     LegacyManagedSkillsInventory,
@@ -222,7 +223,7 @@ def _reload_config(
     config: PortableConfig, issues: list[CheckIssue]
 ) -> PortableConfig | None:
     root = config.root
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / CONFIG_RELATIVE
     if (
         not _ordinary_file(config_path)
         or _has_symlink_component(root, config_path)
@@ -231,7 +232,7 @@ def _reload_config(
         issues.append(
             CheckIssue(
                 "config-invalid",
-                ".obsidian-wiki/config.toml",
+                CONFIG_RELATIVE,
                 "portable configuration must be an ordinary contained file",
             )
         )
@@ -246,7 +247,7 @@ def _reload_config(
         issues.append(
             CheckIssue(
                 "config-invalid",
-                ".obsidian-wiki/config.toml",
+                CONFIG_RELATIVE,
                 _scrub(root, exc),
             )
         )
@@ -255,7 +256,7 @@ def _reload_config(
         issues.append(
             CheckIssue(
                 "config-invalid",
-                ".obsidian-wiki/config.toml",
+                CONFIG_RELATIVE,
                 "portable configuration escapes the repository",
             )
         )
@@ -272,7 +273,7 @@ def _reload_config(
             issues.append(
                 CheckIssue(
                     "config-invalid",
-                    ".obsidian-wiki/config.toml",
+                    CONFIG_RELATIVE,
                     f"configured {label} path escapes the repository",
                 )
             )
@@ -281,7 +282,7 @@ def _reload_config(
         issues.append(
             CheckIssue(
                 "config-invalid",
-                ".obsidian-wiki/config.toml",
+                CONFIG_RELATIVE,
                 "portable canonical skills path must be .skills",
             )
         )
@@ -715,7 +716,7 @@ def _check_git(config: PortableConfig, issues: list[CheckIssue]) -> None:
         return
     tracked = tracked_paths(git_root)
     local = _rel(config.root, config.local_state)
-    canonical_local = ".obsidian-wiki/local"
+    canonical_local = LOCAL_STATE_RELATIVE
     for path in tracked:
         parts = PurePosixPath(path).parts
         if (

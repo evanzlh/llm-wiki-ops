@@ -303,7 +303,7 @@ def test_constructor_and_renderer_do_not_coerce_invalid_types() -> None:
 def test_constants_match_the_portable_contract() -> None:
     assert SCHEMA_VERSION == 2
     assert MIRROR_FORMAT == "full-copy-v1"
-    assert MANAGED_SKILLS_INVENTORY == ".obsidian-wiki/managed-skills.json"
+    assert MANAGED_SKILLS_INVENTORY == ".llmwikiops/managed-skills.json"
 
 
 def write_inventory(root: Path, text: str | None = None) -> Path:
@@ -341,8 +341,8 @@ def test_read_inventory_rejects_parent_swap_after_lexical_validation(
 
     root = tmp_path / "repo"
     write_inventory(root)
-    managed = root / ".obsidian-wiki"
-    stash = root / ".obsidian-wiki-stash"
+    managed = root / ".llmwikiops"
+    stash = root / ".llmwikiops-stash"
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "managed-skills.json").write_text(
@@ -388,8 +388,8 @@ def test_read_inventory_rejects_parent_swap_before_final_attachment_check(
     root = tmp_path / "repo"
     path = write_inventory(root)
     inventory_stat = path.stat()
-    managed = root / ".obsidian-wiki"
-    stash = root / ".obsidian-wiki-stash"
+    managed = root / ".llmwikiops"
+    stash = root / ".llmwikiops-stash"
     real_close = os.close
     real_validate = portable._assert_safe_managed_path
     swapped = False
@@ -437,9 +437,9 @@ def test_read_inventory_rejects_parent_swap_during_second_directory_close(
 
     root = tmp_path / "repo"
     write_inventory(root)
-    managed = root / ".obsidian-wiki"
+    managed = root / ".llmwikiops"
     managed_stat = managed.stat()
-    stash = root / ".obsidian-wiki-stash"
+    stash = root / ".llmwikiops-stash"
     real_close = os.close
     parent_close_count = 0
 
@@ -596,7 +596,7 @@ def test_read_inventory_rejects_parent_symlink(tmp_path: Path) -> None:
         render_inventory(make_inventory()), encoding="utf-8"
     )
     root.mkdir()
-    (root / ".obsidian-wiki").symlink_to(outside, target_is_directory=True)
+    (root / ".llmwikiops").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="symlink"):
         read_inventory(root)

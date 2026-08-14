@@ -53,11 +53,11 @@ def test_cli_lists_context_pack_skill() -> None:
 def test_bootstraps_route_generic_tasks_and_context_pack_is_discoverable() -> None:
     files = [
         "obsidian_wiki/_data/bootstrap/AGENTS.md",
-        "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
-        "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
-        "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
-        "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
-        "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc",
+        "obsidian_wiki/_data/bootstrap/windsurf/rules/llmwikiops.md",
+        "obsidian_wiki/_data/bootstrap/kiro/steering/llmwikiops.md",
+        "obsidian_wiki/_data/bootstrap/agent/rules/llmwikiops.md",
+        "obsidian_wiki/_data/bootstrap/agent/workflows/llmwikiops.md",
         "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
     ]
     for relative in files:

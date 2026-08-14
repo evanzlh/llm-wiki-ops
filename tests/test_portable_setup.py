@@ -85,11 +85,11 @@ SYNTHETIC_LEGACY_BASELINES: dict[Path, dict[str, str]] = {}
 
 BUNDLED_BOOTSTRAP_TARGETS = {
     "AGENTS.md": "AGENTS.md",
-    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
-    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
-    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
-    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
-    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    ".agent/rules/llmwikiops.md": "agent/rules/llmwikiops.md",
+    ".agent/workflows/llmwikiops.md": "agent/workflows/llmwikiops.md",
+    ".cursor/rules/llmwikiops.mdc": "cursor/rules/llmwikiops.mdc",
+    ".windsurf/rules/llmwikiops.md": "windsurf/rules/llmwikiops.md",
+    ".kiro/steering/llmwikiops.md": "kiro/steering/llmwikiops.md",
     ".github/copilot-instructions.md": "github/copilot-instructions.md",
 }
 
@@ -243,7 +243,7 @@ def make_legacy_adapter_repo(root: Path) -> None:
             )
             os.chmod(skill_file.parent, root_modes[name])
             os.chmod(skill_file, skill_file_modes[name])
-    (root / ".obsidian-wiki/managed-skills.json").write_text(
+    (root / ".llmwikiops/managed-skills.json").write_text(
         portable.render_managed_skills_inventory(
             inventory.skills_version, inventory.managed_skills
         ),
@@ -283,10 +283,10 @@ def write_prepared_skill_upgrade_journal(
 ) -> tuple[Path, dict[str, object]]:
     """Create the canonical pre-swap journal state used by recovery tests."""
     make_legacy_adapter_repo(root)
-    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-prepared-test"
+    transaction = root / ".llmwikiops/local/skill-upgrades/txn-prepared-test"
     old_names = tuple(
         json.loads(
-            (root / ".obsidian-wiki/managed-skills.json").read_text(encoding="utf-8")
+            (root / ".llmwikiops/managed-skills.json").read_text(encoding="utf-8")
         )["skills"]
     )
     current_names = tuple(
@@ -410,7 +410,7 @@ def write_prepared_skill_upgrade_journal(
     os.chmod(
         staged_inventory,
         stat.S_IMODE(
-            (root / ".obsidian-wiki/managed-skills.json").stat().st_mode
+            (root / ".llmwikiops/managed-skills.json").stat().st_mode
         ),
     )
     records.append(
@@ -419,7 +419,7 @@ def write_prepared_skill_upgrade_journal(
             "had_target": True,
             "install": "",
             "staged": staged_inventory.relative_to(root).as_posix(),
-            "target": ".obsidian-wiki/managed-skills.json",
+            "target": ".llmwikiops/managed-skills.json",
         }
     )
     payload: dict[str, object] = {
@@ -477,8 +477,19 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     assert result.stderr == ""
     assert str(target.resolve()) in result.stdout
     assert f"Open {target.resolve() / 'wiki'} in Obsidian" in result.stdout
-    assert not (home / ".obsidian-wiki").exists()
-    assert IMPLEMENTATION_ID in (target / ".obsidian-wiki/config.toml").read_text()
+    assert not (home / ".llmwikiops").exists()
+    assert IMPLEMENTATION_ID in (target / ".llmwikiops/config.toml").read_text()
+    assert (target / ".llmwikiops/managed-skills.json").is_file()
+    for relative in BUNDLED_BOOTSTRAP_TARGETS:
+        assert (target / relative).is_file(), relative
+    for relative in (
+        ".agent/rules/obsidian-wiki.md",
+        ".agent/workflows/obsidian-wiki.md",
+        ".cursor/rules/obsidian-wiki.mdc",
+        ".windsurf/rules/obsidian-wiki.md",
+        ".kiro/steering/obsidian-wiki.md",
+    ):
+        assert not (target / relative).exists(), relative
     assert (target / "sources").is_dir()
     assert (target / "wiki/concepts").is_dir()
     assert json.loads((target / "wiki/.manifest.json").read_text()) == MANIFEST_MARKER
@@ -493,8 +504,54 @@ def test_setup_portable_creates_repo_without_global_side_effects(tmp_path: Path)
     ).read_bytes()
     agents = (target / "AGENTS.md").read_text()
     assert MANAGED_START in agents and MANAGED_END in agents
+    assert "<!-- llmwikiops:managed:start -->" in agents
+    assert "<!-- obsidian-wiki:managed:start -->" not in agents
     assert "## Team conventions" in agents
     assert "README Translation Parity" not in agents
+
+
+def test_setup_hard_cutover_preserves_legacy_protocol_owner_content(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    legacy_config = root / ".obsidian-wiki/config.toml"
+    legacy_rule = root / ".agent/rules/obsidian-wiki.md"
+    legacy_cursor = root / ".cursor/rules/obsidian-wiki.mdc"
+    for path, contents in (
+        (legacy_config, b"owner legacy config\n"),
+        (legacy_rule, b"owner legacy agent rule\\x00bytes"),
+        (legacy_cursor, b"owner legacy cursor rule\\x00bytes"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert legacy_config.read_bytes() == b"owner legacy config\n"
+    assert legacy_rule.read_bytes() == b"owner legacy agent rule\\x00bytes"
+    assert legacy_cursor.read_bytes() == b"owner legacy cursor rule\\x00bytes"
+    assert (root / ".llmwikiops/config.toml").is_file()
+    assert (root / ".agent/rules/llmwikiops.md").is_file()
+    assert (root / ".cursor/rules/llmwikiops.mdc").is_file()
+
+
+def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    former = (
+        "<!-- obsidian-wiki:portable-bootstrap -->\n"
+        "# Obsidian Wiki Agent Instructions\n\n"
+        "Read and follow `AGENTS.md` from this repository.\n"
+    )
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    alias = root / "CLAUDE.md"
+    alias.write_text(former, encoding="utf-8")
+
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert alias.read_text(encoding="utf-8") == former
+    assert "<!-- llmwikiops:managed:start -->" not in alias.read_text(encoding="utf-8")
 
 
 def test_portable_complete_mirrors_are_ordinary_and_survive_repo_move(
@@ -544,7 +601,7 @@ def test_portable_config_is_relative_minimal_and_loadable(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / ".llmwikiops/config.toml"
     text = config_path.read_text(encoding="utf-8")
 
     assert 'schema_version = 1' in text
@@ -554,7 +611,7 @@ def test_portable_config_is_relative_minimal_and_loadable(
     assert 'vault = "wiki"' in text
     assert 'sources = ["sources"]' in text
     assert 'skills = ".skills"' in text
-    assert 'local_state = ".obsidian-wiki/local"' in text
+    assert 'local_state = ".llmwikiops/local"' in text
     assert "OBSIDIAN_WIKI_REPO" not in text
     assert "history" not in text.lower()
     assert "api" not in text.lower()
@@ -568,7 +625,7 @@ def test_portable_config_is_relative_minimal_and_loadable(
     assert loaded.vault == (root / "wiki").resolve()
     assert loaded.sources == ((root / "sources").resolve(),)
     assert loaded.skills == (root / ".skills").resolve()
-    assert loaded.local_state == (root / ".obsidian-wiki/local").resolve()
+    assert loaded.local_state == (root / ".llmwikiops/local").resolve()
     assert loaded.settings == {
         "OBSIDIAN_CATEGORIES": "concepts,entities,skills,references,synthesis,journal,projects",
         "OBSIDIAN_MAX_PAGES_PER_INGEST": "15",
@@ -643,7 +700,7 @@ def test_vault_layout_manifest_and_obsidian_json_contract(
     for unsupported in ("_archives", "_raw", "_readouts", "_staging"):
         assert not (vault / unsupported).exists()
     assert "OBSIDIAN_RAW_DIR" not in (
-        root / ".obsidian-wiki/config.toml"
+        root / ".llmwikiops/config.toml"
     ).read_text(encoding="utf-8")
     assert (vault / "hot.md").read_bytes() == HOT_BYTES
     assert (vault / "journal").is_dir()
@@ -676,7 +733,7 @@ def test_setup_rerun_preserves_unsupported_owner_artifacts_and_check_rejects_the
         "owner directory content\n"
     )
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -828,7 +885,7 @@ def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(
         assert not (root / ".skills" / name).exists()
     assert (root / ".skills/wiki-transaction-review/SKILL.md").is_file()
     assert {path: snapshot_tree(path) for path in owner_paths} == owner_before
-    upgrade_transactions = root / ".obsidian-wiki/local/skill-upgrades"
+    upgrade_transactions = root / ".llmwikiops/local/skill-upgrades"
     assert not upgrade_transactions.exists() or not any(
         upgrade_transactions.iterdir()
     )
@@ -1293,7 +1350,7 @@ def test_skill_sync_plan_rejects_legacy_or_invalid_inventory_without_writing(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory_path = root / ".obsidian-wiki/managed-skills.json"
+    inventory_path = root / ".llmwikiops/managed-skills.json"
     if inventory_kind == "legacy":
         inventory_path.write_text(
             json.dumps(
@@ -1359,7 +1416,7 @@ def test_sync_skills_dry_run_apply_and_clean_preserve_authoritative_state(
     owner_only.parent.mkdir()
     owner_only.write_text("owner mirror bytes\n", encoding="utf-8")
     canonical_before = snapshot_tree(root / ".skills")
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory_before = inventory.read_bytes()
 
     dry = _sync_portable_skill_mirrors(root, apply=False)
@@ -1511,7 +1568,7 @@ def test_sync_skills_fails_fast_while_repository_lock_is_held_without_writes(
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     _add_custom_canonical_skill(root)
-    lock = root / ".obsidian-wiki/local/portable-skills.lock"
+    lock = root / ".llmwikiops/local/portable-skills.lock"
     descriptor = os.open(lock, os.O_RDWR)
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     before = snapshot_tree(root)
@@ -1535,7 +1592,7 @@ def test_portable_setup_lock_creation_does_not_require_posix_dirfd_support(
 
     lock = portable._ensure_portable_lock_file(root)
 
-    assert lock == root / ".obsidian-wiki/local/portable-skills.lock"
+    assert lock == root / ".llmwikiops/local/portable-skills.lock"
     assert lock.is_file()
 
 
@@ -2082,8 +2139,8 @@ def test_portable_skills_lock_parent_swap_never_touches_external_tree(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    local = root / ".obsidian-wiki/local"
-    detached = root / ".obsidian-wiki/local-detached"
+    local = root / ".llmwikiops/local"
+    detached = root / ".llmwikiops/local-detached"
     outside = tmp_path / "outside-local"
     outside.mkdir()
     (outside / "sentinel").write_text("owner bytes\n", encoding="utf-8")
@@ -2496,7 +2553,7 @@ def test_cli_check_recovers_pending_sync_but_direct_checker_is_read_only(
     target.replace(backup)
     (transaction / "install/0").replace(target)
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=cli.__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -2705,7 +2762,7 @@ def test_setup_portable_without_directory_defaults_to_current_directory(
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert str(target.resolve()) in result.stdout
-    assert (target / ".obsidian-wiki/config.toml").is_file()
+    assert (target / ".llmwikiops/config.toml").is_file()
 
 
 def test_generated_portable_files_do_not_embed_source_or_home_paths(
@@ -2735,7 +2792,7 @@ def test_setup_rejects_symlinked_config_tree_without_external_writes(
     outside.mkdir()
     sentinel = outside / "sentinel"
     sentinel.write_text("untouched\n", encoding="utf-8")
-    (root / ".obsidian-wiki").symlink_to(outside, target_is_directory=True)
+    (root / ".llmwikiops").symlink_to(outside, target_is_directory=True)
     before = snapshot_tree(root)
 
     with pytest.raises(ValueError, match="symlink"):
@@ -2803,7 +2860,7 @@ def test_direct_config_writer_rejects_symlinked_managed_parent(
     root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (root / ".obsidian-wiki").symlink_to(outside, target_is_directory=True)
+    (root / ".llmwikiops").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="symlink"):
         portable.write_portable_config(root, version="2026.8.3")
@@ -2946,7 +3003,7 @@ def test_setup_scaffolds_git_only_target_without_mutating_git_metadata(
 
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
-    assert (root / ".obsidian-wiki/config.toml").is_file()
+    assert (root / ".llmwikiops/config.toml").is_file()
     assert (root / "wiki").is_dir()
     assert snapshot_tree(git_dir) == before_tree
     assert {
@@ -3008,7 +3065,7 @@ def test_git_only_target_merge_failure_restores_exact_original(
         target = Path(target)
         if (
             self.parent.parent == root.parent
-            and self.parent.name.startswith(f".{root.name}.obsidian-wiki-")
+            and self.parent.name.startswith(f".{root.name}.llmwikiops-")
             and target.parent == root
         ):
             staged_moves += 1
@@ -3024,7 +3081,7 @@ def test_git_only_target_merge_failure_restores_exact_original(
 
     assert failure_raised
     assert snapshot_tree(root) == before
-    assert not list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+    assert not list(root.parent.glob(f".{root.name}.llmwikiops-*"))
 
 
 def test_git_only_target_staging_cleanup_failure_restores_exact_original(
@@ -3043,7 +3100,7 @@ def test_git_only_target_staging_cleanup_failure_restores_exact_original(
         if (
             not failure_raised
             and self.parent == root.parent
-            and self.name.startswith(f".{root.name}.obsidian-wiki-")
+            and self.name.startswith(f".{root.name}.llmwikiops-")
             and not any(self.iterdir())
         ):
             failure_raised = True
@@ -3057,7 +3114,7 @@ def test_git_only_target_staging_cleanup_failure_restores_exact_original(
 
     assert failure_raised
     assert snapshot_tree(root) == before
-    assert not list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+    assert not list(root.parent.glob(f".{root.name}.llmwikiops-*"))
 
 
 def test_setup_cleanup_failure_preserves_original_error_and_staging_evidence(
@@ -3073,7 +3130,7 @@ def test_setup_cleanup_failure_preserves_original_error_and_staging_evidence(
         candidate = Path(path)
         if (
             candidate.parent == root.parent
-            and candidate.name.startswith(f".{root.name}.obsidian-wiki-")
+            and candidate.name.startswith(f".{root.name}.llmwikiops-")
         ):
             raise OSError("simulated staging evidence cleanup failure")
         original_rmtree(candidate, *args, **kwargs)
@@ -3087,7 +3144,7 @@ def test_setup_cleanup_failure_preserves_original_error_and_staging_evidence(
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert str(exc_info.value.__cause__) == "simulated setup preflight failure"
     assert "simulated staging evidence cleanup failure" in str(exc_info.value)
-    staging = list(root.parent.glob(f".{root.name}.obsidian-wiki-*"))
+    staging = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
     assert len(staging) == 1
     assert snapshot_tree(staging[0])
     assert not root.exists()
@@ -3118,7 +3175,7 @@ def test_setup_cli_scaffolds_git_only_target_and_validators_pass(
     assert doctor.returncode == 0, doctor.stderr
     assert check.returncode == 0, check.stderr
     assert (root / ".git").is_dir()
-    assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".llmwikiops").exists()
 
 
 def test_existing_portable_rerun_rejects_mirror_drift_without_writing(
@@ -3126,7 +3183,7 @@ def test_existing_portable_rerun_rejects_mirror_drift_without_writing(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     config.write_text(
         config.read_text(encoding="utf-8")
         + 'OBSIDIAN_ALLOWED_LIFECYCLES = "draft,reviewed"\n',
@@ -3140,7 +3197,7 @@ def test_existing_portable_rerun_rejects_mirror_drift_without_writing(
     )
     owner_files = {
         "CLAUDE.md": "owner Claude rules\n",
-        ".cursor/rules/obsidian-wiki.mdc": "owner Cursor rules\n",
+        ".cursor/rules/llmwikiops.mdc": "owner Cursor rules\n",
         ".claude/skills/wiki-ingest/SKILL.md": "owner adapter\n",
     }
     for relative, content in owner_files.items():
@@ -3175,7 +3232,7 @@ def test_generated_bootstrap_uses_managed_block_and_preserves_owner_text_on_reru
     assert "Owner alias convention." in rerun
 
 
-def test_setup_migrates_the_exact_legacy_reference_bootstrap(
+def test_setup_preserves_the_exact_former_reference_bootstrap(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
     root = tmp_path / "repo"
@@ -3185,11 +3242,7 @@ def test_setup_migrates_the_exact_legacy_reference_bootstrap(
 
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
-    upgraded = alias.read_text(encoding="utf-8")
-    assert LEGACY_REFERENCE_BOOTSTRAP not in upgraded
-    assert "# LLMWikiOps Agent Instructions\n\n" in upgraded
-    assert upgraded.count(MANAGED_START) == 1
-    assert upgraded.count(MANAGED_END) == 1
+    assert alias.read_text(encoding="utf-8") == LEGACY_REFERENCE_BOOTSTRAP
 
 
 def test_setup_portable_rerun_preserves_appended_team_policy(tmp_path: Path) -> None:
@@ -3239,7 +3292,7 @@ def test_initial_setup_writes_exact_managed_skills_inventory(
 
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
-    inventory_path = root / ".obsidian-wiki/managed-skills.json"
+    inventory_path = root / ".llmwikiops/managed-skills.json"
     inventory = read_inventory(root)
     canonical = discover_skill_collection(root / ".skills")
     assert isinstance(inventory, ManagedSkillsInventory)
@@ -3498,8 +3551,8 @@ def test_setup_v2_rerun_rejects_canonical_and_custom_skill_drift_without_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
-    config = root / ".obsidian-wiki/config.toml"
+    inventory = root / ".llmwikiops/managed-skills.json"
+    config = root / ".llmwikiops/config.toml"
     canonical = root / ".skills/wiki-ingest/SKILL.md"
     inventory_bytes = inventory.read_bytes()
     config.write_text(config.read_text() + 'OBSIDIAN_ALLOWED_LIFECYCLES = "draft"\n')
@@ -3539,7 +3592,7 @@ def test_setup_v2_rerun_rejects_inventory_ownership_not_in_canonical(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     payload = json.loads(inventory.read_text(encoding="utf-8"))
     payload["managed_skills"].append("zzghost")
     payload["managed_skill_digests"]["zzghost"] = "sha256:" + "0" * 64
@@ -3659,7 +3712,7 @@ def test_setup_without_inventory_requires_explicit_skill_upgrade_without_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory.unlink()
 
     before = snapshot_tree(root)
@@ -3673,7 +3726,7 @@ def test_setup_legacy_inventory_requires_explicit_upgrade_without_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory.write_text(
         json.dumps(
             {
@@ -3703,8 +3756,8 @@ def test_existing_setup_uses_portable_upgrade_lock_before_inventory_work(
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     if inventory_missing:
-        (root / ".obsidian-wiki/managed-skills.json").unlink()
-    lock = root / ".obsidian-wiki/local/portable-skills.lock"
+        (root / ".llmwikiops/managed-skills.json").unlink()
+    lock = root / ".llmwikiops/local/portable-skills.lock"
     descriptor = os.open(lock, os.O_RDWR)
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     before = snapshot_tree(root)
@@ -3763,7 +3816,7 @@ def test_upgrade_replaces_adds_removes_and_rebuilds_managed_skills(
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(body, encoding="utf-8")
     untouched_paths = [
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         root / "wiki/index.md",
         root / "wiki/log.md",
         root / "wiki/.manifest.json",
@@ -3847,7 +3900,7 @@ def test_upgrade_never_copies_transaction_artifacts_directly_to_final_targets(
         return (
             len(relative.parts) >= 4
             and relative.parts[:3]
-            == (".obsidian-wiki", "local", "skill-upgrades")
+            == (".llmwikiops", "local", "skill-upgrades")
             and relative.parts[3].startswith("txn-")
         )
 
@@ -4015,7 +4068,7 @@ def test_upgrade_invalid_inventory_json_schema_fails_before_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory.write_text(json.dumps(payload), encoding="utf-8")
     before = snapshot_tree(root)
 
@@ -4030,7 +4083,7 @@ def test_upgrade_invalid_inventory_encoding_and_file_kinds_fail_before_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory.write_text("{invalid", encoding="utf-8")
     before = snapshot_tree(root)
     with pytest.raises(ValueError, match="managed-skills.json"):
@@ -4068,7 +4121,7 @@ def test_upgrade_missing_or_nonregular_inventory_fails_before_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     inventory.unlink()
     if inventory_kind == "directory":
         inventory.mkdir()
@@ -4091,7 +4144,7 @@ def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
     failed = run_cli(home, outside, "repo", "upgrade-skills")
     assert failed.returncode != 0
     assert "portable" in failed.stderr.lower() or "configured" in failed.stderr.lower()
-    assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".llmwikiops").exists()
 
     root = tmp_path / "repo"
     setup = run_cli(home, tmp_path, "setup", str(root))
@@ -4102,7 +4155,7 @@ def test_repo_upgrade_cli_requires_portable_context_and_supports_nested_cwd(
     assert upgraded.returncode == 0, upgraded.stderr
     assert str(root.resolve()) in upgraded.stdout
     assert "skills" in upgraded.stdout
-    assert not (home / ".obsidian-wiki").exists()
+    assert not (home / ".llmwikiops").exists()
 
 
 def test_repo_parser_requires_nested_subcommand_and_rejects_root_argument(
@@ -4204,7 +4257,7 @@ def test_upgrade_rolls_back_all_swaps_when_inventory_commit_fails(
     ) -> None:
         if (
             source.parent.name == "install"
-            and Path(target) == root / ".obsidian-wiki/managed-skills.json"
+            and Path(target) == root / ".llmwikiops/managed-skills.json"
         ):
             raise OSError("simulated inventory commit failure")
         original_rename(repository, source, target, **kwargs)
@@ -4232,7 +4285,7 @@ def test_upgrade_rollback_preserves_concurrently_populated_created_parent(
     ) -> None:
         if (
             source.parent.name == "install"
-            and Path(target) == root / ".obsidian-wiki/managed-skills.json"
+            and Path(target) == root / ".llmwikiops/managed-skills.json"
         ):
             (root / ".github/OWNER.txt").write_text(
                 "concurrent owner data\n", encoding="utf-8"
@@ -4251,7 +4304,7 @@ def test_upgrade_rollback_preserves_concurrently_populated_created_parent(
         "concurrent owner data\n"
     )
     assert list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
 
 
@@ -4267,7 +4320,7 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
     (tiny_skills / "wiki-query/SKILL.md").write_text(
         skill_markdown("wiki-query", "Use query v2."), encoding="utf-8"
     )
-    old_inventory = (root / ".obsidian-wiki/managed-skills.json").read_bytes()
+    old_inventory = (root / ".llmwikiops/managed-skills.json").read_bytes()
     original_rename = portable._rename_sync_path
     failures = {"forward": False, "restore": False, "restore_attempts": 0}
 
@@ -4304,12 +4357,12 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
         )
 
     journals = list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
     assert len(journals) == 1
     assert list(journals[0].parent.glob("backups/*"))
     assert failures["restore_attempts"] > 1
-    assert (root / ".obsidian-wiki/managed-skills.json").read_bytes() == old_inventory
+    assert (root / ".llmwikiops/managed-skills.json").read_bytes() == old_inventory
 
     monkeypatch.setattr(portable, "_rename_sync_path", original_rename)
     original_reader = portable._read_managed_skills_inventory
@@ -4318,7 +4371,7 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
         repository: Path,
     ) -> tuple[str, tuple[str, ...]]:
         assert not list(
-            (repository / ".obsidian-wiki/local/skill-upgrades").glob(
+            (repository / ".llmwikiops/local/skill-upgrades").glob(
                 "*/journal.json"
             )
         )
@@ -4339,9 +4392,9 @@ def test_failed_forward_and_rollback_preserve_journal_for_next_recovery(
         "wiki-query", "Use query v2."
     )
     assert not list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
-    assert json.loads((root / ".obsidian-wiki/managed-skills.json").read_text())[
+    assert json.loads((root / ".llmwikiops/managed-skills.json").read_text())[
         "skills_version"
     ] == "2026.8.4"
 
@@ -4353,7 +4406,7 @@ def test_upgrade_fails_fast_while_repository_lock_is_held_without_writes(
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     make_legacy_adapter_repo(root)
-    lock = root / ".obsidian-wiki/local/portable-skills.lock"
+    lock = root / ".llmwikiops/local/portable-skills.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
     os.chmod(lock, 0o600)
@@ -4397,7 +4450,7 @@ def test_upgrade_preserves_existing_bootstrap_file_mode(
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
     agents = root / "AGENTS.md"
-    inventory = root / ".obsidian-wiki/managed-skills.json"
+    inventory = root / ".llmwikiops/managed-skills.json"
     adapter = root / ".claude/skills/wiki-ingest/SKILL.md"
     os.chmod(agents, 0o600)
     os.chmod(inventory, 0o640)
@@ -4424,7 +4477,7 @@ def test_pre_inventory_repository_fails_without_partial_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    (root / ".obsidian-wiki/managed-skills.json").unlink()
+    (root / ".llmwikiops/managed-skills.json").unlink()
     agents = root / "AGENTS.md"
     agents.write_text(
         agents.read_text().replace("transaction-only writes", "stale managed rule"),
@@ -4472,7 +4525,7 @@ def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-malicious"
+    transaction = root / ".llmwikiops/local/skill-upgrades/txn-malicious"
     transaction.mkdir(parents=True)
     transaction_relative = transaction.relative_to(root).as_posix()
     record: dict[str, object] = {
@@ -4480,7 +4533,7 @@ def test_upgrade_recovery_rejects_unsafe_journal_paths_without_external_writes(
         "had_target": True,
         "install": f"{transaction_relative}/install/0",
         "staged": f"{transaction_relative}/staged/inventory/managed-skills.json",
-        "target": ".obsidian-wiki/managed-skills.json",
+        "target": ".llmwikiops/managed-skills.json",
     }
     record[unsafe_field] = "../outside"
     journal = transaction / "journal.json"
@@ -4514,7 +4567,7 @@ def test_upgrade_recovery_removes_safe_journalless_transaction_remnants(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    transaction = root / ".obsidian-wiki/local/skill-upgrades/txn-remnant"
+    transaction = root / ".llmwikiops/local/skill-upgrades/txn-remnant"
     transaction.mkdir(parents=True)
     outside = tmp_path / "owner-outside"
     outside.mkdir()
@@ -4767,7 +4820,7 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
         **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
-            if target == repository / ".obsidian-wiki/managed-skills.json":
+            if target == repository / ".llmwikiops/managed-skills.json":
                 raise OSError("simulated process crash before inventory commit")
             if had_target:
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -4786,7 +4839,7 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
     for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
         assert (root / agent_relative / "wiki-new/SKILL.md").is_file()
     assert list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
 
     monkeypatch.setattr(portable, "_apply_journaled_upgrade", original_apply)
@@ -4801,7 +4854,7 @@ def test_recovery_removes_proven_new_skill_targets_created_before_inventory_comm
     for agent_relative, _label in cli.PROJECT_AGENT_DIRS:
         assert (root / agent_relative / "wiki-new/SKILL.md").is_file()
     assert not list(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
     inventory = read_inventory(root)
     assert isinstance(inventory, ManagedSkillsInventory)
@@ -4824,7 +4877,7 @@ def test_next_invocation_recovery_removes_created_bootstrap_parents_before_upgra
         **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
-            if target == repository / ".obsidian-wiki/managed-skills.json":
+            if target == repository / ".llmwikiops/managed-skills.json":
                 raise OSError("simulated process crash before inventory commit")
             if had_target:
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -4886,7 +4939,7 @@ def test_bootstrap_recovery_rejects_untrusted_or_owner_diverged_state(
         **_kwargs: object,
     ) -> None:
         for index, (target, backup, staged, had_target) in enumerate(records):
-            if target == repository / ".obsidian-wiki/managed-skills.json":
+            if target == repository / ".llmwikiops/managed-skills.json":
                 raise OSError("simulated process crash before inventory commit")
             if had_target:
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -4902,7 +4955,7 @@ def test_bootstrap_recovery_rejects_untrusted_or_owner_diverged_state(
         )
     monkeypatch.setattr(portable, "_apply_journaled_upgrade", original_apply)
     journal = next(
-        (root / ".obsidian-wiki/local/skill-upgrades").glob("*/journal.json")
+        (root / ".llmwikiops/local/skill-upgrades").glob("*/journal.json")
     )
     payload = json.loads(journal.read_text(encoding="utf-8"))
 
@@ -5013,7 +5066,7 @@ def test_invalid_existing_portable_config_fails_before_any_write(
 ) -> None:
     root = tmp_path / "repo"
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     config.write_text(config.read_text().replace(old, new), encoding="utf-8")
     before = snapshot_tree(root)
 
@@ -5121,7 +5174,7 @@ def test_new_target_failure_is_atomic(
         assert list(root.iterdir()) == []
     else:
         assert not root.exists()
-    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
+    assert not any(path.name.startswith(".repo.llmwikiops-") for path in tmp_path.iterdir())
 
 
 def test_cli_reports_malformed_portable_target_without_traceback(tmp_path: Path) -> None:
@@ -5166,8 +5219,8 @@ def test_gitignore_uses_lf_and_escapes_literal_vault_path(
         ".claude/skills/wiki-ingest/SKILL.md",
         "AGENTS.md",
         "CLAUDE.md",
-        ".obsidian-wiki/config.toml",
-        ".obsidian-wiki/managed-skills.json",
+        ".llmwikiops/config.toml",
+        ".llmwikiops/managed-skills.json",
     ],
 )
 def test_existing_portable_rejects_hardlinked_managed_targets_before_mutation(
@@ -5207,7 +5260,7 @@ def test_existing_portable_rejects_hardlinked_managed_targets_before_mutation(
     assert external.read_bytes() == external_bytes
     assert target.stat().st_ino == external.stat().st_ino
     assert snapshot_tree(root) == before
-    assert not (root / ".obsidian-wiki/local/skill-upgrades").exists()
+    assert not (root / ".llmwikiops/local/skill-upgrades").exists()
 
 
 @pytest.mark.parametrize("operation", ["setup", "upgrade"])
@@ -5319,7 +5372,7 @@ def test_source_skill_hard_links_are_rejected_before_target_creation(
 
     assert external.read_bytes() == external_bytes
     assert not target.exists()
-    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
+    assert not any(path.name.startswith(".repo.llmwikiops-") for path in tmp_path.iterdir())
 
 
 def test_source_skill_fifo_is_rejected_before_target_creation(
@@ -5338,4 +5391,4 @@ def test_source_skill_fifo_is_rejected_before_target_creation(
         setup_portable_repo(target, version="2026.8.3", source_skills=source)
 
     assert not target.exists()
-    assert not any(path.name.startswith(".repo.obsidian-wiki-") for path in tmp_path.iterdir())
+    assert not any(path.name.startswith(".repo.llmwikiops-") for path in tmp_path.iterdir())

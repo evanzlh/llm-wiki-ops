@@ -38,6 +38,18 @@ from obsidian_wiki.operations import (
     parse_operation_log,
 )
 from obsidian_wiki.safe_files import stable_directory_identity
+from obsidian_wiki.protocol import (
+    AGENT_RULE_BASENAME,
+    CONFIG_RELATIVE,
+    CURSOR_RULE_BASENAME,
+    GITATTRIBUTES_END,
+    GITATTRIBUTES_START,
+    LOCAL_STATE_RELATIVE,
+    MANAGED_END,
+    MANAGED_START,
+    STATE_DIR_NAME,
+    TEMP_PREFIX_TOKEN,
+)
 from obsidian_wiki.skill_inventory import (
     MANAGED_SKILLS_INVENTORY,
     LegacyManagedSkillsInventory,
@@ -59,10 +71,6 @@ from obsidian_wiki.skill_trees import (
     _digest as _skill_tree_digest,
 )
 
-MANAGED_START = "<!-- obsidian-wiki:managed:start -->"
-MANAGED_END = "<!-- obsidian-wiki:managed:end -->"
-GITATTRIBUTES_START = "# obsidian-wiki:gitattributes:start"
-GITATTRIBUTES_END = "# obsidian-wiki:gitattributes:end"
 _PORTABLE_GITATTRIBUTES = """# Preserve authoritative working-tree bytes across clones.
 * -text
 
@@ -97,9 +105,9 @@ UNSUPPORTED_PERSONAL_VAULT_PATHS = (
     "_readouts",
     "_staging",
 )
-PORTABLE_ROOT_IGNORE = (".obsidian-wiki/local/",)
-_PORTABLE_SKILLS_LOCK = ".obsidian-wiki/local/portable-skills.lock"
-_UPGRADE_TRANSACTIONS = ".obsidian-wiki/local/skill-upgrades"
+PORTABLE_ROOT_IGNORE = (f"{LOCAL_STATE_RELATIVE}/",)
+_PORTABLE_SKILLS_LOCK = f"{LOCAL_STATE_RELATIVE}/portable-skills.lock"
+_UPGRADE_TRANSACTIONS = f"{LOCAL_STATE_RELATIVE}/skill-upgrades"
 _UPGRADE_JOURNAL = "journal.json"
 _LEGACY_UPGRADE_JOURNAL_SCHEMA = 3
 _REPLACEMENT_JOURNAL_SCHEMA = 4
@@ -141,7 +149,7 @@ UPGRADE_OPERATION = ReplacementOperation(
     "upgrade", _UPGRADE_TRANSACTIONS, True
 )
 SYNC_OPERATION = ReplacementOperation(
-    "sync", ".obsidian-wiki/local/skill-syncs", False
+    "sync", f"{LOCAL_STATE_RELATIVE}/skill-syncs", False
 )
 
 
@@ -172,22 +180,22 @@ _BOOTSTRAP_REFERENCES = {
     "CLAUDE.md": "AGENTS.md",
     "GEMINI.md": "AGENTS.md",
     ".hermes.md": "AGENTS.md",
-    ".agent/rules/obsidian-wiki.md": "../../AGENTS.md",
-    ".agent/workflows/obsidian-wiki.md": "../../AGENTS.md",
-    ".cursor/rules/obsidian-wiki.mdc": "../../AGENTS.md",
-    ".windsurf/rules/obsidian-wiki.md": "../../AGENTS.md",
-    ".kiro/steering/obsidian-wiki.md": "../../AGENTS.md",
+    f".agent/rules/{AGENT_RULE_BASENAME}": "../../AGENTS.md",
+    f".agent/workflows/{AGENT_RULE_BASENAME}": "../../AGENTS.md",
+    f".cursor/rules/{CURSOR_RULE_BASENAME}": "../../AGENTS.md",
+    f".windsurf/rules/{AGENT_RULE_BASENAME}": "../../AGENTS.md",
+    f".kiro/steering/{AGENT_RULE_BASENAME}": "../../AGENTS.md",
     ".github/copilot-instructions.md": "../AGENTS.md",
 }
 
 _BUNDLED_BOOTSTRAP_DIR = Path(__file__).parent / "_data/bootstrap"
 _BOOTSTRAP_ASSET_TARGETS = {
     "AGENTS.md": "AGENTS.md",
-    ".agent/rules/obsidian-wiki.md": "agent/rules/obsidian-wiki.md",
-    ".agent/workflows/obsidian-wiki.md": "agent/workflows/obsidian-wiki.md",
-    ".cursor/rules/obsidian-wiki.mdc": "cursor/rules/obsidian-wiki.mdc",
-    ".windsurf/rules/obsidian-wiki.md": "windsurf/rules/obsidian-wiki.md",
-    ".kiro/steering/obsidian-wiki.md": "kiro/steering/obsidian-wiki.md",
+    f".agent/rules/{AGENT_RULE_BASENAME}": f"agent/rules/{AGENT_RULE_BASENAME}",
+    f".agent/workflows/{AGENT_RULE_BASENAME}": f"agent/workflows/{AGENT_RULE_BASENAME}",
+    f".cursor/rules/{CURSOR_RULE_BASENAME}": f"cursor/rules/{CURSOR_RULE_BASENAME}",
+    f".windsurf/rules/{AGENT_RULE_BASENAME}": f"windsurf/rules/{AGENT_RULE_BASENAME}",
+    f".kiro/steering/{AGENT_RULE_BASENAME}": f"kiro/steering/{AGENT_RULE_BASENAME}",
     ".github/copilot-instructions.md": "github/copilot-instructions.md",
 }
 
@@ -991,7 +999,7 @@ def _atomic_replace_text(path: Path, text: str, *, root: Path) -> None:
     temporary: Path | None = None
     try:
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.obsidian-wiki-",
+            prefix=f".{path.name}.{TEMP_PREFIX_TOKEN}-",
             suffix=".tmp",
             dir=path.parent,
         )
@@ -1079,7 +1087,7 @@ def render_portable_config(
     vault: str = "wiki",
     sources: tuple[str, ...] = ("sources",),
     skills: str = ".skills",
-    local_state: str = ".obsidian-wiki/local",
+    local_state: str = LOCAL_STATE_RELATIVE,
 ) -> str:
     """Render repository-relative portable TOML without filesystem access."""
     source_values = ", ".join(json.dumps(source) for source in sources)
@@ -1118,7 +1126,7 @@ def render_manifest_marker() -> str:
 
 
 def _load_canonical_portable_config(root: Path, *, version: str) -> PortableConfig:
-    path = root / ".obsidian-wiki" / "config.toml"
+    path = root / CONFIG_RELATIVE
     config = load_portable_config(
         path,
         installed_version=version,
@@ -1128,14 +1136,14 @@ def _load_canonical_portable_config(root: Path, *, version: str) -> PortableConf
         (root / "wiki").resolve(strict=False),
         ((root / "sources").resolve(strict=False),),
         (root / ".skills").resolve(strict=False),
-        (root / ".obsidian-wiki/local").resolve(strict=False),
+        (root / LOCAL_STATE_RELATIVE).resolve(strict=False),
     )
     actual = (config.vault, config.sources, config.skills, config.local_state)
     if actual != expected:
         raise ValueError(
             "portable configuration must use canonical portable paths: "
             "vault=wiki, sources=[sources], skills=.skills, "
-            "local_state=.obsidian-wiki/local"
+            f"local_state={LOCAL_STATE_RELATIVE}"
         )
     return config
 
@@ -1151,7 +1159,7 @@ def merge_managed_block(existing: str, managed_content: str) -> str:
     start_count = existing.count(MANAGED_START)
     end_count = existing.count(MANAGED_END)
     if start_count != end_count or start_count > 1:
-        raise ValueError("malformed obsidian-wiki managed markers")
+        raise ValueError("malformed llmwikiops managed markers")
 
     block = f"{MANAGED_START}\n{managed_content.rstrip()}\n{MANAGED_END}"
     if start_count == 0:
@@ -1160,7 +1168,7 @@ def merge_managed_block(existing: str, managed_content: str) -> str:
     start = existing.index(MANAGED_START)
     end = existing.index(MANAGED_END)
     if end < start:
-        raise ValueError("malformed obsidian-wiki managed markers: reversed order")
+        raise ValueError("malformed llmwikiops managed markers: reversed order")
     end += len(MANAGED_END)
     return f"{existing[:start]}{block}{existing[end:]}"
 
@@ -1173,11 +1181,11 @@ def write_portable_config(
     vault: str = "wiki",
     sources: tuple[str, ...] = ("sources",),
     skills: str = ".skills",
-    local_state: str = ".obsidian-wiki/local",
+    local_state: str = LOCAL_STATE_RELATIVE,
 ) -> Path:
     """Write the minimal repository-relative portable TOML configuration."""
     root = _safe_root(Path(root))
-    config_dir = root / ".obsidian-wiki"
+    config_dir = root / STATE_DIR_NAME
     _assert_managed_tree(root, config_dir)
     if config_dir.exists() and not config_dir.is_dir():
         raise ValueError(f"portable config parent must be an ordinary directory: {config_dir}")
@@ -1820,9 +1828,6 @@ def _bootstrap_body(relative_agents: str) -> str:
     )
 
 
-_LEGACY_BOOTSTRAP_HEADING = "# Obsidian Wiki Agent Instructions\n\n"
-
-
 def _bootstrap_source(source_bootstrap: Path | None) -> Path:
     source = _absolute_no_resolve(source_bootstrap or _BUNDLED_BOOTSTRAP_DIR)
     try:
@@ -1866,7 +1871,7 @@ def _owner_around_managed_bootstrap(existing: str) -> tuple[str, str] | None:
     start_count = existing.count(MANAGED_START)
     end_count = existing.count(MANAGED_END)
     if start_count != end_count or start_count > 1:
-        raise ValueError("malformed obsidian-wiki managed markers")
+        raise ValueError("malformed llmwikiops managed markers")
     if start_count == 0:
         return None
     start = existing.index(MANAGED_START)
@@ -1897,22 +1902,12 @@ def _render_asset_bootstrap(asset: str, existing: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def _legacy_bootstrap_text(relative_agents: str) -> str:
-    return (
-        "<!-- obsidian-wiki:portable-bootstrap -->\n"
-        + _LEGACY_BOOTSTRAP_HEADING
-        + f"Read and follow `{relative_agents}` from this repository.\n"
-    )
-
-
 def _planned_reference_bootstrap_text(existing: str, relative_agents: str) -> str | None:
     body = _bootstrap_body(relative_agents)
     if not existing:
         return merge_managed_block("", body)
     if MANAGED_START in existing or MANAGED_END in existing:
         return merge_managed_block(existing, body)
-    if existing == _legacy_bootstrap_text(relative_agents):
-        return merge_managed_block("", body)
     return None
 
 
@@ -2067,13 +2062,13 @@ def render_portable_gitattributes(existing: str) -> str:
     start_count = existing.count(GITATTRIBUTES_START)
     end_count = existing.count(GITATTRIBUTES_END)
     if start_count != end_count or start_count > 1:
-        raise ValueError("malformed obsidian-wiki gitattributes markers")
+        raise ValueError("malformed llmwikiops gitattributes markers")
     owner = existing
     if start_count:
         start = existing.index(GITATTRIBUTES_START)
         end = existing.index(GITATTRIBUTES_END)
         if end < start:
-            raise ValueError("malformed obsidian-wiki gitattributes marker order")
+            raise ValueError("malformed llmwikiops gitattributes marker order")
         end += len(GITATTRIBUTES_END)
         owner = f"{existing[:start]}{existing[end:]}"
     owner = owner.strip("\n")
@@ -2101,7 +2096,7 @@ def ensure_portable_gitattributes(root: Path) -> None:
 
 def _preflight_managed_destinations(root: Path) -> None:
     managed_trees = (
-        root / ".obsidian-wiki",
+        root / STATE_DIR_NAME,
         root / "sources",
         root / "wiki",
         root / ".skills",
@@ -2138,7 +2133,7 @@ def _preflight_existing_portable(
 ) -> None:
     """Validate every existing artifact that a portable rerun may touch."""
     _preflight_managed_destinations(root)
-    config_path = root / ".obsidian-wiki/config.toml"
+    config_path = root / CONFIG_RELATIVE
     if not config_path.is_file():
         raise ValueError(
             f"target is nonempty but not a portable repository: missing {config_path}"
@@ -5474,7 +5469,7 @@ def _upgrade_portable_skills_bound(
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):
-        config_path = root / ".obsidian-wiki/config.toml"
+        config_path = root / CONFIG_RELATIVE
         _assert_ordinary_file(root, config_path, "configuration")
         _assert_single_link_ordinary_file(root, config_path, "configuration")
         _load_canonical_portable_config(root, version=version)
@@ -5738,6 +5733,64 @@ def _is_git_only_target(root: Path) -> bool:
     return True
 
 
+def _is_safe_owner_seed_tree(root: Path) -> bool:
+    """Accept a hidden-only owner seed without interpreting its contents."""
+    try:
+        entries = tuple(root.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    if not entries or any(not entry.name.startswith(".") for entry in entries):
+        return False
+    for path in root.rglob("*"):
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return False
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            return False
+    return True
+
+
+def _commit_staged_owner_seed_repo(root: Path, staging: Path) -> None:
+    """Atomically retain a validated hidden owner seed beside new artifacts."""
+    if not _is_safe_owner_seed_tree(root):
+        raise ValueError(f"portable owner seed changed before staged commit: {root}")
+    for path in root.rglob("*"):
+        if path.is_dir():
+            continue
+        staged_path = staging / path.relative_to(root)
+        if staged_path.exists() or staged_path.is_symlink():
+            raise FileExistsError(
+                f"portable staged setup collides with owner seed: {staged_path}"
+            )
+    shutil.copytree(root, staging, dirs_exist_ok=True, symlinks=True)
+    backup = Path(
+        tempfile.mkdtemp(
+            prefix=f".{root.name}.{TEMP_PREFIX_TOKEN}-owner-", dir=root.parent
+        )
+    )
+    backup.rmdir()
+    try:
+        root.replace(backup)
+        staging.replace(root)
+    except BaseException:
+        if not root.exists() and backup.exists():
+            backup.replace(root)
+        raise
+    try:
+        shutil.rmtree(backup)
+    except BaseException as exc:
+        raise _PortableSetupRollbackError(
+            f"portable setup retained owner backup after commit: {backup}: {exc}"
+        ) from exc
+
+
 def setup_portable_repo(
     root: Path,
     *,
@@ -5761,8 +5814,20 @@ def setup_portable_repo(
     target_is_git_only = (
         target_existed and not target_is_empty and _is_git_only_target(root)
     )
-    if target_existed and not target_is_empty and not target_is_git_only:
-        config_path = root / ".obsidian-wiki/config.toml"
+    target_is_owner_seed = (
+        target_existed
+        and not target_is_empty
+        and not target_is_git_only
+        and not (root / CONFIG_RELATIVE).exists()
+        and _is_safe_owner_seed_tree(root)
+    )
+    if (
+        target_existed
+        and not target_is_empty
+        and not target_is_git_only
+        and not target_is_owner_seed
+    ):
+        config_path = root / CONFIG_RELATIVE
         if not config_path.exists() and not config_path.is_symlink():
             raise ValueError(
                 f"existing target is not a portable repository: {root}; accepted "
@@ -5805,7 +5870,7 @@ def setup_portable_repo(
 
     root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
-        tempfile.mkdtemp(prefix=f".{root.name}.obsidian-wiki-", dir=root.parent)
+        tempfile.mkdtemp(prefix=f".{root.name}.{TEMP_PREFIX_TOKEN}-", dir=root.parent)
     )
     removed_empty_target = False
     try:
@@ -5817,6 +5882,8 @@ def setup_portable_repo(
         _preflight_existing_portable(staging, version=version, skill_names=skill_names)
         if target_is_git_only:
             _commit_staged_git_only_repo(root, staging)
+        elif target_is_owner_seed:
+            _commit_staged_owner_seed_repo(root, staging)
         else:
             if target_is_empty:
                 root.rmdir()
