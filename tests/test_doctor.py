@@ -406,7 +406,7 @@ def test_doctor_rejects_unsafe_canonical_local_state_without_mutating_owner_entr
         before = ("file", local_state.read_bytes(), local_state.stat().st_ino)
     elif entry_kind == "symlink":
         target = root / "owner-local-target"
-        target.mkdir()
+        assert not target.exists()
         local_state.symlink_to(target, target_is_directory=True)
         before = ("symlink", os.readlink(local_state), local_state.lstat().st_ino)
     else:
