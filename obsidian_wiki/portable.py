@@ -5757,85 +5757,160 @@ def _is_safe_owner_seed_tree(root: Path) -> bool:
     return True
 
 
-def _owner_seed_identity(path: Path) -> tuple[int, int]:
-    metadata = path.lstat()
+def _owner_seed_identity_from_stat(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
-def _rollback_owner_seed_install(
-    created_files: list[tuple[Path, tuple[int, int]]],
-    created_directories: list[tuple[Path, tuple[int, int]]],
-) -> None:
-    """Remove only still-owned paths created by a failed owner-seed install."""
-    for path, identity in reversed(created_files):
-        try:
-            if _owner_seed_identity(path) == identity:
-                path.unlink()
-        except OSError:
-            continue
-    for path, identity in reversed(created_directories):
-        try:
-            if _owner_seed_identity(path) == identity:
-                path.rmdir()
-        except OSError:
-            continue
-
-
-def _install_staged_owner_seed_tree(
+def _preflight_staged_owner_seed_tree(
     source: Path,
     target: Path,
-    created_files: list[tuple[Path, tuple[int, int]]],
-    created_directories: list[tuple[Path, tuple[int, int]]],
+    relative: tuple[str, ...],
+    existing_directories: dict[tuple[str, ...], tuple[int, int]],
 ) -> None:
+    """Reject every destination collision before owner-seed installation begins."""
     for staged in sorted(source.iterdir(), key=lambda path: path.name):
         destination = target / staged.name
         metadata = staged.lstat()
+        child_relative = (*relative, staged.name)
         if stat.S_ISDIR(metadata.st_mode):
             try:
-                destination.mkdir()
-            except FileExistsError as exc:
                 destination_metadata = destination.lstat()
+            except FileNotFoundError:
+                pass
+            else:
                 if (
                     stat.S_ISLNK(destination_metadata.st_mode)
                     or not stat.S_ISDIR(destination_metadata.st_mode)
                 ):
                     raise FileExistsError(
                         f"portable staged setup collides with owner seed: {destination}"
-                    ) from exc
-            else:
-                created_directories.append(
-                    (destination, _owner_seed_identity(destination))
+                    )
+                existing_directories[child_relative] = _owner_seed_identity_from_stat(
+                    destination_metadata
                 )
-            _install_staged_owner_seed_tree(
-                staged, destination, created_files, created_directories
+            _preflight_staged_owner_seed_tree(
+                staged, destination, child_relative, existing_directories
             )
             continue
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError(f"portable staging contains unsafe entry: {staged}")
         try:
-            os.link(staged, destination, follow_symlinks=False)
-        except FileExistsError as exc:
+            destination.lstat()
+        except FileNotFoundError:
+            continue
+        else:
             raise FileExistsError(
                 f"portable staged setup collides with owner seed: {destination}"
+            )
+
+
+def _open_owner_seed_directory(
+    parent_descriptor: int,
+    name: str,
+    expected_identity: tuple[int, int] | None,
+    relative: tuple[str, ...],
+) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    if expected_identity is None:
+        try:
+            os.mkdir(name, dir_fd=parent_descriptor)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                "portable staged setup collides with owner seed: "
+                + "/".join(relative)
             ) from exc
-        created_files.append((destination, _owner_seed_identity(destination)))
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise OSError(
+            "portable owner seed changed during installation at "
+            + "/".join(relative)
+        ) from exc
+    actual_identity = _owner_seed_identity_from_stat(os.fstat(descriptor))
+    if expected_identity is not None and actual_identity != expected_identity:
+        os.close(descriptor)
+        raise OSError(
+            "portable owner seed changed during installation at "
+            + "/".join(relative)
+        )
+    return descriptor
+
+
+def _install_staged_owner_seed_tree(
+    source: Path,
+    target_descriptor: int,
+    relative: tuple[str, ...],
+    existing_directories: Mapping[tuple[str, ...], tuple[int, int]],
+) -> None:
+    for staged in sorted(source.iterdir(), key=lambda path: path.name):
+        metadata = staged.lstat()
+        child_relative = (*relative, staged.name)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_descriptor = _open_owner_seed_directory(
+                target_descriptor,
+                staged.name,
+                existing_directories.get(child_relative),
+                child_relative,
+            )
+            try:
+                _install_staged_owner_seed_tree(
+                    staged, child_descriptor, child_relative, existing_directories
+                )
+            finally:
+                os.close(child_descriptor)
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"portable staging contains unsafe entry: {staged}")
+        try:
+            os.link(
+                staged,
+                staged.name,
+                dst_dir_fd=target_descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise FileExistsError(
+                "portable staged setup collides with owner seed: "
+                + "/".join(child_relative)
+            ) from exc
         staged.unlink()
 
 
 def _commit_staged_owner_seed_repo(root: Path, staging: Path) -> None:
-    """Install staged artifacts without replacing or copying owner content."""
+    """Install staged artifacts without replacing or copying owner content.
+
+    A failure after installation starts deliberately leaves every created path in
+    place.  An owner may have changed a newly-created inode after installation,
+    so removing it would be less safe than preserving partial setup evidence.
+    """
     if not _is_safe_owner_seed_tree(root):
         raise ValueError(f"portable owner seed changed before staged commit: {root}")
-    created_files: list[tuple[Path, tuple[int, int]]] = []
-    created_directories: list[tuple[Path, tuple[int, int]]] = []
+    existing_directories: dict[tuple[str, ...], tuple[int, int]] = {}
+    _preflight_staged_owner_seed_tree(
+        staging, root, (), existing_directories
+    )
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(root, flags)
     try:
         _install_staged_owner_seed_tree(
-            staging, root, created_files, created_directories
+            staging, descriptor, (), existing_directories
         )
-    except BaseException:
-        _rollback_owner_seed_install(created_files, created_directories)
-        raise
-    shutil.rmtree(staging)
+    except BaseException as exc:
+        raise _PortableSetupRollbackError(
+            "portable owner-seed installation incomplete; preserved installed paths "
+            f"and staged evidence at {staging}: {exc}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+    try:
+        shutil.rmtree(staging)
+    except OSError as exc:
+        raise _PortableSetupRollbackError(
+            "portable owner-seed installation committed; preserved staged evidence at "
+            f"{staging}: {exc}"
+        ) from exc
 
 
 def setup_portable_repo(

@@ -579,6 +579,72 @@ def test_owner_seed_collision_rolls_back_only_setup_created_paths(
     assert not (root / ".llmwikiops").exists()
 
 
+def test_owner_seed_late_owner_write_is_preserved_after_partial_install(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".agent/rules/obsidian-wiki.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    owner_write = b"owner writes after setup install"
+    original_link = portable.os.link
+    injected = False
+
+    def link_with_owner_write(source: object, destination: object, **kwargs: object) -> None:
+        nonlocal injected
+        original_link(source, destination, **kwargs)
+        if not injected and str(source).endswith("agent/rules/llmwikiops.md"):
+            injected = True
+            managed = root / ".agent/rules/llmwikiops.md"
+            managed.write_bytes(owner_write)
+            collision = root / ".cursor/rules/llmwikiops.mdc"
+            collision.parent.mkdir(parents=True)
+            collision.write_bytes(b"late owner collision")
+
+    monkeypatch.setattr(portable.os, "link", link_with_owner_write)
+
+    with pytest.raises(OSError, match="incomplete.*preserved"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert injected
+    assert (root / ".agent/rules/llmwikiops.md").read_bytes() == owner_write
+
+
+def test_owner_seed_parent_swap_never_writes_through_external_symlink(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    agent = root / ".agent"
+    legacy = agent / "rules/obsidian-wiki.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open = portable.os.open
+    swapped = False
+
+    def open_with_parent_swap(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        if path == ".agent" and dir_fd is not None and not swapped:
+            swapped = True
+            agent.rename(root / ".agent-owner")
+            agent.symlink_to(outside, target_is_directory=True)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(portable.os, "open", open_with_parent_swap)
+
+    with pytest.raises(OSError, match="incomplete|owner seed changed"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert swapped
+    assert not any(outside.rglob("*"))
+    assert (root / ".agent-owner/rules/obsidian-wiki.md").read_bytes() == (
+        b"owner legacy rule"
+    )
+
+
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
     tmp_path: Path, tiny_skills: Path
 ) -> None:
