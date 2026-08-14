@@ -80,6 +80,11 @@ MANAGED_BOOTSTRAP_RELATIVES = (
     "kiro/steering/obsidian-wiki.md",
     "windsurf/rules/obsidian-wiki.md",
 )
+MANAGED_BOOTSTRAP_PATHS = tuple(
+    f"{prefix}{relative}"
+    for prefix in ("", ".")
+    for relative in MANAGED_BOOTSTRAP_RELATIVES
+)
 LEGACY_RUNTIME_IDENTITY = re.compile(
     r"obsidian(?:-|\s+)wiki",
     re.IGNORECASE,
@@ -115,6 +120,14 @@ def _line_at(text: str, offset: int) -> str:
     return text[line_start:] if line_end == -1 else text[line_start:line_end]
 
 
+def _has_path_component_boundaries(text: str, start: int, end: int) -> bool:
+    before = " \t\r\n`'\"([{:=,"
+    after = " \t\r\n`'\"),;:!?]}"
+    return (start == 0 or text[start - 1] in before) and (
+        end == len(text) or text[end] in after
+    )
+
+
 def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
     start, end = match.span()
     if start == 0 or text[start - 1] != ".":
@@ -125,16 +138,26 @@ def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
 
 
 def _is_managed_filename(text: str, match: re.Match[str]) -> bool:
-    return re.match(
-        r"obsidian-wiki\.(?:md|mdc)(?![\w.-])", text[match.start() :], re.IGNORECASE
-    ) is not None
+    for managed_path in MANAGED_BOOTSTRAP_PATHS:
+        path_start = match.start() - managed_path.rfind("obsidian-wiki")
+        path_end = path_start + len(managed_path)
+        if path_start < 0:
+            continue
+        if text[path_start:path_end] != managed_path:
+            continue
+        if _has_path_component_boundaries(text, path_start, path_end):
+            return True
+    return False
 
 
 def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
     owner_start = match.start() - len("Ar9av/")
     if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
         return False
-    return owner_start == 0 or not (text[owner_start - 1].isalnum() or text[owner_start - 1] in "_-")
+    if owner_start and (text[owner_start - 1].isalnum() or text[owner_start - 1] in "_-"):
+        return False
+    end = match.end()
+    return end == len(text) or text[end] in " \t\r\n`'\"),;:!?]}#/>"
 
 
 def _is_stable_extension_id(relative: Path, text: str, match: re.Match[str]) -> bool:
@@ -195,6 +218,11 @@ def test_packaged_guidance_scans_extension_background_script() -> None:
         "https://github.com/evanzlh/obsidian-wiki",
         "docs/.obsidian-wiki-brand",
         "obsidian-wiki-extra",
+        "https://evil.example/obsidian-wiki.md",
+        "fooobsidian-wiki.md",
+        "NotAr9av/obsidian-wiki.md",
+        "Ar9av/obsidian-wiki-extra",
+        "Ar9av/obsidian-wiki.evil",
     ),
 )
 def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
@@ -211,6 +239,7 @@ def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
     (
         (Path("fixture.md"), ".obsidian-wiki/config.toml"),
         (Path("fixture.md"), "Ar9av/obsidian-wiki"),
+        (Path("fixture.md"), "https://github.com/Ar9av/obsidian-wiki"),
         (Path("fixture.md"), "agent/workflows/obsidian-wiki.md"),
         (Path("fixture.md"), "cursor/rules/obsidian-wiki.mdc"),
         (RAW_HANDLE_POPUP, 'id: "obsidian-wiki-raw",'),
