@@ -593,7 +593,7 @@ def test_owner_seed_late_owner_write_is_preserved_after_partial_install(
     def link_with_owner_write(source: object, destination: object, **kwargs: object) -> None:
         nonlocal injected
         original_link(source, destination, **kwargs)
-        if not injected and str(source).endswith("agent/rules/llmwikiops.md"):
+        if not injected and source == "llmwikiops.md":
             injected = True
             managed = root / ".agent/rules/llmwikiops.md"
             managed.write_bytes(owner_write)
@@ -809,6 +809,105 @@ def test_open_owner_seed_directory_closes_descriptor_when_attachment_fails(
 
     assert child_descriptor is not None
     assert child_descriptor in closed
+
+
+def test_owner_seed_parent_namespace_swap_preserves_bound_staging_evidence(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".obsidian-wiki/config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"owner legacy rule")
+    moved_parent = tmp_path.parent / "owner-parent"
+    original_open = portable.os.open
+    swapped = False
+    staging_name: str | None = None
+    grandparent_descriptor: int | None = None
+
+    def open_then_swap_parent(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped, staging_name, grandparent_descriptor
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == root.parent.parent and dir_fd is None:
+            grandparent_descriptor = descriptor
+        if (
+            (
+                (path == root.parent and dir_fd is None)
+                or (
+                    path == root.parent.name
+                    and dir_fd == grandparent_descriptor
+                )
+            )
+            and not swapped
+        ):
+            swapped = True
+            staged = list(root.parent.glob(f".{root.name}.llmwikiops-*"))
+            assert len(staged) == 1
+            staging_name = staged[0].name
+            root.parent.rename(moved_parent)
+            root.parent.mkdir()
+            (root.parent / root.name).mkdir()
+            (root.parent / staging_name).mkdir()
+        return descriptor
+
+    monkeypatch.setattr(portable.os, "open", open_then_swap_parent)
+
+    with pytest.raises(OSError, match="incomplete.*preserved.*evidence"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert swapped
+    assert staging_name is not None
+    assert not any((root.parent / root.name).iterdir())
+    assert not any((root.parent / staging_name).iterdir())
+    original_staging = moved_parent / staging_name
+    assert original_staging.is_dir()
+    assert any(original_staging.iterdir())
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/fd").is_dir(), reason="requires procfs descriptor listing"
+)
+def test_owner_seed_root_fstat_failure_does_not_leak_open_descriptors(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_open = portable.os.open
+    original_fstat = portable.os.fstat
+    root: Path | None = None
+    root_descriptor: int | None = None
+
+    def capture_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal root_descriptor
+        assert root is not None
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == root.name and dir_fd is not None:
+            root_descriptor = descriptor
+        return descriptor
+
+    def fail_root_fstat(descriptor: int) -> os.stat_result:
+        if descriptor == root_descriptor:
+            raise OSError("simulated root fstat failure")
+        return original_fstat(descriptor)
+
+    monkeypatch.setattr(portable.os, "open", capture_open)
+    monkeypatch.setattr(portable.os, "fstat", fail_root_fstat)
+    descriptor_count = len(list(Path("/proc/self/fd").iterdir()))
+
+    for attempt in range(3):
+        root = tmp_path / f"repo-{attempt}"
+        legacy = root / ".obsidian-wiki/config.toml"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"owner legacy rule")
+        root_descriptor = None
+
+        with pytest.raises(OSError, match="simulated root fstat failure"):
+            setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+        assert root_descriptor is not None
+
+    assert len(list(Path("/proc/self/fd").iterdir())) == descriptor_count
 
 
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
@@ -3300,6 +3399,7 @@ def test_setup_rejects_git_plus_owner_content_without_changes(
         setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
     assert "missing/empty" in str(exc_info.value)
+    assert "safe hidden-only ordinary owner content" in str(exc_info.value)
     assert snapshot_tree(root) == before
 
 
