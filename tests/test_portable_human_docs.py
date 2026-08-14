@@ -90,7 +90,7 @@ SPEC_BANNER = (
     "> **Superseded (2026-08-12):** Current behavior is defined by the\n"
     "> [Portable-Only Repository Design](2026-08-12-portable-only-design.md).\n\n"
 )
-HISTORICAL_BODY_BASE = "ba9990717e931bb5c78f6ec2d08b2e8a0c0c6b98"
+HISTORICAL_BODY_BASE = "4e16b436ec358067d33df7f59ea30b046a6300ae"
 
 
 def _text(relative: str) -> str:

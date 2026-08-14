@@ -130,6 +130,7 @@ def _uv_tool_environment(tmp_path: Path) -> dict[str, str]:
         HOME=str(tmp_path / "home"),
         XDG_CACHE_HOME=str(tmp_path / "xdg-cache"),
         XDG_CONFIG_HOME=str(tmp_path / "xdg-config"),
+        XDG_DATA_HOME=str(tmp_path / "xdg-data"),
         UV_TOOL_DIR=str(tmp_path / "tools"),
         UV_TOOL_BIN_DIR=str(tmp_path / "bin"),
         UV_CACHE_DIR=str(tmp_path / "cache"),
@@ -155,6 +156,7 @@ def test_uv_tool_environment_ignores_parent_behavior_overrides(
     monkeypatch.setenv("GIT_DIR", "/inherited/git/dir")
     monkeypatch.setenv("GIT_WORK_TREE", "/inherited/git/work-tree")
     monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.setenv("XDG_DATA_HOME", "/inherited/data")
     monkeypatch.setenv("UV_INDEX_URL", "https://index.example.invalid/simple")
     monkeypatch.setenv("INSTALLATION_POLICY_UNRELATED", "retained")
 
@@ -175,6 +177,7 @@ def test_uv_tool_environment_ignores_parent_behavior_overrides(
     assert env["HOME"] == str(tmp_path / "home")
     assert env["XDG_CACHE_HOME"] == str(tmp_path / "xdg-cache")
     assert env["XDG_CONFIG_HOME"] == str(tmp_path / "xdg-config")
+    assert env["XDG_DATA_HOME"] == str(tmp_path / "xdg-data")
     assert env["UV_TOOL_DIR"] == str(tmp_path / "tools")
     assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
     assert env["UV_CACHE_DIR"] == str(tmp_path / "cache")
