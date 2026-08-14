@@ -180,6 +180,10 @@ Retain all existing validation in `_purge_bound_sync_directory`.
 
 - [ ] **Step 3: Run cleanup tests and verify GREEN**
 
+Adjust `test_sync_cleanup_rejects_recursive_child_swap_before_purge` to perform
+its directory swap on the second matching child open, proving the destructive
+pass retains its identity check after the new preflight traversal.
+
 ```bash
 uv run --with pytest python -m pytest \
   tests/test_portable_setup.py::test_sync_cleanup_rejects_nested_fifo_without_removing_evidence \

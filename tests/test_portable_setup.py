@@ -1806,12 +1806,15 @@ def test_sync_cleanup_rejects_recursive_child_swap_before_purge(
     owner_identity = (owner.stat().st_dev, owner.stat().st_ino)
     original_open = portable.os.open
     swapped = False
+    child_open_count = 0
 
     def swap_after_child_stat(
         path: object, flags: int, *args: object, **kwargs: object
     ) -> int:
-        nonlocal swapped
-        if path == "child" and not swapped:
+        nonlocal child_open_count, swapped
+        if path == "child":
+            child_open_count += 1
+        if path == "child" and child_open_count == 2:
             swapped = True
             child.rename(evidence)
             owner.rename(child)
@@ -1823,6 +1826,7 @@ def test_sync_cleanup_rejects_recursive_child_swap_before_purge(
         portable._remove_sync_path(root, victim)
 
     assert swapped
+    assert child_open_count == 2
     assert (child.stat().st_dev, child.stat().st_ino) == owner_identity
     assert (child / precious.name).read_bytes() == b"owner child bytes must survive\n"
     assert (evidence / "journal.json").read_bytes() == b"disposable child evidence\n"

@@ -29,14 +29,18 @@ checks used by destructive cleanup.
 
 The validation must cover the whole subtree before purge begins. Validating and
 purging one sibling at a time would still allow an earlier sibling's evidence to
-be deleted before a later sibling exposes an unsafe file. The purge retains its
-current checks so changes occurring after preflight still fail closed without
-following replaced directories.
+be deleted before a later sibling exposes an unsafe file. This guarantees
+non-destructive rejection when an unsafe entry already exists in a stable tree.
+The purge retains its descriptor-relative traversal and directory identity
+checks, but name-based deletion is not an atomic expected-inode operation and
+this change does not expand the guarantee for arbitrary concurrent replacement.
 
 ## Testing
 
 The three currently failing tests provide the initial RED state. Add a nested
 cross-subtree regression that places evidence in an earlier subtree and a FIFO in
-a later subtree, then proves the entire target remains unchanged. Run the focused
+a later subtree, then proves the entire target remains unchanged. The recursive
+swap regression will trigger during the destructive traversal, after preflight,
+to retain coverage of purge-stage directory identity checks. Run the focused
 installation, historical-document, cleanup, swap, and symlink tests before the
 full suite.
