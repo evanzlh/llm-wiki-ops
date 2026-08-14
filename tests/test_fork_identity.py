@@ -17,68 +17,45 @@ import pytest
 from obsidian_wiki import FORK_BASE_COMMIT, IMPLEMENTATION_ID, UPSTREAM_URL
 
 ROOT = Path(__file__).resolve().parents[1]
-LEGACY_IDENTITY = re.compile(
-    r"obsidian_wiki|obsidian-wiki|obsidian\s+wiki|evanzlh/obsidian-wiki",
-    re.IGNORECASE,
+FORMER_EXTERNAL_PROTOCOL = re.compile(
+    r"(?i)(?:\.obsidian-wiki|"
+    r"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
+    r"(?-i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
-MANAGED_BOOTSTRAP_FILENAMES = (
-    "agent/rules/obsidian-wiki.md",
-    "agent/workflows/obsidian-wiki.md",
-    "cursor/rules/obsidian-wiki.mdc",
-    "kiro/steering/obsidian-wiki.md",
-    "windsurf/rules/obsidian-wiki.md",
-)
+UPSTREAM_ATTRIBUTION = "https://github.com/Ar9av/obsidian-wiki"
 
-
-def _line_at(contents: str, offset: int) -> str:
-    start = contents.rfind("\n", 0, offset) + 1
-    end = contents.find("\n", offset)
-    return contents[start:] if end == -1 else contents[start:end]
-
-
-def _is_allowed_legacy_identity(
-    relative: Path, contents: str, match: re.Match[str]
-) -> bool:
-    value = match.group().casefold()
-    line = _line_at(contents, match.start()).strip()
-    if value == "obsidian_wiki":
-        return True
-    if value == "evanzlh/obsidian-wiki":
-        return False
-    if match.start() and contents[match.start() - 1] == ".":
-        next_character = contents[match.end() : match.end() + 1]
-        if next_character in {"/", "'", '"'}:
-            return True
-        if relative == Path("obsidian_wiki/portable_manifest.py"):
-            return line == '_SIDECAR = ".obsidian-wiki-manifest-mutation"'
-        return relative == Path("obsidian_wiki/portable.py") and (
-            "prefix=f" in line or "tempfile.mkdtemp(prefix=" in line
+def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
+    """Return former external protocol names outside the exact upstream URL."""
+    violations: list[str] = []
+    for match in FORMER_EXTERNAL_PROTOCOL.finditer(text):
+        start = match.start()
+        upstream_start = text.rfind(UPSTREAM_ATTRIBUTION)
+        upstream_end = upstream_start + len(UPSTREAM_ATTRIBUTION)
+        inside_exact_upstream = (
+            upstream_start >= 0
+            and upstream_start <= start < upstream_end
+            and text[upstream_end : upstream_end + 1]
+            in {"", " ", "\n", "\t", "'", '"', ")", "]", ">", ","}
         )
-    if contents[match.start() - len("Ar9av/") : match.start()] == "Ar9av/":
-        return True
-    if any(f'".{name}"' in line for name in MANAGED_BOOTSTRAP_FILENAMES):
-        return True
-    if relative == Path("extensions/brain-capture/popup.js"):
-        return line == 'id: "obsidian-wiki-raw",'
-    if relative == Path("obsidian_wiki/portable_manifest.py"):
-        return line == 'marker = b"obsidian-wiki manifest capability probe\\n"'
-    if relative != Path("obsidian_wiki/portable.py"):
-        return False
-    if line == '_LEGACY_BOOTSTRAP_HEADING = "# Obsidian Wiki Agent Instructions\\n\\n"':
-        return True
-    if any(
-        marker in line
-        for marker in (
-            "obsidian-wiki:managed:",
-            "obsidian-wiki:gitattributes:",
-            "obsidian-wiki:portable-bootstrap",
-        )
-    ):
-        return True
-    return line.startswith('raise ValueError("malformed obsidian-wiki ')
+        if not inside_exact_upstream:
+            line = text.count("\n", 0, start) + 1
+            violations.append(f"{path}:{line}: {match.group()}")
+    return violations
+
+
+def is_specialized_surface(path: Path) -> bool:
+    """Keep historical records, tests, and packaged prose under dedicated guards."""
+    return (
+        path.parts[:1] == ("tests",)
+        or path.parts[:1] == ("docs",)
+        or path.parts[:3] == ("obsidian_wiki", "_data", "skills")
+        or path.parts[:3] == ("obsidian_wiki", "_data", "bootstrap")
+    )
 
 
 def _is_current_source_config_path(relative: Path) -> bool:
+    if is_specialized_surface(relative):
+        return False
     if relative in {
         Path(".gitignore"),
         Path("AGENTS.md"),
@@ -168,22 +145,18 @@ def test_only_llmwikiops_cli_and_protocol_names_remain_supported() -> None:
     assert 'llmwikiops = "obsidian_wiki.cli:main"' in pyproject
     assert 'obsidian-wiki = "obsidian_wiki.cli:main"' not in pyproject
     assert (ROOT / "obsidian_wiki").is_dir()
-    assert ".obsidian-wiki/config.toml" in (
+    assert ".llmwikiops/config.toml" in (
         ROOT / "docs/configuration.md"
     ).read_text(encoding="utf-8")
 
 
-def test_current_product_prose_uses_llmwikiops_identity() -> None:
-    """Current source/config may retain only explicit compatibility identities."""
-    disallowed = []
+def test_current_product_source_and_config_have_no_former_protocol() -> None:
+    """The tracked production/config surface has no compatibility aliases."""
+    disallowed: list[str] = []
     for path in _current_source_paths():
         contents = path.read_text(encoding="utf-8")
         relative = path.relative_to(ROOT)
-        for match in LEGACY_IDENTITY.finditer(contents):
-            if not _is_allowed_legacy_identity(relative, contents, match):
-                line = contents.count("\n", 0, match.start()) + 1
-                snippet = _line_at(contents, match.start()).strip()
-                disallowed.append(f"{relative}:{line}: {snippet}")
+        disallowed.extend(disallowed_protocol_matches(relative, contents))
     assert not disallowed, disallowed
 
 
@@ -196,12 +169,12 @@ def test_current_source_surface_covers_tracked_development_configs() -> None:
         Path("CLAUDE.md"),
         Path("GEMINI.md"),
         Path(".hermes.md"),
-        Path(".agent/rules/obsidian-wiki.md"),
-        Path(".agent/workflows/obsidian-wiki.md"),
-        Path(".windsurf/rules/obsidian-wiki.md"),
-        Path(".kiro/steering/obsidian-wiki.md"),
+        Path(".agent/rules/llmwikiops.md"),
+        Path(".agent/workflows/llmwikiops.md"),
+        Path(".windsurf/rules/llmwikiops.md"),
+        Path(".kiro/steering/llmwikiops.md"),
         Path(".github/copilot-instructions.md"),
-        Path(".cursor/rules/obsidian-wiki.mdc"),
+        Path(".cursor/rules/llmwikiops.mdc"),
         Path("obsidian_wiki/portable.py"),
         Path("tools/check_readme_sync.py"),
         Path("pyproject.toml"),
@@ -236,33 +209,60 @@ def test_current_source_surface_uses_only_git_listed_paths(
 
 
 @pytest.mark.parametrize(
-    ("relative", "contents", "allowed"),
+    ("path", "specialized"),
     (
-        (Path("obsidian_wiki/module.py"), "from obsidian_wiki import cli", True),
-        (Path("obsidian_wiki/config.py"), 'root / ".obsidian-wiki/config.toml"', True),
-        (Path("fixture.py"), 'root / ".obsidian-wiki-brand"', False),
-        (Path("pyproject.toml"), "https://github.com/Ar9av/obsidian-wiki", True),
-        (
-            Path("obsidian_wiki/portable.py"),
-            '_LEGACY_BOOTSTRAP_HEADING = "# Obsidian Wiki Agent Instructions\\n\\n"',
-            True,
-        ),
-        (Path("obsidian_wiki/portable.py"), '".cursor/rules/obsidian-wiki.mdc"', True),
-        (Path("extensions/brain-capture/popup.js"), 'id: "obsidian-wiki-raw",', True),
-        (Path("fixture.py"), 'run "obsidian-wiki check"', False),
-        (Path("fixture.py"), "# Obsidian Wiki Agent Instructions", False),
-        (Path("fixture.py"), "https://github.com/evanzlh/obsidian-wiki", False),
+        (Path("tests/test_protocol_identity.py"), True),
+        (Path("docs/superpowers/specs/historical.md"), True),
+        (Path("obsidian_wiki/_data/skills/llm-wiki/SKILL.md"), True),
+        (Path("obsidian_wiki/_data/bootstrap/AGENTS.md"), True),
+        (Path("obsidian_wiki/portable.py"), False),
+        (Path("extensions/brain-capture/popup.js"), False),
     ),
 )
-def test_current_source_identity_detector_classifies_contexts(
-    relative: Path, contents: str, allowed: bool
+def test_specialized_surfaces_are_excluded_by_exact_path_category(
+    path: Path, specialized: bool
 ) -> None:
-    matches = list(LEGACY_IDENTITY.finditer(contents))
+    assert is_specialized_surface(path) is specialized
 
-    assert matches, contents
-    assert all(
-        _is_allowed_legacy_identity(relative, contents, match) for match in matches
-    ) is allowed
+
+@pytest.mark.parametrize(
+    ("contents", "violations"),
+    (
+        ("from obsidian_wiki import cli", []),
+        ("https://github.com/Ar9av/obsidian-wiki", []),
+        ('root / ".obsidian-wiki/config.toml"', [".obsidian-wiki"]),
+        ("<!-- obsidian-wiki:managed:start -->", ["obsidian-wiki"]),
+        ('id: "obsidian-wiki-raw",', ["obsidian-wiki"]),
+        ('_SIDECAR = ".obsidian-wiki-manifest-mutation"', [".obsidian-wiki"]),
+        ('marker = b"obsidian-wiki manifest capability probe\\n"', ["obsidian-wiki"]),
+        ("OBSIDIAN_WIKI_REPO=/tmp/repository", ["OBSIDIAN_WIKI_REPO"]),
+        ("# Obsidian Wiki Agent Instructions", ["Obsidian Wiki"]),
+        ("https://github.com/evanzlh/obsidian-wiki", ["obsidian-wiki"]),
+        ("https://github.com/Ar9av/obsidian-wiki.evil", ["obsidian-wiki"]),
+        ("ObSiDiAn-WiKi setup", ["ObSiDiAn-WiKi"]),
+    ),
+)
+def test_former_protocol_detector_rejects_all_external_protocol_variants(
+    contents: str, violations: list[str]
+) -> None:
+    found = disallowed_protocol_matches(Path("fixture.txt"), contents)
+    assert [entry.rsplit(": ", 1)[1] for entry in found] == violations
+
+
+def test_former_protocol_managed_assets_are_absent_from_source_tree() -> None:
+    former = (
+        ".agent/rules/obsidian-wiki.md",
+        ".agent/workflows/obsidian-wiki.md",
+        ".cursor/rules/obsidian-wiki.mdc",
+        ".windsurf/rules/obsidian-wiki.md",
+        ".kiro/steering/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+        "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
+        "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
+    )
+    assert not [relative for relative in former if (ROOT / relative).exists()]
 
 
 def test_gitignore_setup_hint_uses_the_supported_cli_syntax() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 import tarfile
@@ -47,6 +48,18 @@ REMOVED_DISTRIBUTION_PREFIXES = (
     "obsidian_wiki/_data/skills/wiki-dashboard/",
     "obsidian_wiki/_data/skills/wiki-stage-commit/",
     "obsidian_wiki/_data/skills/wiki-switch/",
+)
+PROTOCOL_BOOTSTRAP_PATHS = {
+    "bootstrap/agent/rules/llmwikiops.md",
+    "bootstrap/agent/workflows/llmwikiops.md",
+    "bootstrap/cursor/rules/llmwikiops.mdc",
+    "bootstrap/windsurf/rules/llmwikiops.md",
+    "bootstrap/kiro/steering/llmwikiops.md",
+}
+FORMER_PROTOCOL_RESOURCE = re.compile(
+    rb"(?i)(?:\.obsidian-wiki|"
+    rb"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
+    rb"(?-i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
 
 
@@ -296,12 +309,22 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     assert _wheel_inventory(direct_wheels[0]) == expected
     assert _sdist_inventory(sdist_files[0]) == expected
     assert _wheel_inventory(rebuilt_wheels[0]) == expected
+    assert PROTOCOL_BOOTSTRAP_PATHS <= set(expected)
+    for relative, (contents, _) in expected.items():
+        assert not FORMER_PROTOCOL_RESOURCE.search(contents), relative
     artifact_paths = (
         (f"direct:{direct_wheels[0].name}", _wheel_paths(direct_wheels[0])),
         (f"sdist:{sdist_files[0].name}", _sdist_paths(sdist_files[0])),
         (f"rebuilt:{rebuilt_wheels[0].name}", _wheel_paths(rebuilt_wheels[0])),
     )
     for artifact, paths in artifact_paths:
+        assert {
+            f"obsidian_wiki/_data/{relative}" for relative in PROTOCOL_BOOTSTRAP_PATHS
+        } <= paths, artifact
+        assert not any(
+            path.endswith(("obsidian-wiki.md", "obsidian-wiki.mdc"))
+            for path in paths
+        ), artifact
         assert paths.isdisjoint(REMOVED_DISTRIBUTION_PATHS), artifact
         assert not {
             path
