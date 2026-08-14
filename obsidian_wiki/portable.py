@@ -3470,6 +3470,39 @@ def _rename_sync_path(
         _close_sync_directory_chain(source_chain)
 
 
+def _validate_bound_sync_directory(descriptor: int) -> None:
+    for name in os.listdir(descriptor):
+        metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = os.open(name, _inventory_directory_flags(), dir_fd=descriptor)
+            try:
+                opened = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                ):
+                    raise ValueError("portable sync cleanup child identity changed")
+                _validate_bound_sync_directory(child)
+                current = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    current.st_dev,
+                    current.st_ino,
+                ):
+                    raise ValueError("portable sync cleanup child identity changed")
+            finally:
+                os.close(child)
+            attached = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if (metadata.st_dev, metadata.st_ino) != (
+                attached.st_dev,
+                attached.st_ino,
+            ):
+                raise ValueError("portable sync cleanup child was replaced")
+        elif stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            continue
+        else:
+            raise ValueError("portable sync cleanup contains an unsafe entry")
+
+
 def _purge_bound_sync_directory(descriptor: int) -> None:
     for name in os.listdir(descriptor):
         metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
@@ -3574,6 +3607,7 @@ def _remove_sync_path(
                     raise ValueError(
                         f"portable sync removal transaction identity changed: {path}"
                     )
+                _validate_bound_sync_directory(target_fd)
                 _purge_bound_sync_directory(target_fd)
                 current = os.fstat(target_fd)
                 if (current.st_dev, current.st_ino) != bound_identity:
