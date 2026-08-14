@@ -126,7 +126,7 @@ def test_setup_directory_creates_portable_repository(tmp_path: Path) -> None:
     assert result.stderr == ""
     assert f"Repository scaffolded at {target.absolute()}" in result.stdout
     assert f"Open {target.absolute() / 'wiki'} in Obsidian" in result.stdout
-    assert (target / ".obsidian-wiki/config.toml").is_file()
+    assert (target / ".llmwikiops/config.toml").is_file()
 
 
 def test_setup_defaults_to_current_directory(tmp_path: Path) -> None:
@@ -138,7 +138,7 @@ def test_setup_defaults_to_current_directory(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert f"Repository scaffolded at {target.absolute()}" in result.stdout
-    assert (target / ".obsidian-wiki/config.toml").is_file()
+    assert (target / ".llmwikiops/config.toml").is_file()
 
 
 def test_bare_cli_prints_help_without_writing_repository_state(tmp_path: Path) -> None:
@@ -931,7 +931,7 @@ def _personal_artifact_violations(source: str, relative: str) -> list[str]:
             tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", value))
         for token in sorted(tokens & forbidden_tokens):
             if id(node) not in allowed_nodes:
-                violations.append(f"{relative}:{node.lineno}: {token}")
+                    violations.append(f"{relative}:{getattr(node, 'lineno', 1)}: {token}")
     return violations
 
 
@@ -1015,7 +1015,7 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     context = _special_skill("wiki-context-pack")
     digest = _special_skill("wiki-digest")
 
-    assert "nearest ancestor `.obsidian-wiki/config.toml`" in query
+    assert "nearest ancestor `.llmwikiops/config.toml`" in query
     assert 'llmwikiops query "<question>" --json --pretty' in query
     assert 'llmwikiops context-pack "<topic>" --budget 8000' in context
     assert "llmwikiops hot status --json" in digest
@@ -1032,10 +1032,10 @@ def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
     export = _special_skill("wiki-export")
     factory = _special_skill("vault-skill-factory")
 
-    assert ".obsidian-wiki/local/exports/<timestamp>/" in export
-    assert ".obsidian-wiki/local/generated-skills/<name>/" in factory
+    assert ".llmwikiops/local/exports/<timestamp>/" in export
+    assert ".llmwikiops/local/generated-skills/<name>/" in factory
     for name, text in (("wiki-export", export), ("vault-skill-factory", factory)):
-        assert ".obsidian-wiki/local/" in text
+        assert ".llmwikiops/local/" in text
         assert "ignored" in text.lower()
         assert "transaction begin" not in text, name
         assert "transaction commit" not in text, name
@@ -1045,7 +1045,7 @@ def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
 def test_obsidian_config_edits_have_backup_approval_and_git_boundaries() -> None:
     for name in ("graph-colorize", "obsidian-layout-adjustment"):
         text = _special_skill(name)
-        assert ".obsidian-wiki/local/obsidian-config-backups/" in text, name
+        assert ".llmwikiops/local/obsidian-config-backups/" in text, name
         assert "explicit user approval" in text, name
         assert "atomic" in text.lower(), name
         assert "restore" in text.lower(), name
@@ -1093,7 +1093,7 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     assert validator.stat().st_nlink == 1
     assert "import yaml" in validator.read_text(encoding="utf-8")
 
-    generated = repository / ".obsidian-wiki/local/generated-skills/example"
+    generated = repository / ".llmwikiops/local/generated-skills/example"
     generated.mkdir(parents=True)
     (generated / "SKILL.md").write_text(
         "---\nname: example\ndescription: Use when testing validation.\n---\n",

@@ -20,43 +20,108 @@ ROOT = Path(__file__).resolve().parents[1]
 FORMER_EXTERNAL_PROTOCOL = re.compile(
     r"(?i)(?:\.obsidian-wiki|"
     r"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
-    r"(?-i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
+    r"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
 UPSTREAM_ATTRIBUTION = "https://github.com/Ar9av/obsidian-wiki"
+
+TRACKED_CATEGORIES = frozenset(
+    {"production", "docs", "tests", "package-resource", "other"}
+)
+HISTORICAL_DOCUMENTS = frozenset(
+    {
+        Path("docs/superpowers/plans/2026-08-07-fork-identity-and-source-install.md"),
+        Path("docs/superpowers/plans/2026-08-07-portable-config-and-setup.md"),
+        Path("docs/superpowers/plans/2026-08-07-portable-migration-and-e2e.md"),
+        Path("docs/superpowers/plans/2026-08-07-portable-transactions-and-derived-state.md"),
+        Path("docs/superpowers/plans/2026-08-07-sharded-manifest-and-check.md"),
+        Path("docs/superpowers/plans/2026-08-10-cli-runtime-context-and-recovery-guidance.md"),
+        Path("docs/superpowers/plans/2026-08-10-portable-setup-installation-compatibility.md"),
+        Path("docs/superpowers/plans/2026-08-10-source-reinstall-cache-refresh.md"),
+        Path("docs/superpowers/plans/2026-08-11-portable-agent-preflight-cli.md"),
+        Path("docs/superpowers/plans/2026-08-11-portable-agent-skill-docs.md"),
+        Path("docs/superpowers/plans/2026-08-12-agent-context-and-full-skill-mirrors.md"),
+        Path("docs/superpowers/plans/2026-08-12-portable-only.md"),
+        Path("docs/superpowers/plans/2026-08-13-single-operation-log-and-tracked-hot.md"),
+        Path("docs/superpowers/plans/2026-08-14-llmwikiops-independence-and-rename.md"),
+        Path("docs/superpowers/plans/2026-08-14-llmwikiops-protocol-rename.md"),
+        Path("docs/superpowers/specs/2026-08-07-portable-repo-mode-design.md"),
+        Path("docs/superpowers/specs/2026-08-10-cli-runtime-context-and-recovery-guidance-design.md"),
+        Path("docs/superpowers/specs/2026-08-10-portable-setup-installation-compatibility-design.md"),
+        Path("docs/superpowers/specs/2026-08-11-portable-agent-ergonomics-design.md"),
+        Path("docs/superpowers/specs/2026-08-12-agent-context-and-full-skill-mirrors-design.md"),
+        Path("docs/superpowers/specs/2026-08-12-portable-only-design.md"),
+        Path("docs/superpowers/specs/2026-08-13-single-operation-log-and-tracked-hot-design.md"),
+        Path("docs/superpowers/specs/2026-08-14-llmwikiops-independence-and-rename-design.md"),
+        Path("docs/superpowers/specs/2026-08-14-llmwikiops-protocol-rename-design.md"),
+    }
+)
+TEST_PROTOCOL_GUARDS = frozenset(
+    {
+        Path("tests/test_asset_artifact_parity.py"),
+        Path("tests/test_context_pack_docs.py"),
+        Path("tests/test_doctor.py"),
+        Path("tests/test_fork_identity.py"),
+        Path("tests/test_installation_policy.py"),
+        Path("tests/test_portable_config.py"),
+        Path("tests/test_portable_human_docs.py"),
+        Path("tests/test_portable_only_contract.py"),
+        Path("tests/test_portable_setup.py"),
+        Path("tests/test_portable_skill_protocol.py"),
+        Path("tests/test_portable_write_protocol.py"),
+        Path("tests/test_protocol_identity.py"),
+        Path("tests/test_query_cli.py"),
+        Path("tests/test_scripts_packaging.py"),
+        Path("tests/test_transaction.py"),
+    }
+)
 
 def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
     """Return former external protocol names outside the exact upstream URL."""
     violations: list[str] = []
     for match in FORMER_EXTERNAL_PROTOCOL.finditer(text):
         start = match.start()
-        upstream_start = text.rfind(UPSTREAM_ATTRIBUTION)
-        upstream_end = upstream_start + len(UPSTREAM_ATTRIBUTION)
-        inside_exact_upstream = (
-            upstream_start >= 0
-            and upstream_start <= start < upstream_end
-            and text[upstream_end : upstream_end + 1]
+        attribution_starts = [
+            index
+            for index in range(len(text))
+            if text.startswith(UPSTREAM_ATTRIBUTION, index)
+        ]
+        inside_exact_upstream = any(
+            attribution_start <= start < attribution_start + len(UPSTREAM_ATTRIBUTION)
+            and text[
+                attribution_start + len(UPSTREAM_ATTRIBUTION) : attribution_start
+                + len(UPSTREAM_ATTRIBUTION)
+                + 1
+            ]
             in {"", " ", "\n", "\t", "'", '"', ")", "]", ">", ","}
+            for attribution_start in attribution_starts
         )
+        if match.group() == "obsidian_wiki_cwd":
+            continue
         if not inside_exact_upstream:
             line = text.count("\n", 0, start) + 1
             violations.append(f"{path}:{line}: {match.group()}")
     return violations
 
 
-def is_specialized_surface(path: Path) -> bool:
-    """Keep historical records, tests, and packaged prose under dedicated guards."""
-    return (
-        path.parts[:1] == ("tests",)
-        or path.parts[:1] == ("docs",)
-        or path.parts[:3] == ("obsidian_wiki", "_data", "skills")
-        or path.parts[:3] == ("obsidian_wiki", "_data", "bootstrap")
-    )
+def _tracked_manifest() -> frozenset[Path]:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    return frozenset(Path(value) for value in tracked.split("\0") if value)
 
 
-def _is_current_source_config_path(relative: Path) -> bool:
-    if is_specialized_surface(relative):
-        return False
+def classify_tracked_path(relative: Path) -> str:
+    if relative.parts[:1] == ("tests",):
+        return "tests"
+    if relative.parts[:1] == ("docs",) or relative.name in {"README.md", "README_ZH.md"}:
+        return "docs"
+    if relative.parts[:2] == ("obsidian_wiki", "_data"):
+        return "package-resource"
     if relative in {
+        Path(".gitattributes"),
         Path(".gitignore"),
         Path("AGENTS.md"),
         Path("CLAUDE.md"),
@@ -64,21 +129,27 @@ def _is_current_source_config_path(relative: Path) -> bool:
         Path(".hermes.md"),
         Path(".github/copilot-instructions.md"),
     }:
-        return True
+        return "production"
     if relative.parent == Path(".") and relative.suffix == ".toml":
-        return True
+        return "production"
+    if relative.name == "uv.lock":
+        return "production"
     if relative.parts[:1] in {("obsidian_wiki",), ("tools",), ("scripts",)}:
-        return relative.suffix == ".py"
+        return "production" if relative.suffix == ".py" else "other"
     if relative.parts[:1] == ("extensions",):
-        return relative.suffix in {".html", ".js", ".json"}
+        return "production" if relative.suffix in {".css", ".html", ".js", ".json"} else "other"
+    if relative.parts[:1] == (".github",):
+        return "production"
     if relative.parts[:1] == (".cursor",):
-        return relative.suffix == ".mdc"
-    return relative.parts[:2] in {
+        return "production" if relative.suffix == ".mdc" else "other"
+    if relative.parts[:2] in {
         (".agent", "rules"),
         (".agent", "workflows"),
         (".windsurf", "rules"),
         (".kiro", "steering"),
-    }
+    }:
+        return "production"
+    return "other"
 
 
 def _select_current_source_paths(tracked_relatives: Iterable[Path]) -> tuple[Path, ...]:
@@ -86,20 +157,13 @@ def _select_current_source_paths(tracked_relatives: Iterable[Path]) -> tuple[Pat
         sorted(
             ROOT / relative
             for relative in tracked_relatives
-            if _is_current_source_config_path(relative)
+            if classify_tracked_path(relative) == "production"
         )
     )
 
 
 def _current_source_paths() -> tuple[Path, ...]:
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-    ).stdout.decode("utf-8")
-    relatives = (Path(value) for value in tracked.split("\0") if value)
-    return _select_current_source_paths(relatives)
+    return _select_current_source_paths(_tracked_manifest())
 
 
 def test_llmwikiops_identity_constants_are_stable() -> None:
@@ -180,11 +244,13 @@ def test_current_source_surface_covers_tracked_development_configs() -> None:
         Path("pyproject.toml"),
         Path(".gitignore"),
         Path("extensions/brain-capture/popup.js"),
+        Path("extensions/brain-capture/popup.css"),
+        Path(".gitattributes"),
+        Path(".github/workflows/readme-sync.yml"),
+        Path("uv.lock"),
     } <= relative_paths
-    assert not any(path.parts[:2] == ("docs", "superpowers") for path in relative_paths)
-    assert not any(path.parts[:1] == ("docs",) for path in relative_paths)
     assert Path("docs/configuration.md") not in relative_paths
-    assert Path("obsidian_wiki/_data/skills/llm-wiki/SKILL.md") not in relative_paths
+    assert Path("obsidian_wiki/_data/legacy-skill-digests-v1.json") not in relative_paths
 
 
 def test_current_source_surface_uses_only_git_listed_paths(
@@ -208,21 +274,66 @@ def test_current_source_surface_uses_only_git_listed_paths(
     ]
 
 
-@pytest.mark.parametrize(
-    ("path", "specialized"),
-    (
-        (Path("tests/test_protocol_identity.py"), True),
-        (Path("docs/superpowers/specs/historical.md"), True),
-        (Path("obsidian_wiki/_data/skills/llm-wiki/SKILL.md"), True),
-        (Path("obsidian_wiki/_data/bootstrap/AGENTS.md"), True),
-        (Path("obsidian_wiki/portable.py"), False),
-        (Path("extensions/brain-capture/popup.js"), False),
-    ),
-)
-def test_specialized_surfaces_are_excluded_by_exact_path_category(
-    path: Path, specialized: bool
-) -> None:
-    assert is_specialized_surface(path) is specialized
+def test_tracked_manifest_has_one_exhaustive_path_category() -> None:
+    manifest = _tracked_manifest()
+    partitions = {
+        category: {path for path in manifest if classify_tracked_path(path) == category}
+        for category in TRACKED_CATEGORIES
+    }
+
+    assert manifest
+    assert set().union(*partitions.values()) == manifest
+    assert sum(len(paths) for paths in partitions.values()) == len(manifest)
+    assert {
+        "production": Path(".gitattributes"),
+        "docs": Path("README.md"),
+        "tests": Path("tests/test_fork_identity.py"),
+        "package-resource": Path("obsidian_wiki/_data/legacy-skill-digests-v1.json"),
+        "other": Path("LICENSE"),
+    }.items() <= {
+        (category, path)
+        for category, paths in partitions.items()
+        for path in paths
+    }
+
+
+def test_tracked_docs_tests_and_resources_have_dedicated_protocol_guards() -> None:
+    manifest = _tracked_manifest()
+    docs = {path for path in manifest if classify_tracked_path(path) == "docs"}
+    tests = {path for path in manifest if classify_tracked_path(path) == "tests"}
+    resources = {
+        path for path in manifest if classify_tracked_path(path) == "package-resource"
+    }
+
+    assert HISTORICAL_DOCUMENTS <= docs
+    assert TEST_PROTOCOL_GUARDS <= tests
+    assert Path("obsidian_wiki/_data/legacy-skill-digests-v1.json") in resources
+
+    for relative in docs - HISTORICAL_DOCUMENTS:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        if relative == Path("docs/fork.md"):
+            assert "https://github.com/Ar9av/obsidian-wiki" in text
+            assert "https://github.com/evanzlh/obsidian-wiki" not in text
+            continue
+        if relative == Path("README.md"):
+            assert "https://github.com/Ar9av/obsidian-wiki" in text
+            assert "The former `.obsidian-wiki/` state is not detected" in text
+            continue
+        if relative == Path("README_ZH.md"):
+            assert "https://github.com/Ar9av/obsidian-wiki" in text
+            assert "旧的 `.obsidian-wiki/` 状态不会检测、读取、迁移或删除" in text
+            continue
+        violations = disallowed_protocol_matches(relative, text)
+        assert not violations, violations
+    for relative in resources:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert not disallowed_protocol_matches(relative, text), relative
+    test_references = {
+        relative
+        for relative in tests
+        if FORMER_EXTERNAL_PROTOCOL.search((ROOT / relative).read_text(encoding="utf-8"))
+    }
+    assert test_references <= TEST_PROTOCOL_GUARDS
 
 
 @pytest.mark.parametrize(
@@ -236,10 +347,16 @@ def test_specialized_surfaces_are_excluded_by_exact_path_category(
         ('_SIDECAR = ".obsidian-wiki-manifest-mutation"', [".obsidian-wiki"]),
         ('marker = b"obsidian-wiki manifest capability probe\\n"', ["obsidian-wiki"]),
         ("OBSIDIAN_WIKI_REPO=/tmp/repository", ["OBSIDIAN_WIKI_REPO"]),
+        ("Obsidian_Wiki_REPO=/tmp/repository", ["Obsidian_Wiki_REPO"]),
         ("# Obsidian Wiki Agent Instructions", ["Obsidian Wiki"]),
         ("https://github.com/evanzlh/obsidian-wiki", ["obsidian-wiki"]),
         ("https://github.com/Ar9av/obsidian-wiki.evil", ["obsidian-wiki"]),
         ("ObSiDiAn-WiKi setup", ["ObSiDiAn-WiKi"]),
+        (
+            "https://github.com/Ar9av/obsidian-wiki\n"
+            "https://github.com/Ar9av/obsidian-wiki",
+            [],
+        ),
     ),
 )
 def test_former_protocol_detector_rejects_all_external_protocol_variants(
@@ -262,7 +379,7 @@ def test_former_protocol_managed_assets_are_absent_from_source_tree() -> None:
         "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
         "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
     )
-    assert not [relative for relative in former if (ROOT / relative).exists()]
+    assert not set(former) & _tracked_manifest()
 
 
 def test_gitignore_setup_hint_uses_the_supported_cli_syntax() -> None:

@@ -3578,9 +3578,14 @@ def _remove_sync_path(
                     )
                 os.rmdir(path.name, dir_fd=parent_fd)
             else:
-                if not shutil.rmtree.avoids_symlink_attacks:
-                    raise RuntimeError("safe descriptor-relative rmtree is unavailable")
-                shutil.rmtree(path.name, dir_fd=parent_fd)
+                target_fd = os.open(
+                    path.name, _inventory_directory_flags(), dir_fd=parent_fd
+                )
+                try:
+                    _purge_bound_sync_directory(target_fd)
+                finally:
+                    os.close(target_fd)
+                os.rmdir(path.name, dir_fd=parent_fd)
         elif stat.S_ISREG(metadata.st_mode):
             os.unlink(path.name, dir_fd=parent_fd)
         else:

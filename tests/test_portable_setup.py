@@ -3395,7 +3395,7 @@ def test_root_agents_is_portable_dedicated_and_preserves_team_conventions(
     text = (root / "AGENTS.md").read_text(encoding="utf-8")
     flat = " ".join(text.split())
 
-    assert ".obsidian-wiki/config.toml" in flat
+    assert ".llmwikiops/config.toml" in flat
     assert ".skills/<task>/SKILL.md" in flat
     assert "canonical protocol takes precedence" in flat
     assert "All knowledge writes use CLI transactions" in flat

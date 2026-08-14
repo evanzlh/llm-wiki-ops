@@ -192,7 +192,7 @@ def test_canonical_protocol_defines_configuration_and_authority() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     flat = " ".join(text.split())
     for required in (
-        "nearest ancestor `.obsidian-wiki/config.toml`",
+        "nearest ancestor `.llmwikiops/config.toml`",
         "llmwikiops setup [DIR]",
         "fail closed",
         "repository root",
@@ -481,7 +481,7 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             steps.append(" ".join(workflow[match.start() : end].split()))
 
         for required in (
-            "nearest `.obsidian-wiki/config.toml`",
+            "nearest `.llmwikiops/config.toml`",
             "owner",
             "canonical `llm-wiki`",
         ):
@@ -1109,7 +1109,7 @@ def test_history_authority_and_canonical_recovery_are_complete() -> None:
             "task skill",
         )
         for required in (
-            "nearest ancestor `.obsidian-wiki/config.toml`",
+            "nearest ancestor `.llmwikiops/config.toml`",
             "repository root as CWD",
             "llmwikiops setup [DIR]",
             "fail closed",

@@ -59,7 +59,7 @@ PROTOCOL_BOOTSTRAP_PATHS = {
 FORMER_PROTOCOL_RESOURCE = re.compile(
     rb"(?i)(?:\.obsidian-wiki|"
     rb"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
-    rb"(?-i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
+    rb"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
 
 

@@ -899,7 +899,7 @@ def test_distributed_schema_config_contract_names_all_four_variables(tmp_path: P
         assert f"`{value}`" in configuration
     for skill in (llm_skill, capture_skill):
         assert "nearest" in skill
-        assert ".obsidian-wiki/config.toml" in skill
+        assert ".llmwikiops/config.toml" in skill
         assert "canonical" in skill
     assert (
         "CLI flags > resolved environment/config values > framework defaults"

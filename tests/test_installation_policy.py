@@ -6,6 +6,7 @@ from email.parser import BytesParser
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -27,6 +28,11 @@ from obsidian_wiki.portable import PROJECT_AGENT_DIRS, render_portable_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FORMER_PROTOCOL_RESOURCE = re.compile(
+    rb"(?i)(?:\.obsidian-wiki|"
+    rb"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
+    rb"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
+)
 
 
 def _safe_tree_snapshot(
@@ -292,9 +298,61 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
                 assert dict(entry_points["console_scripts"]) == {
                     "llmwikiops": "obsidian_wiki.cli:main"
                 }
+                for name in raw_names:
+                    if not name.startswith("obsidian_wiki/_data/") or name.endswith("/"):
+                        continue
+                    assert not FORMER_PROTOCOL_RESOURCE.search(archive.read(name)), name
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()
+                root_name = next(
+                    name.rsplit("/", 2)[0]
+                    for name in raw_names
+                    if name.endswith("/obsidian_wiki/__init__.py")
+                )
+                package_info = next(
+                    member
+                    for member in archive.getmembers()
+                    if member.isfile() and member.name == f"{root_name}/PKG-INFO"
+                )
+                stream = archive.extractfile(package_info)
+                assert stream is not None
+                metadata = BytesParser(policy=policy.default).parsebytes(stream.read())
+                assert metadata["Name"] == "llm-wiki-ops"
+                assert metadata["Summary"] == (
+                    "LLM-oriented operational framework for durable Markdown "
+                    "knowledge bases"
+                )
+                project_urls = {
+                    name: url
+                    for value in metadata.get_all("Project-URL", [])
+                    for name, url in [value.split(", ", 1)]
+                }
+                assert project_urls == {
+                    "Homepage": "https://github.com/evanzlh/llm-wiki-ops",
+                    "Repository": "https://github.com/evanzlh/llm-wiki-ops",
+                    "Issues": "https://github.com/evanzlh/llm-wiki-ops/issues",
+                    "Changelog": "https://github.com/evanzlh/llm-wiki-ops/releases",
+                    "Upstream": "https://github.com/Ar9av/obsidian-wiki",
+                }
+                pyproject = next(
+                    member
+                    for member in archive.getmembers()
+                    if member.isfile() and member.name == f"{root_name}/pyproject.toml"
+                )
+                stream = archive.extractfile(pyproject)
+                assert stream is not None
+                assert tomllib.loads(stream.read().decode("utf-8"))["project"][
+                    "scripts"
+                ] == {"llmwikiops": "obsidian_wiki.cli:main"}
+                for member in archive.getmembers():
+                    if not member.isfile() or not member.name.startswith(
+                        f"{root_name}/obsidian_wiki/_data/"
+                    ):
+                        continue
+                    stream = archive.extractfile(member)
+                    assert stream is not None
+                    assert not FORMER_PROTOCOL_RESOURCE.search(stream.read()), member.name
         names = {
             "/".join(Path(name).parts[1:])
             if Path(name).parts

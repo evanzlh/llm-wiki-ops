@@ -39,7 +39,7 @@ def _write_config(home: Path, vault: Path, *, version: str | None = None) -> Non
     config_dir.mkdir(parents=True, exist_ok=True)
     lines = [f'OBSIDIAN_VAULT_PATH="{vault}"']
     if version is not None:
-        lines.append(f'OBSIDIAN_WIKI_VERSION="{version}"')
+        lines.append(f'LLMWIKIOPS_VERSION="{version}"')
     (config_dir / "config").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
