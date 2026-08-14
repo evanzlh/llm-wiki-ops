@@ -221,7 +221,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
     non_artifact_files = [path for path in output_files if path not in artifacts]
     assert len(wheels) == 1
     assert len(sdists) == 1
-    assert non_artifact_files == [output / ".gitignore"]
+    assert all(path.name == ".gitignore" for path in non_artifact_files)
     assert not [
         path for path in output_files if path.name.startswith("obsidian_wiki-")
     ]

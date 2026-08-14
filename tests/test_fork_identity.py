@@ -76,20 +76,41 @@ def _is_allowed_legacy_identity(
     return line.startswith('raise ValueError("malformed obsidian-wiki ')
 
 
-def _current_source_paths() -> tuple[Path, ...]:
-    paths = {
-        *ROOT.glob("*.toml"),
-        ROOT / ".gitignore",
-        ROOT / "AGENTS.md",
-        *(ROOT / "obsidian_wiki").rglob("*.py"),
-        *(ROOT / "tools").rglob("*.py"),
-        *(ROOT / "scripts").rglob("*.py"),
-        *(ROOT / ".cursor").rglob("*.mdc"),
-        *(ROOT / "extensions").rglob("*.js"),
-        *(ROOT / "extensions").rglob("*.json"),
-        *(ROOT / "extensions").rglob("*.html"),
+def _is_current_source_config_path(relative: Path) -> bool:
+    if relative in {
+        Path(".gitignore"),
+        Path("AGENTS.md"),
+        Path("CLAUDE.md"),
+        Path("GEMINI.md"),
+        Path(".hermes.md"),
+        Path(".github/copilot-instructions.md"),
+    }:
+        return True
+    if relative.parent == Path(".") and relative.suffix == ".toml":
+        return True
+    if relative.parts[:1] in {("obsidian_wiki",), ("tools",), ("scripts",)}:
+        return relative.suffix == ".py"
+    if relative.parts[:1] == ("extensions",):
+        return relative.suffix in {".html", ".js", ".json"}
+    if relative.parts[:1] == (".cursor",):
+        return relative.suffix == ".mdc"
+    return relative.parts[:2] in {
+        (".agent", "rules"),
+        (".agent", "workflows"),
+        (".windsurf", "rules"),
+        (".kiro", "steering"),
     }
-    return tuple(sorted(path for path in paths if path.is_file()))
+
+
+def _current_source_paths() -> tuple[Path, ...]:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    relatives = (Path(value) for value in tracked.split("\0") if value)
+    return tuple(sorted(ROOT / relative for relative in relatives if _is_current_source_config_path(relative)))
 
 
 def test_llmwikiops_identity_constants_are_stable() -> None:
@@ -152,6 +173,42 @@ def test_current_product_prose_uses_llmwikiops_identity() -> None:
                 snippet = _line_at(contents, match.start()).strip()
                 disallowed.append(f"{relative}:{line}: {snippet}")
     assert not disallowed, disallowed
+
+
+def test_current_source_surface_covers_tracked_development_configs() -> None:
+    relative_paths = {
+        path.relative_to(ROOT) for path in _current_source_paths()
+    }
+
+    assert {
+        Path("CLAUDE.md"),
+        Path("GEMINI.md"),
+        Path(".hermes.md"),
+        Path(".agent/rules/obsidian-wiki.md"),
+        Path(".agent/workflows/obsidian-wiki.md"),
+        Path(".windsurf/rules/obsidian-wiki.md"),
+        Path(".kiro/steering/obsidian-wiki.md"),
+        Path(".github/copilot-instructions.md"),
+        Path(".cursor/rules/obsidian-wiki.mdc"),
+        Path("obsidian_wiki/portable.py"),
+        Path("tools/check_readme_sync.py"),
+        Path("pyproject.toml"),
+        Path(".gitignore"),
+        Path("extensions/brain-capture/popup.js"),
+    } <= relative_paths
+    assert not any(path.parts[:2] == ("docs", "superpowers") for path in relative_paths)
+    assert not any(path.parts[:1] == ("docs",) for path in relative_paths)
+    assert Path("docs/configuration.md") not in relative_paths
+    assert Path("obsidian_wiki/_data/skills/llm-wiki/SKILL.md") not in relative_paths
+
+
+def test_current_source_surface_excludes_untracked_python_scratch() -> None:
+    scratch = ROOT / "obsidian_wiki" / "_identity_audit_scratch.py"
+    scratch.write_text("# untracked scratch\n", encoding="utf-8")
+    try:
+        assert scratch not in _current_source_paths()
+    finally:
+        scratch.unlink()
 
 
 @pytest.mark.parametrize(
