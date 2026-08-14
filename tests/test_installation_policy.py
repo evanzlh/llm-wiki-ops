@@ -207,6 +207,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
     )
     artifacts = sorted(output.glob("llm_wiki_ops-*"))
     assert {path.suffix for path in artifacts} == {".whl", ".gz"}
+    assert all(path.name.startswith("llm_wiki_ops-") for path in artifacts)
 
     expected_data = {
         path.relative_to(ROOT).as_posix()
@@ -235,6 +236,33 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
             with zipfile.ZipFile(artifact) as archive:
                 raw_names = archive.namelist()
                 assert "obsidian_wiki/_data/.env.example" not in raw_names
+                metadata_path = next(
+                    name for name in raw_names if name.endswith(".dist-info/METADATA")
+                )
+                entry_points_path = next(
+                    name
+                    for name in raw_names
+                    if name.endswith(".dist-info/entry_points.txt")
+                )
+                metadata = archive.read(metadata_path).decode("utf-8")
+                entry_points = archive.read(entry_points_path).decode("utf-8")
+                assert "Name: llm-wiki-ops" in metadata
+                assert (
+                    "Summary: LLM-oriented operational framework for durable "
+                    "Markdown knowledge bases"
+                ) in metadata
+                for project_url in (
+                    "Project-URL: Homepage, https://github.com/evanzlh/llm-wiki-ops",
+                    "Project-URL: Repository, https://github.com/evanzlh/llm-wiki-ops",
+                    "Project-URL: Issues, https://github.com/evanzlh/llm-wiki-ops/issues",
+                    "Project-URL: Changelog, https://github.com/evanzlh/llm-wiki-ops/releases",
+                    "Project-URL: Upstream, https://github.com/Ar9av/obsidian-wiki",
+                ):
+                    assert project_url in metadata
+                assert entry_points == (
+                    "[console_scripts]\n"
+                    "llmwikiops = obsidian_wiki.cli:main\n"
+                )
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()
@@ -247,6 +275,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         }
 
         assert expected_data <= names, artifact.name
+        assert "obsidian_wiki/__init__.py" in names, artifact.name
         assert not {
             name
             for name in names

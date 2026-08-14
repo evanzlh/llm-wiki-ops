@@ -21,7 +21,7 @@ Four independent defences, in descending order of how much work they do:
      its most distinctive ~120 terms rather than its full boilerplate cloud.
      This is what actually sharpens the cosine similarity.
 
-No third-party dependencies: `obsidian-wiki` ships with `dependencies = []` and
+No third-party dependencies: LLMWikiOps ships with `dependencies = []` and
 this module keeps it that way.
 """
 

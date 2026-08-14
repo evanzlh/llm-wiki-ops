@@ -49,3 +49,23 @@ def test_package_metadata_preserves_upstream_and_points_users_to_fork() -> None:
         "Upstream": "https://github.com/Ar9av/obsidian-wiki",
     }
     assert project["scripts"] == {"llmwikiops": "obsidian_wiki.cli:main"}
+
+
+def test_only_llmwikiops_cli_and_protocol_names_remain_supported() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'llmwikiops = "obsidian_wiki.cli:main"' in pyproject
+    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' not in pyproject
+    assert (ROOT / "obsidian_wiki").is_dir()
+    assert ".obsidian-wiki/config.toml" in (
+        ROOT / "docs/configuration.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_current_product_prose_uses_llmwikiops_identity() -> None:
+    for relative in (
+        ".gitignore",
+        "obsidian_wiki/session_index.py",
+        "obsidian_wiki/lint.py",
+    ):
+        assert "obsidian-wiki" not in (ROOT / relative).read_text(encoding="utf-8")

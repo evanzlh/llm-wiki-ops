@@ -4299,7 +4299,7 @@ def test_transaction_validate_cli_invalid_id_uses_structured_error_envelope(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-            "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4407,7 +4407,7 @@ def test_transaction_cli_json_failures_outside_portable_mode_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-            "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4515,7 +4515,7 @@ def test_transaction_cli_corrupt_record_only_reports_inspection_guidance(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-            "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4554,7 +4554,7 @@ def test_transaction_cli_corrupt_manifest_marker_reports_manifest_error(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-            "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4710,7 +4710,7 @@ def test_transaction_cli_json_parse_errors_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-            "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction list --json",
         "preferred_action": None,
         "alternatives": [],
     }

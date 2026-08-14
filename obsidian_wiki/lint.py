@@ -28,7 +28,7 @@ REQUIRED_FRONTMATTER = (
 )
 # Introduced by the trust-ledger rollout (#28, #132). Legacy pages that predate
 # the schema are missing these by construction; enforcement is staged behind
-# lint_vault's strict_trust switch so upgrading obsidian-wiki doesn't fail-close
+# lint_vault's strict_trust switch so upgrading LLMWikiOps doesn't fail-close
 # every pre-existing page until a vault owner explicitly opts into strict mode
 # after a backfill/review pass.
 TRUST_REQUIRED_FRONTMATTER = (
