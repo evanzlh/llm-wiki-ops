@@ -1815,7 +1815,7 @@ def _snapshot_bundled_skills(source: Path) -> SkillCollection:
 
 def _bootstrap_body(relative_agents: str) -> str:
     return (
-        "# Obsidian Wiki Agent Instructions\n\n"
+        "# LLMWikiOps Agent Instructions\n\n"
         f"Read and follow `{relative_agents}` from this repository.\n"
     )
 

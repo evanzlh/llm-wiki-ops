@@ -21,8 +21,8 @@ Four independent defences, in descending order of how much work they do:
      its most distinctive ~120 terms rather than its full boilerplate cloud.
      This is what actually sharpens the cosine similarity.
 
-No third-party dependencies: LLMWikiOps ships with `dependencies = []` and
-this module keeps it that way.
+Package dependencies are declared in `pyproject.toml`; this module itself uses
+only the Python standard library.
 """
 
 from __future__ import annotations

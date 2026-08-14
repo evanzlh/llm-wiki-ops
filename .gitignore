@@ -20,7 +20,7 @@ extensions/brain-capture/*.zip
 
 # Agent skill symlinks are just pointers to .skills/. We track them so cloners
 # get the symlinks too; relative adapters are created by
-# `llmwikiops setup --portable` or `llmwikiops setup --project`.
+# Create one with: `llmwikiops setup [DIR]`.
 
 # Local isolated development worktrees
 /.worktrees/

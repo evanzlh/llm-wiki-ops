@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+import re
 
 try:
     import tomllib
@@ -12,6 +13,9 @@ except ModuleNotFoundError:  # Python 3.9/3.10
 from obsidian_wiki import FORK_BASE_COMMIT, IMPLEMENTATION_ID, UPSTREAM_URL
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_PRODUCT_IDENTITY = re.compile(
+    r"(?<![.\w-])obsidian(?:-|\s+)wiki(?![\w-])", re.IGNORECASE
+)
 
 
 def test_llmwikiops_identity_constants_are_stable() -> None:
@@ -63,9 +67,27 @@ def test_only_llmwikiops_cli_and_protocol_names_remain_supported() -> None:
 
 
 def test_current_product_prose_uses_llmwikiops_identity() -> None:
+    """Stable filenames may retain the legacy name; their prose may not."""
     for relative in (
         ".gitignore",
+        ".cursor/rules/obsidian-wiki.mdc",
         "obsidian_wiki/session_index.py",
         "obsidian_wiki/lint.py",
     ):
-        assert "obsidian-wiki" not in (ROOT / relative).read_text(encoding="utf-8")
+        contents = (ROOT / relative).read_text(encoding="utf-8")
+        assert not CURRENT_PRODUCT_IDENTITY.search(contents), relative
+
+
+def test_gitignore_setup_hint_uses_the_supported_cli_syntax() -> None:
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert "llmwikiops setup [DIR]" in gitignore
+    assert "--portable" not in gitignore
+    assert "--project" not in gitignore
+
+
+def test_session_index_describes_its_stdlib_scope_without_misstating_dependencies() -> None:
+    contents = (ROOT / "obsidian_wiki/session_index.py").read_text(encoding="utf-8")
+
+    assert "`dependencies = []`" not in contents
+    assert "Package dependencies are declared in `pyproject.toml`" in contents

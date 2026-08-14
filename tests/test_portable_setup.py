@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -2568,6 +2569,10 @@ def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
     task = agents.index("`.skills/<task>/SKILL.md`")
     assert canonical < task
     assert "canonical protocol takes precedence" in agents
+    for relative in ("CLAUDE.md", "GEMINI.md", ".hermes.md"):
+        contents = (root / relative).read_text(encoding="utf-8")
+        assert "# LLMWikiOps Agent Instructions\n\n" in contents, relative
+        assert not re.search(r"\bobsidian\s+wiki\b", contents, re.IGNORECASE)
     checked = run_cli(tmp_path / "home", root, "check")
     assert checked.returncode == 0, checked.stderr or checked.stdout
 

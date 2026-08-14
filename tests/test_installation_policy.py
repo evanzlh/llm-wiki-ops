@@ -1,3 +1,6 @@
+from configparser import ConfigParser
+from email import policy
+from email.parser import BytesParser
 import hashlib
 import json
 import os
@@ -197,6 +200,8 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "dist"
+    output.mkdir()
+    assert not list(output.iterdir())
     subprocess.run(
         ["uv", "build", "--out-dir", str(output)],
         cwd=ROOT,
@@ -205,8 +210,20 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         check=True,
         timeout=180,
     )
-    artifacts = sorted(output.glob("llm_wiki_ops-*"))
-    assert {path.suffix for path in artifacts} == {".whl", ".gz"}
+    output_files = sorted(path for path in output.iterdir() if path.is_file())
+    artifacts = [
+        path
+        for path in output_files
+        if path.suffix == ".whl" or path.name.endswith(".tar.gz")
+    ]
+    wheels = [path for path in artifacts if path.suffix == ".whl"]
+    sdists = [path for path in artifacts if path.name.endswith(".tar.gz")]
+    assert len(wheels) == 1
+    assert len(sdists) == 1
+    assert artifacts == sorted([*wheels, *sdists])
+    assert not [
+        path for path in output_files if path.name.startswith("obsidian_wiki-")
+    ]
     assert all(path.name.startswith("llm_wiki_ops-") for path in artifacts)
 
     expected_data = {
@@ -232,7 +249,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
     )
 
     for artifact in artifacts:
-        if artifact.suffix == ".whl":
+        if artifact in wheels:
             with zipfile.ZipFile(artifact) as archive:
                 raw_names = archive.namelist()
                 assert "obsidian_wiki/_data/.env.example" not in raw_names
@@ -244,25 +261,29 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
                     for name in raw_names
                     if name.endswith(".dist-info/entry_points.txt")
                 )
-                metadata = archive.read(metadata_path).decode("utf-8")
-                entry_points = archive.read(entry_points_path).decode("utf-8")
-                assert "Name: llm-wiki-ops" in metadata
-                assert (
-                    "Summary: LLM-oriented operational framework for durable "
-                    "Markdown knowledge bases"
-                ) in metadata
-                for project_url in (
-                    "Project-URL: Homepage, https://github.com/evanzlh/llm-wiki-ops",
-                    "Project-URL: Repository, https://github.com/evanzlh/llm-wiki-ops",
-                    "Project-URL: Issues, https://github.com/evanzlh/llm-wiki-ops/issues",
-                    "Project-URL: Changelog, https://github.com/evanzlh/llm-wiki-ops/releases",
-                    "Project-URL: Upstream, https://github.com/Ar9av/obsidian-wiki",
-                ):
-                    assert project_url in metadata
-                assert entry_points == (
-                    "[console_scripts]\n"
-                    "llmwikiops = obsidian_wiki.cli:main\n"
+                metadata = BytesParser(policy=policy.default).parsebytes(
+                    archive.read(metadata_path)
                 )
+                entry_points = ConfigParser()
+                entry_points.optionxform = str
+                entry_points.read_string(archive.read(entry_points_path).decode("utf-8"))
+                assert metadata["Name"] == "llm-wiki-ops"
+                assert metadata["Summary"] == (
+                    "LLM-oriented operational framework for durable Markdown "
+                    "knowledge bases"
+                )
+                assert metadata.get_all("Project-URL") == [
+                    "Homepage, https://github.com/evanzlh/llm-wiki-ops",
+                    "Repository, https://github.com/evanzlh/llm-wiki-ops",
+                    "Issues, https://github.com/evanzlh/llm-wiki-ops/issues",
+                    "Changelog, https://github.com/evanzlh/llm-wiki-ops/releases",
+                    "Upstream, https://github.com/Ar9av/obsidian-wiki",
+                ]
+                assert entry_points.defaults() == {}
+                assert entry_points.sections() == ["console_scripts"]
+                assert dict(entry_points["console_scripts"]) == {
+                    "llmwikiops": "obsidian_wiki.cli:main"
+                }
         else:
             with tarfile.open(artifact) as archive:
                 raw_names = archive.getnames()
