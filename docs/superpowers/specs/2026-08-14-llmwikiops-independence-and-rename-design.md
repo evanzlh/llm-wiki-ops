@@ -1,7 +1,7 @@
 # LLMWikiOps Independence and Rename Design
 
 **Date:** 2026-08-14
-**Status:** Approved
+**Status:** Approved (amended 2026-08-14: legacy CLI removed)
 **Source baseline:** `feat/portable-repo-mode` at `a8436ac`
 **Destination repository:** `git@github.com:evanzlh/llm-wiki-ops.git`
 
@@ -13,11 +13,11 @@ upstream fork network. Preserve the complete Git history, upstream attribution,
 MIT license, and fork-base record while making the current 349-commit product
 line the new `main` branch.
 
-The public product name, distribution metadata, documentation, primary CLI, and
+The public product name, distribution metadata, documentation, CLI, and
 repository identity change to LLMWikiOps. The established Python import package
 `obsidian_wiki` and repository protocol directory `.obsidian-wiki/` remain stable
-in this migration. The old `obsidian-wiki` executable remains as a compatibility
-alias so existing initialized knowledge repositories can upgrade safely.
+in this migration. The old `obsidian-wiki` executable is removed rather than
+retained as a compatibility alias; `llmwikiops` is the only installed command.
 
 ## Product Identity
 
@@ -27,8 +27,8 @@ The canonical identity is:
 Name:        LLMWikiOps
 Repository:  https://github.com/evanzlh/llm-wiki-ops
 Distribution: llm-wiki-ops
-Primary CLI: llmwikiops
-Description: A deterministic, repository-native implementation of the LLM Wiki pattern.
+CLI:         llmwikiops
+Description: LLM-oriented operational framework for durable Markdown knowledge bases
 ```
 
 LLMWikiOps is personal-first and open source. Its roadmap serves the maintainer's
@@ -63,8 +63,7 @@ former upstream. It does not submit pull requests to the former upstream. The
 - Make the 349 commits after the recorded fork base the canonical `main` line.
 - Keep commit content, topology, authorship, attribution, and license history.
 - Make all current human-facing documentation describe LLMWikiOps first.
-- Install `llmwikiops` as the canonical executable.
-- Keep `obsidian-wiki` as a functional compatibility executable.
+- Install `llmwikiops` as the sole executable and retire `obsidian-wiki`.
 - Point package metadata, issue links, clone commands, and maintenance identity to
   `evanzlh/llm-wiki-ops`.
 - Keep README and README_ZH behavior and examples aligned.
@@ -79,7 +78,7 @@ former upstream. It does not submit pull requests to the former upstream. The
 - Renaming `.obsidian-wiki/`, its configuration schema, managed-skill state, or
   repository discovery protocol.
 - Migrating initialized knowledge repositories to a new configuration directory.
-- Changing CLI behavior beyond adding the new entry point and changing identity
+- Changing CLI behavior beyond replacing the old entry point and changing identity
   text, help examples, and documentation.
 - Importing GitHub issues, pull requests, stars, releases, or other platform
   metadata from the old fork.
@@ -95,7 +94,8 @@ The following surfaces become LLMWikiOps in this project:
 - README titles, summaries, clone paths, installation examples, and navigation;
 - current human documentation and packaged runtime-skill prose;
 - Python distribution name `llm-wiki-ops`;
-- primary executable `llmwikiops`;
+- sole executable `llmwikiops`, including removal of the old `obsidian-wiki`
+  console script;
 - project URLs and issue URLs;
 - implementation identity constants and `--version` output;
 - contributor instructions and current command examples; and
@@ -111,8 +111,7 @@ The following names are stable compatibility or historical surfaces:
 - schema keys and environment names whose rename would require repository
   migration;
 - the former upstream name in attribution and historical design records;
-- historical commit messages and old, explicitly historical documentation; and
-- the `obsidian-wiki` console-script alias.
+- historical commit messages and old, explicitly historical documentation.
 
 Tests must distinguish an accidental stale public-brand reference from an
 intentional compatibility, protocol, attribution, or historical reference. No
@@ -120,18 +119,17 @@ unreviewed global search-and-replace is allowed.
 
 ## CLI Contract
 
-Both entry points invoke the same implementation:
+The distribution installs one entry point:
 
 ```toml
 [project.scripts]
 llmwikiops = "obsidian_wiki.cli:main"
-obsidian-wiki = "obsidian_wiki.cli:main"
 ```
 
 All current documentation and newly rendered runtime templates use `llmwikiops`.
-The compatibility command has identical behavior and emits no warning during this
-migration. Removal or deprecation requires a later design because initialized
-repositories and installed skill copies may contain the old executable name.
+The former `obsidian-wiki` executable is intentionally unavailable after installation.
+Initialized repositories remain compatible because their durable contract is the
+`.obsidian-wiki/` on-disk protocol, not the name of the executable used to operate it.
 
 Python callers continue to import `obsidian_wiki`. This avoids a broad internal
 move with no user benefit and allows the public rename to be reviewed separately
@@ -218,8 +216,8 @@ Implementation follows regression-first tests for identity and compatibility.
 Acceptance requires:
 
 - package metadata names `llm-wiki-ops` and points to the new repository;
-- both `llmwikiops --version` and `obsidian-wiki --version` work and identify
-  `evanzlh/llm-wiki-ops`;
+- `llmwikiops --version` works and identifies `evanzlh/llm-wiki-ops`;
+- installed project metadata exposes no `obsidian-wiki` console script;
 - installed wheels contain the unchanged `obsidian_wiki` package resources;
 - `.obsidian-wiki/` setup, discovery, validation, transactions, and recovery still
   pass their focused and full suites;

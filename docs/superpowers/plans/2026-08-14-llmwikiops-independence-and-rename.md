@@ -16,7 +16,7 @@ Public identity changes now:
 
 - `obsidian_wiki/__init__.py`: distribution lookup and implementation identity.
 - `obsidian_wiki/cli.py`: program/version labels, guidance, repository URLs.
-- `pyproject.toml`, `uv.lock`: distribution, URLs, dual console scripts.
+- `pyproject.toml`, `uv.lock`: distribution, URLs, and sole console script.
 - `README.md`, `README_ZH.md`, `AGENTS.md`, current `docs/*.md`: product prose.
 - `obsidian_wiki/_data/bootstrap/AGENTS.md`, `obsidian_wiki/_data/skills/**/*.md`: packaged runtime prose.
 - `extensions/brain-capture/popup.js`, `extensions/brain-capture/README.md`: extension guidance.
@@ -26,7 +26,6 @@ Compatibility surfaces remain:
 
 - `obsidian_wiki/` Python imports and package resources.
 - `.obsidian-wiki/` repository protocol paths.
-- `obsidian-wiki` console-script alias.
 - Managed bootstrap filenames ending in `obsidian-wiki.md` or `obsidian-wiki.mdc`.
 - `Ar9av/obsidian-wiki`, fork base, license, historical specs/plans/commits.
 
@@ -69,12 +68,16 @@ Make the metadata test require:
 assert 'name = "llm-wiki-ops"' in text
 assert 'Repository = "https://github.com/evanzlh/llm-wiki-ops"' in text
 assert 'Issues = "https://github.com/evanzlh/llm-wiki-ops/issues"' in text
+assert 'Changelog = "https://github.com/evanzlh/llm-wiki-ops/blob/main/CHANGELOG.md"' in text
+assert 'description = "LLM-oriented operational framework for durable Markdown knowledge bases"' in text
 assert 'llmwikiops = "obsidian_wiki.cli:main"' in text
-assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in text
+assert 'obsidian-wiki = "obsidian_wiki.cli:main"' not in text
 ```
 
-In `tests/test_installation_policy.py`, require both scripts and make the isolated
-installation test resolve and run both executables.
+In `tests/test_installation_policy.py`, require `llmwikiops` as the only script,
+make the isolated installation test run it, and update artifact discovery to the
+normalized `llm_wiki_ops-*` distribution prefix while continuing to require the
+internal `obsidian_wiki` package.
 
 - [ ] **Step 2: Verify red**
 
@@ -118,17 +121,17 @@ Set these `pyproject.toml` values:
 ```toml
 [project]
 name = "llm-wiki-ops"
-description = "A deterministic, repository-native implementation of the LLM Wiki pattern."
+description = "LLM-oriented operational framework for durable Markdown knowledge bases"
 
 [project.urls]
 Homepage = "https://github.com/evanzlh/llm-wiki-ops"
 Repository = "https://github.com/evanzlh/llm-wiki-ops"
 Issues = "https://github.com/evanzlh/llm-wiki-ops/issues"
+Changelog = "https://github.com/evanzlh/llm-wiki-ops/blob/main/CHANGELOG.md"
 Upstream = "https://github.com/Ar9av/obsidian-wiki"
 
 [project.scripts]
 llmwikiops = "obsidian_wiki.cli:main"
-obsidian-wiki = "obsidian_wiki.cli:main"
 ```
 
 Regenerate metadata with `uv lock`.
@@ -327,7 +330,7 @@ git add obsidian_wiki/_data extensions tests
 git commit -m "docs: migrate runtime guidance to llmwikiops"
 ```
 
-## Task 4: Audit compatibility names and artifacts
+## Task 4: Audit retained protocol names and artifacts
 
 **Files:**
 
@@ -337,9 +340,10 @@ git commit -m "docs: migrate runtime guidance to llmwikiops"
 - [ ] **Step 1: Add compatibility assertions**
 
 ```python
-def test_legacy_cli_alias_and_protocol_names_remain_supported() -> None:
+def test_only_llmwikiops_cli_and_protocol_names_remain_supported() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' in pyproject
+    assert 'llmwikiops = "obsidian_wiki.cli:main"' in pyproject
+    assert 'obsidian-wiki = "obsidian_wiki.cli:main"' not in pyproject
     assert (ROOT / "obsidian_wiki").is_dir()
     assert '.obsidian-wiki/config.toml' in (
         ROOT / "docs/configuration.md"
@@ -359,7 +363,7 @@ rg -n 'obsidian-wiki|obsidian_wiki|\.obsidian-wiki' --glob '!.git/**' \
 ```
 
 Every match must be attribution, Python import/package, repository protocol path,
-console alias/test, managed compatibility filename, or a negative identity assertion.
+managed compatibility filename, or a negative identity assertion.
 Change every other match.
 
 - [ ] **Step 3: Build and verify artifacts**
@@ -384,7 +388,7 @@ Commit only if the audit produced tracked fixes:
 ```bash
 git add obsidian_wiki pyproject.toml uv.lock README.md README_ZH.md AGENTS.md \
   docs extensions tests
-git commit -m "test: lock LLMWikiOps compatibility boundaries"
+git commit -m "test: lock LLMWikiOps protocol boundaries"
 ```
 
 ## Task 5: Complete pre-publication verification
@@ -463,7 +467,7 @@ git ls-remote --tags origin
 
 Expected: exactly `refs/heads/main` at local `main`; no tags.
 
-- [ ] **Step 5: Verify clean clone and dual commands**
+- [ ] **Step 5: Verify clean clone and sole command**
 
 ```bash
 migration_tmp=$(mktemp -d)
@@ -472,11 +476,10 @@ UV_TOOL_DIR="$migration_tmp/tools" UV_TOOL_BIN_DIR="$migration_tmp/bin" \
 UV_CACHE_DIR="$migration_tmp/cache" \
   uv tool install --link-mode copy "$migration_tmp/repo"
 PATH="$migration_tmp/bin:$PATH" llmwikiops --version
-PATH="$migration_tmp/bin:$PATH" obsidian-wiki --version
 ```
 
-Expected: both commands report `evanzlh/llm-wiki-ops`; output starts with
-`llmwikiops`.
+Expected: `llmwikiops --version` reports `evanzlh/llm-wiki-ops` and its output
+starts with `llmwikiops`. The installed metadata exposes no `obsidian-wiki` script.
 
 - [ ] **Step 6: Remove temporary old remote and report**
 
