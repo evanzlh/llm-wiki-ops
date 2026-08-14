@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Iterable
 
 try:
     import tomllib
@@ -102,6 +104,16 @@ def _is_current_source_config_path(relative: Path) -> bool:
     }
 
 
+def _select_current_source_paths(tracked_relatives: Iterable[Path]) -> tuple[Path, ...]:
+    return tuple(
+        sorted(
+            ROOT / relative
+            for relative in tracked_relatives
+            if _is_current_source_config_path(relative)
+        )
+    )
+
+
 def _current_source_paths() -> tuple[Path, ...]:
     tracked = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -110,7 +122,7 @@ def _current_source_paths() -> tuple[Path, ...]:
         capture_output=True,
     ).stdout.decode("utf-8")
     relatives = (Path(value) for value in tracked.split("\0") if value)
-    return tuple(sorted(ROOT / relative for relative in relatives if _is_current_source_config_path(relative)))
+    return _select_current_source_paths(relatives)
 
 
 def test_llmwikiops_identity_constants_are_stable() -> None:
@@ -202,13 +214,25 @@ def test_current_source_surface_covers_tracked_development_configs() -> None:
     assert Path("obsidian_wiki/_data/skills/llm-wiki/SKILL.md") not in relative_paths
 
 
-def test_current_source_surface_excludes_untracked_python_scratch() -> None:
-    scratch = ROOT / "obsidian_wiki" / "_identity_audit_scratch.py"
-    scratch.write_text("# untracked scratch\n", encoding="utf-8")
-    try:
-        assert scratch not in _current_source_paths()
-    finally:
-        scratch.unlink()
+def test_current_source_surface_uses_only_git_listed_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listed = Path("obsidian_wiki/portable.py")
+    ambient = Path("obsidian_wiki/_identity_audit_scratch.py")
+    calls = []
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout=f"{listed}\0".encode("utf-8"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    selected = _current_source_paths()
+    assert selected == (ROOT / listed,)
+    assert ROOT / ambient not in selected
+    assert calls == [
+        ((["git", "ls-files", "-z"],), {"cwd": ROOT, "check": True, "capture_output": True}),
+    ]
 
 
 @pytest.mark.parametrize(
