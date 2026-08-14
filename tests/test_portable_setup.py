@@ -43,6 +43,7 @@ from obsidian_wiki.operations import (
     render_operation_log,
 )
 from obsidian_wiki.portable_check import check_portable_repo
+from obsidian_wiki.protocol import PORTABLE_BOOTSTRAP_MARKER
 from obsidian_wiki.safe_files import stable_directory_identity
 from obsidian_wiki.skill_inventory import (
     LegacyManagedSkillsInventory,
@@ -3434,7 +3435,9 @@ def test_bootstrap_files_are_ordinary_markdown_with_correct_agents_reference(
         path = root / relative
         assert path.is_file(), relative
         assert not path.is_symlink(), relative
-        assert f"`{reference}`" in path.read_text(encoding="utf-8")
+        contents = path.read_text(encoding="utf-8")
+        assert f"<!-- {PORTABLE_BOOTSTRAP_MARKER} -->" in contents
+        assert f"`{reference}`" in contents
 
 
 def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(

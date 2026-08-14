@@ -48,6 +48,7 @@ from obsidian_wiki.protocol import (
     LOCAL_STATE_RELATIVE,
     MANAGED_END,
     MANAGED_START,
+    PORTABLE_BOOTSTRAP_MARKER,
     STATE_DIR_NAME,
     TEMP_PREFIX_TOKEN,
 )
@@ -1824,6 +1825,7 @@ def _snapshot_bundled_skills(source: Path) -> SkillCollection:
 
 def _bootstrap_body(relative_agents: str) -> str:
     return (
+        f"<!-- {PORTABLE_BOOTSTRAP_MARKER} -->\n"
         "# LLMWikiOps Agent Instructions\n\n"
         f"Read and follow `{relative_agents}` from this repository.\n"
     )

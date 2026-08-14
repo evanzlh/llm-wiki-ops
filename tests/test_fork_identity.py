@@ -68,7 +68,11 @@ HISTORICAL_DOCUMENTS = frozenset(
 )
 NEGATIVE_TEST_MODULE_CONSTANTS = {
     Path("tests/test_asset_artifact_parity.py"): frozenset(
-        {"REMOVED_DISTRIBUTION_PATHS", "FORMER_PROTOCOL_RESOURCE"}
+        {
+            "REMOVED_DISTRIBUTION_PATHS",
+            "FORMER_PROTOCOL_RESOURCE",
+            "FORMER_PROTOCOL_PATH",
+        }
     ),
     Path("tests/test_installation_policy.py"): frozenset(
         {"FORMER_PROTOCOL_RESOURCE"}
@@ -89,7 +93,10 @@ NEGATIVE_TEST_MODULE_CONSTANTS = {
 }
 NEGATIVE_TEST_FUNCTIONS = {
     Path("tests/test_asset_artifact_parity.py"): frozenset(
-        {"test_distribution_assets_exactly_match_canonical_package_data"}
+        {
+            "test_distribution_assets_exactly_match_canonical_package_data",
+            "test_archive_path_audit_rejects_former_protocol_filenames",
+        }
     ),
     Path("tests/test_context_pack_docs.py"): frozenset(
         {"test_context_skill_uses_repo_discovery_and_requires_installed_cli"}
@@ -103,6 +110,7 @@ NEGATIVE_TEST_FUNCTIONS = {
             "test_protocol_audit_rejects_mutated_allowed_contexts",
             "test_current_document_allowance_rejects_old_name_appended_to_attribution_line",
             "test_manifest_audit_rejects_old_name_appended_to_license",
+            "test_tracked_path_audit_rejects_former_protocol_filenames",
             "test_former_protocol_detector_rejects_all_external_protocol_variants",
             "test_former_protocol_managed_assets_are_absent_from_source_tree",
         }
@@ -202,6 +210,7 @@ NEGATIVE_TEST_HELPERS = {
         {"_is_ar9av_attribution", "is_allowed_legacy_identity"}
     ),
 }
+NEGATIVE_TEST_PATH_FIXTURES = frozenset[Path]()
 
 def _line_at(text: str, offset: int) -> str:
     start = text.rfind("\n", 0, offset) + 1
@@ -426,6 +435,16 @@ def _tracked_protocol_violations(
     return violations
 
 
+def _tracked_path_protocol_violations(paths: Iterable[Path]) -> list[str]:
+    violations: list[str] = []
+    for relative in sorted(paths):
+        if relative in HISTORICAL_DOCUMENTS or relative in NEGATIVE_TEST_PATH_FIXTURES:
+            continue
+        for match in FORMER_EXTERNAL_PROTOCOL.finditer(relative.as_posix()):
+            violations.append(f"{relative}: {match.group()}")
+    return violations
+
+
 def _select_current_source_paths(tracked_relatives: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(
         sorted(
@@ -588,6 +607,7 @@ def test_tracked_docs_tests_and_resources_have_dedicated_protocol_guards() -> No
         manifest, lambda relative: (ROOT / relative).read_text(encoding="utf-8")
     )
 
+    assert not _tracked_path_protocol_violations(manifest), manifest
     assert not violations, violations
 
 
@@ -642,6 +662,23 @@ def test_manifest_audit_rejects_old_name_appended_to_license() -> None:
     violations = _tracked_protocol_violations(manifest, contents)
 
     assert any(violation.startswith("LICENSE:") for violation in violations)
+
+
+def test_tracked_path_audit_rejects_former_protocol_filenames() -> None:
+    paths = {
+        Path("obsidian_wiki/portable.py"),
+        Path("extensions/obsidian-wiki-probe.js"),
+        Path(".agent/rules/obsidian-wiki.md.extra"),
+        Path("LICENSE.obsidian-wiki"),
+    }
+
+    violations = _tracked_path_protocol_violations(paths)
+
+    assert set(violations) == {
+        "extensions/obsidian-wiki-probe.js: obsidian-wiki",
+        ".agent/rules/obsidian-wiki.md.extra: obsidian-wiki",
+        "LICENSE.obsidian-wiki: .obsidian-wiki",
+    }
 
 
 @pytest.mark.parametrize(

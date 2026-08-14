@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -61,6 +61,11 @@ FORMER_PROTOCOL_RESOURCE = re.compile(
     rb"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
     rb"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
+FORMER_PROTOCOL_PATH = re.compile(
+    r"(?i)(?:\.obsidian-wiki|"
+    r"(?<![A-Za-z0-9_])obsidian-wiki(?![A-Za-z0-9_])|"
+    r"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
+)
 
 
 def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> None:
@@ -76,6 +81,35 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
             archive.writestr(info, b"VALUE = 1\n")
 
     assert _normalized_wheel_inventory(first) == _normalized_wheel_inventory(second)
+
+
+def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
+    paths = {
+        "llm_wiki_ops-2026.9/obsidian_wiki/portable.py",
+        "llm_wiki_ops-2026.9/extensions/obsidian-wiki-probe.js",
+        ".agent/rules/obsidian-wiki.md.extra",
+        "LICENSE.obsidian-wiki",
+    }
+
+    violations = _archive_path_protocol_violations(paths)
+
+    assert violations == {
+        "llm_wiki_ops-2026.9/extensions/obsidian-wiki-probe.js",
+        ".agent/rules/obsidian-wiki.md.extra",
+        "LICENSE.obsidian-wiki",
+    }
+
+
+def _archive_path_protocol_violations(paths: set[str]) -> set[str]:
+    violations: set[str] = set()
+    for path in paths:
+        parts = PurePosixPath(path).parts
+        if parts and parts[0].startswith("llm_wiki_ops-"):
+            parts = parts[1:]
+        relative = "/".join(parts)
+        if FORMER_PROTOCOL_PATH.search(relative):
+            violations.add(path)
+    return violations
 
 
 def test_source_inventory_rejects_tracked_missing_file(
@@ -318,6 +352,7 @@ def test_distribution_assets_exactly_match_canonical_package_data(
         (f"rebuilt:{rebuilt_wheels[0].name}", _wheel_paths(rebuilt_wheels[0])),
     )
     for artifact, paths in artifact_paths:
+        assert not _archive_path_protocol_violations(paths), artifact
         assert {
             f"obsidian_wiki/_data/{relative}" for relative in PROTOCOL_BOOTSTRAP_PATHS
         } <= paths, artifact
