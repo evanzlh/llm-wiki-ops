@@ -62,8 +62,17 @@ def test_bootstraps_route_generic_tasks_and_context_pack_is_discoverable() -> No
     ]
     for relative in files:
         bootstrap = read(relative)
-        assert ".skills/llm-wiki/SKILL.md" in bootstrap, relative
-        assert ".skills/<task>/SKILL.md" in bootstrap, relative
+        canonical = bootstrap.index("`llm-wiki` skill")
+        task = bootstrap.index("task skill")
+        assert canonical < task, relative
+        assert ".skills/" not in bootstrap, relative
+        assert "SKILL.md" not in bootstrap, relative
+
+    workflow = read(
+        "obsidian_wiki/_data/bootstrap/agent/workflows/llmwikiops.md"
+    )
+    for name in ("wiki-query", "wiki-update", "wiki-ingest", "wiki-status"):
+        assert f"skill: {name}" in workflow
 
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
     assert "name: wiki-context-pack" in skill

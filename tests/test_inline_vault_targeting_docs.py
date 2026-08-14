@@ -42,9 +42,11 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
                 text = self.read(relpath)
                 self.assertIn("nearest", text)
                 self.assertIn(".llmwikiops/config.toml", text)
-                canonical = text.index(".skills/llm-wiki/SKILL.md")
-                task = text.index(".skills/<task>/SKILL.md")
+                canonical = text.index("`llm-wiki` skill")
+                task = text.index("task skill")
                 self.assertLess(canonical, task)
+                self.assertNotIn(".skills/", text)
+                self.assertNotIn("SKILL.md", text)
                 self.assertNotIn("@name", text)
                 self.assertNotIn("global", text.casefold())
 
