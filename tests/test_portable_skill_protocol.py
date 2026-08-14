@@ -261,7 +261,8 @@ def test_bootstraps_delegate_to_repository_authority() -> None:
         bootstrap = text(relative)
         for required in ("config.toml", "transaction"):
             assert required in bootstrap, f"{relative}: missing {required!r}"
-        assert ".skills/" in bootstrap or "AGENTS.md" in bootstrap, relative
+        for required in ("`llm-wiki` skill", "task skill"):
+            assert required in bootstrap, f"{relative}: missing {required!r}"
         for forbidden in FORBIDDEN_RUNTIME_TERMS:
             assert forbidden not in bootstrap, f"{relative}: contains {forbidden!r}"
 
