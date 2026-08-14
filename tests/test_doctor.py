@@ -385,6 +385,54 @@ def test_doctor_allows_multiple_missing_nested_sources_and_local_state(
 
 
 @pytest.mark.parametrize(
+    "entry_kind",
+    (
+        "file",
+        "symlink",
+        pytest.param("fifo", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO")),
+    ),
+)
+def test_doctor_rejects_unsafe_canonical_local_state_without_mutating_owner_entry(
+    entry_kind: str, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    root, nested = _make_portable_repo(tmp_path)
+    local_state = root / ".llmwikiops" / "local"
+    shutil.rmtree(local_state)
+
+    if entry_kind == "file":
+        owner_bytes = b"owner local state evidence\n"
+        local_state.write_bytes(owner_bytes)
+        before = ("file", local_state.read_bytes(), local_state.stat().st_ino)
+    elif entry_kind == "symlink":
+        target = root / "owner-local-target"
+        target.mkdir()
+        local_state.symlink_to(target, target_is_directory=True)
+        before = ("symlink", os.readlink(local_state), local_state.lstat().st_ino)
+    else:
+        os.mkfifo(local_state)
+        before = ("fifo", local_state.lstat().st_mode, local_state.lstat().st_ino)
+
+    proc = _run(home, "doctor", "--json", cwd=nested)
+
+    assert proc.returncode == 1
+    check = _portable_check(proc, "portable-paths")
+    assert check["status"] == "fail"
+    detail = check["detail"].lower()
+    assert "local" in detail
+    if entry_kind == "symlink":
+        assert "symlink" in detail
+        after = ("symlink", os.readlink(local_state), local_state.lstat().st_ino)
+    elif entry_kind == "file":
+        assert "directory" in detail
+        after = ("file", local_state.read_bytes(), local_state.stat().st_ino)
+    else:
+        assert "directory" in detail
+        after = ("fifo", local_state.lstat().st_mode, local_state.lstat().st_ino)
+    assert after == before
+
+
+@pytest.mark.parametrize(
     ("old", "new", "relative"),
     [
         ('sources = ["sources"]', 'sources = ["runtime/inbox"]', "runtime/inbox"),
