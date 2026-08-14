@@ -36,7 +36,9 @@ llmwikiops doctor
 llmwikiops check
 ```
 
-在 Obsidian 中打开 `wiki/`。命令解析最近祖先目录中的 `.obsidian-wiki/config.toml`，因此可以从仓库根目录或其子目录运行。初始化还会安装规范 `.skills/` 技能树及完整的 Agent 镜像。
+在 Obsidian 中打开 `wiki/`。命令解析最近祖先目录中的 `.llmwikiops/config.toml`，因此可以从仓库根目录或其子目录运行。初始化还会安装规范 `.skills/` 技能树及完整的 Agent 镜像。
+
+**协议不兼容。** 旧的 `.obsidian-wiki/` 状态不会检测、读取、迁移或删除。仅有该目录的仓库视为未初始化；两个目录同时存在时，只有 `.llmwikiops/` 是权威。请显式运行 `llmwikiops setup` 并审查新文件；不要手工复制旧状态。
 
 Setup 不会初始化 Git。协作前，所有者需要初始化知识库仓库，审查、暂存并提交 scaffold；详见[安装说明](docs/installation.md#create-a-repository)。
 
@@ -48,14 +50,14 @@ Manifest 分片更新通过仓库本地锁和有界恢复日志执行。同一�
 
 `transaction begin` 会冻结所选来源的哈希；如果来源在候选内容准备期间发生变化，commit 会失败并要求重新开始事务。若 manifest 冲突留下固定恢复日志，所有者应先检查 live 分片和工作树 diff，再通过 `llmwikiops manifest resolve-conflict --keep-live` 明确保留当前版本。该命令只删除身份和内容仍与日志记录一致的恢复工件。若清理中断后 live 分片又发生变化，自动恢复会停止，直到所有者重新运行该命令以确认当前 live 版本。
 
-请采用这套两步 CLI 与仓库升级协议。所有者先创建分支，从框架 clone 安装新 CLI，再读取受版本管理的 `requires_cli` 约束。如果该 PEP 440 约束尚未包含新版本，仓库命令会失败并停止；因此所有者必须先显式审查并编辑 `.obsidian-wiki/config.toml`，让约束接受过渡版本，再运行维护命令。`repo upgrade-skills` 不会改写 `requires_cli`。完成校验与差异检查后，由协作者审查完整变更，所有者决定是否提交。
+请采用这套两步 CLI 与仓库升级协议。所有者先创建分支，从框架 clone 安装新 CLI，再读取受版本管理的 `requires_cli` 约束。如果该 PEP 440 约束尚未包含新版本，仓库命令会失败并停止；因此所有者必须先显式审查并编辑 `.llmwikiops/config.toml`，让约束接受过渡版本，再运行维护命令。`repo upgrade-skills` 不会改写 `requires_cli`。完成校验与差异检查后，由协作者审查完整变更，所有者决定是否提交。
 
 ```bash
 git switch -c upgrade-llmwikiops
 cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
-${EDITOR:?} .obsidian-wiki/config.toml
+${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check

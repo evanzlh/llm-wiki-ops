@@ -6,7 +6,7 @@ LLMWikiOps treats the knowledge base as a reproducible repository artifact. Pyth
 
 ```text
 team-knowledge/
-├── .obsidian-wiki/
+├── .llmwikiops/
 │   ├── config.toml
 │   └── local/                 # ignored transactions and recovery state
 ├── .skills/                   # canonical tracked skills

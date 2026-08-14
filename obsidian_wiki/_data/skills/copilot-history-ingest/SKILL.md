@@ -9,7 +9,7 @@ Use [Copilot data format](references/copilot-data-format.md) for SQLite/JSONL de
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in order.
+Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.llmwikiops/config.toml` and keep its repository root as CWD. If absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in order.
 
 Resolve the GitHub Copilot CLI root from non-empty absolute `COPILOT_HOME` when set, otherwise absolute `~/.copilot`; reject an empty or relative override/root. CLI sessions are below `<COPILOT_HOME>/session-state/` and the sibling store is `<COPILOT_HOME>/session-store.db`. VS Code stores are separate allowed roots and must be explicitly selected from their documented platform locations, not inferred from an arbitrary path.
 

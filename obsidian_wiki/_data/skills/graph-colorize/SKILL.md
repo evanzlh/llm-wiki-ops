@@ -14,7 +14,7 @@ not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and approval
 
-1. Resolve the nearest ancestor `.obsidian-wiki/config.toml`. If absent, stop with
+1. Resolve the nearest ancestor `.llmwikiops/config.toml`. If absent, stop with
    `llmwikiops setup [DIR]`; invalid config fails closed.
 2. Read repository `AGENTS.md`, `.skills/llm-wiki/SKILL.md`, then this skill. The
    canonical protocol wins on conflict. Never accept another vault path.
@@ -51,8 +51,8 @@ and `color` object with numeric `a` and integer RGB in `0..16777215`.
 
 ## Safe backup and atomic edit
 
-Use `.obsidian-wiki/local/obsidian-config-backups/<timestamp>/graph.json` for the
-backup. `.obsidian-wiki/local/` is ignored local state. Before any read or write:
+Use `.llmwikiops/local/obsidian-config-backups/<timestamp>/graph.json` for the
+backup. `.llmwikiops/local/` is ignored local state. Before any read or write:
 
 - resolve both source and backup beneath the repository without following links;
 - reject a symbolic link, hard link, special file, non-owner file/directory, or

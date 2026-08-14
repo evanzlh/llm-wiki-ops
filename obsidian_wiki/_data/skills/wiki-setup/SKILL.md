@@ -7,7 +7,7 @@ description: Initialize, clone, inspect, or upgrade an LLMWikiOps repository.
 
 Use the installed CLI for deterministic repository setup. Run
 `llmwikiops setup [DIR]` to initialize the target directory, or clone an
-existing wiki repository and inspect its checked-in `.obsidian-wiki/config.toml`.
+existing wiki repository and inspect its checked-in `.llmwikiops/config.toml`.
 Do not invent configuration files or copy runtime assets manually.
 
 After setup or clone, keep the repository root as the working directory. The
@@ -29,7 +29,7 @@ installed CLI. `upgrade-skills` applies immediately and has no dry-run mode.
 
 The checked-in `requires_cli` constraint is a two-step compatibility boundary.
 On a review branch, first upgrade the CLI through the project's installation
-workflow, then deliberately edit `.obsidian-wiki/config.toml` so `requires_cli`
+workflow, then deliberately edit `.llmwikiops/config.toml` so `requires_cli`
 accepts that installed version, and rerun `llmwikiops repo upgrade-skills`.
 The command does not bypass compatibility checks or rewrite `requires_cli`.
 After any applied maintenance, rerun doctor and check and inspect the Git diff.

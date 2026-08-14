@@ -9,7 +9,7 @@ Mine selected Pi JSONL sessions and materialize repository-reviewed evidence. Fo
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
+Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.llmwikiops/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
 
 Resolve Pi's session root in this precedence: invocation `--session-dir` (the caller must explicitly pass and record it), then `PI_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json, then `<PI_CODING_AGENT_DIR>/sessions/`. `PI_CODING_AGENT_DIR` relocates the agent directory and defaults to `~/.pi/agent`, making the ordinary default `~/.pi/agent/sessions/`. Pi settings allow relative values, but this skill accepts only the caller/Pi-resolved non-empty absolute root and never guesses a relative base. An unresolved relative session root returns `NEEDS_CONTEXT`; an empty or relative final root is rejected.
 

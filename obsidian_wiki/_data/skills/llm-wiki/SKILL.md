@@ -13,7 +13,7 @@ second configuration path or a direct-write completion path.
 
 ## Configuration
 
-Start at the current working directory and walk upward. Use the nearest ancestor `.obsidian-wiki/config.toml`;
+Start at the current working directory and walk upward. Use the nearest ancestor `.llmwikiops/config.toml`;
 do not continue searching after finding it. Resolve
 every configured path relative to that configuration file's repository root,
 then keep the repository root as the working directory for CLI commands.

@@ -62,7 +62,7 @@ git switch -c upgrade-llmwikiops
 cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
-${EDITOR:?} .obsidian-wiki/config.toml
+${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops check
 git diff

@@ -9,7 +9,7 @@ Mine selected Codex sessions while keeping the cache transient. Read [Codex data
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as CWD. If absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
+Complete this before cache discovery: walk upward from the invocation CWD to the nearest ancestor `.llmwikiops/config.toml` and keep its repository root as CWD. If absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill, in that order.
 
 Resolve the transient root from non-empty absolute `CODEX_HOME` when set, otherwise absolute `~/.codex`; reject an empty or relative override/root. Session index, active rollouts, and archived rollouts are relative to that resolved root.
 

@@ -1,6 +1,6 @@
 # CLI Reference
 
-`llmwikiops --help` is the command authority. The CLI resolves the nearest ancestor `.obsidian-wiki/config.toml` for repository-aware operations and writes structured data to stdout when JSON output is requested.
+`llmwikiops --help` is the command authority. The CLI resolves the nearest ancestor `.llmwikiops/config.toml` for repository-aware operations and writes structured data to stdout when JSON output is requested.
 
 Only commands and options printed by the current command's `--help` are supported. Unlisted interfaces are outside the current product surface.
 
@@ -33,7 +33,7 @@ git switch -c upgrade-llmwikiops
 cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
-${EDITOR:?} .obsidian-wiki/config.toml
+${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check

@@ -12,7 +12,7 @@ substantial reviewed content.
 
 ## Mandatory authority preflight
 
-Locate the nearest ancestor `.obsidian-wiki/config.toml`, resolve its repository
+Locate the nearest ancestor `.llmwikiops/config.toml`, resolve its repository
 root, and keep that repository root as the command working directory. Read root
 `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task
 skill. Fail closed rather than guessing configuration or authority.

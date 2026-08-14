@@ -33,8 +33,10 @@ CURRENT_DOCS = (
     "docs/skills.md",
 )
 
-OLD_PRODUCT_REFERENCE = re.compile(
-    r"(?<![\w.-])obsidian-wiki(?![\w-]|\.(?:md|mdc)\b)", re.IGNORECASE
+FORMER_EXTERNAL_PROTOCOL = re.compile(
+    r"(?i)(?:\.obsidian-wiki(?:[/:]|\b)|"
+    r"(?<![A-Za-z0-9_])obsidian-wiki(?:-(?:raw)|\.(?:md|mdc)|:[A-Za-z0-9:-]+)?"
+    r"(?![A-Za-z0-9_])|OBSIDIAN_WIKI_[A-Z0-9_]+)"
 )
 
 FORBIDDEN_CURRENT_DOC_TERMS = (
@@ -45,7 +47,6 @@ FORBIDDEN_CURRENT_DOC_TERMS = (
     "cache-update",
     "manifest v1",
     "@name",
-    "~/.obsidian-wiki/config",
     "Dataview",
 )
 
@@ -57,7 +58,6 @@ FORBIDDEN_CURRENT_DOC_PATTERNS = (
     r"cache[\s_-]+update",
     r"manifest[\s_-]+v1",
     r"@\s*name",
-    r"~[\\/]\.obsidian-wiki[\\/]config",
     r"dataview",
 )
 
@@ -96,11 +96,37 @@ def _text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def _unexpected_old_product_reference(text: str) -> re.Match[str] | None:
-    """Return a stale public brand reference, preserving protocol and attribution."""
-    for match in OLD_PRODUCT_REFERENCE.finditer(text):
-        prefix = text[max(0, match.start() - len("Ar9av/")) : match.start()]
-        if prefix.casefold() == "ar9av/":
+def _paragraph_at(text: str, offset: int) -> str:
+    start = text.rfind("\n\n", 0, offset) + 2
+    end = text.find("\n\n", offset)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _is_upstream_attribution(text: str, match: re.Match[str]) -> bool:
+    return (
+        match.group() == "obsidian-wiki"
+        and text[max(0, match.start() - len("Ar9av/")) : match.start()] == "Ar9av/"
+    )
+
+
+def _is_hard_cutover_explanation(text: str, match: re.Match[str]) -> bool:
+    paragraph = _paragraph_at(text, match.start())
+    return all(
+        phrase in paragraph
+        for phrase in (
+            ".obsidian-wiki/",
+            ".llmwikiops/",
+            "llmwikiops setup",
+        )
+    ) and ("not detected" in paragraph or "不会检测" in paragraph)
+
+
+def _unexpected_former_protocol_reference(text: str) -> re.Match[str] | None:
+    """Return a former external protocol reference outside narrow allowed prose."""
+    for match in FORMER_EXTERNAL_PROTOCOL.finditer(text):
+        if _is_upstream_attribution(text, match) or _is_hard_cutover_explanation(
+            text, match
+        ):
             continue
         return match
     return None
@@ -133,6 +159,25 @@ def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
         assert command in _text("README_ZH.md")
 
 
+def test_current_docs_name_the_llmwikiops_protocol_and_hard_cutover() -> None:
+    combined = "\n".join(_text(relative) for relative in CURRENT_DOCS)
+    for required in (
+        ".llmwikiops/config.toml",
+        ".llmwikiops/local/",
+        "llmwikiops setup",
+    ):
+        assert required in combined, required
+
+    for relative in CURRENT_DOCS:
+        assert _unexpected_former_protocol_reference(_text(relative)) is None, relative
+
+    for relative in ("README.md", "README_ZH.md"):
+        text = _text(relative)
+        assert ".obsidian-wiki/" in text
+        assert ".llmwikiops/" in text
+        assert "llmwikiops setup" in text
+
+
 @pytest.mark.parametrize(
     "reference",
     (
@@ -141,36 +186,38 @@ def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
         '"obsidian-wiki"',
         "[obsidian-wiki](https://example.invalid)",
         "https://github.com/evanzlh/obsidian-wiki",
+        "Ar9av/Obsidian-Wiki",
+        "obsidian-wiki.md",
+        "obsidian-wiki.mdc",
+        'id: "obsidian-wiki-raw",',
+        "<!-- obsidian-wiki:managed:start -->",
+        "OBSIDIAN_WIKI_REPO=/tmp/repository",
     ),
 )
 def test_old_product_reference_detection_covers_public_boundaries(
     reference: str,
 ) -> None:
-    assert _unexpected_old_product_reference(reference) is not None
+    assert _unexpected_former_protocol_reference(reference) is not None
 
 
 @pytest.mark.parametrize(
     "reference",
     (
-        ".obsidian-wiki/config.toml",
-        "obsidian_wiki.cli",
-        "obsidian-wiki.md",
-        "obsidian-wiki.mdc",
         "Ar9av/obsidian-wiki",
-        "Ar9av/Obsidian-Wiki",
+        "from obsidian_wiki import cli",
     ),
 )
 def test_old_product_reference_detection_preserves_allowed_contexts(
     reference: str,
 ) -> None:
-    assert _unexpected_old_product_reference(reference) is None
+    assert _unexpected_former_protocol_reference(reference) is None
 
 
 def test_current_docs_use_llmwikiops_identity() -> None:
     for relative in CURRENT_DOCS:
         text = _text(relative)
         assert "evanzlh/obsidian-wiki" not in text, relative
-        assert _unexpected_old_product_reference(text) is None, relative
+        assert _unexpected_former_protocol_reference(text) is None, relative
     for relative in ("README.md", "README_ZH.md", "docs/fork.md"):
         text = _text(relative)
         assert "LLMWikiOps" in text, relative
@@ -300,14 +347,14 @@ def test_architecture_layout_and_source_shard_example_match_runtime(
     config = PortableConfig(
         root=root,
         root_identity=stable_directory_identity(root.stat()),
-        path=root / ".obsidian-wiki/config.toml",
+        path=root / ".llmwikiops/config.toml",
         schema_version=1,
         implementation=IMPLEMENTATION_ID,
         requires_cli=">=0",
         vault=vault,
         sources=(source_root,),
         skills=root / ".skills",
-        local_state=root / ".obsidian-wiki/local",
+        local_state=root / ".llmwikiops/local",
         settings={},
     )
     store = ShardedManifest(config)

@@ -2,7 +2,7 @@
 
 ## Resolution
 
-Repository-aware commands search from the current working directory toward the filesystem root and load the nearest ancestor `.obsidian-wiki/config.toml`. The first candidate is authoritative. Missing configuration reports that the repository is not configured; invalid configuration fails closed.
+Repository-aware commands search from the current working directory toward the filesystem root and load the nearest ancestor `.llmwikiops/config.toml`. The first candidate is authoritative. Missing configuration reports that the repository is not configured; invalid configuration fails closed.
 
 There is no secondary user-level or environment-file configuration path. This makes resolution identical after cloning and allows nested repositories to select their own nearest configuration.
 
@@ -19,7 +19,7 @@ requires_cli = ">=0.1,<0.2"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ```
 
 All paths must be relative, use forward slashes, stay inside the repository, and avoid overlap between the vault and source roots. `paths.sources` must contain exactly one configured source root. `requires_cli` is a reviewed PEP 440 constraint checked by repository commands.
@@ -55,16 +55,16 @@ Integration policy is commonly summarized as CLI flags > resolved environment/co
 
 ## Tracked and ignored state
 
-Tracked repository authority includes `.obsidian-wiki/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and the tracked authoritative operation log `wiki/log.md`.
+Tracked repository authority includes `.llmwikiops/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and the tracked authoritative operation log `wiki/log.md`.
 
-Ignored local state includes `.obsidian-wiki/local/`, transaction workspaces, and recovery copies. `wiki/hot.md` is instead a tracked derived semantic view; `hot status` is read-only and must not remove it.
+Ignored local state includes `.llmwikiops/local/`, transaction workspaces, and recovery copies. `wiki/hot.md` is instead a tracked derived semantic view; `hot status` is read-only and must not remove it.
 
 A transaction commit owns affected manifest shards and appends one canonical block to `wiki/log.md` last, but never modifies tracked source snapshots. Its JSON output returns `log_path`. Agents must never edit manifest shards directly and must not edit `log.md` directly. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
 
 Manifest v2 consists of the tracked `wiki/.manifest.json` marker and shards below `wiki/.manifest/sources/`.
 
 Manifest mutations are serialized for cooperating writers by a repository-local lock
-and a fixed, bounded write-ahead log under `.obsidian-wiki/local/`. Recovery completes
+and a fixed, bounded write-ahead log under `.llmwikiops/local/`. Recovery completes
 or cleans an interrupted shard update before a later transaction reads rollback state.
 Writers that bypass the lock are outside the cooperation contract: detected conflicts
 are preserved and block further manifest mutations instead of being overwritten. All

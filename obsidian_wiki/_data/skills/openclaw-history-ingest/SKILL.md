@@ -9,7 +9,7 @@ Use [OpenClaw data format](references/openclaw-data-format.md) for exact formats
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
+Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.llmwikiops/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed.
 
 Resolve OpenClaw paths in documented precedence. `OPENCLAW_HOME` overrides the OS home used for defaults; an explicit absolute `OPENCLAW_STATE_DIR` overrides derived state, and explicit absolute `OPENCLAW_CONFIG_PATH` overrides `<state>/openclaw.json`. `OPENCLAW_PROFILE` isolates default state/config/workspace names. Workspace precedence is per-agent workspace, then `agents.defaults.workspace`, then `OPENCLAW_WORKSPACE_DIR`, then the profile-aware default. Non-default agents without an explicit workspace use their per-agent workspace below state. Reject an empty or relative resolved root (tilde expansion must finish absolute). Sessions live per agent below state; treat legacy/archive `sessions.json` as a keyed object whose values include `sessionId` and optional `sessionFile`, not as an array.
 

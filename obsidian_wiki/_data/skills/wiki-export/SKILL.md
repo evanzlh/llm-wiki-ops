@@ -7,14 +7,14 @@ description: >
 
 # Wiki Export
 
-Export to `.obsidian-wiki/local/exports/<timestamp>/`. The repository root
-`.gitignore` ignores `.obsidian-wiki/local/`, so exports are local review output,
+Export to `.llmwikiops/local/exports/<timestamp>/`. The repository root
+`.gitignore` ignores `.llmwikiops/local/`, so exports are local review output,
 not knowledge, transaction candidates, or Git publication. This workflow must not
 edit the vault, run a knowledge transaction, commit, push, or open a pull request.
 
 ## Authority and safe reads
 
-Resolve the nearest ancestor `.obsidian-wiki/config.toml`; if absent, stop with
+Resolve the nearest ancestor `.llmwikiops/config.toml`; if absent, stop with
 `llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
 `.skills/llm-wiki/SKILL.md`, then this skill. Invalid config fails closed and the
 canonical protocol wins on conflict. Never accept another vault path from the
@@ -35,7 +35,7 @@ Optional filters:
 ## Safe output creation
 
 Use an ISO-like UTC timestamp containing only digits, `T`, and `Z`. Inspect every
-existing component of `.obsidian-wiki/local/exports/` without following links;
+existing component of `.llmwikiops/local/exports/` without following links;
 reject a symbolic link, hard link, special file, or non-owner directory. Require
 each local parent directory and the timestamp directory to be owner-only mode `0700`
 where supported; output files and temporary files default to private mode `0600`.
@@ -59,7 +59,7 @@ owner-only temporary file. A mismatch stops promotion without replacing anything
 
 Inventory knowledge pages only. Exclude root/control/derived Markdown including
 `index.md`, `log.md`, `hot.md`, agent instruction files, and content below
-`.obsidian/` or `.obsidian-wiki/`; none becomes a graph node. For each eligible page,
+`.obsidian/` or `.llmwikiops/`; none becomes a graph node. For each eligible page,
 derive `id`, `label`, category, tags, summary, and community.
 Extract body wikilinks as `relation: wikilink`; preserve `EXTRACTED`, `INFERRED`, or
 `AMBIGUOUS` confidence. A valid `relationships` frontmatter entry promotes the

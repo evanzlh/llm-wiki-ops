@@ -1,7 +1,7 @@
 # LLMWikiOps — Repository Authority
 
 The Config Resolution Protocol is repository-only: resolve the nearest ancestor
-`.obsidian-wiki/config.toml`, keep its repository root as the working directory,
+`.llmwikiops/config.toml`, keep its repository root as the working directory,
 and read this file before wiki work. If config is absent, use
 `llmwikiops setup [DIR]`; invalid config fails closed.
 

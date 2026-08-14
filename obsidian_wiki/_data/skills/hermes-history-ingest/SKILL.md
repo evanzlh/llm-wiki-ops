@@ -9,7 +9,7 @@ Use [Hermes data format](references/hermes-data-format.md) for schemas and [sour
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed.
+Complete this before cache discovery: walk upward from invocation CWD to the nearest ancestor `.llmwikiops/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent, stop and recommend `llmwikiops setup [DIR]`; invalid/incomplete/unsafe config must fail closed.
 
 Resolve the transient root from non-empty absolute `HERMES_HOME` when set, otherwise absolute `~/.hermes`; reject an empty or relative override/root. Do not use obsolete alternate history variables.
 

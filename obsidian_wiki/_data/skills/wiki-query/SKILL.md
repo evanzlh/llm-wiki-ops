@@ -16,7 +16,7 @@ or log anything. A request to save a finding must be handed to `wiki-capture` or
 
 ## Authority preflight
 
-1. Resolve the nearest ancestor `.obsidian-wiki/config.toml` from the current
+1. Resolve the nearest ancestor `.llmwikiops/config.toml` from the current
    directory. It is the only repository/vault selection authority. If absent,
    stop with `llmwikiops setup [DIR]`; invalid config fails closed.
 2. Read repository `AGENTS.md`, `.skills/llm-wiki/SKILL.md`, and then this skill.

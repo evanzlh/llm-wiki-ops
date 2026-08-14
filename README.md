@@ -36,7 +36,12 @@ llmwikiops doctor
 llmwikiops check
 ```
 
-Open `wiki/` in Obsidian. Commands resolve the nearest ancestor `.obsidian-wiki/config.toml`, so they work from the repository root or a nested directory. Setup also installs the canonical `.skills/` tree and complete agent mirrors.
+Open `wiki/` in Obsidian. Commands resolve the nearest ancestor `.llmwikiops/config.toml`, so they work from the repository root or a nested directory. Setup also installs the canonical `.skills/` tree and complete agent mirrors.
+
+**Protocol incompatibility.** The former `.obsidian-wiki/` state is not detected,
+read, migrated, or deleted. A repository containing only it is uninitialized; when
+both directories exist, `.llmwikiops/` is the only authority. Explicitly run
+`llmwikiops setup` and review its new files; do not manually copy former state.
 
 Setup does not initialize Git. Before collaboration, the owner initializes the knowledge repository and reviews, stages, and commits the scaffold; see [Installation](docs/installation.md#create-a-repository).
 
@@ -61,14 +66,14 @@ recorded identity and content still match are removed. If cleanup is interrupted
 the live shard changes, automatic recovery stops until the owner reruns the command to
 confirm the current live version.
 
-Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.obsidian-wiki/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
+Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.llmwikiops/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
 
 ```bash
 git switch -c upgrade-llmwikiops
 cd /path/to/llm-wiki-ops
 uv tool install --force --reinstall --link-mode copy .
 cd /path/to/team-knowledge
-${EDITOR:?} .obsidian-wiki/config.toml
+${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check

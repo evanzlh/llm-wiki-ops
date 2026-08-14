@@ -63,7 +63,7 @@ llmwikiops check
 
 The repository contains its own configuration, source material, canonical skills, mirrors, and bootstrap instructions. It does not vendor the executable.
 
-After cloning, you can work from anywhere inside it: each repository-aware command discovers `.obsidian-wiki/config.toml` while walking up to the nearest configured ancestor. The repository-local skills and bootstrap files remain the authority from nested directories.
+After cloning, you can work from anywhere inside it: each repository-aware command discovers `.llmwikiops/config.toml` while walking up to the nearest configured ancestor. The repository-local skills and bootstrap files remain the authority from nested directories.
 
 ## Upgrade
 
@@ -81,7 +81,7 @@ Return to the knowledge repository and read its tracked `requires_cli`. Resoluti
 
 ```bash
 cd /path/to/team-knowledge
-${EDITOR:?} .obsidian-wiki/config.toml
+${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check

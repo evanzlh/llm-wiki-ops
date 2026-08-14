@@ -14,7 +14,7 @@ not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and subjective approval
 
-Resolve the nearest ancestor `.obsidian-wiki/config.toml`. If absent, stop with
+Resolve the nearest ancestor `.llmwikiops/config.toml`. If absent, stop with
 `llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
 `.skills/llm-wiki/SKILL.md`, then this skill; the canonical protocol wins on conflict.
 Invalid config fails closed, and an invocation cannot select another vault.
@@ -35,7 +35,7 @@ being refactored.
 2. Map the phrase to visible object, Obsidian layer, selector/settings surface, change
    type, and owning layer. Distinguish tab headers from the markdown view header.
 3. Back up every file to be edited under
-   `.obsidian-wiki/local/obsidian-config-backups/<timestamp>/`, preserving its
+   `.llmwikiops/local/obsidian-config-backups/<timestamp>/`, preserving its
    repository-relative `.obsidian/` path.
 4. Patch one owning stage, shell, header, wrapper, or child. Format CSS without
    changing selector order unless the approved change requires it.
@@ -47,7 +47,7 @@ being refactored.
 
 ## Backup and edit safety
 
-`.obsidian-wiki/local/` is ignored local state. Inspect every source, target, and
+`.llmwikiops/local/` is ignored local state. Inspect every source, target, and
 backup component without following links. Reject a symbolic link, hard link, special
 file, non-owner path, escaping resolution, or identity change. Create a new
 owner-only timestamp backup directory and flush ordinary single-link preimages before

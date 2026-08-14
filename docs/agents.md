@@ -12,7 +12,7 @@ Edit only `.skills/`. Use `llmwikiops repo sync-skills` to inspect drift and `ll
 
 Before wiki work, an agent must:
 
-1. Resolve the nearest ancestor `.obsidian-wiki/config.toml` and keep its repository root as the command working directory.
+1. Resolve the nearest ancestor `.llmwikiops/config.toml` and keep its repository root as the command working directory.
 2. Read the repository bootstrap instructions.
 3. Read `.skills/llm-wiki/SKILL.md` as the canonical protocol.
 4. Read the one or more task skills needed for the request.

@@ -4,12 +4,12 @@
     {
       "id": 1,
       "prompt": "In the configured example vault, the right sidebar should feel more like the left side, but the side icons are hard to read and the backlink cards look overwrapped. Make one visual pass, preserve the current look first, and verify it with a screenshot.",
-      "expected_output": "The agent reads appearance.json, identifies active snippets, obtains approval, backs them up under .obsidian-wiki/local/obsidian-config-backups, maps 'right sidebar' to the right utility split/backlink pane and 'side icons' to side-dock tab headers, atomically styles the owning shell or wrapper rather than nesting card treatments, reloads, screenshot-checks the affected pane, and reviews the Git diff without committing.",
+      "expected_output": "The agent reads appearance.json, identifies active snippets, obtains approval, backs them up under .llmwikiops/local/obsidian-config-backups, maps 'right sidebar' to the right utility split/backlink pane and 'side icons' to side-dock tab headers, atomically styles the owning shell or wrapper rather than nesting card treatments, reloads, screenshot-checks the affected pane, and reviews the Git diff without committing.",
       "expectations": [
         "Reads the vault's .obsidian/appearance.json and treats enabledCssSnippets as the active source of truth.",
         "Maps 'right sidebar' to the right workspace utility split/backlinks pane and maps 'side icons' to side-dock tab headers or icon button states.",
         "Chooses the visible wrapper/shell as the likely owner for the overwrapped backlink/card treatment instead of adding nested styling to inner text.",
-        "Requires explicit approval and a named backup under .obsidian-wiki/local/obsidian-config-backups before any subjective visual pass.",
+        "Requires explicit approval and a named backup under .llmwikiops/local/obsidian-config-backups before any subjective visual pass.",
         "Includes screenshot verification of the affected right pane and icon states before claiming success."
       ]
     },
@@ -43,7 +43,7 @@
       "expected_output": "The agent reads appearance.json, separates active snippets from archived iterations, obtains approval and saves a safe local baseline backup, preserves selector order, adds a file map and section headers, formats CSS, checks the Git diff for unintended visual changes, reloads and screenshot-verifies the same look, leaves commit ownership to the user, and does not delete experiments in the same pass unless explicitly asked.",
       "expectations": [
         "Reads appearance.json first and separates active snippets from archived or inactive iterations.",
-        "Saves a validated baseline backup under .obsidian-wiki/local/obsidian-config-backups before refactoring so the snippet picker stays clean.",
+        "Saves a validated baseline backup under .llmwikiops/local/obsidian-config-backups before refactoring so the snippet picker stays clean.",
         "Preserves selector order and cascade behavior unless a screenshot-verified reason requires changing it.",
         "Adds or improves a file map and section headers without turning the active CSS into a large narrative document.",
         "Runs formatting/diff checks and screenshot-verifies that the visual design did not change."

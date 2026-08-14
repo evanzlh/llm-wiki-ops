@@ -12,7 +12,7 @@ For live styling work, this translation should usually be brief and operational:
 
 > "I’m treating 'right sidebar' as the right workspace split/backlinks pane, and 'side icons' as side-dock tab/header icon states."
 
-Then inspect, obtain approval, back up to `.obsidian-wiki/local/obsidian-config-backups/`,
+Then inspect, obtain approval, back up to `.llmwikiops/local/obsidian-config-backups/`,
 patch atomically, reload, and screenshot. Long translation tables belong in evals,
 audits, or planning notes, not in every small visual pass.
 
@@ -207,7 +207,7 @@ Avoid these as first moves:
 All snippet and appearance changes remain explicit `.obsidian/` configuration edits.
 Before a subjective edit, show the proposed scope and obtain explicit user approval.
 Backups belong under the ignored
-`.obsidian-wiki/local/obsidian-config-backups/<timestamp>/`, never in the active
+`.llmwikiops/local/obsidian-config-backups/<timestamp>/`, never in the active
 snippet picker. Reject symbolic links, hard links, special files, non-owner paths,
 and escaping resolutions; use owner-only temporary files and atomic replacement.
 Afterward, reload and screenshot Obsidian, review a path-scoped `git diff`, and leave

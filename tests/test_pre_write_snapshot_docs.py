@@ -20,7 +20,7 @@ def _skill_texts() -> list[tuple[str, str]]:
 
 def test_maintenance_resolves_nearest_repository_and_closes_sources_before_write() -> None:
     for path, text in _skill_texts():
-        assert "nearest ancestor `.obsidian-wiki/config.toml`" in text, path
+        assert "nearest ancestor `.llmwikiops/config.toml`" in text, path
         assert "complete source closure" in text, path
         assert "live vault read-only" in text, path
 

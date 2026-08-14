@@ -9,7 +9,7 @@ Find a bounded set of sessions relevant to a query, preserve reviewed evidence, 
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.obsidian-wiki/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed. Then load exactly one retained tool skill and apply its cache-root precedence; reject empty or relative roots.
+Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.llmwikiops/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed. Then load exactly one retained tool skill and apply its cache-root precedence; reject empty or relative roots.
 
 ## Bounded safe input
 

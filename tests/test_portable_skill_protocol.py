@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import itertools
 import json
@@ -81,7 +83,7 @@ MANAGED_BOOTSTRAP_RELATIVES = (
     "windsurf/rules/llmwikiops.md",
 )
 LEGACY_RUNTIME_IDENTITY = re.compile(
-    r"obsidian(?:-|\s+)wiki",
+    r"(?:obsidian(?:-|\s+)wiki|OBSIDIAN_WIKI_[A-Z0-9_]+)",
     re.IGNORECASE,
 )
 WORKFLOW_BOOTSTRAP = Path(
@@ -121,16 +123,9 @@ def format_identity_location(relative: Path, text: str, match: re.Match[str]) ->
     return f"{relative}:{line_number}: {_line_at(text, match.start()).strip()}"
 
 
-def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
-    start, end = match.span()
-    if start == 0 or text[start - 1] != ".":
-        return False
-    if start > 1 and (text[start - 2].isalnum() or text[start - 2] in "_-"):
-        return False
-    return end == len(text) or text[end] in "/ \t\r\n`'\"),;:!?]}"
-
-
 def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
+    if match.group() != "obsidian-wiki":
+        return False
     owner_start = match.start() - len("Ar9av/")
     if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
         return False
@@ -149,29 +144,16 @@ def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
     return text[end] == "/" and (end + 1 == len(text) or text[end + 1] not in "/ \t\r\n")
 
 
-def _is_stable_extension_id(relative: Path, text: str, match: re.Match[str]) -> bool:
-    return (
-        relative == RAW_HANDLE_POPUP
-        and _line_at(text, match.start()).strip() == 'id: "obsidian-wiki-raw",'
-    )
-
-
 def is_allowed_legacy_identity(
     relative: Path, text: str, match: re.Match[str]
 ) -> bool:
     if match.group().lower() != "obsidian-wiki":
         return False
-    return any(
-        (
-            _is_protocol_directory(text, match),
-            _is_ar9av_attribution(text, match),
-            _is_stable_extension_id(relative, text, match),
-        )
-    )
+    return _is_ar9av_attribution(text, match)
 
 
-def test_packaged_guidance_has_no_legacy_product_identity() -> None:
-    """Runtime prose permits only exact protocol and compatibility identities."""
+def test_packaged_guidance_has_no_former_external_protocol_identity() -> None:
+    """Runtime prose permits only the exact upstream attribution."""
     for relative in MANAGED_BOOTSTRAP_RELATIVES:
         assert (ROOT / "obsidian_wiki/_data/bootstrap" / relative).is_file()
 
@@ -204,6 +186,9 @@ def test_packaged_guidance_scans_extension_background_script() -> None:
         "Ar9av/obsidian-wiki-extra",
         "Ar9av/obsidian-wiki.evil",
         "https://evil.example/Ar9av/obsidian-wiki",
+        "<!-- obsidian-wiki:managed:start -->",
+        'id: "obsidian-wiki-raw",',
+        "OBSIDIAN_WIKI_REPO=/tmp/repository",
     ),
 )
 def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
@@ -218,14 +203,12 @@ def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
 @pytest.mark.parametrize(
     ("relative", "allowed"),
     (
-        (Path("fixture.md"), ".obsidian-wiki/config.toml"),
         (Path("fixture.md"), "Ar9av/obsidian-wiki"),
         (Path("fixture.md"), "https://github.com/Ar9av/obsidian-wiki"),
         (
             Path("fixture.md"),
             "https://github.com/Ar9av/obsidian-wiki/issues",
         ),
-        (RAW_HANDLE_POPUP, 'id: "obsidian-wiki-raw",'),
     ),
 )
 def test_identity_allowlist_preserves_exact_compatibility_contexts(
@@ -251,11 +234,12 @@ def test_managed_workflow_uses_llmwikiops_frontmatter_name() -> None:
 def test_popup_keeps_the_stable_raw_picker_id_once_in_picker_options() -> None:
     popup = text(RAW_HANDLE_POPUP.as_posix())
     picker = re.compile(
-        r"showDirectoryPicker\(\{\s*id:\s*\"obsidian-wiki-raw\",\s*"
+        r"showDirectoryPicker\(\{\s*id:\s*\"llmwikiops-raw\",\s*"
         r"mode:\s*\"readwrite\",\s*startIn:\s*\"documents\"\s*\}\)",
         re.DOTALL,
     )
     assert len(picker.findall(popup)) == 1
+    assert "obsidian-wiki-raw" not in popup
 
 
 def test_identity_location_reports_path_line_and_snippet() -> None:
@@ -319,7 +303,7 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
 
     assert "sync-skills` is read-only by default" in flat
     assert "upgrade-skills` applies immediately" in flat
-    assert "deliberately edit `.obsidian-wiki/config.toml`" in flat
+    assert "deliberately edit `.llmwikiops/config.toml`" in flat
     assert "does not bypass compatibility checks or rewrite `requires_cli`" in flat
     assert "upgrade-skills --dry-run" not in flat
     assert "review its proposed changes" not in flat
@@ -335,7 +319,7 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
     assert frontmatter.scalars["name"] == "wiki-transaction-review"
     assert frontmatter.scalars["description"].startswith("Use when ")
     for required in (
-        "nearest ancestor `.obsidian-wiki/config.toml`",
+        "nearest ancestor `.llmwikiops/config.toml`",
         "repository root",
         "root `AGENTS.md`",
         "vault `AGENTS.md`",
@@ -455,7 +439,7 @@ def test_maintenance_skills_are_repository_native(name: str) -> None:
     assert frontmatter.scalars["name"] == name
     assert frontmatter.scalars["description"].startswith("Use when ")
     for required in (
-        "nearest ancestor `.obsidian-wiki/config.toml`",
+        "nearest ancestor `.llmwikiops/config.toml`",
         "repository root",
         "root `AGENTS.md`",
         "canonical `llm-wiki`",

@@ -17,7 +17,7 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
 
         for text in (llm_wiki, agents):
             self.assertIn("nearest ancestor", text)
-            self.assertIn(".obsidian-wiki/config.toml", text)
+            self.assertIn(".llmwikiops/config.toml", text)
             self.assertNotIn("@name", text)
         self.assertIn("Never guess a vault, source root, or\nfallback location", llm_wiki)
 
@@ -26,22 +26,22 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
             text = self.read(f"obsidian_wiki/_data/skills/{name}/SKILL.md")
             with self.subTest(name=name):
                 self.assertIn("nearest", text)
-                self.assertIn(".obsidian-wiki/config.toml", text)
+                self.assertIn(".llmwikiops/config.toml", text)
                 self.assertNotIn("@name", text)
 
     def test_runtime_bootstraps_route_nearest_repository_canonical_then_task(self) -> None:
         for relpath in [
             "obsidian_wiki/_data/bootstrap/AGENTS.md",
-            "obsidian_wiki/_data/bootstrap/agent/rules/obsidian-wiki.md",
-            "obsidian_wiki/_data/bootstrap/cursor/rules/obsidian-wiki.mdc",
+            "obsidian_wiki/_data/bootstrap/agent/rules/llmwikiops.md",
+            "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc",
             "obsidian_wiki/_data/bootstrap/github/copilot-instructions.md",
-            "obsidian_wiki/_data/bootstrap/kiro/steering/obsidian-wiki.md",
-            "obsidian_wiki/_data/bootstrap/windsurf/rules/obsidian-wiki.md",
+            "obsidian_wiki/_data/bootstrap/kiro/steering/llmwikiops.md",
+            "obsidian_wiki/_data/bootstrap/windsurf/rules/llmwikiops.md",
         ]:
             with self.subTest(relpath=relpath):
                 text = self.read(relpath)
                 self.assertIn("nearest", text)
-                self.assertIn(".obsidian-wiki/config.toml", text)
+                self.assertIn(".llmwikiops/config.toml", text)
                 canonical = text.index(".skills/llm-wiki/SKILL.md")
                 task = text.index(".skills/<task>/SKILL.md")
                 self.assertLess(canonical, task)
@@ -52,7 +52,7 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
         install = self.read("docs/installation.md")
 
         self.assertIn("work from anywhere inside it", install)
-        self.assertIn("discovers `.obsidian-wiki/config.toml` while walking up", install)
+        self.assertIn("discovers `.llmwikiops/config.toml` while walking up", install)
         self.assertIn("repository-local skills and bootstrap files", install.casefold())
 
     def test_core_skill_descriptions_use_repository_local_authority(self) -> None:
@@ -72,7 +72,7 @@ class InlineVaultTargetingDocsTest(unittest.TestCase):
         wiki_query = self.read("obsidian_wiki/_data/skills/wiki-query/SKILL.md")
 
         self.assertIn("It is the only repository/vault selection authority", wiki_query)
-        self.assertIn("nearest ancestor `.obsidian-wiki/config.toml`", wiki_query)
+        self.assertIn("nearest ancestor `.llmwikiops/config.toml`", wiki_query)
         self.assertNotIn("inline", wiki_query.casefold())
         self.assertNotIn("global", wiki_query.casefold())
         self.assertNotIn("@name", wiki_query)

@@ -10,7 +10,7 @@ does not create candidate knowledge or invent filesystem paths or commands.
 
 ## Resolve authority
 
-Find the nearest ancestor `.obsidian-wiki/config.toml`; fail closed if absent,
+Find the nearest ancestor `.llmwikiops/config.toml`; fail closed if absent,
 and use its repository root as the command working directory. Apply authority
 in this order: root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when
 present, then this task skill. The canonical protocol wins any conflict.

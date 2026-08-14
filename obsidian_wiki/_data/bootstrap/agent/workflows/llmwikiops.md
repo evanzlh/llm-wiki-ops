@@ -14,7 +14,7 @@ commands:
 
 # LLMWikiOps Workflow Registry
 
-Resolve `.obsidian-wiki/config.toml` and read `AGENTS.md`. First load the
+Resolve `.llmwikiops/config.toml` and read `AGENTS.md`. First load the
 canonical transaction protocol in `.skills/llm-wiki/SKILL.md`, then load the
 command's `.skills/<task>/SKILL.md`. The canonical protocol takes precedence
 over conflicts.
