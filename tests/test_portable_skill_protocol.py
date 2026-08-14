@@ -72,6 +72,7 @@ PACKAGED_GUIDANCE_ROOTS = (
     ROOT / "obsidian_wiki/_data/bootstrap",
     ROOT / "extensions/brain-capture",
 )
+PACKAGED_GUIDANCE_SUFFIXES = {".html", ".js", ".json", ".md", ".mdc"}
 MANAGED_BOOTSTRAP_RELATIVES = (
     "agent/rules/obsidian-wiki.md",
     "agent/workflows/obsidian-wiki.md",
@@ -80,9 +81,13 @@ MANAGED_BOOTSTRAP_RELATIVES = (
     "windsurf/rules/obsidian-wiki.md",
 )
 LEGACY_RUNTIME_IDENTITY = re.compile(
-    r"evanzlh/obsidian-wiki|(?<![./\w-])obsidian(?:-|\s+)wiki(?![\w.-])",
+    r"obsidian(?:-|\s+)wiki",
     re.IGNORECASE,
 )
+WORKFLOW_BOOTSTRAP = Path(
+    "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md"
+)
+RAW_HANDLE_POPUP = Path("extensions/brain-capture/popup.js")
 
 
 def skill_text(name: str) -> str:
@@ -93,22 +98,142 @@ def text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_packaged_guidance_has_no_legacy_product_identity() -> None:
-    """Runtime prose may retain protocol paths, imports, and managed filenames only."""
-    guidance_paths = [
-        path
-        for root in PACKAGED_GUIDANCE_ROOTS
-        for pattern in ("*.md", "*.mdc", "*.html")
-        for path in root.rglob(pattern)
-    ]
-    guidance_paths.append(ROOT / "extensions/brain-capture/popup.js")
+def packaged_guidance_paths() -> tuple[Path, ...]:
+    return tuple(
+        sorted(
+            path
+            for root in PACKAGED_GUIDANCE_ROOTS
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in PACKAGED_GUIDANCE_SUFFIXES
+        )
+    )
 
+
+def _line_at(text: str, offset: int) -> str:
+    line_start = text.rfind("\n", 0, offset) + 1
+    line_end = text.find("\n", offset)
+    return text[line_start:] if line_end == -1 else text[line_start:line_end]
+
+
+def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
+    start, end = match.span()
+    if start == 0 or text[start - 1] != ".":
+        return False
+    if start > 1 and (text[start - 2].isalnum() or text[start - 2] in "_-"):
+        return False
+    return end == len(text) or text[end] in "/ \t\r\n`'\"),;:!?]}"
+
+
+def _is_managed_filename(text: str, match: re.Match[str]) -> bool:
+    return re.match(
+        r"obsidian-wiki\.(?:md|mdc)(?![\w.-])", text[match.start() :], re.IGNORECASE
+    ) is not None
+
+
+def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
+    owner_start = match.start() - len("Ar9av/")
+    if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
+        return False
+    return owner_start == 0 or not (text[owner_start - 1].isalnum() or text[owner_start - 1] in "_-")
+
+
+def _is_stable_extension_id(relative: Path, text: str, match: re.Match[str]) -> bool:
+    return (
+        relative == RAW_HANDLE_POPUP
+        and _line_at(text, match.start()).strip() == 'id: "obsidian-wiki-raw",'
+    )
+
+
+def _is_managed_workflow_name(relative: Path, text: str, match: re.Match[str]) -> bool:
+    return (
+        relative == WORKFLOW_BOOTSTRAP
+        and _line_at(text, match.start()).strip() == "name: obsidian-wiki"
+    )
+
+
+def is_allowed_legacy_identity(
+    relative: Path, text: str, match: re.Match[str]
+) -> bool:
+    if match.group().lower() != "obsidian-wiki":
+        return False
+    return any(
+        (
+            _is_protocol_directory(text, match),
+            _is_managed_filename(text, match),
+            _is_ar9av_attribution(text, match),
+            _is_stable_extension_id(relative, text, match),
+            _is_managed_workflow_name(relative, text, match),
+        )
+    )
+
+
+def test_packaged_guidance_has_no_legacy_product_identity() -> None:
+    """Runtime prose permits only exact protocol and compatibility identities."""
     for relative in MANAGED_BOOTSTRAP_RELATIVES:
         assert (ROOT / "obsidian_wiki/_data/bootstrap" / relative).is_file()
 
-    for path in guidance_paths:
-        matches = LEGACY_RUNTIME_IDENTITY.findall(path.read_text(encoding="utf-8"))
-        assert not matches, f"{path.relative_to(ROOT)}: {matches}"
+    for path in packaged_guidance_paths():
+        relative = path.relative_to(ROOT)
+        contents = path.read_text(encoding="utf-8")
+        disallowed = [
+            match.group()
+            for match in LEGACY_RUNTIME_IDENTITY.finditer(contents)
+            if not is_allowed_legacy_identity(relative, contents, match)
+        ]
+        assert not disallowed, f"{relative}: {disallowed}"
+
+
+def test_packaged_guidance_scans_extension_background_script() -> None:
+    assert ROOT / "extensions/brain-capture/background.js" in packaged_guidance_paths()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    (
+        "https://example.com/obsidian-wiki",
+        "EvilCorp/obsidian-wiki",
+        "https://github.com/evanzlh/obsidian-wiki",
+        "docs/.obsidian-wiki-brand",
+        "obsidian-wiki-extra",
+    ),
+)
+def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
+    matches = list(LEGACY_RUNTIME_IDENTITY.finditer(invalid))
+    assert matches, invalid
+    assert not any(
+        is_allowed_legacy_identity(Path("fixture.md"), invalid, match)
+        for match in matches
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative", "allowed"),
+    (
+        (Path("fixture.md"), ".obsidian-wiki/config.toml"),
+        (Path("fixture.md"), "Ar9av/obsidian-wiki"),
+        (Path("fixture.md"), "agent/workflows/obsidian-wiki.md"),
+        (Path("fixture.md"), "cursor/rules/obsidian-wiki.mdc"),
+        (RAW_HANDLE_POPUP, 'id: "obsidian-wiki-raw",'),
+        (WORKFLOW_BOOTSTRAP, "name: obsidian-wiki"),
+    ),
+)
+def test_identity_allowlist_preserves_exact_compatibility_contexts(
+    relative: Path, allowed: str
+) -> None:
+    matches = list(LEGACY_RUNTIME_IDENTITY.finditer(allowed))
+    assert matches, allowed
+    assert all(
+        is_allowed_legacy_identity(relative, allowed, match) for match in matches
+    )
+
+
+def test_identity_matcher_does_not_treat_python_package_name_as_legacy_brand() -> None:
+    assert not list(LEGACY_RUNTIME_IDENTITY.finditer("from obsidian_wiki import cli"))
+
+
+def test_managed_workflow_retains_its_stable_frontmatter_name() -> None:
+    contents = text(WORKFLOW_BOOTSTRAP.as_posix())
+    assert "name: obsidian-wiki" in contents
 
 
 def test_canonical_runtime_has_no_mode_or_legacy_branches() -> None:

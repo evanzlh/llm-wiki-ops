@@ -1,5 +1,5 @@
 ---
-name: llmwikiops
+name: obsidian-wiki
 description: Delegate wiki workflows to repository-owned skills.
 commands:
   - name: wiki-query
