@@ -270,11 +270,11 @@ def test_bilingual_readmes_disclose_the_fork_and_only_source_install() -> None:
     for text in (english, chinese):
         assert "Ar9av/obsidian-wiki" in text
         assert "5ef66b6bec8b26bab6594ac37fb4d8371469fbab" in text
-        assert "git clone https://github.com/evanzlh/obsidian-wiki.git" in text
+        assert "git clone https://github.com/evanzlh/llm-wiki-ops.git" in text
         assert SOURCE_INSTALL_COMMAND in text
         assert SOURCE_REINSTALL_COMMAND in text
         assert "docs/fork.md" in text
-        assert "pip install obsidian-wiki" not in text
+        assert "pip install llm-wiki-ops" not in text
         assert "setup.sh" not in text
 
 
@@ -311,8 +311,8 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
             assert required.casefold() in protocol_folded, (relative, required)
         assert "fail closed" in protocol_folded or "fails closed" in protocol_folded
         constraint = protocol.index("`requires_cli`")
-        upgrade = protocol.index("obsidian-wiki repo upgrade-skills")
-        check = protocol.index("obsidian-wiki check")
+        upgrade = protocol.index("llmwikiops repo upgrade-skills")
+        check = protocol.index("llmwikiops check")
         diff = protocol.index("git diff")
         assert constraint < upgrade < check < diff, relative
 
@@ -333,8 +333,8 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     ):
         assert required in protocol_zh, required
     constraint = protocol_zh.index("`requires_cli`")
-    upgrade = protocol_zh.index("obsidian-wiki repo upgrade-skills")
-    check = protocol_zh.index("obsidian-wiki check")
+    upgrade = protocol_zh.index("llmwikiops repo upgrade-skills")
+    check = protocol_zh.index("llmwikiops check")
     diff = protocol_zh.index("git diff")
     assert constraint < upgrade < check < diff
 
@@ -374,7 +374,7 @@ def test_cli_quick_reference_does_not_skip_requires_cli_upgrade_step() -> None:
         "## Upgrade protocol", 1
     )[0]
 
-    assert "obsidian-wiki repo upgrade-skills" not in quick_reference
+    assert "llmwikiops repo upgrade-skills" not in quick_reference
 
 
 def test_fork_policy_is_explicit() -> None:
@@ -390,11 +390,11 @@ def test_contributor_skill_flow_rebuilds_installed_cli_before_setup() -> None:
         "## Documentation", 1
     )[0]
     rebuild = adding_skill.index(SOURCE_REINSTALL_COMMAND)
-    assert rebuild < adding_skill.index("obsidian-wiki setup")
-    assert adding_skill.index("obsidian-wiki setup") < adding_skill.index(
-        "obsidian-wiki check"
+    assert rebuild < adding_skill.index("llmwikiops setup")
+    assert adding_skill.index("llmwikiops setup") < adding_skill.index(
+        "llmwikiops check"
     )
-    assert "obsidian-wiki repo sync-skills" in adding_skill
+    assert "llmwikiops repo sync-skills" in adding_skill
     assert "tests/test_asset_artifact_parity.py" in adding_skill
     assert "source checkout as a runtime fallback" in adding_skill
 

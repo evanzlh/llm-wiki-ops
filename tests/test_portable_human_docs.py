@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
+import pytest
+
 from obsidian_wiki import IMPLEMENTATION_ID
 from obsidian_wiki.config import PortableConfig
 from obsidian_wiki.portable import render_portable_config
@@ -15,6 +17,7 @@ from obsidian_wiki.safe_files import stable_directory_identity
 ROOT = Path(__file__).resolve().parents[1]
 
 CURRENT_DOCS = (
+    "AGENTS.md",
     "README.md",
     "README_ZH.md",
     "docs/README.md",
@@ -28,6 +31,10 @@ CURRENT_DOCS = (
     "docs/installation.md",
     "docs/session-brain.md",
     "docs/skills.md",
+)
+
+OLD_PRODUCT_REFERENCE = re.compile(
+    r"(?<![\w.-])obsidian-wiki(?![\w-]|\.(?:md|mdc)\b)", re.IGNORECASE
 )
 
 FORBIDDEN_CURRENT_DOC_TERMS = (
@@ -89,6 +96,16 @@ def _text(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def _unexpected_old_product_reference(text: str) -> re.Match[str] | None:
+    """Return a stale public brand reference, preserving protocol and attribution."""
+    for match in OLD_PRODUCT_REFERENCE.finditer(text):
+        prefix = text[max(0, match.start() - len("Ar9av/")) : match.start()]
+        if prefix.casefold() == "ar9av/":
+            continue
+        return match
+    return None
+
+
 def test_current_docs_describe_only_the_current_repository_product() -> None:
     for relative in CURRENT_DOCS:
         text = _text(relative)
@@ -116,11 +133,44 @@ def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
         assert command in _text("README_ZH.md")
 
 
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "obsidian-wiki,",
+        "Obsidian-Wiki.",
+        '"obsidian-wiki"',
+        "[obsidian-wiki](https://example.invalid)",
+        "https://github.com/evanzlh/obsidian-wiki",
+    ),
+)
+def test_old_product_reference_detection_covers_public_boundaries(
+    reference: str,
+) -> None:
+    assert _unexpected_old_product_reference(reference) is not None
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        ".obsidian-wiki/config.toml",
+        "obsidian_wiki.cli",
+        "obsidian-wiki.md",
+        "obsidian-wiki.mdc",
+        "Ar9av/obsidian-wiki",
+        "Ar9av/Obsidian-Wiki",
+    ),
+)
+def test_old_product_reference_detection_preserves_allowed_contexts(
+    reference: str,
+) -> None:
+    assert _unexpected_old_product_reference(reference) is None
+
+
 def test_current_docs_use_llmwikiops_identity() -> None:
     for relative in CURRENT_DOCS:
         text = _text(relative)
         assert "evanzlh/obsidian-wiki" not in text, relative
-        assert re.search(r"(?<![./\w-])obsidian-wiki(?=[\s`])", text) is None, relative
+        assert _unexpected_old_product_reference(text) is None, relative
     for relative in ("README.md", "README_ZH.md", "docs/fork.md"):
         text = _text(relative)
         assert "LLMWikiOps" in text, relative
@@ -153,6 +203,7 @@ def test_active_docs_drop_operation_pages_and_ignored_hot_contract() -> None:
 
 def test_each_authoritative_page_documents_its_role() -> None:
     required_by_page = {
+        "AGENTS.md": ("LLMWikiOps", "Framework Development", "obsidian_wiki"),
         "README.md": ("one repository layout", "transaction begin", "Git publication"),
         "README_ZH.md": ("一种仓库布局", "transaction begin", "Git 发布"),
         "docs/installation.md": ("does not initialize Git", "requires_cli", "doctor"),

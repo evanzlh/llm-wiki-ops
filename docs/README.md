@@ -9,6 +9,7 @@ The README is the landing page. These guides define the current repository produ
 - [CLI reference in Traditional Chinese](cli.zh-TW.md) — current command forms and the core workflow.
 - [Agent protocol](agents.md) — authority, skill discovery, reads, writes, and Git boundaries.
 - [Skills](skills.md) — the complete bundled inventory and authoring rules.
+- [Session Brain](session-brain.md) — build and query a sidecar topic graph over local agent history.
 - [Contributing](contributing.md) — source layout, tests, and documentation synchronization.
 - [Fork relationship](fork.md) — attribution, scope, and compatibility policy.
 

@@ -109,8 +109,8 @@ def test_framework_bootstraps_are_ordinary_development_pointers() -> None:
         assert "Skill Routing" not in text, relative
 
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Obsidian Wiki — Framework Development" in agents
-    assert "source of the `obsidian-wiki` framework" in agents
+    assert "LLMWikiOps — Framework Development" in agents
+    assert "source of the `LLMWikiOps` framework" in agents
     assert "not an initialized\nwiki repository" in agents
     assert "Do not resolve a vault" in agents
     assert "obsidian_wiki/_data/skills" in agents

@@ -74,7 +74,7 @@ def test_cli_docs_document_agent_context_contract() -> None:
     chinese = read("docs/cli.zh-TW.md")
 
     for text in (english, chinese):
-        assert "obsidian-wiki context-pack" in text
+        assert "llmwikiops context-pack" in text
         assert "--budget 8000" in text
         assert "--public-only" in text
         assert "wiki-context-pack" in text
