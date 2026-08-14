@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable
+from typing import Callable, Iterable
 
 try:
     import tomllib
@@ -24,9 +24,9 @@ FORMER_EXTERNAL_PROTOCOL = re.compile(
     r"(?i:OBSIDIAN_WIKI_[A-Z0-9_]+)|obsidian\s+wiki)"
 )
 UPSTREAM_ATTRIBUTION = "https://github.com/Ar9av/obsidian-wiki"
-OTHER_NON_TEXT_ALLOWLIST = frozenset(
+UPSTREAM_REPOSITORY = "Ar9av/obsidian-wiki"
+OTHER_BINARY_ALLOWLIST = frozenset(
     {
-        Path("LICENSE"),
         Path("extensions/brain-capture/assets/icon-128.png"),
         Path("extensions/brain-capture/assets/icon-16.png"),
         Path("extensions/brain-capture/assets/icon-48.png"),
@@ -83,6 +83,9 @@ NEGATIVE_TEST_MODULE_CONSTANTS = {
     Path("tests/test_scripts_packaging.py"): frozenset(
         {"REMOVED_SCHEDULER_ARTIFACTS"}
     ),
+    Path("tests/test_fork_identity.py"): frozenset(
+        {"FORMER_EXTERNAL_PROTOCOL", "HARD_CUTOVER_PARAGRAPHS"}
+    ),
 }
 NEGATIVE_TEST_FUNCTIONS = {
     Path("tests/test_asset_artifact_parity.py"): frozenset(
@@ -98,6 +101,8 @@ NEGATIVE_TEST_FUNCTIONS = {
         {
             "test_only_llmwikiops_cli_and_protocol_names_remain_supported",
             "test_protocol_audit_rejects_mutated_allowed_contexts",
+            "test_current_document_allowance_rejects_old_name_appended_to_attribution_line",
+            "test_manifest_audit_rejects_old_name_appended_to_license",
             "test_former_protocol_detector_rejects_all_external_protocol_variants",
             "test_former_protocol_managed_assets_are_absent_from_source_tree",
         }
@@ -204,31 +209,36 @@ def _line_at(text: str, offset: int) -> str:
     return text[start:] if end == -1 else text[start:end]
 
 
+def _is_exact_upstream_attribution(text: str, match: re.Match[str]) -> bool:
+    for attribution in (UPSTREAM_ATTRIBUTION, UPSTREAM_REPOSITORY):
+        start = text.find(attribution)
+        while start >= 0:
+            end = start + len(attribution)
+            leading = text[start - 1 : start]
+            trailing = text[end : end + 1]
+            valid_trailing = trailing in {
+                "", " ", "\n", "\t", "'", '"', ")", "]", ">", ","
+            }
+            if attribution == UPSTREAM_ATTRIBUTION and trailing == "/":
+                valid_trailing = text[end + 1 : end + 2] not in {
+                    "", "/", " ", "\n", "\t"
+                }
+            if (
+                leading in {"", " ", "\n", "\t", "'", '"', "(", "[", "<"}
+                and valid_trailing
+                and start <= match.start() < end
+            ):
+                return True
+            start = text.find(attribution, start + 1)
+    return False
+
+
 def _unattributed_protocol_matches(text: str) -> list[re.Match[str]]:
-    matches: list[re.Match[str]] = []
-    for match in FORMER_EXTERNAL_PROTOCOL.finditer(text):
-        start = match.start()
-        attribution_starts = [
-            index
-            for index in range(len(text))
-            if text.startswith(UPSTREAM_ATTRIBUTION, index)
-        ]
-        inside_exact_upstream = any(
-            text[attribution_start - 1 : attribution_start]
-            in {"", " ", "\n", "\t", "'", '"', "(", "[", "<"}
-            and
-            attribution_start <= start < attribution_start + len(UPSTREAM_ATTRIBUTION)
-            and text[
-                attribution_start + len(UPSTREAM_ATTRIBUTION) : attribution_start
-                + len(UPSTREAM_ATTRIBUTION)
-                + 1
-            ]
-            in {"", " ", "\n", "\t", "'", '"', ")", "]", ">", ","}
-            for attribution_start in attribution_starts
-        )
-        if not inside_exact_upstream:
-            matches.append(match)
-    return matches
+    return [
+        match
+        for match in FORMER_EXTERNAL_PROTOCOL.finditer(text)
+        if not _is_exact_upstream_attribution(text, match)
+    ]
 
 
 def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
@@ -239,21 +249,44 @@ def disallowed_protocol_matches(path: Path, text: str) -> list[str]:
     ]
 
 
+HARD_CUTOVER_PARAGRAPHS = {
+    Path("README.md"): (
+        "**Protocol incompatibility.** The former `.obsidian-wiki/` state is not detected,\n"
+        "read, migrated, or deleted. A repository containing only it is uninitialized; when\n"
+        "both directories exist, `.llmwikiops/` is the only authority. Explicitly run\n"
+        "`llmwikiops setup` and review its new files; do not manually copy former state."
+    ),
+    Path("README_ZH.md"): (
+        "**协议不兼容。** 旧的 `.obsidian-wiki/` 状态不会检测、读取、迁移或删除。仅有该目录的仓库视为未初始化；"
+        "两个目录同时存在时，只有 `.llmwikiops/` 是权威。请显式运行 `llmwikiops setup` 并审查新文件；"
+        "不要手工复制旧状态。"
+    ),
+}
+
+
+def _paragraph_start(text: str, offset: int) -> int:
+    return text.rfind("\n\n", 0, offset) + 2
+
+
+def _paragraph_at(text: str, offset: int) -> str:
+    start = _paragraph_start(text, offset)
+    end = text.find("\n\n", offset)
+    return text[start:] if end == -1 else text[start:end]
+
+
 def _is_allowed_current_document_match(
     relative: Path, text: str, match: re.Match[str]
 ) -> bool:
-    line = _line_at(text, match.start())
-    if relative == Path("docs/fork.md"):
-        return line.startswith("LLMWikiOps is independently maintained at ")
-    if relative == Path("README.md"):
-        return line.startswith("LLMWikiOps is independently maintained at ") or line.startswith(
-            "**Protocol incompatibility.** The former `.obsidian-wiki/` state"
-        )
-    if relative == Path("README_ZH.md"):
-        return line.startswith("LLMWikiOps 在 ") or line.startswith(
-            "**协议不兼容。** 旧的 `.obsidian-wiki/` 状态"
-        )
-    return False
+    paragraph = HARD_CUTOVER_PARAGRAPHS.get(relative)
+    if paragraph is None or match.group() != ".obsidian-wiki":
+        return False
+    if text[match.start() : match.end() + 1] != ".obsidian-wiki/":
+        return False
+    paragraph_start = _paragraph_start(text, match.start())
+    return (
+        _paragraph_at(text, match.start()) == paragraph
+        and match.start() == paragraph_start + paragraph.index(".obsidian-wiki/")
+    )
 
 
 def _is_explicit_negative_test_match(
@@ -360,6 +393,37 @@ def classify_tracked_path(relative: Path) -> str:
     }:
         return "production"
     return "other"
+
+
+def _tracked_protocol_violations(
+    manifest: Iterable[Path], contents: Callable[[Path], str]
+) -> list[str]:
+    violations: list[str] = []
+    for relative in manifest:
+        category = classify_tracked_path(relative)
+        if category == "docs":
+            if relative in HISTORICAL_DOCUMENTS:
+                continue
+            text = contents(relative)
+            violations.extend(
+                f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
+                for match in _unattributed_protocol_matches(text)
+                if not _is_allowed_current_document_match(relative, text, match)
+            )
+        elif category == "package-resource":
+            text = contents(relative)
+            violations.extend(disallowed_protocol_matches(relative, text))
+        elif category == "tests":
+            text = contents(relative)
+            violations.extend(
+                f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
+                for match in _unattributed_protocol_matches(text)
+                if not _is_explicit_negative_test_match(relative, text, match)
+            )
+        elif category == "other" and relative not in OTHER_BINARY_ALLOWLIST:
+            text = contents(relative)
+            violations.extend(disallowed_protocol_matches(relative, text))
+    return violations
 
 
 def _select_current_source_paths(tracked_relatives: Iterable[Path]) -> tuple[Path, ...]:
@@ -517,39 +581,14 @@ def test_tracked_docs_tests_and_resources_have_dedicated_protocol_guards() -> No
 
     assert HISTORICAL_DOCUMENTS <= docs
     assert Path("obsidian_wiki/_data/legacy-skill-digests-v1.json") in resources
-
-    # Historical specs/plans are retained records on an exact path allowlist.
-    # Every current documentation path is still scanned match-by-match.
-    for relative in docs - HISTORICAL_DOCUMENTS:
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        disallowed = [
-            match
-            for match in _unattributed_protocol_matches(text)
-            if not _is_allowed_current_document_match(relative, text, match)
-        ]
-        assert not disallowed, [
-            f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
-            for match in disallowed
-        ]
-    for relative in resources:
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        assert not disallowed_protocol_matches(relative, text), relative
-    for relative in tests:
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        disallowed = [
-            match
-            for match in _unattributed_protocol_matches(text)
-            if not _is_explicit_negative_test_match(relative, text, match)
-        ]
-        assert not disallowed, [
-            f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: {match.group()}"
-            for match in disallowed
-        ]
     others = {path for path in manifest if classify_tracked_path(path) == "other"}
-    assert others == OTHER_NON_TEXT_ALLOWLIST
-    for relative in others - OTHER_NON_TEXT_ALLOWLIST:
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        assert not disallowed_protocol_matches(relative, text), relative
+    assert others == OTHER_BINARY_ALLOWLIST | {Path("LICENSE")}
+
+    violations = _tracked_protocol_violations(
+        manifest, lambda relative: (ROOT / relative).read_text(encoding="utf-8")
+    )
+
+    assert not violations, violations
 
 
 def test_protocol_audit_rejects_mutated_allowed_contexts() -> None:
@@ -567,6 +606,42 @@ def test_protocol_audit_rejects_mutated_allowed_contexts() -> None:
             assert disallowed_protocol_matches(relative, text)
         else:
             assert not _is_allowed_current_document_match(relative, text, matches[0])
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (Path("README.md"), Path("README_ZH.md"), Path("docs/fork.md")),
+)
+def test_current_document_allowance_rejects_old_name_appended_to_attribution_line(
+    relative: Path,
+) -> None:
+    text = (ROOT / relative).read_text(encoding="utf-8").replace(
+        UPSTREAM_ATTRIBUTION,
+        f"{UPSTREAM_ATTRIBUTION} obsidian-wiki command",
+        1,
+    )
+    appended_start = text.index(" obsidian-wiki command") + 1
+    match = next(
+        match
+        for match in _unattributed_protocol_matches(text)
+        if match.start() == appended_start
+    )
+
+    assert not _is_allowed_current_document_match(relative, text, match)
+
+
+def test_manifest_audit_rejects_old_name_appended_to_license() -> None:
+    manifest = _tracked_manifest()
+
+    def contents(relative: Path) -> str:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        if relative == Path("LICENSE"):
+            return f"{text}\nobsidian-wiki command\n"
+        return text
+
+    violations = _tracked_protocol_violations(manifest, contents)
+
+    assert any(violation.startswith("LICENSE:") for violation in violations)
 
 
 @pytest.mark.parametrize(
