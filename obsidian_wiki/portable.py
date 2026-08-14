@@ -5757,38 +5757,85 @@ def _is_safe_owner_seed_tree(root: Path) -> bool:
     return True
 
 
+def _owner_seed_identity(path: Path) -> tuple[int, int]:
+    metadata = path.lstat()
+    return metadata.st_dev, metadata.st_ino
+
+
+def _rollback_owner_seed_install(
+    created_files: list[tuple[Path, tuple[int, int]]],
+    created_directories: list[tuple[Path, tuple[int, int]]],
+) -> None:
+    """Remove only still-owned paths created by a failed owner-seed install."""
+    for path, identity in reversed(created_files):
+        try:
+            if _owner_seed_identity(path) == identity:
+                path.unlink()
+        except OSError:
+            continue
+    for path, identity in reversed(created_directories):
+        try:
+            if _owner_seed_identity(path) == identity:
+                path.rmdir()
+        except OSError:
+            continue
+
+
+def _install_staged_owner_seed_tree(
+    source: Path,
+    target: Path,
+    created_files: list[tuple[Path, tuple[int, int]]],
+    created_directories: list[tuple[Path, tuple[int, int]]],
+) -> None:
+    for staged in sorted(source.iterdir(), key=lambda path: path.name):
+        destination = target / staged.name
+        metadata = staged.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            try:
+                destination.mkdir()
+            except FileExistsError as exc:
+                destination_metadata = destination.lstat()
+                if (
+                    stat.S_ISLNK(destination_metadata.st_mode)
+                    or not stat.S_ISDIR(destination_metadata.st_mode)
+                ):
+                    raise FileExistsError(
+                        f"portable staged setup collides with owner seed: {destination}"
+                    ) from exc
+            else:
+                created_directories.append(
+                    (destination, _owner_seed_identity(destination))
+                )
+            _install_staged_owner_seed_tree(
+                staged, destination, created_files, created_directories
+            )
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"portable staging contains unsafe entry: {staged}")
+        try:
+            os.link(staged, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"portable staged setup collides with owner seed: {destination}"
+            ) from exc
+        created_files.append((destination, _owner_seed_identity(destination)))
+        staged.unlink()
+
+
 def _commit_staged_owner_seed_repo(root: Path, staging: Path) -> None:
-    """Atomically retain a validated hidden owner seed beside new artifacts."""
+    """Install staged artifacts without replacing or copying owner content."""
     if not _is_safe_owner_seed_tree(root):
         raise ValueError(f"portable owner seed changed before staged commit: {root}")
-    for path in root.rglob("*"):
-        if path.is_dir():
-            continue
-        staged_path = staging / path.relative_to(root)
-        if staged_path.exists() or staged_path.is_symlink():
-            raise FileExistsError(
-                f"portable staged setup collides with owner seed: {staged_path}"
-            )
-    shutil.copytree(root, staging, dirs_exist_ok=True, symlinks=True)
-    backup = Path(
-        tempfile.mkdtemp(
-            prefix=f".{root.name}.{TEMP_PREFIX_TOKEN}-owner-", dir=root.parent
+    created_files: list[tuple[Path, tuple[int, int]]] = []
+    created_directories: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        _install_staged_owner_seed_tree(
+            staging, root, created_files, created_directories
         )
-    )
-    backup.rmdir()
-    try:
-        root.replace(backup)
-        staging.replace(root)
     except BaseException:
-        if not root.exists() and backup.exists():
-            backup.replace(root)
+        _rollback_owner_seed_install(created_files, created_directories)
         raise
-    try:
-        shutil.rmtree(backup)
-    except BaseException as exc:
-        raise _PortableSetupRollbackError(
-            f"portable setup retained owner backup after commit: {backup}: {exc}"
-        ) from exc
+    shutil.rmtree(staging)
 
 
 def setup_portable_repo(

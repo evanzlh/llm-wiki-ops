@@ -524,15 +524,59 @@ def test_setup_hard_cutover_preserves_legacy_protocol_owner_content(
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
+    owner_paths = (root, legacy_config.parent, legacy_rule.parent, legacy_cursor.parent)
+    owner_inodes = {
+        path: (path.stat().st_dev, path.stat().st_ino) for path in owner_paths
+    }
+    owner_file_inodes = {
+        path: (path.stat().st_dev, path.stat().st_ino)
+        for path in (legacy_config, legacy_rule, legacy_cursor)
+    }
 
     setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
 
     assert legacy_config.read_bytes() == b"owner legacy config\n"
     assert legacy_rule.read_bytes() == b"owner legacy agent rule\\x00bytes"
     assert legacy_cursor.read_bytes() == b"owner legacy cursor rule\\x00bytes"
+    assert {
+        path: (path.stat().st_dev, path.stat().st_ino) for path in owner_paths
+    } == owner_inodes
+    assert {
+        path: (path.stat().st_dev, path.stat().st_ino)
+        for path in (legacy_config, legacy_rule, legacy_cursor)
+    } == owner_file_inodes
     assert (root / ".llmwikiops/config.toml").is_file()
     assert (root / ".agent/rules/llmwikiops.md").is_file()
     assert (root / ".cursor/rules/llmwikiops.mdc").is_file()
+
+
+def test_owner_seed_collision_rolls_back_only_setup_created_paths(
+    tmp_path: Path, tiny_skills: Path
+) -> None:
+    root = tmp_path / "repo"
+    legacy = root / ".agent/rules/obsidian-wiki.md"
+    collision = root / ".cursor/rules/llmwikiops.mdc"
+    for path, contents in (
+        (legacy, b"owner legacy rule"),
+        (collision, b"owner concurrent write"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+    owner_inode = (root.stat().st_dev, root.stat().st_ino)
+    legacy_inode = (legacy.stat().st_dev, legacy.stat().st_ino)
+    collision_inode = (collision.stat().st_dev, collision.stat().st_ino)
+
+    with pytest.raises(FileExistsError, match="collides with owner seed"):
+        setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+    assert root.exists()
+    assert (root.stat().st_dev, root.stat().st_ino) == owner_inode
+    assert legacy.read_bytes() == b"owner legacy rule"
+    assert collision.read_bytes() == b"owner concurrent write"
+    assert (legacy.stat().st_dev, legacy.stat().st_ino) == legacy_inode
+    assert (collision.stat().st_dev, collision.stat().st_ino) == collision_inode
+    assert not (root / ".agent/rules/llmwikiops.md").exists()
+    assert not (root / ".llmwikiops").exists()
 
 
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(

@@ -130,12 +130,6 @@ def _is_protocol_directory(text: str, match: re.Match[str]) -> bool:
     return end == len(text) or text[end] in "/ \t\r\n`'\"),;:!?]}"
 
 
-def _is_renamed_bootstrap_scope(relative: Path) -> bool:
-    return relative.as_posix().removeprefix("obsidian_wiki/_data/bootstrap/") in (
-        MANAGED_BOOTSTRAP_RELATIVES
-    )
-
-
 def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
     owner_start = match.start() - len("Ar9av/")
     if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
@@ -170,7 +164,6 @@ def is_allowed_legacy_identity(
     return any(
         (
             _is_protocol_directory(text, match),
-            _is_renamed_bootstrap_scope(relative),
             _is_ar9av_attribution(text, match),
             _is_stable_extension_id(relative, text, match),
         )
