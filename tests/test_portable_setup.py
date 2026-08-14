@@ -1849,6 +1849,32 @@ def test_sync_cleanup_rejects_nested_fifo_without_removing_evidence(
     assert evidence.read_bytes() == b"disposable evidence remains\n"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO cleanup safety")
+def test_sync_cleanup_preflights_all_subtrees_before_removing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    victim = root / "disposable"
+    evidence = victim / "a-evidence/journal.json"
+    fifo = victim / "z-unsafe/owner.fifo"
+    evidence.parent.mkdir(parents=True)
+    fifo.parent.mkdir(parents=True)
+    evidence.write_bytes(b"cross-subtree evidence remains\n")
+    os.mkfifo(fifo)
+    original_listdir = portable.os.listdir
+    monkeypatch.setattr(
+        portable.os,
+        "listdir",
+        lambda directory: sorted(original_listdir(directory)),
+    )
+
+    with pytest.raises(ValueError, match="unsafe entry"):
+        portable._remove_sync_path(root, victim)
+
+    assert evidence.read_bytes() == b"cross-subtree evidence remains\n"
+    assert fifo.exists()
+
+
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unavailable")
 def test_sync_cleanup_unlinks_internal_symlink_without_following_owner_target(
     tmp_path: Path,
