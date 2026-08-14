@@ -39,11 +39,11 @@ def src_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def portable_repo(tmp_path: Path):
     root = tmp_path / "portable"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / "wiki").mkdir()
     (root / ".skills").mkdir()
-    config_path = root / ".obsidian-wiki" / "config.toml"
+    config_path = root / ".llmwikiops" / "config.toml"
     config_path.write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
@@ -52,7 +52,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )

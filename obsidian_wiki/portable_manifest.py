@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from obsidian_wiki.cache import compute_hash
 from obsidian_wiki.config import PortableConfig
+from obsidian_wiki.protocol import TEMP_PREFIX_TOKEN
 from obsidian_wiki.safe_files import stable_directory_identity
 
 _SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
@@ -23,7 +24,8 @@ _SUPPORTS_MANIFEST_DIRFD = all(
     function in os.supports_dir_fd
     for function in (os.open, os.stat, os.mkdir, os.rename, os.link, os.unlink)
 ) and os.stat in os.supports_follow_symlinks
-_SIDECAR = ".obsidian-wiki-manifest-mutation"
+_SIDECAR = f".{TEMP_PREFIX_TOKEN}-manifest-mutation"
+_CAPABILITY_MARKER = b"llmwikiops manifest capability probe\n"
 _WAL_FILES = frozenset(
     {"journal.json", ".journal.tmp", "pre.bin", ".pre.tmp", "post.bin", ".post.tmp"}
 )
@@ -210,7 +212,7 @@ class ShardedManifest:
     def _probe_target_filesystem(self, parent_fd: int) -> None:
         source = "probe-source"
         linked = "probe-link"
-        marker = b"obsidian-wiki manifest capability probe\n"
+        marker = _CAPABILITY_MARKER
         descriptor = -1
         side_fd = -1
         try:

@@ -35,7 +35,7 @@ def _run(
 
 
 def _write_config(home: Path, vault: Path, *, version: str | None = None) -> None:
-    config_dir = home / ".obsidian-wiki"
+    config_dir = home / ".llmwikiops"
     config_dir.mkdir(parents=True, exist_ok=True)
     lines = [f'OBSIDIAN_VAULT_PATH="{vault}"']
     if version is not None:
@@ -101,7 +101,7 @@ def _portable_snapshot(root: Path) -> tuple[tuple[str, str, bytes | str], ...]:
 def _replace_portable_path(
     root: Path, *, old: str, new: str
 ) -> None:
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     text = config.read_text(encoding="utf-8")
     assert old in text
     config.write_text(text.replace(old, new), encoding="utf-8")
@@ -277,7 +277,7 @@ def test_doctor_portable_mode_reports_exact_v2_shard_count(tmp_path: Path) -> No
     home = tmp_path / "home"
     root, nested = _make_portable_repo(tmp_path)
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -303,7 +303,7 @@ def test_doctor_rejects_hardlinked_manifest_files(
     home = tmp_path / "home"
     root, nested = _make_portable_repo(tmp_path)
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -344,7 +344,7 @@ def test_doctor_fresh_portable_clone_allows_lazy_paths_without_mutation(
     _git(origin, "commit", "-m", "portable fixture")
     clone = tmp_path / "clone"
     _git(tmp_path, "clone", str(origin), str(clone))
-    lazy_paths = (clone / ".obsidian-wiki/local", clone / "sources")
+    lazy_paths = (clone / ".llmwikiops/local", clone / "sources")
     assert all(not path.exists() and not path.is_symlink() for path in lazy_paths)
     before = _portable_snapshot(clone)
 
@@ -362,22 +362,17 @@ def test_doctor_allows_multiple_missing_nested_sources_and_local_state(
 ) -> None:
     home = tmp_path / "home"
     root, nested = _make_portable_repo(tmp_path)
-    shutil.rmtree(root / ".obsidian-wiki/local")
+    shutil.rmtree(root / ".llmwikiops/local")
     (root / "sources").rmdir()
     _replace_portable_path(
         root,
         old='sources = ["sources"]',
         new='sources = ["sources/inbox", "imports/deep/nested"]',
     )
-    _replace_portable_path(
-        root,
-        old='local_state = ".obsidian-wiki/local"',
-        new='local_state = ".obsidian-wiki/runtime/cache"',
-    )
     lazy_paths = (
         root / "sources/inbox",
         root / "imports/deep/nested",
-        root / ".obsidian-wiki/runtime/cache",
+        root / ".llmwikiops/local",
     )
     before = _portable_snapshot(root)
 
@@ -393,11 +388,6 @@ def test_doctor_allows_multiple_missing_nested_sources_and_local_state(
     ("old", "new", "relative"),
     [
         ('sources = ["sources"]', 'sources = ["runtime/inbox"]', "runtime/inbox"),
-        (
-            'local_state = ".obsidian-wiki/local"',
-            'local_state = ".obsidian-wiki/runtime/cache"',
-            ".obsidian-wiki/runtime/cache",
-        ),
     ],
 )
 def test_doctor_rejects_dangling_symlink_at_lazy_path(
@@ -429,12 +419,6 @@ def test_doctor_rejects_dangling_symlink_at_lazy_path(
             'sources = ["runtime/deep/inbox"]',
             "runtime/deep/inbox",
             "runtime",
-        ),
-        (
-            'local_state = ".obsidian-wiki/local"',
-            'local_state = ".obsidian-wiki/runtime/deep/cache"',
-            ".obsidian-wiki/runtime/deep/cache",
-            ".obsidian-wiki/runtime",
         ),
     ],
 )
@@ -479,10 +463,6 @@ def test_doctor_rejects_unsafe_existing_component_of_lazy_path(
     ("old", "new"),
     [
         ('sources = ["sources"]', 'sources = ["../outside"]'),
-        (
-            'local_state = ".obsidian-wiki/local"',
-            'local_state = "../outside"',
-        ),
     ],
 )
 def test_doctor_rejects_escaping_lazy_path(
@@ -554,7 +534,7 @@ def test_doctor_wrong_portable_implementation_fails_without_global_fallback(
 ) -> None:
     home = tmp_path / "home"
     root, nested = _make_portable_repo(tmp_path)
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
             IMPLEMENTATION_ID, "Ar9av/obsidian-wiki"
@@ -580,7 +560,7 @@ def test_doctor_dangling_portable_config_symlink_fails_without_global_fallback(
 ) -> None:
     home = tmp_path / "home"
     root, nested = _make_portable_repo(tmp_path)
-    config = root / ".obsidian-wiki/config.toml"
+    config = root / ".llmwikiops/config.toml"
     config.unlink()
     config.symlink_to(tmp_path / "missing-config.toml")
     global_vault = tmp_path / "global-vault"
@@ -601,7 +581,7 @@ def test_doctor_dangling_portable_config_symlink_fails_without_global_fallback(
 @pytest.mark.parametrize(
     "relative",
     [
-        ".obsidian-wiki/config.toml",
+        ".llmwikiops/config.toml",
         "CLAUDE.md",
         "wiki/index.md",
         ".skills/wiki-ingest/SKILL.md",

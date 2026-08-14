@@ -27,10 +27,10 @@ from obsidian_wiki.graph_analysis import (
 def vault(tmp_path):
     v = tmp_path / "vault"
     v.mkdir()
-    (tmp_path / ".obsidian-wiki").mkdir()
+    (tmp_path / ".llmwikiops").mkdir()
     (tmp_path / "sources").mkdir()
     (tmp_path / ".skills").mkdir()
-    (tmp_path / ".obsidian-wiki/config.toml").write_text(
+    (tmp_path / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -38,7 +38,7 @@ requires_cli = ">=0"
 vault = "vault"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )

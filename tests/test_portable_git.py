@@ -113,7 +113,7 @@ def test_authoritative_fingerprint_includes_read_only_branch_identity(
     root = tmp_path / "knowledge"
     setup_portable_repo(root, version=__version__, source_skills=source_skills)
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -168,7 +168,7 @@ def test_portable_check_and_doctor_reject_different_enclosing_git_root(
     root = parent / "knowledge"
     setup_portable_repo(root, version=__version__, source_skills=source_skills)
     config = load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )

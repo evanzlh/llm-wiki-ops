@@ -29,12 +29,12 @@ def make_repository(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "knowledge"
     vault = root / "wiki"
     nested = root / "work/nested"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / ".skills").mkdir()
     vault.mkdir()
     nested.mkdir(parents=True)
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -42,7 +42,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )

@@ -46,6 +46,11 @@ from obsidian_wiki.transaction_validation import (
 )
 
 
+def test_transaction_excludes_llmwikiops_protocol_directory() -> None:
+    assert ".llmwikiops" in transaction_module._CONTROL_DIRECTORIES
+    assert ".obsidian-wiki" not in transaction_module._CONTROL_DIRECTORIES
+
+
 def test_commit_holds_manifest_session_before_snapshot_and_through_manifest_updates(
     tmp_path: Path, log_writer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,11 +228,11 @@ updated: 2026-08-07
 
 def make_config(tmp_path: Path):
     root = tmp_path / "knowledge"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / "wiki" / "concepts").mkdir(parents=True)
     (root / ".skills").mkdir()
-    path = root / ".obsidian-wiki" / "config.toml"
+    path = root / ".llmwikiops" / "config.toml"
     path.write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
@@ -236,7 +241,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -279,7 +284,7 @@ def test_begin_rejects_ordinary_repository_rebound(tmp_path: Path) -> None:
     root, config = make_config(tmp_path)
     manager = TransactionManager(config)
     root.rename(tmp_path / "original-knowledge")
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "wiki/concepts").mkdir(parents=True)
     (root / "sources").mkdir()
 
@@ -5169,7 +5174,7 @@ def test_transaction_command_rejects_hard_linked_repository_config(
     tmp_path: Path,
 ) -> None:
     root, _ = make_config(tmp_path)
-    config = root / ".obsidian-wiki" / "config.toml"
+    config = root / ".llmwikiops" / "config.toml"
     duplicate = tmp_path / "config-copy.toml"
     os.link(config, duplicate)
 

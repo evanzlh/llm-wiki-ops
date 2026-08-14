@@ -28,6 +28,7 @@ from obsidian_wiki.operations import (
     parse_operation_log,
 )
 from obsidian_wiki.safe_files import stable_directory_identity
+from obsidian_wiki.protocol import STATE_DIR_NAME
 from obsidian_wiki.portable_manifest import (
     ManifestError,
     ManifestPreconditionError,
@@ -147,7 +148,7 @@ _CONTROL_DIRECTORIES = frozenset(
     {
         ".manifest",
         ".obsidian",
-        ".obsidian-wiki",
+        STATE_DIR_NAME,
         "_meta",
     }
 )

@@ -155,7 +155,7 @@ def _clone(source: Path, target: Path) -> None:
 
 def _config(root: Path) -> PortableConfig:
     return load_portable_config(
-        root / ".obsidian-wiki/config.toml",
+        root / ".llmwikiops/config.toml",
         installed_version=__version__,
         implementation=IMPLEMENTATION_ID,
     )
@@ -717,12 +717,12 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         .split("\0")
     )
     assert untracked == framework_outputs
-    assert not any(path.startswith(".obsidian-wiki/local/") for path in untracked)
+    assert not any(path.startswith(".llmwikiops/local/") for path in untracked)
     assert _git(root, "diff", "--name-only").stdout.splitlines() == ["wiki/log.md"]
     assert _git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
     assert _git(root, "rev-parse", "HEAD").stdout.strip() == owner_head
     local_transaction = (
-        f".obsidian-wiki/local/transactions/{transaction['transaction_id']}"
+        f".llmwikiops/local/transactions/{transaction['transaction_id']}"
     )
     ignored = _git(root, "check-ignore", "-q", local_transaction, check=False)
     assert ignored.returncode == 0
@@ -736,7 +736,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         .split("\0")
     )
     assert durable_paths <= head_paths
-    assert not any(path.startswith(".obsidian-wiki/local/") for path in head_paths)
+    assert not any(path.startswith(".llmwikiops/local/") for path in head_paths)
     assert _git(root, "status", "--porcelain=v1", "-z").stdout == ""
 
     durable_files = {
@@ -756,7 +756,7 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         .split("\0")
     )
     assert durable_paths <= clone_paths
-    assert not any(path.startswith(".obsidian-wiki/local/") for path in clone_paths)
+    assert not any(path.startswith(".llmwikiops/local/") for path in clone_paths)
     for relative, path in durable_files.items():
         expected = path.read_bytes()
         clone_path = clone / relative

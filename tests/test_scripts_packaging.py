@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
 REMOVED_SCHEDULER_ARTIFACTS = (
     "daily-update.sh",
-    "com.obsidian-wiki.daily-update.plist",
+    "com.llmwikiops.daily-update.plist",
     "wiki-notify.sh",
 )
 GENERIC_SCRIPTS = ("extract-jsonl.py",)

@@ -47,7 +47,7 @@ def _portable_cli_context(
 ) -> Path:
     root = vault.parent
     vault.mkdir(parents=True, exist_ok=True)
-    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / ".llmwikiops").mkdir(exist_ok=True)
     (root / "sources").mkdir(exist_ok=True)
     (root / ".skills").mkdir(exist_ok=True)
     nested = root / "work/nested"
@@ -55,7 +55,7 @@ def _portable_cli_context(
     setting_lines = "".join(
         f'{key} = "{value}"\n' for key, value in (settings or {}).items()
     )
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -63,7 +63,7 @@ requires_cli = ">=0"
 vault = "{vault.name}"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 {setting_lines}''',
         encoding="utf-8",
@@ -422,7 +422,7 @@ def test_lint_cli_prefers_portable_vault_and_schema_from_nested_cwd(
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
     global_vault = tmp_path / "global-vault"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / ".skills").mkdir()
     portable_vault.mkdir()
@@ -436,7 +436,7 @@ def test_lint_cli_prefers_portable_vault_and_schema_from_nested_cwd(
         encoding="utf-8",
     )
     _page(global_vault, "concepts/global.md")
-    portable_config = root / ".obsidian-wiki/config.toml"
+    portable_config = root / ".llmwikiops/config.toml"
     portable_config.write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
@@ -445,13 +445,13 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 OBSIDIAN_ALLOWED_LIFECYCLES = ["active"]
 ''',
         encoding="utf-8",
     )
-    global_config = home / ".obsidian-wiki/config"
+    global_config = home / ".llmwikiops/config"
     global_config.parent.mkdir(parents=True)
     global_config.write_text(
         f'OBSIDIAN_VAULT_PATH="{global_vault}"\n', encoding="utf-8"
@@ -475,12 +475,12 @@ def test_lint_cli_rejects_explicit_vault_in_portable_repository(tmp_path: Path) 
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
     explicit_vault = tmp_path / "explicit-vault"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / ".skills").mkdir()
     portable_vault.mkdir()
     _page(explicit_vault, "concepts/explicit.md")
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -488,7 +488,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -1000,7 +1000,7 @@ def test_schema_source_is_portable_config_and_positional_vaults_are_rejected(tmp
         page = _page(vault, "concepts/alpha.md")
         page.write_text(page.read_text().replace("lifecycle: reviewed", "lifecycle: active"))
 
-    portable_config = tmp_path / ".obsidian-wiki/config.toml"
+    portable_config = tmp_path / ".llmwikiops/config.toml"
     nested = _portable_cli_context(
         local_vault, {"OBSIDIAN_ALLOWED_LIFECYCLES": "active"}
     )

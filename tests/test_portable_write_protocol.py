@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,23 @@ from obsidian_wiki.cli import (
 from obsidian_wiki.transaction import TransactionError, TransactionRecord
 from obsidian_wiki.transaction_guidance import guidance_for_record
 from obsidian_wiki.transaction_validation import TransactionValidationReport
+from obsidian_wiki import cli as cli_module
+
+
+def test_runtime_exports_only_new_repository_variable(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = SimpleNamespace(
+        root=root,
+        vault=root / "wiki",
+        sources=(root / "sources",),
+        settings={},
+    )
+
+    values = cli_module._config_values(config)
+
+    assert values["LLMWIKIOPS_REPO"] == str(root)
+    assert "OBSIDIAN_WIKI_REPO" not in values
 
 
 ROOT = Path(__file__).resolve().parents[1]

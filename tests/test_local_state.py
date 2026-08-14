@@ -43,11 +43,11 @@ def run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[st
 @pytest.fixture
 def config_fixture(tmp_path: Path) -> PortableConfig:
     root = tmp_path / "knowledge"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / "wiki").mkdir()
     (root / ".skills").mkdir()
-    path = root / ".obsidian-wiki" / "config.toml"
+    path = root / ".llmwikiops" / "config.toml"
     path.write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
@@ -56,7 +56,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -434,7 +434,7 @@ def test_sidecar_write_stays_bound_to_opened_local_directory(
     hot = config.vault / "hot.md"
     hot.write_text("hot\n", encoding="utf-8")
     config.local_state.mkdir(parents=True)
-    displaced = config.root / ".obsidian-wiki" / "displaced-local"
+    displaced = config.root / ".llmwikiops" / "displaced-local"
     external = tmp_path / "external-local"
     external.mkdir()
     real_write_all = local_state_module._write_all

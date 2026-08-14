@@ -102,7 +102,7 @@ def _portable_cli_context(
 ) -> Path:
     root = vault.parent
     vault.mkdir(parents=True, exist_ok=True)
-    (root / ".obsidian-wiki").mkdir(exist_ok=True)
+    (root / ".llmwikiops").mkdir(exist_ok=True)
     (root / "sources").mkdir(exist_ok=True)
     (root / ".skills").mkdir(exist_ok=True)
     nested = root / "work/nested"
@@ -110,7 +110,7 @@ def _portable_cli_context(
     setting_lines = "".join(
         f'{key} = "{value}"\n' for key, value in (settings or {}).items()
     )
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -118,7 +118,7 @@ requires_cli = ">=0"
 vault = "{vault.name}"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 [settings]
 {setting_lines}''',
         encoding="utf-8",
@@ -884,7 +884,7 @@ def test_configured_vault_symlink_cannot_write_trust_ledger_outside_repository(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
-    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path = repository / ".llmwikiops/config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         f'''schema_version = 1
@@ -894,7 +894,7 @@ requires_cli = ">=0"
 vault = "escape/wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -922,7 +922,7 @@ def test_trust_writer_rejects_repository_rebound_after_config_load(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
-    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path = repository / ".llmwikiops/config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         f'''schema_version = 1
@@ -932,7 +932,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -960,7 +960,7 @@ def test_trust_writer_rejects_ordinary_repository_rebound_after_config_load(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
-    config_path = repository / ".obsidian-wiki/config.toml"
+    config_path = repository / ".llmwikiops/config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         f'''schema_version = 1
@@ -970,7 +970,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -1398,11 +1398,11 @@ def test_trust_cli_uses_portable_context_without_context_warning_fields(tmp_path
     home = tmp_path / "home"
     root = tmp_path / "knowledge"
     portable_vault = root / "wiki"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources").mkdir()
     (root / ".skills").mkdir()
     _page(portable_vault, "concepts/portable.md")
-    (root / ".obsidian-wiki/config.toml").write_text(
+    (root / ".llmwikiops/config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -1410,7 +1410,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -1667,7 +1667,7 @@ def test_portable_config_path_is_used_as_cli_schema_source(tmp_path: Path) -> No
     assert record.returncode == 0, record.stderr
     assert "removed obsolete trust ledger entries" not in record.stderr
     assert json.loads(record.stdout)["schema"]["source"] == (
-        f"cli:{tmp_path / '.obsidian-wiki/config.toml'}"
+        f"cli:{tmp_path / '.llmwikiops/config.toml'}"
     )
 
 

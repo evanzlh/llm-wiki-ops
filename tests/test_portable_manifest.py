@@ -19,13 +19,20 @@ from obsidian_wiki.portable_manifest import (
 )
 
 
+def test_manifest_protocol_names_are_llmwikiops() -> None:
+    assert portable_manifest_module._SIDECAR == ".llmwikiops-manifest-mutation"
+    assert portable_manifest_module._CAPABILITY_MARKER == (
+        b"llmwikiops manifest capability probe\n"
+    )
+
+
 def make_repo(tmp_path: Path):
     root = tmp_path / "knowledge"
-    (root / ".obsidian-wiki").mkdir(parents=True)
+    (root / ".llmwikiops").mkdir(parents=True)
     (root / "sources" / "design").mkdir(parents=True)
     (root / "wiki").mkdir()
     (root / ".skills").mkdir()
-    (root / ".obsidian-wiki" / "config.toml").write_text(
+    (root / ".llmwikiops" / "config.toml").write_text(
         f'''schema_version = 1
 implementation = "{IMPLEMENTATION_ID}"
 requires_cli = ">=0"
@@ -33,7 +40,7 @@ requires_cli = ">=0"
 vault = "wiki"
 sources = ["sources"]
 skills = ".skills"
-local_state = ".obsidian-wiki/local"
+local_state = ".llmwikiops/local"
 ''',
         encoding="utf-8",
     )
@@ -42,7 +49,7 @@ local_state = ".obsidian-wiki/local"
         encoding="utf-8",
     )
     config = load_portable_config(
-        root / ".obsidian-wiki" / "config.toml",
+        root / ".llmwikiops" / "config.toml",
         installed_version="2026.8",
         implementation=IMPLEMENTATION_ID,
     )
@@ -478,9 +485,9 @@ def test_prepared_wal_precedes_sidecar_and_recovers(tmp_path: Path, monkeypatch)
     with pytest.raises(SystemExit, match="PREPARED"):
         ShardedManifest(config).upsert(source)
 
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "PREPARED"
-    assert not list((root / "wiki").rglob(".obsidian-wiki-manifest-mutation"))
+    assert not list((root / "wiki").rglob(".llmwikiops-manifest-mutation"))
 
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
     recovered = ShardedManifest(config)
@@ -508,7 +515,7 @@ def test_reader_accepts_only_wal_proven_link_window(tmp_path: Path, monkeypatch)
     assert shard.stat().st_nlink == 2
     assert ShardedManifest(config).load("sources/design/a.md") is not None
 
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     journal.unlink()
     with pytest.raises(ManifestError, match="single-link"):
         ShardedManifest(config).load("sources/design/a.md")
@@ -530,7 +537,7 @@ def test_reader_rejects_link_window_with_wrong_candidate_identity(
     store = ShardedManifest(config)
     with pytest.raises(SystemExit):
         store.upsert(source)
-    journal_path = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal_path = root / ".llmwikiops/local/manifest-mutation/journal.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     journal["candidate_identity"] = [0, 0]
     journal_path.write_text(json.dumps(journal) + "\n", encoding="utf-8")
@@ -559,7 +566,7 @@ def test_noncooperative_target_creation_is_preserved_and_blocks_mutation(
     with pytest.raises(ManifestPreconditionError, match="concurrent|conflict"):
         store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
     assert target.read_bytes() == owner
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "CONFLICT"
 
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
@@ -575,7 +582,7 @@ def test_iter_ignores_only_reserved_sidecar_directory(tmp_path: Path) -> None:
     source.write_text("source", encoding="utf-8")
     store = ShardedManifest(config)
     store.upsert(source)
-    sidecar = store.entry_path("sources/design/a.md").parent / ".obsidian-wiki-manifest-mutation"
+    sidecar = store.entry_path("sources/design/a.md").parent / ".llmwikiops-manifest-mutation"
     sidecar.mkdir()
     (sidecar / "candidate").write_text("internal", encoding="utf-8")
     assert [entry.source_id for entry in store.iter_entries()] == [
@@ -614,7 +621,7 @@ def test_journal_rewrite_keeps_previous_durable_record_on_crash(
     monkeypatch.setattr(portable_manifest_module.os, "rename", crash_on_second_journal_rename)
     with pytest.raises(SystemExit, match="journal replacement"):
         ShardedManifest(config).upsert(source)
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "PREPARED"
 
     monkeypatch.setattr(portable_manifest_module.os, "rename", real_rename)
@@ -645,8 +652,8 @@ def test_each_upsert_crash_boundary_recovers_to_complete_shard(
     recovered = ShardedManifest(config)
     recovered.upsert(source, compiled_at="2026-08-08T00:00:01Z")
     assert recovered.load("sources/design/a.md").compiled_at == "2026-08-08T00:00:01Z"
-    assert not (root / ".obsidian-wiki/local/manifest-mutation/journal.json").exists()
-    assert not list((root / "wiki").rglob(".obsidian-wiki-manifest-mutation"))
+    assert not (root / ".llmwikiops/local/manifest-mutation/journal.json").exists()
+    assert not list((root / "wiki").rglob(".llmwikiops-manifest-mutation"))
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
@@ -719,7 +726,7 @@ def test_repeated_crash_recovery_keeps_control_artifacts_bounded(
         path
         for path in root.rglob("*")
         if path.name in portable_manifest_module._WAL_FILES
-        or path.name in {"candidate", "reserved", ".obsidian-wiki-manifest-mutation"}
+        or path.name in {"candidate", "reserved", ".llmwikiops-manifest-mutation"}
     ]
     assert controls == []
 
@@ -758,7 +765,7 @@ def test_unsafe_wal_journal_fails_closed_before_live_mutation(
     root, config = make_repo(tmp_path)
     source = root / "sources/design/a.md"
     source.write_text("source", encoding="utf-8")
-    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    wal = root / ".llmwikiops/local/manifest-mutation"
     wal.mkdir(parents=True)
     journal = wal / "journal.json"
     if kind == "symlink":
@@ -788,7 +795,7 @@ def test_unsafe_sidecar_fails_closed_without_touching_live_shard(
     store.upsert(source, compiled_at="2026-08-08T00:00:00Z")
     target = store.entry_path("sources/design/a.md")
     before = target.read_bytes()
-    sidecar = target.parent / ".obsidian-wiki-manifest-mutation"
+    sidecar = target.parent / ".llmwikiops-manifest-mutation"
     if kind == "symlink":
         sidecar.symlink_to(tmp_path / "outside", target_is_directory=True)
     else:
@@ -808,7 +815,7 @@ def test_unknown_sidecar_debris_blocks_mutation(tmp_path: Path) -> None:
     store = ShardedManifest(config)
     store.upsert(source)
     target = store.entry_path("sources/design/a.md")
-    sidecar = target.parent / ".obsidian-wiki-manifest-mutation"
+    sidecar = target.parent / ".llmwikiops-manifest-mutation"
     sidecar.mkdir()
     (sidecar / "owner-file").write_text("owner", encoding="utf-8")
     before = target.read_bytes()
@@ -873,7 +880,7 @@ def test_applied_cleanup_recovers_with_one_blob_already_missing(
     with ShardedManifest(config).mutation_session():
         pass
     assert ShardedManifest(config).load("sources/design/a.md") is not None
-    assert not (root / ".obsidian-wiki/local/manifest-mutation/journal.json").exists()
+    assert not (root / ".llmwikiops/local/manifest-mutation/journal.json").exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX manifest WAL")
@@ -881,7 +888,7 @@ def test_wal_directory_rejects_unknown_entries(tmp_path: Path) -> None:
     root, config = make_repo(tmp_path)
     source = root / "sources/design/a.md"
     source.write_text("source", encoding="utf-8")
-    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    wal = root / ".llmwikiops/local/manifest-mutation"
     wal.mkdir(parents=True)
     (wal / "owner-debris").write_text("owner", encoding="utf-8")
     with pytest.raises(ManifestError, match="unexpected|WAL"):
@@ -1116,7 +1123,7 @@ def test_oversize_postimage_is_rejected_before_any_wal_artifact(tmp_path: Path) 
     with store.mutation_session():
         with pytest.raises(ManifestError, match="size|limit"):
             store._mutate("sources/design/a.md", "upsert", oversized, portable_manifest_module._UNSET_PREIMAGE)
-    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    wal = root / ".llmwikiops/local/manifest-mutation"
     assert not any((wal / name).exists() for name in portable_manifest_module._WAL_FILES)
 
 
@@ -1137,7 +1144,7 @@ def test_target_filesystem_capability_failure_precedes_wal_and_live(
     monkeypatch.setattr(portable_manifest_module.os, "link", fail_probe)
     with pytest.raises(ManifestError, match="capability|filesystem"):
         ShardedManifest(config).upsert(source)
-    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    wal = root / ".llmwikiops/local/manifest-mutation"
     assert not (wal / "journal.json").exists()
     assert not ShardedManifest(config).entry_path("sources/design/a.md").exists()
 
@@ -1184,7 +1191,7 @@ def test_conflict_resolution_preserves_replaced_wal_evidence(
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", interpose)
     with pytest.raises(ManifestPreconditionError):
         store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
-    pre = root / ".obsidian-wiki/local/manifest-mutation/pre.bin"
+    pre = root / ".llmwikiops/local/manifest-mutation/pre.bin"
     pre.write_bytes(b"OWNER EVIDENCE")
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
     with pytest.raises(ManifestPreconditionError, match="evidence|inspection"):
@@ -1210,7 +1217,7 @@ def test_conflict_resolution_preserves_journal_when_wal_evidence_missing(
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", interpose)
     with pytest.raises(ManifestPreconditionError):
         store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
-    wal = root / ".obsidian-wiki/local/manifest-mutation"
+    wal = root / ".llmwikiops/local/manifest-mutation"
     (wal / "pre.bin").unlink()
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
     with pytest.raises(ManifestPreconditionError, match="missing|inspection"):
@@ -1331,7 +1338,7 @@ def test_conflict_resolution_is_crash_idempotent(
     with ShardedManifest(config).mutation_session():
         pass
     assert target.read_bytes() == b"owner live\n"
-    assert not (root / ".obsidian-wiki/local/manifest-mutation/journal.json").exists()
+    assert not (root / ".llmwikiops/local/manifest-mutation/journal.json").exists()
 
 
 def _strip_resolution_fields(journal: Path) -> None:
@@ -1364,7 +1371,7 @@ def test_legacy_schema_one_journal_recovers(
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
     with pytest.raises(SystemExit, match=step):
         ShardedManifest(config).upsert(source)
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     _strip_resolution_fields(journal)
 
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
@@ -1390,7 +1397,7 @@ def test_legacy_schema_one_conflict_can_be_resolved(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", conflict)
     with pytest.raises(ManifestPreconditionError):
         store.upsert(source, compiled_at="2026-08-08T00:00:01Z")
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     _strip_resolution_fields(journal)
 
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
@@ -1415,7 +1422,7 @@ def test_legacy_schema_one_link_window_remains_readable(
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
     with pytest.raises(SystemExit, match="linked"):
         ShardedManifest(config).upsert(source)
-    journal = root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    journal = root / ".llmwikiops/local/manifest-mutation/journal.json"
     if journal_shape == "legacy":
         _strip_resolution_fields(journal)
     else:
@@ -1450,7 +1457,7 @@ def _create_interrupted_resolution(
     with pytest.raises(SystemExit, match="resolution crash"):
         ShardedManifest(config).resolve_conflict_keep_live()
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
-    return target, root / ".obsidian-wiki/local/manifest-mutation/journal.json"
+    return target, root / ".llmwikiops/local/manifest-mutation/journal.json"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX manifest reconciliation")
@@ -1531,7 +1538,7 @@ def test_capability_probe_crash_debris_is_bounded_and_recovered(
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", crash)
     with pytest.raises(SystemExit, match="probe crash"):
         ShardedManifest(config).upsert(source)
-    sidecar = root / "wiki/.manifest/sources/design/.obsidian-wiki-manifest-mutation"
+    sidecar = root / "wiki/.manifest/sources/design/.llmwikiops-manifest-mutation"
     assert sorted(path.name for path in sidecar.iterdir()) == ["probe-link", "probe-source"]
     monkeypatch.setattr(portable_manifest_module, "_manifest_fault_point", lambda _: None)
     store = ShardedManifest(config)
