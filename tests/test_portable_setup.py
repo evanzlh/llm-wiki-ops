@@ -1751,6 +1751,82 @@ def test_skill_sync_staging_failure_rolls_back_a_created_agent_parent(
     assert not (root / portable.SYNC_OPERATION.transactions_relative).exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap race")
+def test_sync_cleanup_rejects_top_level_directory_swap_before_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    parent = root / "state"
+    victim = parent / "disposable"
+    owner = tmp_path / "owner"
+    evidence = parent / "disposable-evidence"
+    precious = owner / "precious.md"
+    victim.mkdir(parents=True)
+    (victim / "journal.json").write_bytes(b"disposable evidence\n")
+    owner.mkdir()
+    precious.write_bytes(b"owner bytes must survive\n")
+    owner_identity = (owner.stat().st_dev, owner.stat().st_ino)
+    original_open = portable.os.open
+    swapped = False
+
+    def swap_after_stat(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if path == "disposable" and not swapped:
+            swapped = True
+            victim.rename(evidence)
+            owner.rename(victim)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(portable.os, "open", swap_after_stat)
+
+    with pytest.raises(ValueError, match="identity changed"):
+        portable._remove_sync_path(root, victim)
+
+    assert swapped
+    assert (victim.stat().st_dev, victim.stat().st_ino) == owner_identity
+    assert (victim / precious.name).read_bytes() == b"owner bytes must survive\n"
+    assert (evidence / "journal.json").read_bytes() == b"disposable evidence\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap race")
+def test_sync_cleanup_rejects_recursive_child_swap_before_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    victim = root / "disposable"
+    child = victim / "child"
+    owner = tmp_path / "owner"
+    evidence = victim / "child-evidence"
+    precious = owner / "precious.md"
+    child.mkdir(parents=True)
+    (child / "journal.json").write_bytes(b"disposable child evidence\n")
+    owner.mkdir()
+    precious.write_bytes(b"owner child bytes must survive\n")
+    owner_identity = (owner.stat().st_dev, owner.stat().st_ino)
+    original_open = portable.os.open
+    swapped = False
+
+    def swap_after_child_stat(
+        path: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal swapped
+        if path == "child" and not swapped:
+            swapped = True
+            child.rename(evidence)
+            owner.rename(child)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(portable.os, "open", swap_after_child_stat)
+
+    with pytest.raises(ValueError, match="identity changed"):
+        portable._remove_sync_path(root, victim)
+
+    assert swapped
+    assert (child.stat().st_dev, child.stat().st_ino) == owner_identity
+    assert (child / precious.name).read_bytes() == b"owner child bytes must survive\n"
+    assert (evidence / "journal.json").read_bytes() == b"disposable child evidence\n"
+
+
 def test_skill_sync_plan_classifies_changed_removed_and_ordinary_invalid_extra(
     tmp_path: Path, tiny_skills: Path
 ) -> None:

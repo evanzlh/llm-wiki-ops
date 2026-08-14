@@ -3474,6 +3474,12 @@ def _purge_bound_sync_directory(descriptor: int) -> None:
         if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
             child = os.open(name, _inventory_directory_flags(), dir_fd=descriptor)
             try:
+                opened = os.fstat(child)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                ):
+                    raise ValueError("portable sync cleanup child identity changed")
                 _purge_bound_sync_directory(child)
                 current = os.fstat(child)
                 if (metadata.st_dev, metadata.st_ino) != (
@@ -3556,36 +3562,30 @@ def _remove_sync_path(
         if stat.S_ISLNK(metadata.st_mode):
             raise ValueError(f"portable sync removal target is a symlink: {path}")
         if stat.S_ISDIR(metadata.st_mode):
-            if expected_identity is not None:
-                target_fd = os.open(
-                    path.name, _inventory_directory_flags(), dir_fd=parent_fd
-                )
-                try:
-                    opened = os.fstat(target_fd)
-                    if (opened.st_dev, opened.st_ino) != expected_identity:
-                        raise ValueError(
-                            f"portable sync removal transaction identity changed: {path}"
-                        )
-                    _purge_bound_sync_directory(target_fd)
-                finally:
-                    os.close(target_fd)
-                attached = os.stat(
-                    path.name, dir_fd=parent_fd, follow_symlinks=False
-                )
-                if (attached.st_dev, attached.st_ino) != expected_identity:
+            bound_identity = (metadata.st_dev, metadata.st_ino)
+            target_fd = os.open(
+                path.name, _inventory_directory_flags(), dir_fd=parent_fd
+            )
+            try:
+                opened = os.fstat(target_fd)
+                if (opened.st_dev, opened.st_ino) != bound_identity:
                     raise ValueError(
-                        f"portable sync removal transaction detached: {path}"
+                        f"portable sync removal transaction identity changed: {path}"
                     )
-                os.rmdir(path.name, dir_fd=parent_fd)
-            else:
-                target_fd = os.open(
-                    path.name, _inventory_directory_flags(), dir_fd=parent_fd
+                _purge_bound_sync_directory(target_fd)
+                current = os.fstat(target_fd)
+                if (current.st_dev, current.st_ino) != bound_identity:
+                    raise ValueError(
+                        f"portable sync removal transaction identity changed: {path}"
+                    )
+            finally:
+                os.close(target_fd)
+            attached = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (attached.st_dev, attached.st_ino) != bound_identity:
+                raise ValueError(
+                    f"portable sync removal transaction detached: {path}"
                 )
-                try:
-                    _purge_bound_sync_directory(target_fd)
-                finally:
-                    os.close(target_fd)
-                os.rmdir(path.name, dir_fd=parent_fd)
+            os.rmdir(path.name, dir_fd=parent_fd)
         elif stat.S_ISREG(metadata.st_mode):
             os.unlink(path.name, dir_fd=parent_fd)
         else:
