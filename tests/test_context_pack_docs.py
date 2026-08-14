@@ -28,7 +28,9 @@ def test_context_skill_uses_repo_discovery_and_requires_installed_cli() -> None:
     assert 'cd "$OBSIDIAN_VAULT_PATH" && pwd -P' not in skill
     assert "OBSIDIAN_VAULT_PATH=" not in skill
     assert "command -v llmwikiops" in skill
-    assert "git clone https://github.com/evanzlh/llm-wiki-ops.git" in skill
+    assert """git clone https://github.com/evanzlh/llm-wiki-ops.git
+   cd llm-wiki-ops
+   uv tool install --link-mode copy .""" in skill
     assert SOURCE_INSTALL_COMMAND in skill
     assert '"$OBSIDIAN_WIKI_REPO/obsidian_wiki/cli.py"' not in skill
     assert "python3 -m obsidian_wiki.cli context-pack" not in skill

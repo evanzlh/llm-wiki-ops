@@ -93,6 +93,7 @@ WORKFLOW_BOOTSTRAP = Path(
     "obsidian_wiki/_data/bootstrap/agent/workflows/obsidian-wiki.md"
 )
 RAW_HANDLE_POPUP = Path("extensions/brain-capture/popup.js")
+AR9AV_REPOSITORY_URL_PREFIX = "https://github.com/"
 
 
 def skill_text(name: str) -> str:
@@ -118,6 +119,11 @@ def _line_at(text: str, offset: int) -> str:
     line_start = text.rfind("\n", 0, offset) + 1
     line_end = text.find("\n", offset)
     return text[line_start:] if line_end == -1 else text[line_start:line_end]
+
+
+def format_identity_location(relative: Path, text: str, match: re.Match[str]) -> str:
+    line_number = text.count("\n", 0, match.start()) + 1
+    return f"{relative}:{line_number}: {_line_at(text, match.start()).strip()}"
 
 
 def _has_path_component_boundaries(text: str, start: int, end: int) -> bool:
@@ -154,10 +160,19 @@ def _is_ar9av_attribution(text: str, match: re.Match[str]) -> bool:
     owner_start = match.start() - len("Ar9av/")
     if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
         return False
-    if owner_start and (text[owner_start - 1].isalnum() or text[owner_start - 1] in "_-"):
+    url_start = owner_start - len(AR9AV_REPOSITORY_URL_PREFIX)
+    if (
+        url_start >= 0
+        and text[url_start:owner_start] == AR9AV_REPOSITORY_URL_PREFIX
+    ):
+        if url_start and text[url_start - 1] not in " \t\r\n`'\"([{:=" :
+            return False
+    elif owner_start and text[owner_start - 1] not in " \t\r\n`'\"([{:=,":
         return False
     end = match.end()
-    return end == len(text) or text[end] in " \t\r\n`'\"),;:!?]}#/>"
+    if end == len(text) or text[end] in " \t\r\n`'\"),;:!?]}#>":
+        return True
+    return text[end] == "/" and (end + 1 == len(text) or text[end + 1] not in "/ \t\r\n")
 
 
 def _is_stable_extension_id(relative: Path, text: str, match: re.Match[str]) -> bool:
@@ -199,7 +214,7 @@ def test_packaged_guidance_has_no_legacy_product_identity() -> None:
         relative = path.relative_to(ROOT)
         contents = path.read_text(encoding="utf-8")
         disallowed = [
-            match.group()
+            format_identity_location(relative, contents, match)
             for match in LEGACY_RUNTIME_IDENTITY.finditer(contents)
             if not is_allowed_legacy_identity(relative, contents, match)
         ]
@@ -223,6 +238,7 @@ def test_packaged_guidance_scans_extension_background_script() -> None:
         "NotAr9av/obsidian-wiki.md",
         "Ar9av/obsidian-wiki-extra",
         "Ar9av/obsidian-wiki.evil",
+        "https://evil.example/Ar9av/obsidian-wiki",
     ),
 )
 def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
@@ -240,6 +256,10 @@ def test_identity_matcher_detects_disallowed_contexts(invalid: str) -> None:
         (Path("fixture.md"), ".obsidian-wiki/config.toml"),
         (Path("fixture.md"), "Ar9av/obsidian-wiki"),
         (Path("fixture.md"), "https://github.com/Ar9av/obsidian-wiki"),
+        (
+            Path("fixture.md"),
+            "https://github.com/Ar9av/obsidian-wiki/issues",
+        ),
         (Path("fixture.md"), "agent/workflows/obsidian-wiki.md"),
         (Path("fixture.md"), "cursor/rules/obsidian-wiki.mdc"),
         (RAW_HANDLE_POPUP, 'id: "obsidian-wiki-raw",'),
@@ -262,7 +282,26 @@ def test_identity_matcher_does_not_treat_python_package_name_as_legacy_brand() -
 
 def test_managed_workflow_retains_its_stable_frontmatter_name() -> None:
     contents = text(WORKFLOW_BOOTSTRAP.as_posix())
-    assert "name: obsidian-wiki" in contents
+    supported_header = contents.partition("commands:")[0] + "---\n"
+    assert parse_frontmatter(supported_header).scalars["name"] == "obsidian-wiki"
+
+
+def test_popup_keeps_the_stable_raw_picker_id_once_in_picker_options() -> None:
+    popup = text(RAW_HANDLE_POPUP.as_posix())
+    picker = re.compile(
+        r"showDirectoryPicker\(\{\s*id:\s*\"obsidian-wiki-raw\",\s*"
+        r"mode:\s*\"readwrite\",\s*startIn:\s*\"documents\"\s*\}\)",
+        re.DOTALL,
+    )
+    assert len(picker.findall(popup)) == 1
+
+
+def test_identity_location_reports_path_line_and_snippet() -> None:
+    contents = "before\nobsidian-wiki after\n"
+    match = next(LEGACY_RUNTIME_IDENTITY.finditer(contents))
+    assert format_identity_location(Path("fixture.md"), contents, match) == (
+        "fixture.md:2: obsidian-wiki after"
+    )
 
 
 def test_canonical_runtime_has_no_mode_or_legacy_branches() -> None:

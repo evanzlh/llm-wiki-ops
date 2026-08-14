@@ -26,7 +26,7 @@ pages, `index.md`, `log.md`, `hot.md`, `.manifest.json`, or repository-local sta
 
    ```bash
    git clone https://github.com/evanzlh/llm-wiki-ops.git
-   cd llmwikiops
+   cd llm-wiki-ops
    uv tool install --link-mode copy .
    ```
 5. Run the real CLI from any directory inside the owning portable repository,
