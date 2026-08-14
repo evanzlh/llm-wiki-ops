@@ -696,7 +696,7 @@ def test_owner_seed_opened_parent_swap_is_not_treated_as_success(
     ) -> int:
         nonlocal swapped
         descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
-        if path == ".agent" and dir_fd is not None and not swapped:
+        if path == "rules" and dir_fd is not None and not swapped:
             swapped = True
             agent.rename(root / ".agent-owner")
             agent.symlink_to(outside, target_is_directory=True)
@@ -713,6 +713,102 @@ def test_owner_seed_opened_parent_swap_is_not_treated_as_success(
     assert (root / ".agent-owner/rules/obsidian-wiki.md").read_bytes() == (
         b"owner legacy rule"
     )
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/fd").is_dir(), reason="requires procfs descriptor listing"
+)
+def test_owner_seed_attachment_failure_does_not_leak_recursive_descriptors(
+    tmp_path: Path, tiny_skills: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open = portable.os.open
+    agent: Path | None = None
+    root: Path | None = None
+    swapped = False
+
+    def open_then_swap_parent(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        assert agent is not None and root is not None
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "rules" and dir_fd is not None and not swapped:
+            swapped = True
+            agent.rename(root / ".agent-owner")
+            agent.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(portable.os, "open", open_then_swap_parent)
+    descriptor_count = len(list(Path("/proc/self/fd").iterdir()))
+
+    for attempt in range(3):
+        root = tmp_path / f"repo-{attempt}"
+        agent = root / ".agent"
+        legacy = agent / "rules/obsidian-wiki.md"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"owner legacy rule")
+        swapped = False
+
+        with pytest.raises(OSError, match="incomplete|owner seed changed"):
+            setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+
+        assert swapped
+
+    assert len(list(Path("/proc/self/fd").iterdir())) == descriptor_count
+
+
+def test_open_owner_seed_directory_closes_descriptor_when_attachment_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    parent_descriptor = os.open(parent, flags)
+    original_open = portable.os.open
+    original_close = portable.os.close
+    child_descriptor: int | None = None
+    closed: list[int] = []
+
+    def capture_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal child_descriptor
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "child" and dir_fd == parent_descriptor:
+            child_descriptor = descriptor
+        return descriptor
+
+    def track_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(portable.os, "open", capture_open)
+    monkeypatch.setattr(portable.os, "close", track_close)
+    monkeypatch.setattr(
+        portable,
+        "_assert_owner_seed_attachment",
+        lambda *args: (_ for _ in ()).throw(OSError("attachment changed")),
+    )
+
+    try:
+        with pytest.raises(OSError, match="attachment changed"):
+            portable._open_owner_seed_directory(
+                parent_descriptor,
+                "child",
+                (child.stat().st_dev, child.stat().st_ino),
+                ("child",),
+                (),
+            )
+    finally:
+        if child_descriptor is not None and child_descriptor not in closed:
+            original_close(child_descriptor)
+        original_close(parent_descriptor)
+
+    assert child_descriptor is not None
+    assert child_descriptor in closed
 
 
 def test_former_portable_bootstrap_marker_is_owner_content_not_migration_input(
