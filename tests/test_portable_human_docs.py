@@ -125,6 +125,8 @@ def _is_upstream_attribution(text: str, match: re.Match[str]) -> bool:
 
 
 def _is_hard_cutover_explanation(text: str, match: re.Match[str]) -> bool:
+    if match.group() != ".obsidian-wiki/":
+        return False
     paragraph = _paragraph_at(text, match.start())
     return all(
         phrase in paragraph
@@ -233,6 +235,49 @@ def test_old_product_reference_detection_preserves_allowed_contexts(
     reference: str,
 ) -> None:
     assert _unexpected_former_protocol_reference(reference) is None
+
+
+@pytest.mark.parametrize(
+    "injected",
+    (
+        "OBSIDIAN_WIKI_REPO=/tmp/repository",
+        'id: "obsidian-wiki-raw",',
+        "obsidian-wiki.md",
+        "obsidian-wiki.mdc",
+        "<!-- obsidian-wiki:managed:start -->",
+    ),
+)
+def test_hard_cutover_explanation_rejects_other_former_protocol_identifiers(
+    injected: str,
+) -> None:
+    paragraph = (
+        "The former `.obsidian-wiki/` state is not detected, read, migrated, or "
+        "deleted. When both directories exist, `.llmwikiops/` is the only "
+        "authority. Explicitly run `llmwikiops setup`. "
+        f"{injected}"
+    )
+    assert _unexpected_former_protocol_reference(paragraph) is not None
+
+
+@pytest.mark.parametrize(
+    "injected",
+    (
+        "OBSIDIAN_WIKI_REPO=/tmp/repository",
+        'id: "obsidian-wiki-raw",',
+        "obsidian-wiki.md",
+        "obsidian-wiki.mdc",
+        "<!-- obsidian-wiki:managed:start -->",
+    ),
+)
+def test_chinese_hard_cutover_explanation_rejects_other_former_protocol_identifiers(
+    injected: str,
+) -> None:
+    paragraph = (
+        "旧的 `.obsidian-wiki/` 状态不会检测、读取、迁移或删除。两个目录同时存在时，"
+        "只有 `.llmwikiops/` 是权威。请显式运行 `llmwikiops setup`。"
+        f"{injected}"
+    )
+    assert _unexpected_former_protocol_reference(paragraph) is not None
 
 
 def test_current_docs_use_llmwikiops_identity() -> None:
