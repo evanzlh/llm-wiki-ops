@@ -15,6 +15,7 @@ from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.safe_files import stable_directory_identity
 
 ROOT = Path(__file__).resolve().parents[1]
+AR9AV_REPOSITORY_URL_PREFIX = "https://github.com/"
 
 CURRENT_DOCS = (
     "AGENTS.md",
@@ -103,10 +104,24 @@ def _paragraph_at(text: str, offset: int) -> str:
 
 
 def _is_upstream_attribution(text: str, match: re.Match[str]) -> bool:
-    return (
-        match.group() == "obsidian-wiki"
-        and text[max(0, match.start() - len("Ar9av/")) : match.start()] == "Ar9av/"
-    )
+    if match.group() != "obsidian-wiki":
+        return False
+    owner_start = match.start() - len("Ar9av/")
+    if owner_start < 0 or text[owner_start : match.start()] != "Ar9av/":
+        return False
+    url_start = owner_start - len(AR9AV_REPOSITORY_URL_PREFIX)
+    if (
+        url_start >= 0
+        and text[url_start:owner_start] == AR9AV_REPOSITORY_URL_PREFIX
+    ):
+        if url_start and text[url_start - 1] not in " \t\r\n`'\"([{:=" :
+            return False
+    elif owner_start and text[owner_start - 1] not in " \t\r\n`'\"([{:=,":
+        return False
+    end = match.end()
+    if end == len(text) or text[end] in " \t\r\n`'\"),;:!?]}#>":
+        return True
+    return text[end] == "/" and (end + 1 == len(text) or text[end + 1] not in "/ \t\r\n")
 
 
 def _is_hard_cutover_explanation(text: str, match: re.Match[str]) -> bool:
@@ -187,6 +202,11 @@ def test_current_docs_name_the_llmwikiops_protocol_and_hard_cutover() -> None:
         "[obsidian-wiki](https://example.invalid)",
         "https://github.com/evanzlh/obsidian-wiki",
         "Ar9av/Obsidian-Wiki",
+        "Ar9av/obsidian-wiki-extra",
+        "Ar9av/obsidian-wiki.evil",
+        "https://evil.example/Ar9av/obsidian-wiki",
+        "https://github.com/Ar9av/obsidian-wiki.evil",
+        "NotAr9av/obsidian-wiki",
         "obsidian-wiki.md",
         "obsidian-wiki.mdc",
         'id: "obsidian-wiki-raw",',
@@ -204,6 +224,8 @@ def test_old_product_reference_detection_covers_public_boundaries(
     "reference",
     (
         "Ar9av/obsidian-wiki",
+        "https://github.com/Ar9av/obsidian-wiki",
+        "https://github.com/Ar9av/obsidian-wiki/commit/5ef66b6",
         "from obsidian_wiki import cli",
     ),
 )
