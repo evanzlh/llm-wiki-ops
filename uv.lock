@@ -57,7 +57,7 @@ wheels = [
 ]
 
 [[package]]
-name = "obsidian-wiki"
+name = "llm-wiki-ops"
 source = { editable = "." }
 dependencies = [
     { name = "packaging" },

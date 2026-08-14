@@ -148,9 +148,12 @@ def test_bare_cli_prints_help_without_writing_repository_state(tmp_path: Path) -
     result = run_cli(tmp_path / "home", work)
 
     assert result.returncode == 0, result.stderr
-    assert "usage: obsidian-wiki" in result.stdout
+    assert "usage: llmwikiops" in result.stdout
     assert "setup" in result.stdout
-    assert "portable repository setup and maintenance" in result.stdout.lower()
+    assert (
+        "deterministic, repository-native llm wiki operations"
+        in result.stdout.lower()
+    )
     assert result.stderr == ""
     assert not (work / ".obsidian-wiki").exists()
 
@@ -159,7 +162,7 @@ def test_cli_has_no_global_agent_installation_surface() -> None:
     assert not hasattr(cli, "GLOBAL_AGENT_DIRS")
     assert not hasattr(cli, "_agent_install_payload")
     assert cli.__doc__ is not None
-    assert "portable repository setup and maintenance" in cli.__doc__.lower()
+    assert "deterministic, repository-native llm wiki operations" in cli.__doc__.lower()
 
 
 @pytest.mark.parametrize(

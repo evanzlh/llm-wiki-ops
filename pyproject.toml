@@ -3,9 +3,9 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "obsidian-wiki"
+name = "llm-wiki-ops"
 dynamic = ["version"]
-description = "A skill-based framework for building and maintaining an AI-maintained Obsidian knowledge base (Karpathy's LLM Wiki pattern) across any AI coding agent."
+description = "A deterministic, repository-native implementation of the LLM Wiki pattern."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -45,12 +45,13 @@ ast = ["tree-sitter>=0.21", "tree-sitter-languages>=1.10"]
 graph = ["leidenalg>=0.10", "igraph>=0.11"]
 
 [project.urls]
-Homepage = "https://github.com/evanzlh/obsidian-wiki"
-Repository = "https://github.com/evanzlh/obsidian-wiki"
-Issues = "https://github.com/evanzlh/obsidian-wiki/issues"
+Homepage = "https://github.com/evanzlh/llm-wiki-ops"
+Repository = "https://github.com/evanzlh/llm-wiki-ops"
+Issues = "https://github.com/evanzlh/llm-wiki-ops/issues"
 Upstream = "https://github.com/Ar9av/obsidian-wiki"
 
 [project.scripts]
+llmwikiops = "obsidian_wiki.cli:main"
 obsidian-wiki = "obsidian_wiki.cli:main"
 
 # Version is derived from the git tag (CalVer, e.g. v2026.05.2 -> 2026.5.2),

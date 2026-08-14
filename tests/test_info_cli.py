@@ -140,7 +140,7 @@ def test_info_json_without_config_is_available_with_exact_setup_guidance(
     assert result.stderr == ""
     data = payload(result)
     assert data["runtime"]["status"] == "unconfigured"
-    assert data["runtime"]["guidance"] == "run: obsidian-wiki setup [DIR]"
+    assert data["runtime"]["guidance"] == "run: llmwikiops setup [DIR]"
     assert data["installation"]["version"]
     assert data["installation"]["skills"]
     assert "global_config" not in data["installation"]

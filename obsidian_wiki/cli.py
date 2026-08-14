@@ -1,4 +1,4 @@
-"""Portable repository setup and maintenance CLI for obsidian-wiki.
+"""LLMWikiOps CLI for deterministic, repository-native LLM Wiki operations.
 
 The locally built artifact bundles the canonical skill and bootstrap resources
 used to scaffold and maintain clone-ready repositories.
@@ -40,12 +40,12 @@ from obsidian_wiki.portable import (
     upgrade_portable_skills,
 )
 SOURCE_REINSTALL_HINT = (
-    "clone https://github.com/evanzlh/obsidian-wiki, then run "
+    "clone https://github.com/evanzlh/llm-wiki-ops, then run "
     f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
 )
 
 def version_label() -> str:
-    return f"obsidian-wiki {__version__} ({IMPLEMENTATION_ID})"
+    return f"llmwikiops {__version__} ({IMPLEMENTATION_ID})"
 
 
 class SchemaOptions(TypedDict):
@@ -69,7 +69,7 @@ def _data_dir(name: str) -> Path:
         return bundled
     raise FileNotFoundError(
         f"Could not locate bundled {name}. Reinstall from a clone of "
-        "https://github.com/evanzlh/obsidian-wiki with "
+        "https://github.com/evanzlh/llm-wiki-ops with "
         f"`{SOURCE_REINSTALL_COMMAND}`."
     )
 
@@ -451,7 +451,7 @@ def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
             name="portable-config",
             status="fail",
             detail=_runtime_error_detail(error),
-            hint="run: obsidian-wiki setup [DIR]",
+            hint="run: llmwikiops setup [DIR]",
         )
         return {"status": "fail", "checks": checks}
 
@@ -485,14 +485,14 @@ def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
         name="portable-config",
         status="fail",
         detail=_runtime_error_detail(error),
-        hint="run: obsidian-wiki setup [DIR]",
+        hint="run: llmwikiops setup [DIR]",
     )
     return {"status": "fail", "checks": checks}
 
 
 def _print_doctor(report: dict[str, object]) -> None:
     icon = {"pass": "✅", "warn": "⚠️ ", "fail": "❌"}
-    print(f"obsidian-wiki doctor: {report['status']}")
+    print(f"llmwikiops doctor: {report['status']}")
     for check in report["checks"]:
         name = check["name"]
         status = check["status"]
@@ -1289,7 +1289,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _print_lint(report: dict[str, object]) -> None:
-    print(f"obsidian-wiki lint: {report['status']}")
+    print(f"llmwikiops lint: {report['status']}")
     stats = report["stats"]
     print(f"pages: {stats['pages']}  links: {stats['link_count']}")
     for name, count in stats["findings"].items():
@@ -1595,7 +1595,7 @@ def cmd_trust_check(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(report, indent=2 if args.pretty else None))
     else:
-        print(f"obsidian-wiki trust-check: {report['status']}")
+        print(f"llmwikiops trust-check: {report['status']}")
         for name, count in report["counts"].items():
             print(f"{name}: {count}")
     if report["status"] == "fail" or (args.strict and report["status"] == "warn"):
@@ -1694,7 +1694,7 @@ def _runtime_payload(
             return {"status": "error", "error": _runtime_error_detail(error)}
         return {
             "status": "unconfigured",
-            "guidance": "run: obsidian-wiki setup [DIR]",
+            "guidance": "run: llmwikiops setup [DIR]",
         }
 
     return {
@@ -1871,7 +1871,7 @@ def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
             changes = len(target.added + target.changed + target.removed + target.unsafe)
             if changes:
                 print(f"  - {target.path}: {changes} change(s)")
-        print("Run `obsidian-wiki repo sync-skills --apply` to rebuild all mirrors.")
+        print("Run `llmwikiops repo sync-skills --apply` to rebuild all mirrors.")
     if not args.json:
         for warning in report.warnings:
             print(f"warning: {warning['path']}: {warning['message']}", file=sys.stderr)
@@ -2000,8 +2000,10 @@ def _normalize_transaction_parent_separator(argv: list[str]) -> list[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(
-        prog="obsidian-wiki",
-        description="Portable repository setup and maintenance for obsidian-wiki.",
+        prog="llmwikiops",
+        description=(
+            "LLMWikiOps: deterministic, repository-native LLM Wiki operations."
+        ),
     )
     p.add_argument("-V", "--version", action="version", version=version_label())
     sub = p.add_subparsers(dest="command")
