@@ -1649,6 +1649,35 @@ def _query_help_epilog() -> str:
     return "\n".join(lines)
 
 
+def _query_recovery_forms(operand: str) -> tuple[str, str] | None:
+    """Build concrete, shell-safe find rewrites for one rejected operand."""
+    from obsidian_wiki.query_language import (
+        describe_query_language,
+        normalize_operand,
+    )
+
+    normalized_operand = normalize_operand(operand)
+    if not normalized_operand:
+        return None
+    description = describe_query_language()
+    find_template = next(
+        item["template"]
+        for item in description["natural_templates"]
+        if item["mode"] == "find"
+    )
+    grammar_escaped_operand = normalized_operand.replace("\\", "\\\\").replace(
+        '"', '\\"'
+    )
+    natural_question = find_template.replace("<term>", grammar_escaped_operand)
+    explicit_arguments = description["canonical_cli"]["find"].replace(
+        "<term>", shlex.quote(normalized_operand)
+    )
+    return (
+        f"llmwikiops query {shlex.quote(natural_question)}",
+        f"llmwikiops query {explicit_arguments}",
+    )
+
+
 def _query_error_payload(error: Exception) -> dict[str, object]:
     from obsidian_wiki.query_language import GRAMMAR_VERSION, describe_query_language
 
@@ -1678,13 +1707,26 @@ def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
     else:
         print(f"error: {error_payload['message']}", file=sys.stderr)
         if error_payload.get("templates"):
-            natural_forms, explicit_forms = _query_command_forms()
-            print("legal natural query forms:", file=sys.stderr)
-            for command in natural_forms:
-                print(f"  {command}", file=sys.stderr)
-            print("canonical explicit query forms:", file=sys.stderr)
-            for command in explicit_forms:
-                print(f"  {command}", file=sys.stderr)
+            question = getattr(args, "question", None)
+            rewrites = (
+                _query_recovery_forms(question)
+                if isinstance(question, str)
+                else None
+            )
+            if rewrites is not None:
+                natural_rewrite, explicit_rewrite = rewrites
+                print("legal natural rewrite:", file=sys.stderr)
+                print(f"  {natural_rewrite}", file=sys.stderr)
+                print("canonical explicit rewrite:", file=sys.stderr)
+                print(f"  {explicit_rewrite}", file=sys.stderr)
+            else:
+                natural_forms, explicit_forms = _query_command_forms()
+                print("legal natural query forms:", file=sys.stderr)
+                for command in natural_forms:
+                    print(f"  {command}", file=sys.stderr)
+                print("canonical explicit query forms:", file=sys.stderr)
+                for command in explicit_forms:
+                    print(f"  {command}", file=sys.stderr)
         details = error_payload.get("details")
         if isinstance(details, dict):
             operand = details.get("operand")

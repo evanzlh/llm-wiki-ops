@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import IMPLEMENTATION_ID
+from obsidian_wiki.query_language import normalize_operand, parse_natural_query
 
 
 NATURAL_TEMPLATES = [
@@ -127,20 +129,53 @@ def test_query_rejects_legacy_bare_question_before_repository_resolution(
     }
 
 
-def test_query_human_error_prints_legal_templates(tmp_path: Path) -> None:
-    proc = _run(tmp_path / "home", "query", "transformer")
+def test_query_human_error_prints_executable_rewrites(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root, vault = _portable_root(tmp_path)
+    _page(vault, "known", title="Known", summary="Known")
+
+    proc = _run(home, "query", "transformer", cwd=root)
 
     assert proc.returncode == 2
     assert proc.stdout == ""
-    assert proc.stderr.splitlines() == [
+    lines = proc.stderr.splitlines()
+    assert lines[:2] == [
         "error: query does not match query-language/v1",
-        "legal natural query forms:",
-        *[f"  llmwikiops query '{template}'" for template in NATURAL_TEMPLATES],
-        "canonical explicit query forms:",
-        *[
-            f"  llmwikiops query {command}"
-            for command in CANONICAL_CLI.values()
-        ],
+        "legal natural rewrite:",
+    ]
+    assert lines[3] == "canonical explicit rewrite:"
+    commands = [lines[2].strip(), lines[4].strip()]
+
+    natural_argv = shlex.split(commands[0])
+    explicit_argv = shlex.split(commands[1])
+    assert natural_argv[:2] == explicit_argv[:2] == ["llmwikiops", "query"]
+    assert parse_natural_query(natural_argv[2]).term == "transformer"
+    assert explicit_argv[2:] == ["--mode", "find", "--term", "transformer"]
+    for argv in (natural_argv, explicit_argv):
+        rerun = _run(home, *argv[1:], cwd=root)
+        assert rerun.returncode == 0
+
+
+def test_query_human_rewrites_shell_quote_opaque_unicode_and_metacharacters(
+    tmp_path: Path,
+) -> None:
+    operand = "注意力 \"机制\"; $(ignored) '单引号' \\路径"
+    proc = _run(tmp_path / "home", "query", operand)
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    lines = proc.stderr.splitlines()
+    natural_argv = shlex.split(lines[2].strip())
+    explicit_argv = shlex.split(lines[4].strip())
+
+    assert parse_natural_query(natural_argv[2]).term == normalize_operand(operand)
+    assert explicit_argv == [
+        "llmwikiops",
+        "query",
+        "--mode",
+        "find",
+        "--term",
+        normalize_operand(operand),
     ]
 
 
