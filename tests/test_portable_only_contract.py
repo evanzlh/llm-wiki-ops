@@ -1068,6 +1068,24 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
         assert "--vault" not in text, name
 
 
+def test_packaged_skills_reject_legacy_bare_query_commands() -> None:
+    legacy_bare_query = re.compile(
+        r"^\s*llmwikiops\s+query\s+(?:"
+        r'"(?!(?:find |list pages about |find path from ))[^"\n]*"'
+        r"|<[^>\n]+>"
+        r"|(?!--)[^\s`\"']+)",
+        flags=re.MULTILINE,
+    )
+    skill_paths = sorted((ROOT / "obsidian_wiki/_data/skills").glob("*/SKILL.md"))
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in skill_paths
+        if legacy_bare_query.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == []
+
+
 def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
     export = _special_skill("wiki-export")
     factory = _special_skill("vault-skill-factory")

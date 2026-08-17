@@ -33,7 +33,7 @@ This workflow does not change authoritative knowledge, sources, manifest shards,
 4. Retrieve bounded candidates with the real CLI:
 
    ```bash
-   llmwikiops query "<topic>" --top 8 --max-read 3 --json --pretty
+   llmwikiops query --mode find --term "<topic>" --top 8 --max-read 3 --json --pretty
    ```
 
 5. For a public-only request, add `--public-only` to that command. The CLI filters
