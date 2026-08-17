@@ -286,11 +286,65 @@ def test_query_human_parse_errors_keep_argparse_usage(tmp_path: Path) -> None:
 
 
 def test_query_help_remains_argparse_help_with_json_flag(tmp_path: Path) -> None:
-    proc = _run(tmp_path / "home", "query", "--json", "--help")
+    proc = _run(
+        tmp_path / "home",
+        "query",
+        "--json",
+        "--help",
+        "--top",
+        "nope",
+    )
 
     assert proc.returncode == 0
     assert proc.stderr == ""
     assert proc.stdout.startswith("usage: llmwikiops query")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message_fragment"),
+    [
+        (
+            ("--json", "--top", "nope", "--help"),
+            "invalid int value: 'nope'",
+        ),
+        (
+            ("--json", "--term", "--help"),
+            "argument --term: expected one argument",
+        ),
+    ],
+)
+def test_query_malformed_input_before_help_keeps_json_error_intent(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    message_fragment: str,
+) -> None:
+    proc = _run(tmp_path / "home", "query", *arguments)
+
+    assert proc.returncode == 2
+    assert proc.stderr == ""
+    error = json.loads(proc.stdout)["error"]
+    assert error["code"] == "invalid_query_arguments"
+    assert error["grammar_version"] == "query-language/v1"
+    assert message_fragment in error["message"]
+
+
+def test_query_rejects_abbreviated_json_as_human_parse_error(tmp_path: Path) -> None:
+    proc = _run(tmp_path / "home", "query", "--j")
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("usage: llmwikiops")
+    assert "unrecognized arguments: --j" in proc.stderr
+
+
+def test_query_exact_json_structures_abbreviation_parse_error(tmp_path: Path) -> None:
+    proc = _run(tmp_path / "home", "query", "--j", "--json")
+
+    assert proc.returncode == 2
+    assert proc.stderr == ""
+    error = json.loads(proc.stdout)["error"]
+    assert error["code"] == "invalid_query_arguments"
+    assert "unrecognized arguments: --j" in error["message"]
 
 
 @pytest.mark.parametrize(

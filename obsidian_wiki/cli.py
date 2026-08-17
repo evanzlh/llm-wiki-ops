@@ -2015,9 +2015,9 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
 )
 
 
-def _query_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
+def _query_option_intent(argv: list[str]) -> tuple[bool, bool]:
     if not argv or argv[0] != "query":
-        return False, False, False
+        return False, False
     try:
         separator = argv.index("--", 1)
     except ValueError:
@@ -2027,7 +2027,6 @@ def _query_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
     return (
         "--json" in option_tokens,
         "--pretty" in option_tokens,
-        "-h" in option_tokens or "--help" in option_tokens,
     )
 
 
@@ -2602,6 +2601,7 @@ def build_parser() -> argparse.ArgumentParser:
     qq = sub.add_parser(
         "query",
         help="run a query-language/v1 operation against the configured vault",
+        allow_abbrev=False,
     )
     qq.add_argument(
         "question",
@@ -2693,10 +2693,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
-    query_json_intent, query_pretty_intent, query_help_intent = (
-        _query_option_intent(argv)
-    )
-    query_json_parse = query_json_intent and not query_help_intent
+    query_json_intent, query_pretty_intent = _query_option_intent(argv)
+    query_json_parse = query_json_intent
     argv = _normalize_cache_check_argv(argv)
     argv = _normalize_transaction_parent_separator(argv)
     try:
