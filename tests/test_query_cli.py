@@ -226,7 +226,10 @@ def test_query_rejects_missing_or_extra_operands(
         ("--from", "source"),
         ("--to", "target"),
         ("--top", "9"),
+        ("--top", "8"),
+        ("--top", "9", "--top", "8"),
         ("--max-read", "2"),
+        ("--max-read", "3"),
         ("--public-only",),
     ],
 )
@@ -244,6 +247,50 @@ def test_query_describe_rejects_query_options(
     assert proc.returncode == 2
     assert proc.stderr == ""
     assert json.loads(proc.stdout)["error"]["code"] == "invalid_query_arguments"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message_fragment"),
+    [
+        (("--top", "nope", "--json"), "invalid int value: 'nope'"),
+        (("--json", "--term"), "argument --term: expected one argument"),
+        (("--from", "--json"), "argument --from: expected one argument"),
+        (("--json", "--to"), "argument --to: expected one argument"),
+        (("--unknown", "--json"), "unrecognized arguments: --unknown"),
+        (("--json", "--unknown"), "unrecognized arguments: --unknown"),
+    ],
+)
+def test_query_json_parse_errors_use_stable_query_payload(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    message_fragment: str,
+) -> None:
+    proc = _run(tmp_path / "home", "query", *arguments)
+
+    assert proc.returncode == 2
+    assert proc.stderr == ""
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "invalid_query_arguments"
+    assert payload["error"]["grammar_version"] == "query-language/v1"
+    assert message_fragment in payload["error"]["message"]
+
+
+def test_query_human_parse_errors_keep_argparse_usage(tmp_path: Path) -> None:
+    proc = _run(tmp_path / "home", "query", "--top", "nope")
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("usage: llmwikiops query")
+    assert "invalid int value: 'nope'" in proc.stderr
+
+
+def test_query_help_remains_argparse_help_with_json_flag(tmp_path: Path) -> None:
+    proc = _run(tmp_path / "home", "query", "--json", "--help")
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
+    assert proc.stdout.startswith("usage: llmwikiops query")
 
 
 @pytest.mark.parametrize(

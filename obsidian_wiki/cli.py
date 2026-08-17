@@ -1669,8 +1669,8 @@ def cmd_query(args: argparse.Namespace) -> int:
             has_query_option = (
                 args.question is not None
                 or any(value is not None for value in explicit_values)
-                or args.top != 8
-                or args.max_read != 3
+                or args.top is not None
+                or args.max_read is not None
                 or args.public_only
             )
             if has_query_option:
@@ -1701,15 +1701,21 @@ def cmd_query(args: argparse.Namespace) -> int:
                 source=args.source,
                 target=args.target,
             )
-        if isinstance(args.top, bool) or not isinstance(args.top, int) or args.top < 1:
+        effective_top = 8 if args.top is None else args.top
+        effective_max_read = 3 if args.max_read is None else args.max_read
+        if (
+            isinstance(effective_top, bool)
+            or not isinstance(effective_top, int)
+            or effective_top < 1
+        ):
             raise QueryLanguageError(
                 "invalid_query_arguments",
                 "top must be an integer greater than or equal to 1",
             )
         if (
-            isinstance(args.max_read, bool)
-            or not isinstance(args.max_read, int)
-            or args.max_read < 0
+            isinstance(effective_max_read, bool)
+            or not isinstance(effective_max_read, int)
+            or effective_max_read < 0
         ):
             raise QueryLanguageError(
                 "invalid_query_arguments",
@@ -1729,8 +1735,8 @@ def cmd_query(args: argparse.Namespace) -> int:
         result = query(
             vault,
             spec,
-            top_n=args.top,
-            max_should_read=args.max_read,
+            top_n=effective_top,
+            max_should_read=effective_max_read,
             public_only=args.public_only,
         )
     except QueryExecutionError as exc:
@@ -2007,6 +2013,22 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
         "abort",
     }
 )
+
+
+def _query_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
+    if not argv or argv[0] != "query":
+        return False, False, False
+    try:
+        separator = argv.index("--", 1)
+    except ValueError:
+        option_tokens = argv[1:]
+    else:
+        option_tokens = argv[1:separator]
+    return (
+        "--json" in option_tokens,
+        "--pretty" in option_tokens,
+        "-h" in option_tokens or "--help" in option_tokens,
+    )
 
 
 def _transaction_option_intent(argv: list[str]) -> tuple[bool, bool, bool]:
@@ -2598,13 +2620,13 @@ def build_parser() -> argparse.ArgumentParser:
     qq.add_argument(
         "--top",
         type=int,
-        default=8,
+        default=None,
         help="maximum returned candidates",
     )
     qq.add_argument(
         "--max-read",
         type=int,
-        default=3,
+        default=None,
         help="maximum suggested page reads",
     )
     qq.add_argument(
@@ -2671,6 +2693,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
     transaction_json_parse = json_intent and not help_intent
+    query_json_intent, query_pretty_intent, query_help_intent = (
+        _query_option_intent(argv)
+    )
+    query_json_parse = query_json_intent and not query_help_intent
     argv = _normalize_cache_check_argv(argv)
     argv = _normalize_transaction_parent_separator(argv)
     try:
@@ -2685,6 +2711,20 @@ def main(argv: list[str] | None = None) -> int:
                 parse_args,
                 TransactionError(
                     f"invalid transaction arguments: {exc.message}"
+                ),
+            )
+        if query_json_parse:
+            from obsidian_wiki.query_language import QueryLanguageError
+
+            parse_args = argparse.Namespace(
+                json=True,
+                pretty=query_pretty_intent,
+            )
+            return _render_query_error(
+                parse_args,
+                QueryLanguageError(
+                    "invalid_query_arguments",
+                    f"invalid query arguments: {exc.message}",
                 ),
             )
         exc.parser.print_usage(sys.stderr)
