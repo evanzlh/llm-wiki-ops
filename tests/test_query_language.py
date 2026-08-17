@@ -61,6 +61,30 @@ def test_natural_queries_reject_unsupported_escapes(question: str) -> None:
     assert raised.value.code == "unsupported_query_structure"
 
 
+@pytest.mark.parametrize("question", ['find ""', 'find " \t　 "'])
+def test_natural_queries_reject_empty_normalized_operands(question: str) -> None:
+    with pytest.raises(QueryLanguageError) as raised:
+        parse_natural_query(question)
+
+    assert raised.value.code == "unsupported_query_structure"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        'find\t"term"',
+        'find  "term"',
+        'list pages\nabout "term"',
+        'find path from "source"\nto "target"',
+    ],
+)
+def test_natural_queries_require_exact_template_spaces(question: str) -> None:
+    with pytest.raises(QueryLanguageError) as raised:
+        parse_natural_query(question)
+
+    assert raised.value.code == "unsupported_query_structure"
+
+
 def test_query_language_description_is_versioned_and_ordered() -> None:
     description = describe_query_language()
 

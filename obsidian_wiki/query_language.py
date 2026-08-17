@@ -24,11 +24,12 @@ class QuerySpec:
 
 
 @dataclass(frozen=True)
-class _NaturalTemplate:
+class _ModeDefinition:
     mode: QueryMode
-    template: str
+    natural_template: str
     example: str
     operands: tuple[str, ...]
+    canonical_cli: str
     pattern: re.Pattern[str]
 
 
@@ -54,37 +55,63 @@ def _decode_quoted_operand(value: str) -> str:
     return re.sub(r'\\(["\\])', r'\1', value)
 
 
-_NATURAL_TEMPLATES = (
-    _NaturalTemplate(
+def _compile_natural_pattern(
+    template: str, operands: tuple[str, ...]
+) -> re.Pattern[str]:
+    """Compile a template while preserving each fixed ASCII character exactly."""
+    parts = []
+    remainder = template
+    for operand in operands:
+        placeholder = '"<{}>"'.format(operand)
+        fixed_text, separator, remainder = remainder.partition(placeholder)
+        if not separator:
+            raise ValueError("natural template is missing {}".format(placeholder))
+        parts.extend((re.escape(fixed_text), _QUOTED_OPERAND))
+    parts.append(re.escape(remainder))
+    return re.compile("".join(parts), re.ASCII | re.IGNORECASE)
+
+
+def _define_mode(
+    mode: QueryMode,
+    natural_template: str,
+    example: str,
+    operands: tuple[str, ...],
+    canonical_cli: str,
+) -> _ModeDefinition:
+    return _ModeDefinition(
+        mode=mode,
+        natural_template=natural_template,
+        example=example,
+        operands=operands,
+        canonical_cli=canonical_cli,
+        pattern=_compile_natural_pattern(natural_template, operands),
+    )
+
+
+_MODE_DEFINITIONS = (
+    _define_mode(
         mode="find",
-        template='find "<term>"',
+        natural_template='find "<term>"',
         example='find "注意力机制"',
         operands=("term",),
-        pattern=re.compile(
-            rf"find\s+{_QUOTED_OPERAND}", re.ASCII | re.IGNORECASE
-        ),
+        canonical_cli="--mode find --term <term>",
     ),
-    _NaturalTemplate(
+    _define_mode(
         mode="list",
-        template='list pages about "<term>"',
+        natural_template='list pages about "<term>"',
         example='list pages about "深度学习"',
         operands=("term",),
-        pattern=re.compile(
-            rf"list\s+pages\s+about\s+{_QUOTED_OPERAND}",
-            re.ASCII | re.IGNORECASE,
-        ),
+        canonical_cli="--mode list --term <term>",
     ),
-    _NaturalTemplate(
+    _define_mode(
         mode="path",
-        template='find path from "<source>" to "<target>"',
+        natural_template='find path from "<source>" to "<target>"',
         example='find path from "注意力机制" to "词嵌入"',
         operands=("source", "target"),
-        pattern=re.compile(
-            rf"find\s+path\s+from\s+{_QUOTED_OPERAND}\s+to\s+{_QUOTED_OPERAND}",
-            re.ASCII | re.IGNORECASE,
-        ),
+        canonical_cli="--mode path --from <source> --to <target>",
     ),
 )
+_MODE_BY_NAME = {definition.mode: definition for definition in _MODE_DEFINITIONS}
 
 
 def build_explicit_query(
@@ -94,17 +121,14 @@ def build_explicit_query(
     target: Optional[str] = None,
 ) -> QuerySpec:
     """Validate explicit operands and return their normalized query spec."""
-    if mode not in {"find", "list", "path"}:
+    definition = _MODE_BY_NAME.get(mode)
+    if definition is None:
         raise QueryLanguageError(
             "unsupported_operation", "unsupported query mode: {}".format(mode)
         )
 
     supplied = {"term": term, "source": source, "target": target}
-    required = {
-        "find": {"term"},
-        "list": {"term"},
-        "path": {"source", "target"},
-    }[mode]
+    required = set(definition.operands)
     present = {name for name, value in supplied.items() if value is not None}
     if present != required:
         raise QueryLanguageError(
@@ -121,17 +145,19 @@ def build_explicit_query(
         raise QueryLanguageError(
             "invalid_query_arguments", "query operands must not be empty"
         )
-    return QuerySpec(mode=mode, **normalized)
+    return QuerySpec(mode=definition.mode, **normalized)
 
 
 def parse_natural_query(question: str) -> QuerySpec:
     """Parse one complete natural-language grammar template, or fail closed."""
-    for template in _NATURAL_TEMPLATES:
-        match = template.pattern.fullmatch(question)
+    for definition in _MODE_DEFINITIONS:
+        match = definition.pattern.fullmatch(question)
         if match is not None:
             values = [_decode_quoted_operand(value) for value in match.groups()]
+            if any(not normalize_operand(value) for value in values):
+                break
             return build_explicit_query(
-                template.mode, **dict(zip(template.operands, values))
+                definition.mode, **dict(zip(definition.operands, values))
             )
     raise QueryLanguageError(
         "unsupported_query_structure", "query does not match query-language/v1"
@@ -145,15 +171,13 @@ def describe_query_language() -> dict[str, Any]:
         "natural_templates": [
             {
                 "mode": item.mode,
-                "template": item.template,
+                "template": item.natural_template,
                 "example": item.example,
             }
-            for item in _NATURAL_TEMPLATES
+            for item in _MODE_DEFINITIONS
         ],
         "canonical_cli": {
-            "find": "--mode find --term <term>",
-            "list": "--mode list --term <term>",
-            "path": "--mode path --from <source> --to <target>",
+            item.mode: item.canonical_cli for item in _MODE_DEFINITIONS
         },
         "normalization": ["NFKC", "strip", "casefold for matching"],
         "search_fields": ["slug", "title", "tags", "summary"],
