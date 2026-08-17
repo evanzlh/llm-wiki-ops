@@ -99,19 +99,43 @@ _MODE_DEFINITIONS = (
     _define_mode(
         mode="list",
         natural_template='list pages about "<term>"',
-        example='list pages about "深度学习"',
+        example='list pages about "الذكاء الاصطناعي"',
         operands=("term",),
         canonical_cli="--mode list --term <term>",
     ),
     _define_mode(
         mode="path",
         natural_template='find path from "<source>" to "<target>"',
-        example='find path from "注意力机制" to "词嵌入"',
+        example='find path from "注意力機構" to "English destination"',
         operands=("source", "target"),
         canonical_cli="--mode path --from <source> --to <target>",
     ),
 )
 _MODE_BY_NAME = {definition.mode: definition for definition in _MODE_DEFINITIONS}
+
+_NORMALIZATION = ("NFKC", "strip", "casefold for matching")
+_OPERAND_POLICY = {
+    "representation": "opaque Unicode complete phrases",
+    "normalization": _NORMALIZATION,
+    "prohibited_operations": (
+        "tokenization",
+        "language detection",
+        "translation",
+        "synonym expansion",
+        "stemming",
+        "fuzzy matching",
+    ),
+}
+_MATCH_RANKING = {
+    "lexical_precedence": (
+        ("exact", ("page identity", "basename", "title")),
+        ("title", ("title substring",)),
+        ("tag", ("tag substring",)),
+        ("summary", ("summary substring",)),
+    ),
+    "within_lexical_band_order": ("degree", "tier"),
+    "tie_breaker": "path",
+}
 
 
 def build_explicit_query(
@@ -168,19 +192,38 @@ def describe_query_language() -> dict[str, Any]:
     """Return the JSON-serializable contract derived from the grammar source."""
     return {
         "grammar_version": GRAMMAR_VERSION,
+        "supported_modes": [item.mode for item in _MODE_DEFINITIONS],
         "natural_templates": [
             {
                 "mode": item.mode,
                 "template": item.natural_template,
                 "example": item.example,
+                "operands": list(item.operands),
             }
             for item in _MODE_DEFINITIONS
         ],
         "canonical_cli": {
             item.mode: item.canonical_cli for item in _MODE_DEFINITIONS
         },
-        "normalization": ["NFKC", "strip", "casefold for matching"],
+        "normalization": list(_NORMALIZATION),
+        "operand_policy": {
+            "representation": _OPERAND_POLICY["representation"],
+            "normalization": list(_OPERAND_POLICY["normalization"]),
+            "prohibited_operations": list(
+                _OPERAND_POLICY["prohibited_operations"]
+            ),
+        },
         "search_fields": ["slug", "title", "tags", "summary"],
+        "match_ranking": {
+            "lexical_precedence": [
+                {"match_kind": kind, "fields": list(fields)}
+                for kind, fields in _MATCH_RANKING["lexical_precedence"]
+            ],
+            "within_lexical_band_order": list(
+                _MATCH_RANKING["within_lexical_band_order"]
+            ),
+            "tie_breaker": _MATCH_RANKING["tie_breaker"],
+        },
         "result_statuses": ["ok", "no_matches", "no_path"],
         "error_codes": [
             "unsupported_query_structure",

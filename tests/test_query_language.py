@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import pytest
@@ -85,30 +86,70 @@ def test_natural_queries_require_exact_template_spaces(question: str) -> None:
     assert raised.value.code == "unsupported_query_structure"
 
 
-def test_query_language_description_is_versioned_and_ordered() -> None:
+def test_query_language_description_is_complete_machine_readable_authority() -> None:
     description = describe_query_language()
 
-    assert description["grammar_version"] == GRAMMAR_VERSION == "query-language/v1"
-    assert [item["mode"] for item in description["natural_templates"]] == [
-        "find",
-        "list",
-        "path",
-    ]
-    assert description["natural_templates"][-1]["example"] == (
-        'find path from "注意力机制" to "词嵌入"'
-    )
-    assert description["canonical_cli"]["path"] == (
-        "--mode path --from <source> --to <target>"
-    )
-    assert description["normalization"] == ["NFKC", "strip", "casefold for matching"]
-    assert description["search_fields"] == ["slug", "title", "tags", "summary"]
-    assert description["result_statuses"] == ["ok", "no_matches", "no_path"]
-    assert description["error_codes"] == [
-        "unsupported_query_structure",
-        "invalid_query_arguments",
-        "ambiguous_operand",
-        "unsupported_operation",
-    ]
+    assert description == {
+        "grammar_version": GRAMMAR_VERSION,
+        "supported_modes": ["find", "list", "path"],
+        "natural_templates": [
+            {
+                "mode": "find",
+                "template": 'find "<term>"',
+                "example": 'find "注意力机制"',
+                "operands": ["term"],
+            },
+            {
+                "mode": "list",
+                "template": 'list pages about "<term>"',
+                "example": 'list pages about "الذكاء الاصطناعي"',
+                "operands": ["term"],
+            },
+            {
+                "mode": "path",
+                "template": 'find path from "<source>" to "<target>"',
+                "example": 'find path from "注意力機構" to "English destination"',
+                "operands": ["source", "target"],
+            },
+        ],
+        "canonical_cli": {
+            "find": "--mode find --term <term>",
+            "list": "--mode list --term <term>",
+            "path": "--mode path --from <source> --to <target>",
+        },
+        "normalization": ["NFKC", "strip", "casefold for matching"],
+        "operand_policy": {
+            "representation": "opaque Unicode complete phrases",
+            "normalization": ["NFKC", "strip", "casefold for matching"],
+            "prohibited_operations": [
+                "tokenization",
+                "language detection",
+                "translation",
+                "synonym expansion",
+                "stemming",
+                "fuzzy matching",
+            ],
+        },
+        "search_fields": ["slug", "title", "tags", "summary"],
+        "match_ranking": {
+            "lexical_precedence": [
+                {"match_kind": "exact", "fields": ["page identity", "basename", "title"]},
+                {"match_kind": "title", "fields": ["title substring"]},
+                {"match_kind": "tag", "fields": ["tag substring"]},
+                {"match_kind": "summary", "fields": ["summary substring"]},
+            ],
+            "within_lexical_band_order": ["degree", "tier"],
+            "tie_breaker": "path",
+        },
+        "result_statuses": ["ok", "no_matches", "no_path"],
+        "error_codes": [
+            "unsupported_query_structure",
+            "invalid_query_arguments",
+            "ambiguous_operand",
+            "unsupported_operation",
+        ],
+    }
+    assert json.loads(json.dumps(description)) == description
 
 
 @pytest.mark.parametrize(
