@@ -1605,7 +1605,8 @@ def cmd_trust_check(args: argparse.Namespace) -> int:
 
 
 def _print_query(result: dict[str, object]) -> None:
-    print(f"answer_type: {result['answer_type']}")
+    print(f"mode: {result['mode']}")
+    print(f"status: {result['status']}")
     candidates = result.get("candidates", [])
     if candidates:
         print("candidates:")
@@ -1622,8 +1623,100 @@ def _print_query(result: dict[str, object]) -> None:
             print(f"- {page}")
 
 
+def _query_error_payload(error: Exception) -> dict[str, object]:
+    from obsidian_wiki.query_language import GRAMMAR_VERSION, describe_query_language
+
+    error_payload: dict[str, object] = {
+        "code": error.code,
+        "message": str(error),
+        "grammar_version": GRAMMAR_VERSION,
+    }
+    if error.code == "unsupported_query_structure":
+        error_payload["templates"] = [
+            item["template"]
+            for item in describe_query_language()["natural_templates"]
+        ]
+    details = getattr(error, "details", None)
+    if details:
+        error_payload["details"] = details
+    return {"status": "error", "error": error_payload}
+
+
+def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
+    payload = _query_error_payload(error)
+    error_payload = payload["error"]
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(f"error: {error_payload['message']}", file=sys.stderr)
+        for template in error_payload.get("templates", []):
+            print(f"  {template}", file=sys.stderr)
+    return 2
+
+
 def cmd_query(args: argparse.Namespace) -> int:
-    from obsidian_wiki.graphrag import query
+    from obsidian_wiki.graphrag import QueryExecutionError, query
+    from obsidian_wiki.query_language import (
+        QueryLanguageError,
+        build_explicit_query,
+        describe_query_language,
+        parse_natural_query,
+    )
+
+    explicit_values = (args.mode, args.term, args.source, args.target)
+    try:
+        if args.describe:
+            has_query_option = (
+                args.question is not None
+                or any(value is not None for value in explicit_values)
+                or args.top != 8
+                or args.max_read != 3
+                or args.public_only
+            )
+            if has_query_option:
+                raise QueryLanguageError(
+                    "invalid_query_arguments",
+                    "--describe cannot be combined with a query",
+                )
+            _json_print(describe_query_language(), pretty=args.pretty)
+            return 0
+        if args.question is not None and any(
+            value is not None for value in explicit_values
+        ):
+            raise QueryLanguageError(
+                "invalid_query_arguments",
+                "natural and explicit query forms cannot be mixed",
+            )
+        if args.question is not None:
+            spec = parse_natural_query(args.question)
+        else:
+            if args.mode is None:
+                raise QueryLanguageError(
+                    "invalid_query_arguments",
+                    "provide one natural template or --mode with its operands",
+                )
+            spec = build_explicit_query(
+                mode=args.mode,
+                term=args.term,
+                source=args.source,
+                target=args.target,
+            )
+        if isinstance(args.top, bool) or not isinstance(args.top, int) or args.top < 1:
+            raise QueryLanguageError(
+                "invalid_query_arguments",
+                "top must be an integer greater than or equal to 1",
+            )
+        if (
+            isinstance(args.max_read, bool)
+            or not isinstance(args.max_read, int)
+            or args.max_read < 0
+        ):
+            raise QueryLanguageError(
+                "invalid_query_arguments",
+                "max-read must be an integer greater than or equal to 0",
+            )
+    except QueryLanguageError as exc:
+        return _render_query_error(args, exc)
 
     runtime = _resolve_runtime()
     if runtime is None:
@@ -1632,18 +1725,18 @@ def cmd_query(args: argparse.Namespace) -> int:
     if vault is None:
         return 1
 
-    result = query(
-        vault,
-        args.question,
-        top_n=args.top,
-        max_should_read=args.max_read,
-        public_only=args.public_only,
-    )
+    try:
+        result = query(
+            vault,
+            spec,
+            top_n=args.top,
+            max_should_read=args.max_read,
+            public_only=args.public_only,
+        )
+    except QueryExecutionError as exc:
+        return _render_query_error(args, exc)
     if args.json:
-        if args.pretty:
-            print(json.dumps(result, indent=2))
-        else:
-            print(json.dumps(result))
+        _json_print(result, pretty=args.pretty)
     else:
         _print_query(result)
     return 0
@@ -2486,20 +2579,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     qq = sub.add_parser(
         "query",
-        help="query the configured vault without passing the raw path each time",
+        help="run a query-language/v1 operation against the configured vault",
     )
-    qq.add_argument("question", help="question to ask against the vault index")
+    qq.add_argument(
+        "question",
+        nargs="?",
+        help="one exact query-language/v1 natural template",
+    )
+    qq.add_argument(
+        "--describe", action="store_true", help="describe query-language/v1"
+    )
+    qq.add_argument("--mode", help="explicit mode: find, list, or path")
+    qq.add_argument("--term", help="opaque Unicode operand for find or list")
+    qq.add_argument(
+        "--from", dest="source", help="opaque Unicode path source operand"
+    )
+    qq.add_argument("--to", dest="target", help="opaque Unicode path target operand")
     qq.add_argument(
         "--top",
         type=int,
         default=8,
-        help="number of candidate pages to rank (default: 8)",
+        help="maximum returned candidates",
     )
     qq.add_argument(
         "--max-read",
         type=int,
         default=3,
-        help="max pages to return in should_read (default: 3)",
+        help="maximum suggested page reads",
     )
     qq.add_argument(
         "--public-only",
