@@ -1669,9 +1669,13 @@ def _query_recovery_forms(operand: str) -> tuple[str, str] | None:
         '"', '\\"'
     )
     natural_question = find_template.replace("<term>", grammar_escaped_operand)
-    explicit_arguments = description["canonical_cli"]["find"].replace(
-        "<term>", shlex.quote(normalized_operand)
-    )
+    explicit_tokens = shlex.split(description["canonical_cli"]["find"])
+    placeholder_index = explicit_tokens.index("<term>")
+    value_option_index = placeholder_index - 1
+    explicit_tokens[value_option_index : placeholder_index + 1] = [
+        f"{explicit_tokens[value_option_index]}={normalized_operand}"
+    ]
+    explicit_arguments = shlex.join(explicit_tokens)
     return (
         f"llmwikiops query {shlex.quote(natural_question)}",
         f"llmwikiops query {explicit_arguments}",

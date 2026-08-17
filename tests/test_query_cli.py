@@ -150,17 +150,28 @@ def test_query_human_error_prints_executable_rewrites(tmp_path: Path) -> None:
     explicit_argv = shlex.split(commands[1])
     assert natural_argv[:2] == explicit_argv[:2] == ["llmwikiops", "query"]
     assert parse_natural_query(natural_argv[2]).term == "transformer"
-    assert explicit_argv[2:] == ["--mode", "find", "--term", "transformer"]
+    assert explicit_argv[2:] == ["--mode", "find", "--term=transformer"]
     for argv in (natural_argv, explicit_argv):
         rerun = _run(home, *argv[1:], cwd=root)
         assert rerun.returncode == 0
 
 
-def test_query_human_rewrites_shell_quote_opaque_unicode_and_metacharacters(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "operand",
+    [
+        "-x",
+        "--json",
+        "--mode=find",
+        "注意力 \"机制\"; $(ignored) '单引号' \\路径",
+    ],
+)
+def test_query_human_rewrites_keep_option_like_operands_attached_and_safe(
+    tmp_path: Path, operand: str
 ) -> None:
-    operand = "注意力 \"机制\"; $(ignored) '单引号' \\路径"
-    proc = _run(tmp_path / "home", "query", operand)
+    home = tmp_path / "home"
+    root, vault = _portable_root(tmp_path)
+    _page(vault, "known", title="Known", summary="Known")
+    proc = _run(home, "query", "--", operand, cwd=root)
 
     assert proc.returncode == 2
     assert proc.stdout == ""
@@ -174,9 +185,11 @@ def test_query_human_rewrites_shell_quote_opaque_unicode_and_metacharacters(
         "query",
         "--mode",
         "find",
-        "--term",
-        normalize_operand(operand),
+        f"--term={normalize_operand(operand)}",
     ]
+    for argv in (natural_argv, explicit_argv):
+        rerun = _run(home, *argv[1:], cwd=root)
+        assert rerun.returncode == 0
 
 
 def test_query_help_exposes_all_forms_from_language_description(
