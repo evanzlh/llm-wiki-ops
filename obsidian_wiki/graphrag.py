@@ -84,7 +84,7 @@ def _link_candidates(
     aliases: dict[str, list[str]],
 ) -> list[str]:
     target = normalize_match(raw_target.removesuffix(".md"))
-    if target in pages:
+    if "/" in target and target in pages:
         return [target]
     return aliases.get(target, [])
 

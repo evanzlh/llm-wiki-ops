@@ -261,6 +261,20 @@ class TestBuildIndex:
         assert index["concepts/agent"]["in_links"] == ["source"]
         assert index["alias-page"]["in_links"] == []
 
+    def test_keeps_root_and_nested_basename_links_ambiguous(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(vault, "agent", title="Root Agent")
+        _page(concepts, "agent", title="Concept Agent")
+        _page(vault, "source", links=["agent"])
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == []
+        assert index["source"]["ambiguous_links"] == [
+            {"target": "agent", "candidates": ["agent", "concepts/agent"]}
+        ]
+
     def test_duplicate_normalized_identity_fails_closed(self, vault):
         _page(vault, "Agent", title="First Agent")
         duplicate = _page(vault, "Ａgent", title="Second Agent")
