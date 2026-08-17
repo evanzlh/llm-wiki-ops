@@ -754,6 +754,23 @@ class TestQuery:
             "candidates": ["agent-alpha.md", "agent-beta.md"],
         }
 
+    def test_path_rejects_markdown_path_identity_collision(self, vault):
+        _page(vault, "foo", title="First Foo")
+        _page(vault, "foo.md", title="Second Foo")
+        _page(vault, "target", title="Target")
+
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            query(
+                vault,
+                QuerySpec(mode="path", source="foo.md", target="Target"),
+            )
+
+        assert raised.value.code == "ambiguous_operand"
+        assert raised.value.details == {
+            "operand": "source",
+            "candidates": ["foo.md", "foo.md.md"],
+        }
+
     def test_index_only_requires_exact_title_or_identity_match(self, simple_vault):
         exact = query(
             simple_vault,

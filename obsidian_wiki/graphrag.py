@@ -388,16 +388,19 @@ def resolve_operand(
 ) -> Optional[str]:
     """Resolve one opaque operand to a page identity, or report ambiguity."""
     term = normalize_match(operand)
-    if term.endswith(".md"):
-        page_id = term.removesuffix(".md")
-        if page_id in index and normalize_match(index[page_id]["path"]) == term:
-            return page_id
-
-    exact = sorted(
+    exact_ids = {
         page_id
         for page_id, entry in index.items()
         if term in _aliases(page_id, entry)
-    )
+    }
+    if term in index:
+        exact_ids.add(term)
+    if term.endswith(".md"):
+        page_id = term.removesuffix(".md")
+        if page_id in index:
+            exact_ids.add(page_id)
+
+    exact = sorted(exact_ids)
     if len(exact) > 1:
         raise _ambiguous_operand(operand_name, exact, index)
     if exact:
