@@ -86,8 +86,8 @@ class TestBuildIndex:
 
         index = build_index(vault)
 
-        assert set(index) == {"daily", "entry"}
-        assert index["entry"]["out_links"] == ["daily"]
+        assert set(index) == {"journal/daily", "journal/operations/entry"}
+        assert index["journal/operations/entry"]["out_links"] == ["journal/daily"]
 
     def test_rejects_symlinked_journal_operations(self, vault, tmp_path):
         journal = vault / "journal"
@@ -114,10 +114,10 @@ class TestBuildIndex:
 
         index = build_index(vault)
 
-        assert set(index) == {"topic", "log"}
-        assert index["log"]["title"] == "Nested Log"
-        assert index["topic"]["out_links"] == ["log"]
-        assert index["topic"]["in_links"] == []
+        assert set(index) == {"concepts/topic", "concepts/log"}
+        assert index["concepts/log"]["title"] == "Nested Log"
+        assert index["concepts/topic"]["out_links"] == ["concepts/log"]
+        assert index["concepts/topic"]["in_links"] == []
 
     def test_skips_root_views_before_frontmatter_parsing(self, vault):
         for name in ("index.md", "log.md", "hot.md"):
@@ -146,6 +146,51 @@ class TestBuildIndex:
     def test_reads_tier(self, simple_vault):
         idx = build_index(simple_vault)
         assert idx["transformer"]["tier"] == "core"
+
+    def test_preserves_distinct_nested_page_identities_and_paths(self, vault):
+        concepts = vault / "concepts"
+        projects = vault / "projects"
+        concepts.mkdir()
+        projects.mkdir()
+        _page(concepts, "agent", title="Concept Agent")
+        _page(projects, "agent", title="Project Agent")
+
+        index = build_index(vault)
+
+        assert set(index) == {"concepts/agent", "projects/agent"}
+        assert index["concepts/agent"]["path"] == "concepts/agent.md"
+        assert index["projects/agent"]["path"] == "projects/agent.md"
+        assert index["concepts/agent"]["ambiguous_links"] == []
+
+    def test_resolves_qualified_links_and_records_ambiguous_aliases(self, vault):
+        concepts = vault / "concepts"
+        projects = vault / "projects"
+        concepts.mkdir()
+        projects.mkdir()
+        _page(concepts, "agent", title="Concept Agent")
+        _page(projects, "agent", title="Project Agent")
+        _page(vault, "source", links=["concepts/agent", "agent"])
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == ["concepts/agent"]
+        assert index["concepts/agent"]["in_links"] == ["source"]
+        assert index["source"]["ambiguous_links"] == [
+            {"target": "agent", "candidates": ["concepts/agent", "projects/agent"]}
+        ]
+
+    def test_duplicate_normalized_identity_fails_closed(self, vault):
+        _page(vault, "Agent", title="First Agent")
+        duplicate = _page(vault, "Ａgent", title="Second Agent")
+        duplicate.write_text(
+            duplicate.read_text(encoding="utf-8") + "PRIVATE-BODY-SENTINEL\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="duplicate normalized query page identity") as raised:
+            build_index(vault)
+
+        assert "PRIVATE-BODY-SENTINEL" not in str(raised.value)
 
     def test_public_only_filters_metadata_before_body_read(self, vault, monkeypatch):
         _page(vault, "public", summary="Public summary", tags=["public"], links=[])
@@ -278,7 +323,7 @@ class TestBuildIndex:
         directory.mkdir()
         _page(directory, "draft", title="Draft")
         idx = build_index(vault)
-        assert "draft" in idx
+        assert f"{name}/draft" in idx
 
     def test_rejects_external_symlink_without_leaking_content(self, vault, tmp_path):
         raw = vault / "_raw"

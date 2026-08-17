@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict, deque
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
+from .query_language import normalize_match
 from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 
@@ -55,6 +56,58 @@ def _slug(s: str) -> str:
     return s.strip().lower().replace(" ", "-")
 
 
+def _page_id(relative: str) -> str:
+    return normalize_match(PurePosixPath(relative).with_suffix("").as_posix())
+
+
+def _aliases(page_id: str, entry: dict) -> set[str]:
+    return {
+        page_id,
+        normalize_match(PurePosixPath(page_id).name),
+        normalize_match(entry["title"]),
+    }
+
+
+def _alias_map(pages: dict[str, dict]) -> dict[str, list[str]]:
+    aliases: defaultdict[str, list[str]] = defaultdict(list)
+    for page_id, entry in pages.items():
+        for alias in _aliases(page_id, entry):
+            aliases[alias].append(page_id)
+    return {alias: sorted(ids) for alias, ids in aliases.items()}
+
+
+def _link_candidates(
+    raw_target: str,
+    pages: dict[str, dict],
+    aliases: dict[str, list[str]],
+) -> list[str]:
+    target = normalize_match(raw_target.removesuffix(".md"))
+    if "/" in target:
+        return [target] if target in pages else []
+    return aliases.get(target, [])
+
+
+def _record_link(
+    pages: dict[str, dict],
+    aliases: dict[str, list[str]],
+    page_id: str,
+    raw_target: str,
+) -> None:
+    candidates = _link_candidates(raw_target, pages, aliases)
+    if len(candidates) == 1 and candidates[0] != page_id:
+        target = candidates[0]
+        pages[page_id]["out_links"].append(target)
+        pages[target]["in_links"].append(page_id)
+    elif len(candidates) > 1:
+        pages[page_id]["ambiguous_links"].append(
+            {"target": raw_target, "candidates": candidates}
+        )
+
+
+def _markdown_link_target(href: str) -> str:
+    return href.split("#", 1)[0].split("?", 1)[0].removesuffix(".md")
+
+
 def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     """Build a lightweight index dict from vault frontmatter and wikilinks.
 
@@ -73,7 +126,7 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
     # First pass: collect all slugs and frontmatter
     for header in headers:
         page = header
-        slug = _slug(page.path.stem)
+        page_id = _page_id(page.relative)
         try:
             text = page.text()
         except ValueError:
@@ -109,7 +162,10 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
         lifecycle = str(values.get("lifecycle", "")).strip()
         updated = str(values.get("updated", "")).strip()
 
-        pages[slug] = {
+        if page_id in pages:
+            raise RuntimeError("duplicate normalized query page identity")
+
+        pages[page_id] = {
             "title": title or page.path.stem,
             "tags": tags,
             "summary": summary,
@@ -121,29 +177,24 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
             "path": page.relative,
             "out_links": [],
             "in_links": [],
+            "ambiguous_links": [],
         }
         eligible.append(header)
 
     # Second pass: extract wikilinks
-    known = set(pages.keys())
+    aliases = _alias_map(pages)
     for header in eligible:
         page = read_markdown_snapshot(header)
-        slug = _slug(page.path.stem)
-        if slug not in pages:
+        page_id = _page_id(page.relative)
+        if page_id not in pages:
             continue
         text = page.text(errors="replace")
 
         for link in _WIKILINK_RE.findall(text):
-            target = _slug(link.split("/")[-1])
-            if target and target != slug and target in known:
-                pages[slug]["out_links"].append(target)
-                pages[target]["in_links"].append(slug)
+            _record_link(pages, aliases, page_id, link)
 
         for href in _MD_LINK_RE.findall(text):
-            target = _slug(Path(href).stem)
-            if target and target != slug and target in known:
-                pages[slug]["out_links"].append(target)
-                pages[target]["in_links"].append(slug)
+            _record_link(pages, aliases, page_id, _markdown_link_target(href))
 
     return pages
 
