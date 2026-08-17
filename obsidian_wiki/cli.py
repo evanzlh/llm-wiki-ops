@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import stat
 import sys
 from pathlib import Path
@@ -1623,6 +1624,31 @@ def _print_query(result: dict[str, object]) -> None:
             print(f"- {page}")
 
 
+def _query_command_forms() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return shell-facing query forms from the machine-readable authority."""
+    from obsidian_wiki.query_language import describe_query_language
+
+    description = describe_query_language()
+    natural_forms = tuple(
+        f"llmwikiops query {shlex.quote(item['template'])}"
+        for item in description["natural_templates"]
+    )
+    explicit_forms = tuple(
+        f"llmwikiops query {command}"
+        for command in description["canonical_cli"].values()
+    )
+    return natural_forms, explicit_forms
+
+
+def _query_help_epilog() -> str:
+    natural_forms, explicit_forms = _query_command_forms()
+    lines = ["supported natural query forms:"]
+    lines.extend(f"  {command}" for command in natural_forms)
+    lines.append("canonical explicit query forms:")
+    lines.extend(f"  {command}" for command in explicit_forms)
+    return "\n".join(lines)
+
+
 def _query_error_payload(error: Exception) -> dict[str, object]:
     from obsidian_wiki.query_language import GRAMMAR_VERSION, describe_query_language
 
@@ -1632,10 +1658,12 @@ def _query_error_payload(error: Exception) -> dict[str, object]:
         "grammar_version": GRAMMAR_VERSION,
     }
     if error.code == "unsupported_query_structure":
+        description = describe_query_language()
         error_payload["templates"] = [
             item["template"]
-            for item in describe_query_language()["natural_templates"]
+            for item in description["natural_templates"]
         ]
+        error_payload["canonical_cli"] = description["canonical_cli"]
     details = getattr(error, "details", None)
     if details:
         error_payload["details"] = details
@@ -1649,8 +1677,24 @@ def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
         _json_print(payload, pretty=args.pretty)
     else:
         print(f"error: {error_payload['message']}", file=sys.stderr)
-        for template in error_payload.get("templates", []):
-            print(f"  {template}", file=sys.stderr)
+        if error_payload.get("templates"):
+            natural_forms, explicit_forms = _query_command_forms()
+            print("legal natural query forms:", file=sys.stderr)
+            for command in natural_forms:
+                print(f"  {command}", file=sys.stderr)
+            print("canonical explicit query forms:", file=sys.stderr)
+            for command in explicit_forms:
+                print(f"  {command}", file=sys.stderr)
+        details = error_payload.get("details")
+        if isinstance(details, dict):
+            operand = details.get("operand")
+            if operand is not None:
+                print(f"operand: {operand}", file=sys.stderr)
+            candidates = details.get("candidates")
+            if isinstance(candidates, list) and candidates:
+                print("candidates:", file=sys.stderr)
+                for candidate in candidates:
+                    print(f"  {candidate}", file=sys.stderr)
     return 2
 
 
@@ -1989,6 +2033,43 @@ class _ArgumentParseError(Exception):
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise _ArgumentParseError(self, message)
+
+
+class _StoreQueryOptionOnce(argparse.Action):
+    """Store a query option while rejecting a second occurrence."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        seen_attribute = f"_query_option_seen_{self.dest}"
+        if getattr(namespace, seen_attribute, False):
+            parser.error(f"argument {option_string}: may not be repeated")
+        setattr(namespace, seen_attribute, True)
+        setattr(namespace, self.dest, values)
+
+
+class _StoreTrueQueryOptionOnce(argparse.Action):
+    """Set a query flag while rejecting a second occurrence."""
+
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: object) -> None:
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        seen_attribute = f"_query_option_seen_{self.dest}"
+        if getattr(namespace, seen_attribute, False):
+            parser.error(f"argument {option_string}: may not be repeated")
+        setattr(namespace, seen_attribute, True)
+        setattr(namespace, self.dest, True)
 
 
 def _add_json_args(parser: argparse.ArgumentParser) -> None:
@@ -2602,6 +2683,8 @@ def build_parser() -> argparse.ArgumentParser:
         "query",
         help="run a query-language/v1 operation against the configured vault",
         allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_query_help_epilog(),
     )
     qq.add_argument(
         "question",
@@ -2609,33 +2692,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="one exact query-language/v1 natural template",
     )
     qq.add_argument(
-        "--describe", action="store_true", help="describe query-language/v1"
+        "--describe",
+        action=_StoreTrueQueryOptionOnce,
+        default=False,
+        help="describe query-language/v1",
     )
-    qq.add_argument("--mode", help="explicit mode: find, list, or path")
-    qq.add_argument("--term", help="opaque Unicode operand for find or list")
     qq.add_argument(
-        "--from", dest="source", help="opaque Unicode path source operand"
+        "--mode",
+        action=_StoreQueryOptionOnce,
+        help="explicit mode: find, list, or path",
     )
-    qq.add_argument("--to", dest="target", help="opaque Unicode path target operand")
+    qq.add_argument(
+        "--term",
+        action=_StoreQueryOptionOnce,
+        help="opaque Unicode operand for find or list",
+    )
+    qq.add_argument(
+        "--from",
+        dest="source",
+        action=_StoreQueryOptionOnce,
+        help="opaque Unicode path source operand",
+    )
+    qq.add_argument(
+        "--to",
+        dest="target",
+        action=_StoreQueryOptionOnce,
+        help="opaque Unicode path target operand",
+    )
     qq.add_argument(
         "--top",
+        action=_StoreQueryOptionOnce,
         type=int,
         default=None,
         help="maximum returned candidates",
     )
     qq.add_argument(
         "--max-read",
+        action=_StoreQueryOptionOnce,
         type=int,
         default=None,
         help="maximum suggested page reads",
     )
     qq.add_argument(
         "--public-only",
-        action="store_true",
+        action=_StoreTrueQueryOptionOnce,
+        default=False,
         help="exclude visibility/internal and visibility/pii before body reads",
     )
-    qq.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-    qq.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    qq.add_argument(
+        "--json",
+        action=_StoreTrueQueryOptionOnce,
+        default=False,
+        help="emit machine-readable JSON",
+    )
+    qq.add_argument(
+        "--pretty",
+        action=_StoreTrueQueryOptionOnce,
+        default=False,
+        help="pretty-print JSON output",
+    )
     qq.set_defaults(func=cmd_query)
 
     cp = sub.add_parser(

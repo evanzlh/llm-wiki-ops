@@ -18,6 +18,11 @@ NATURAL_TEMPLATES = [
     'list pages about "<term>"',
     'find path from "<source>" to "<target>"',
 ]
+CANONICAL_CLI = {
+    "find": "--mode find --term <term>",
+    "list": "--mode list --term <term>",
+    "path": "--mode path --from <source> --to <target>",
+}
 
 
 def _page(
@@ -118,6 +123,7 @@ def test_query_rejects_legacy_bare_question_before_repository_resolution(
         "message": "query does not match query-language/v1",
         "grammar_version": "query-language/v1",
         "templates": NATURAL_TEMPLATES,
+        "canonical_cli": CANONICAL_CLI,
     }
 
 
@@ -128,8 +134,89 @@ def test_query_human_error_prints_legal_templates(tmp_path: Path) -> None:
     assert proc.stdout == ""
     assert proc.stderr.splitlines() == [
         "error: query does not match query-language/v1",
-        *[f"  {template}" for template in NATURAL_TEMPLATES],
+        "legal natural query forms:",
+        *[f"  llmwikiops query '{template}'" for template in NATURAL_TEMPLATES],
+        "canonical explicit query forms:",
+        *[
+            f"  llmwikiops query {command}"
+            for command in CANONICAL_CLI.values()
+        ],
     ]
+
+
+def test_query_help_exposes_all_forms_from_language_description(
+    tmp_path: Path,
+) -> None:
+    proc = _run(tmp_path / "home", "query", "--help")
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
+    for template in NATURAL_TEMPLATES:
+        assert f"llmwikiops query '{template}'" in proc.stdout
+    for command in CANONICAL_CLI.values():
+        assert f"llmwikiops query {command}" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--describe", "--describe"),
+        ("--mode", "search", "--mode=find"),
+        ("--mode", "find", "--term", "topic", "--term=other"),
+        ("--mode", "path", "--from", "left", "--from=other", "--to", "right"),
+        ("--mode", "path", "--from", "left", "--to", "right", "--to=other"),
+        ("--mode", "find", "--term", "topic", "--top", "0", "--top=8"),
+        (
+            "--mode",
+            "find",
+            "--term",
+            "topic",
+            "--max-read",
+            "-1",
+            "--max-read=3",
+        ),
+        ("--mode", "find", "--term", "topic", "--public-only", "--public-only"),
+        ("--describe", "--json", "--json"),
+        ("--describe", "--pretty", "--pretty"),
+    ],
+)
+@pytest.mark.parametrize("json_position", ["before", "after"])
+def test_query_rejects_repeated_options_with_stable_json_error(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    json_position: str,
+) -> None:
+    positioned = (
+        ("--json", *arguments)
+        if json_position == "before"
+        else (*arguments, "--json")
+    )
+    proc = _run(tmp_path / "home", "query", *positioned)
+
+    assert proc.returncode == 2
+    assert proc.stderr == ""
+    error = json.loads(proc.stdout)["error"]
+    assert error["code"] == "invalid_query_arguments"
+    assert "may not be repeated" in error["message"]
+
+
+def test_query_repeated_option_without_json_keeps_argparse_usage(
+    tmp_path: Path,
+) -> None:
+    proc = _run(
+        tmp_path / "home",
+        "query",
+        "--mode",
+        "search",
+        "--mode=find",
+        "--term",
+        "topic",
+    )
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("usage: llmwikiops query")
+    assert "argument --mode: may not be repeated" in proc.stderr
 
 
 def test_query_natural_and_explicit_chinese_forms_return_same_json(
@@ -529,6 +616,38 @@ def test_query_path_ambiguity_returns_candidate_paths(tmp_path: Path) -> None:
         "operand": "source",
         "candidates": ["concepts/agent.md", "projects/agent.md"],
     }
+
+
+def test_query_human_path_ambiguity_prints_operand_and_candidate_paths(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    root, vault = _portable_root(tmp_path)
+    _page(vault, "concepts/agent", title="Concept Agent", summary="Concept")
+    _page(vault, "projects/agent", title="Project Agent", summary="Project")
+    _page(vault, "target", title="Target", summary="Target")
+
+    proc = _run(
+        home,
+        "query",
+        "--mode",
+        "path",
+        "--from",
+        "agent",
+        "--to",
+        "Target",
+        cwd=root,
+    )
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.splitlines() == [
+        "error: query operand matches more than one page",
+        "operand: source",
+        "candidates:",
+        "  concepts/agent.md",
+        "  projects/agent.md",
+    ]
 
 
 def test_query_no_path_is_success(tmp_path: Path) -> None:
