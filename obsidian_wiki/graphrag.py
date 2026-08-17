@@ -78,7 +78,7 @@ def _alias_map(pages: dict[str, dict]) -> dict[str, list[str]]:
     return {alias: sorted(ids) for alias, ids in aliases.items()}
 
 
-def _link_candidates(
+def _wikilink_candidates(
     raw_target: str,
     pages: dict[str, dict],
     aliases: dict[str, list[str]],
@@ -89,21 +89,32 @@ def _link_candidates(
     return aliases.get(target, [])
 
 
-def _record_link(
+def _record_edge(pages: dict[str, dict], page_id: str, target: str) -> None:
+    if target != page_id:
+        pages[page_id]["out_links"].append(target)
+        pages[target]["in_links"].append(page_id)
+
+
+def _record_wikilink(
     pages: dict[str, dict],
     aliases: dict[str, list[str]],
     page_id: str,
     raw_target: str,
 ) -> None:
-    candidates = _link_candidates(raw_target, pages, aliases)
-    if len(candidates) == 1 and candidates[0] != page_id:
-        target = candidates[0]
-        pages[page_id]["out_links"].append(target)
-        pages[target]["in_links"].append(page_id)
+    candidates = _wikilink_candidates(raw_target, pages, aliases)
+    if len(candidates) == 1:
+        _record_edge(pages, page_id, candidates[0])
     elif len(candidates) > 1:
         pages[page_id]["ambiguous_links"].append(
             {"target": raw_target, "candidates": candidates}
         )
+
+
+def _record_resolved_markdown_link(
+    pages: dict[str, dict], page_id: str, target: str
+) -> None:
+    if target in pages:
+        _record_edge(pages, page_id, target)
 
 
 def _markdown_link_target(href: str, source_relative: str) -> str | None:
@@ -216,12 +227,12 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
         text = page.text(errors="replace")
 
         for link in _WIKILINK_RE.findall(text):
-            _record_link(pages, aliases, page_id, link)
+            _record_wikilink(pages, aliases, page_id, link)
 
         for href in _MD_LINK_RE.findall(text):
             target = _markdown_link_target(href, page.relative)
             if target is not None:
-                _record_link(pages, aliases, page_id, target)
+                _record_resolved_markdown_link(pages, page_id, target)
 
     return pages
 

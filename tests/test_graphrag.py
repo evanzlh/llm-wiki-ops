@@ -247,6 +247,34 @@ class TestBuildIndex:
             "concepts/agent",
         ]
 
+    def test_markdown_destinations_do_not_fall_back_to_title_aliases(self, vault):
+        _page(vault, "alias", title="missing/target")
+        source = _page(vault, "source")
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "[Broken](missing/target.md)\n",
+            encoding="utf-8",
+        )
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == []
+        assert index["source"]["ambiguous_links"] == []
+        assert index["alias"]["in_links"] == []
+
+    def test_markdown_destination_preserves_page_ids_ending_in_md(self, vault):
+        _page(vault, "foo.md", title="Double Markdown Suffix")
+        source = _page(vault, "source")
+        source.write_text(
+            source.read_text(encoding="utf-8") + "[Double](foo.md.md)\n",
+            encoding="utf-8",
+        )
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == ["foo.md"]
+        assert index["foo.md"]["in_links"] == ["source"]
+
     def test_resolves_slash_title_aliases_after_exact_page_ids(self, vault):
         concepts = vault / "concepts"
         concepts.mkdir()
