@@ -891,6 +891,21 @@ class TestQuery:
         assert result["status"] == "ok"
         assert result["path"] == ["concepts/agent.md", "target.md"]
 
+    def test_markdown_qualified_identity_wins_over_exact_title_alias(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "agent", title="Qualified Agent", links=["target"])
+        _page(vault, "alias-page", title="concepts/agent.md")
+        _page(vault, "target", title="Target")
+
+        result = query(
+            vault,
+            QuerySpec(mode="path", source="concepts/agent.md", target="Target"),
+        )
+
+        assert result["status"] == "ok"
+        assert result["path"] == ["concepts/agent.md", "target.md"]
+
     def test_no_path_reports_operation_relevant_ambiguous_links(self, vault):
         concepts = vault / "concepts"
         projects = vault / "projects"
