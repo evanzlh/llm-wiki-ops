@@ -20,6 +20,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections import defaultdict, deque
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -55,6 +56,7 @@ ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
 MAX_AMBIGUOUS_LINK_DIAGNOSTICS = 20
 MAX_AMBIGUOUS_LINK_CANDIDATES = 20
 MAX_AMBIGUITY_RELEVANT_PAGES = 100
+MAX_AMBIGUITY_NEIGHBOUR_SCANS_PER_PAGE = 100
 
 
 def _page_id(relative: str) -> str:
@@ -629,14 +631,14 @@ def _reachable_page_ids(
         if page_id in reachable or depth >= max_depth:
             continue
         reachable.add(page_id)
-        if len(reachable) >= max_pages:
-            truncated = True
-            break
         if depth + 1 >= max_depth:
             continue
-        neighbours = index[page_id]["out_links"] + index[page_id]["in_links"]
+        neighbours = chain(
+            index[page_id]["out_links"],
+            index[page_id]["in_links"],
+        )
         for position, neighbour in enumerate(neighbours):
-            if position >= max_pages:
+            if position >= MAX_AMBIGUITY_NEIGHBOUR_SCANS_PER_PAGE:
                 truncated = True
                 break
             if neighbour not in reachable and neighbour not in queued:

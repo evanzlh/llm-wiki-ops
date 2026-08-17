@@ -703,6 +703,55 @@ class TestFindPath:
         path = find_path(idx, "x", "y")
         assert path is None
 
+    def test_ambiguity_relevance_scans_neighbours_lazily_with_a_bound(self):
+        class GuardedLinks(list[str]):
+            def __init__(self, values):
+                super().__init__(values)
+                self.pulls = 0
+
+            def __add__(self, other):
+                raise AssertionError("neighbour lists must not be materialized")
+
+            def __iter__(self):
+                for value in super().__iter__():
+                    self.pulls += 1
+                    if self.pulls > 3:
+                        raise AssertionError("neighbour scan exceeded its bound")
+                    yield value
+
+        links = GuardedLinks(["first", "second", "third", "fourth"])
+        index = {
+            "source": {"out_links": links, "in_links": []},
+            "first": {"out_links": [], "in_links": []},
+        }
+
+        relevant, truncated = graphrag._reachable_page_ids(
+            index,
+            "source",
+            max_depth=2,
+            max_pages=2,
+        )
+
+        assert relevant == {"source", "first"}
+        assert truncated is True
+        assert links.pulls == 2
+
+    def test_ambiguity_relevance_exact_page_cap_is_not_truncated(self):
+        index = {
+            "source": {"out_links": ["first"], "in_links": []},
+            "first": {"out_links": [], "in_links": ["source"]},
+        }
+
+        relevant, truncated = graphrag._reachable_page_ids(
+            index,
+            "source",
+            max_depth=2,
+            max_pages=2,
+        )
+
+        assert relevant == {"source", "first"}
+        assert truncated is False
+
 
 # ---------------------------------------------------------------------------
 # query (integration)
