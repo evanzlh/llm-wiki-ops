@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_wiki import cli
+from obsidian_wiki.query_language import QueryLanguageError, build_explicit_query
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1069,17 +1071,72 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
 
 
 def _noncanonical_query_command_lines(text: str) -> list[str]:
-    canonical_prefixes = (
-        "llmwikiops query --describe --json",
-        "llmwikiops query --mode find --term ",
-        "llmwikiops query --mode list --term ",
-        "llmwikiops query --mode path --from ",
+    semantic_flags = (
+        "--describe",
+        "--mode",
+        "--term",
+        "--from",
+        "--to",
+        "--top",
+        "--max-read",
+        "--public-only",
     )
+
+    def is_valid_query_command(line: str) -> bool:
+        try:
+            tokens = shlex.split(line)
+            args = cli.build_parser().parse_args(tokens[1:])
+        except (ValueError, cli._ArgumentParseError, SystemExit):
+            return False
+
+        if (
+            tokens[0] != "llmwikiops"
+            or getattr(args, "func", None) is not cli.cmd_query
+            or args.question is not None
+            or not args.json
+        ):
+            return False
+        if any(
+            sum(
+                token == flag or token.startswith(f"{flag}=")
+                for token in tokens[2:]
+            )
+            > 1
+            for flag in semantic_flags
+        ):
+            return False
+        if args.describe:
+            return (
+                args.mode is None
+                and args.term is None
+                and args.source is None
+                and args.target is None
+                and args.top is None
+                and args.max_read is None
+                and not args.public_only
+            )
+        if args.mode is None:
+            return False
+        try:
+            build_explicit_query(
+                mode=args.mode,
+                term=args.term,
+                source=args.source,
+                target=args.target,
+            )
+        except QueryLanguageError:
+            return False
+        return (
+            args.top is None or args.top >= 1
+        ) and (
+            args.max_read is None or args.max_read >= 0
+        )
+
     return [
         line
         for raw_line in text.splitlines()
         if (line := raw_line.strip()).startswith("llmwikiops query ")
-        and not line.startswith(canonical_prefixes)
+        and not is_valid_query_command(line)
     ]
 
 
@@ -1096,16 +1153,38 @@ def _noncanonical_query_command_lines(text: str) -> list[str]:
             ['llmwikiops query --mode list "<topic>"'],
         ),
         ('llmwikiops query "<question>"', ['llmwikiops query "<question>"']),
-        ("llmwikiops query --describe --json", []),
-        ('llmwikiops query --mode find --term "topic"', []),
-        ('llmwikiops query --mode list --term "topic"', []),
         (
-            'llmwikiops query --mode path --from "source" --to "target"',
+            "llmwikiops query --describe --mode find --term topic --json",
+            ["llmwikiops query --describe --mode find --term topic --json"],
+        ),
+        (
+            'llmwikiops query --mode find --term "topic" --to "target" --json',
+            ['llmwikiops query --mode find --term "topic" --to "target" --json'],
+        ),
+        (
+            'llmwikiops query --mode path --from "source" --json',
+            ['llmwikiops query --mode path --from "source" --json'],
+        ),
+        (
+            'llmwikiops query --mode find --mode find --term "topic" --json',
+            [
+                'llmwikiops query --mode find --mode find --term "topic" --json'
+            ],
+        ),
+        (
+            'llmwikiops query --mode find --term "topic"',
+            ['llmwikiops query --mode find --term "topic"'],
+        ),
+        ("llmwikiops query --describe --json", []),
+        ('llmwikiops query --mode find --term "topic" --json', []),
+        ('llmwikiops query --mode list --term "topic" --json --pretty', []),
+        (
+            'llmwikiops query --mode path --from "source" --to "target" --json',
             [],
         ),
     ],
 )
-def test_query_command_allowlist_rejects_noncanonical_lines(
+def test_query_command_parser_rejects_noncanonical_lines(
     line: str, expected_offenders: list[str]
 ) -> None:
     assert _noncanonical_query_command_lines(line) == expected_offenders
