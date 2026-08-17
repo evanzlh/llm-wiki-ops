@@ -1016,7 +1016,29 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     digest = _special_skill("wiki-digest")
 
     assert "nearest ancestor `.llmwikiops/config.toml`" in query
-    assert 'llmwikiops query "<question>" --json --pretty' in query
+    assert "llmwikiops query --describe --json" in query
+    assert "grammar_version" in query
+    assert "query-language/v1" in query
+    for command in (
+        'llmwikiops query --mode find --term "<term>" --json --pretty',
+        'llmwikiops query --mode list --term "<term>" --json --pretty',
+        'llmwikiops query --mode path --from "<source>" --to "<target>" --json --pretty',
+    ):
+        assert command in query
+    for template in (
+        'find "<term>"',
+        'list pages about "<term>"',
+        'find path from "<source>" to "<target>"',
+    ):
+        assert template in query
+    assert "must not invent aliases, paraphrases, or parameter combinations" in query
+    assert "unsupported_query_structure" in query
+    assert "ambiguous_operand" in query
+    assert "no_matches" in query
+    assert "no_path" in query
+    assert 'llmwikiops query "<question>"' not in query
+    assert "answer_type" not in query
+    assert "gap-query" not in query
     assert 'llmwikiops context-pack "<topic>" --budget 8000' in context
     assert "llmwikiops hot status --json" in digest
     assert "Read `hot.md` only when `stale` is `false`" in " ".join(digest.split())

@@ -83,6 +83,8 @@ git commit -m "Upgrade LLMWikiOps"
 
 The current product surface is the repository workflow documented here and in `docs/`. A Dashboard is intentionally absent; any future Dashboard requires a separate design and implementation, with no placeholder in this release.
 
+Query discovery is explicit: run `llmwikiops query --describe --json` before querying. Agents execute `llmwikiops query --mode find --term "注意力机制" --json --pretty`; query-language/v1 fixes the English shell while accepting operands in any language. See the [CLI reference](docs/cli.md).
+
 ## Documentation
 
 - [Documentation index](docs/README.md)

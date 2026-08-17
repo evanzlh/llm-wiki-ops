@@ -61,7 +61,13 @@ llmwikiops hot mark-current --json --pretty
 ## 查詢、圖形與品質
 
 ```bash
-llmwikiops query "topic" --public-only --json --pretty
+llmwikiops query --describe [--json] [--pretty]
+llmwikiops query 'find "<term>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query 'list pages about "<term>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query 'find path from "<source>" to "<target>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode find --term TERM [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode list --term TERM [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode path --from SOURCE --to TARGET [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
 llmwikiops context-pack "topic" --budget 8000 --json --pretty
 llmwikiops graph-analyse --top 20 --pretty
 llmwikiops lint --json --pretty
@@ -69,6 +75,34 @@ llmwikiops trust-check --json --pretty
 llmwikiops cache-check sources/example.md --json --pretty
 llmwikiops batch-plan --pretty
 ```
+
+在第一次查詢前，先探索已安裝的語法：
+
+```bash
+llmwikiops query --describe --json
+```
+
+必須確認 `grammar_version: query-language/v1`；已安裝命令回傳的說明就是語法權威。v1 僅接受下列固定英文外殼的自然語言範本：
+
+```text
+find "<term>"
+list pages about "<term>"
+find path from "<source>" to "<target>"
+```
+
+自動化時請使用明確的 mode 形式：
+
+```bash
+llmwikiops query --mode find --term "<term>" --json --pretty
+llmwikiops query --mode list --term "<term>" --json --pretty
+llmwikiops query --mode path --from "<source>" --to "<target>" --json --pretty
+```
+
+英文外殼與參數組合固定，但引號內的運算元是可使用任何語言的 opaque Unicode 值。運算元會先做 NFKC 正規化並去除首尾空白；比對時再 casefold，且只比對頁面 slug、title、tags 與 summary。不可自行發明別名或改寫範本。
+
+`ok`、`no_matches` 與 `no_path` 都是正常結果狀態。無效結構、無效參數組合、模糊運算元與不支援的操作會以 exit 2 結束；請檢查 JSON error。遇到 `unsupported_query_structure` 時，只能依回傳範本重寫一次；遇到 `ambiguous_operand` 時，顯示候選路徑並請使用者選擇。`--public-only` 會在讀取本文或連結前，先依 metadata 排除 `visibility/internal` 與 `visibility/pii`。
+
+舊式裸查詢（例如 `llmwikiops query "topic"`）是硬性遷移邊界，會被拒絕。請改用一個完全符合的自然語言範本，或明確的 `--mode` 命令。
 
 `context` 是 `context-pack` 的別名。工作階段旁路索引命令包括 `sessions-build`、`sessions-query`、`sessions-show`、`sessions-clusters` 與 `sessions-name`。程式碼結構可用 `ast-extract PATH` 擷取。完整選項以各命令的 `--help` 為準。
 

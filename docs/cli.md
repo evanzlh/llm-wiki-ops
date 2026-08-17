@@ -90,10 +90,55 @@ llmwikiops hot mark-current [--json] [--pretty]
 ## Query and context
 
 ```bash
-llmwikiops query QUESTION [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --describe [--json] [--pretty]
+llmwikiops query 'find "<term>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query 'list pages about "<term>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query 'find path from "<source>" to "<target>"' [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode find --term TERM [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode list --term TERM [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
+llmwikiops query --mode path --from SOURCE --to TARGET [--top TOP] [--max-read MAX_READ] [--public-only] [--json] [--pretty]
 llmwikiops context-pack [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
 llmwikiops context [TOPIC] [--budget BUDGET] [--recent] [--public-only] [--metadata-only] [--json] [--pretty]
 ```
+
+Discover the installed query syntax before the first query:
+
+```bash
+llmwikiops query --describe --json
+```
+
+Require `grammar_version: query-language/v1`; this installed description is the
+syntax authority. Version 1 accepts only these fixed-English natural templates:
+
+```text
+find "<term>"
+list pages about "<term>"
+find path from "<source>" to "<target>"
+```
+
+Use the explicit mode forms for automation:
+
+```bash
+llmwikiops query --mode find --term "<term>" --json --pretty
+llmwikiops query --mode list --term "<term>" --json --pretty
+llmwikiops query --mode path --from "<source>" --to "<target>" --json --pretty
+```
+
+The English shell and its parameter combinations are fixed, while quoted operands
+are opaque Unicode and may be in any language. Operands are normalized with NFKC
+and surrounding whitespace removal; matching additionally uses casefolding against
+page slugs, titles, tags, and summaries. Do not invent aliases or paraphrases.
+
+`ok`, `no_matches`, and `no_path` are normal result statuses. Invalid structures,
+invalid argument combinations, ambiguous operands, and unsupported operations exit
+2; inspect the JSON error. For `unsupported_query_structure`, rewrite once from a
+returned template. For `ambiguous_operand`, present the candidate paths and ask for
+a choice. `--public-only` filters `visibility/internal` and `visibility/pii`
+metadata before body or link extraction.
+
+The former bare-query form, such as `llmwikiops query "topic"`, is a hard
+migration boundary and is rejected. Use one exact natural template or an explicit
+`--mode` command instead.
 
 `context` is an alias of `context-pack`. A topic is optional only with `--recent`. `--public-only` excludes restricted visibility before body reads; `--metadata-only` omits body excerpts.
 

@@ -67,6 +67,8 @@ git commit -m "Upgrade LLMWikiOps"
 
 当前产品界面仅包含本文与 `docs/` 所述的仓库工作流。Dashboard 有意不提供；未来若要加入，必须另行设计与实现，本版本不包含占位实现。
 
+查询必须先探索语法：请在查询前运行 `llmwikiops query --describe --json`。Agent 执行 `llmwikiops query --mode find --term "注意力机制" --json --pretty`；query-language/v1 固定英文外壳，同时允许任何语言的运算元。详见 [CLI 参考](docs/cli.md)。
+
 ## 文档
 
 - [文档索引](docs/README.md)
