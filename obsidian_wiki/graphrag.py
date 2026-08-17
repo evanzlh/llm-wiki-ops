@@ -43,7 +43,8 @@ from .safe_files import read_markdown_snapshot, scan_markdown_headers
 # ---------------------------------------------------------------------------
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
-_MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+\.md[^)]*)\)")
+_MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+)\)")
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 SKIP_DIRS = frozenset(
     "_archived .obsidian".split()
@@ -104,8 +105,16 @@ def _record_link(
         )
 
 
-def _markdown_link_target(href: str) -> str:
-    return href.split("#", 1)[0].split("?", 1)[0].removesuffix(".md")
+def _markdown_link_target(href: str) -> str | None:
+    destination = href.strip()
+    path = re.split(r"[?#]", destination, maxsplit=1)[0]
+    if (
+        not path.endswith(".md")
+        or path.startswith("//")
+        or _URI_SCHEME_RE.match(path)
+    ):
+        return None
+    return path.removesuffix(".md")
 
 
 def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
@@ -194,7 +203,9 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
             _record_link(pages, aliases, page_id, link)
 
         for href in _MD_LINK_RE.findall(text):
-            _record_link(pages, aliases, page_id, _markdown_link_target(href))
+            target = _markdown_link_target(href)
+            if target is not None:
+                _record_link(pages, aliases, page_id, target)
 
     return pages
 

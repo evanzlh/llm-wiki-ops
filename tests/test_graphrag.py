@@ -179,6 +179,45 @@ class TestBuildIndex:
             {"target": "agent", "candidates": ["concepts/agent", "projects/agent"]}
         ]
 
+    def test_resolves_qualified_markdown_links_with_fragments_and_queries(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "agent", title="Agent")
+        source = _page(vault, "source")
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "[Exact](concepts/agent.md)\n"
+            + "[Fragment](concepts/agent.md#details)\n"
+            + "[Query](concepts/agent.md?view=compact#details)\n",
+            encoding="utf-8",
+        )
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == ["concepts/agent"] * 3
+        assert index["source"]["ambiguous_links"] == []
+
+    def test_ignores_non_markdown_and_external_markdown_destinations(self, vault):
+        _page(vault, "foo.mdx", title="Foo MDX")
+        _page(vault, "agent", title="Agent")
+        source = _page(vault, "source")
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "[MDX](foo.mdx)\n"
+            + "[HTTP](http://example.invalid/agent.md)\n"
+            + "[HTTPS](https://example.invalid/agent.md)\n"
+            + "[Mail](mailto:agent.md)\n"
+            + "[File](file:agent.md)\n"
+            + "[Protocol](//example.invalid/agent.md)\n"
+            + "[HTML](agent.md.html)\n",
+            encoding="utf-8",
+        )
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == []
+        assert index["source"]["ambiguous_links"] == []
+
     def test_duplicate_normalized_identity_fails_closed(self, vault):
         _page(vault, "Agent", title="First Agent")
         duplicate = _page(vault, "Ａgent", title="Second Agent")
