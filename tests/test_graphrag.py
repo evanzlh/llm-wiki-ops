@@ -1,6 +1,7 @@
 """Tests for the GraphRAG query index module."""
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -541,6 +542,17 @@ class TestRankCandidates:
         result = rank_candidates(idx, "deep-learning", top_n=1)
         assert len(result) <= 1
 
+    @pytest.mark.parametrize("top_n", [0, -1, 1.5, True, "1"])
+    def test_rejects_invalid_optional_top_n(self, simple_vault, top_n):
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            rank_candidates(
+                build_index(simple_vault),
+                "deep-learning",
+                top_n=top_n,
+            )
+
+        assert raised.value.code == "invalid_query_arguments"
+
     def test_lexical_kind_precedes_degree_and_tier(self, vault):
         _page(vault, "exact", title="Topic", tier="peripheral")
         _page(vault, "substring", title="Topic Overview", tier="core")
@@ -698,7 +710,7 @@ class TestQuery:
             directory = vault / folder
             directory.mkdir()
             _page(directory, "agent", title=f"{folder} agent")
-        _page(vault, "target", title="Target")
+        _page(vault, "target", title="Target", links=["concepts/agent"])
 
         with pytest.raises(graphrag.QueryExecutionError) as raised:
             query(
@@ -712,6 +724,18 @@ class TestQuery:
             "concepts/agent.md",
             "projects/agent.md",
         ]
+
+        chosen = query(
+            vault,
+            QuerySpec(
+                mode="path",
+                source=raised.value.details["candidates"][0],
+                target="Target",
+            ),
+        )
+
+        assert chosen["status"] == "ok"
+        assert chosen["path"] == ["concepts/agent.md", "target.md"]
 
     def test_path_rejects_ambiguous_best_substring_kind(self, vault):
         _page(vault, "agent-alpha", title="Agent Alpha", tier="peripheral")
@@ -744,6 +768,81 @@ class TestQuery:
         assert exact["should_read"] == []
         assert partial["index_only"] is False
         assert partial["should_read"] == ["transformer.md"]
+
+    def test_index_only_requires_one_exact_lexical_match(self, vault):
+        for folder, tier in (("concepts", "core"), ("projects", "supporting")):
+            directory = vault / folder
+            directory.mkdir()
+            _page(
+                directory,
+                "agent",
+                title=f"{folder.title()} Agent",
+                summary=f"Summary for {folder}",
+                tier=tier,
+            )
+
+        result = query(
+            vault,
+            QuerySpec(mode="find", term="agent"),
+            top_n=1,
+        )
+
+        assert len(result["candidates"]) == 1
+        assert result["candidates"][0]["match_kind"] == "exact"
+        assert result["index_only"] is False
+        assert result["should_read"] == ["concepts/agent.md"]
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "find",
+            QuerySpec(mode=cast(Any, "unknown"), term="topic"),
+            QuerySpec(mode="find"),
+            QuerySpec(mode="find", term="topic", source="extra"),
+            QuerySpec(mode="find", term="   "),
+            QuerySpec(mode="list", term=cast(Any, 123)),
+            QuerySpec(mode="path", source="left"),
+            QuerySpec(mode="path", source="left", target="right", term="extra"),
+            QuerySpec(mode="path", source="", target="right"),
+            QuerySpec(mode="path", source="left", target=cast(Any, 123)),
+        ],
+    )
+    def test_rejects_malformed_query_specs(self, vault, spec):
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            query(vault, spec)
+
+        assert raised.value.code == "invalid_query_arguments"
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"top_n": 0},
+            {"top_n": -1},
+            {"top_n": 1.5},
+            {"top_n": True},
+            {"max_should_read": -1},
+            {"max_should_read": 1.5},
+            {"max_should_read": True},
+            {"max_should_read": "1"},
+        ],
+    )
+    def test_rejects_invalid_query_numeric_bounds(self, vault, options):
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            query(vault, QuerySpec(mode="find", term="topic"), **options)
+
+        assert raised.value.code == "invalid_query_arguments"
+
+    def test_zero_max_should_read_is_valid(self, simple_vault):
+        result = query(
+            simple_vault,
+            QuerySpec(mode="find", term="Architecture"),
+            max_should_read=0,
+        )
+
+        assert result["status"] == "ok"
+        assert result["index_only"] is False
+        assert result["should_read"] == []
+        assert result["should_read_metadata"] == []
 
     @pytest.mark.parametrize(
         ("spec", "mode"),

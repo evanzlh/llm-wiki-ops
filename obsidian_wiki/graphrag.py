@@ -244,6 +244,28 @@ class QueryExecutionError(RuntimeError):
         self.details = details or {}
 
 
+def _invalid_query_arguments(
+    message: str,
+    *,
+    details: Optional[dict] = None,
+) -> QueryExecutionError:
+    return QueryExecutionError(
+        "invalid_query_arguments",
+        message,
+        details=details,
+    )
+
+
+def _validate_integer_bound(name: str, value: Any, *, minimum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _invalid_query_arguments(
+            "{} must be an integer greater than or equal to {}".format(
+                name, minimum
+            ),
+            details={"argument": name},
+        )
+
+
 def _score(
     page_id: str,
     entry: dict,
@@ -280,6 +302,9 @@ def rank_candidates(
     operand: str,
     top_n: Optional[int] = None,
 ) -> list[dict]:
+    if top_n is not None:
+        _validate_integer_bound("top_n", top_n, minimum=1)
+
     scored = []
     for page_id, entry in index.items():
         score, match_kind = _score(page_id, entry, operand)
@@ -363,6 +388,11 @@ def resolve_operand(
 ) -> Optional[str]:
     """Resolve one opaque operand to a page identity, or report ambiguity."""
     term = normalize_match(operand)
+    if term.endswith(".md"):
+        page_id = term.removesuffix(".md")
+        if page_id in index and normalize_match(index[page_id]["path"]) == term:
+            return page_id
+
     exact = sorted(
         page_id
         for page_id, entry in index.items()
@@ -391,6 +421,39 @@ def _query_operands(spec: QuerySpec) -> dict[str, str]:
     if spec.mode in {"find", "list"}:
         return {"term": spec.term or ""}
     return {"source": spec.source or "", "target": spec.target or ""}
+
+
+def _is_nonempty_operand(value: Any) -> bool:
+    return isinstance(value, str) and bool(normalize_match(value))
+
+
+def _validate_query_spec(spec: Any) -> QuerySpec:
+    if not isinstance(spec, QuerySpec):
+        raise _invalid_query_arguments("query requires a QuerySpec")
+    if not isinstance(spec.mode, str) or spec.mode not in (
+        "find",
+        "list",
+        "path",
+    ):
+        raise _invalid_query_arguments("query mode must be find, list, or path")
+
+    if spec.mode in ("find", "list"):
+        valid = (
+            _is_nonempty_operand(spec.term)
+            and spec.source is None
+            and spec.target is None
+        )
+    else:
+        valid = (
+            spec.term is None
+            and _is_nonempty_operand(spec.source)
+            and _is_nonempty_operand(spec.target)
+        )
+    if not valid:
+        raise _invalid_query_arguments(
+            "query operands do not match mode {}".format(spec.mode)
+        )
+    return spec
 
 
 def _trust_by_path(index: dict[str, dict]) -> dict[str, dict]:
@@ -474,6 +537,7 @@ def _candidate_result(
     index: dict[str, dict],
     candidates: list[dict],
     *,
+    exact_match_count: int,
     max_should_read: int,
     status: str,
 ) -> dict[str, Any]:
@@ -481,11 +545,12 @@ def _candidate_result(
     index_only = bool(
         spec.mode == "find"
         and top
+        and exact_match_count == 1
         and top["match_kind"] == "exact"
         and top["summary"]
     )
     should_read = [] if index_only else [
-        item["page"] for item in candidates[:max(0, max_should_read)]
+        item["page"] for item in candidates[:max_should_read]
     ]
     return _base_result(
         spec,
@@ -514,7 +579,7 @@ def _path_result(
         status=status,
         candidates=[],
         path=path,
-        should_read=path[:max(0, max_should_read)],
+        should_read=path[:max_should_read],
         index_only=False,
     )
     if unresolved is not None:
@@ -534,17 +599,21 @@ def query(
     max_should_read: int = 3,
     public_only: bool = False,
 ) -> dict[str, Any]:
-    if not isinstance(spec, QuerySpec):
-        raise TypeError("query requires a validated QuerySpec")
+    spec = _validate_query_spec(spec)
+    _validate_integer_bound("top_n", top_n, minimum=1)
+    _validate_integer_bound("max_should_read", max_should_read, minimum=0)
 
     index = build_index(vault, public_only=public_only)
     if spec.mode in {"find", "list"}:
         matches = rank_candidates(index, spec.term or "")
-        selected = matches[:max(0, top_n)]
+        selected = matches[:top_n]
         result = _candidate_result(
             spec,
             index,
             selected,
+            exact_match_count=sum(
+                candidate["match_kind"] == "exact" for candidate in matches
+            ),
             max_should_read=max_should_read,
             status="ok" if selected else "no_matches",
         )
@@ -552,12 +621,6 @@ def query(
             result["total_matches"] = len(matches)
             result["truncated"] = len(matches) > len(selected)
         return result
-
-    if spec.mode != "path":
-        raise QueryExecutionError(
-            "unsupported_operation",
-            "unsupported query mode: {}".format(spec.mode),
-        )
 
     source = resolve_operand(index, spec.source or "", operand_name="source")
     target = resolve_operand(index, spec.target or "", operand_name="target")
