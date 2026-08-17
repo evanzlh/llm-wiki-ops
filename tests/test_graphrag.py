@@ -218,6 +218,49 @@ class TestBuildIndex:
         assert index["source"]["out_links"] == []
         assert index["source"]["ambiguous_links"] == []
 
+    def test_resolves_local_markdown_paths_relative_to_nested_source(self, vault):
+        concepts = vault / "concepts"
+        nested = vault / "nested"
+        concepts.mkdir()
+        nested.mkdir()
+        _page(concepts, "agent", title="Agent")
+        _page(nested, "local", title="Local")
+        source = _page(nested, "source")
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "[Parent](../concepts/agent.md#details)\n"
+            + "[Local](./local.md)\n"
+            + "[Root](/concepts/agent.md)\n"
+            + "[Angle](<../concepts/agent.md>)\n"
+            + '[Title](../concepts/agent.md "Agent title")\n'
+            + "[Escape](../../outside.md)\n",
+            encoding="utf-8",
+        )
+
+        index = build_index(vault)
+
+        assert index["nested/source"]["out_links"] == [
+            "concepts/agent",
+            "nested/local",
+            "concepts/agent",
+            "concepts/agent",
+            "concepts/agent",
+        ]
+
+    def test_resolves_slash_title_aliases_after_exact_page_ids(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "agent", title="Qualified Agent")
+        _page(vault, "alias-page", title="concepts/agent")
+        _page(vault, "reference", title="AC/DC")
+        _page(vault, "source", links=["AC/DC", "concepts/agent"])
+
+        index = build_index(vault)
+
+        assert index["source"]["out_links"] == ["reference", "concepts/agent"]
+        assert index["concepts/agent"]["in_links"] == ["source"]
+        assert index["alias-page"]["in_links"] == []
+
     def test_duplicate_normalized_identity_fails_closed(self, vault):
         _page(vault, "Agent", title="First Agent")
         duplicate = _page(vault, "Ａgent", title="Second Agent")

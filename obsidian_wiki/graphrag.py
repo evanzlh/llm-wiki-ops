@@ -28,10 +28,12 @@ to open, replacing the current approach of opening 10+ pages speculatively.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections import defaultdict, deque
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
 from .query_language import normalize_match
@@ -44,7 +46,6 @@ from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 _MD_LINK_RE = re.compile(r"\[.*?\]\(([^)]+)\)")
-_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 SKIP_DIRS = frozenset(
     "_archived .obsidian".split()
@@ -83,8 +84,8 @@ def _link_candidates(
     aliases: dict[str, list[str]],
 ) -> list[str]:
     target = normalize_match(raw_target.removesuffix(".md"))
-    if "/" in target:
-        return [target] if target in pages else []
+    if target in pages:
+        return [target]
     return aliases.get(target, [])
 
 
@@ -105,16 +106,31 @@ def _record_link(
         )
 
 
-def _markdown_link_target(href: str) -> str | None:
+def _markdown_link_target(href: str, source_relative: str) -> str | None:
     destination = href.strip()
-    path = re.split(r"[?#]", destination, maxsplit=1)[0]
-    if (
-        not path.endswith(".md")
-        or path.startswith("//")
-        or _URI_SCHEME_RE.match(path)
-    ):
+    if destination.startswith("<"):
+        closing = destination.find(">", 1)
+        if closing < 0:
+            return None
+        destination = destination[1:closing].strip()
+    else:
+        destination = destination.split(None, 1)[0] if destination else ""
+    if not destination or destination.startswith("//"):
         return None
-    return path.removesuffix(".md")
+    try:
+        parsed = urlsplit(destination)
+    except ValueError:
+        return None
+    if parsed.scheme or not parsed.path.endswith(".md"):
+        return None
+    if parsed.path.startswith("/"):
+        resolved = posixpath.normpath(parsed.path.lstrip("/"))
+    else:
+        parent = PurePosixPath(source_relative).parent.as_posix()
+        resolved = posixpath.normpath(posixpath.join(parent, parsed.path))
+    if resolved == ".." or resolved.startswith("../"):
+        return None
+    return _page_id(resolved)
 
 
 def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
@@ -203,7 +219,7 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
             _record_link(pages, aliases, page_id, link)
 
         for href in _MD_LINK_RE.findall(text):
-            target = _markdown_link_target(href)
+            target = _markdown_link_target(href, page.relative)
             if target is not None:
                 _record_link(pages, aliases, page_id, target)
 
