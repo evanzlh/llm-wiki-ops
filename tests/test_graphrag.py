@@ -8,17 +8,19 @@ import obsidian_wiki.graphrag as graphrag
 from obsidian_wiki.frontmatter import FrontmatterError
 from obsidian_wiki.graphrag import (
     build_index,
-    classify_query,
     find_path,
     query,
     rank_candidates,
 )
+from obsidian_wiki.query_language import QuerySpec
 
 
 def test_module_docs_use_current_portable_query_command() -> None:
     assert graphrag.__doc__ is not None
-    assert 'llmwikiops query "<question>"' in graphrag.__doc__
+    assert "llmwikiops query 'find \"注意力机制\"'" in graphrag.__doc__
+    assert 'llmwikiops query --mode find --term "注意力机制"' in graphrag.__doc__
     assert "graph-query" not in graphrag.__doc__
+    assert 'query "<question>"' not in graphrag.__doc__
 
 
 # ---------------------------------------------------------------------------
@@ -511,23 +513,24 @@ class TestBuildIndex:
 class TestRankCandidates:
     def test_exact_title_match_scores_highest(self, simple_vault):
         idx = build_index(simple_vault)
-        result = rank_candidates(idx, ["transformer"])
+        result = rank_candidates(idx, "transformer")
         assert result[0]["slug"] == "transformer"
+        assert result[0]["match_kind"] == "exact"
 
     def test_tag_match_included(self, simple_vault):
         idx = build_index(simple_vault)
-        result = rank_candidates(idx, ["nlp"])
+        result = rank_candidates(idx, "nlp")
         slugs = [r["slug"] for r in result]
         assert "transformer" in slugs or "embedding" in slugs
 
     def test_no_match_returns_empty(self, simple_vault):
         idx = build_index(simple_vault)
-        result = rank_candidates(idx, ["zzznomatch"])
+        result = rank_candidates(idx, "zzznomatch")
         assert result == []
 
     def test_core_tier_boosted(self, simple_vault):
         idx = build_index(simple_vault)
-        result = rank_candidates(idx, ["deep-learning"])
+        result = rank_candidates(idx, "deep-learning")
         # transformer is tier:core; attention is tier:supporting — transformer should score higher
         transformer_score = next((r["score"] for r in result if r["slug"] == "transformer"), 0)
         attention_score = next((r["score"] for r in result if r["slug"] == "attention"), 0)
@@ -535,8 +538,20 @@ class TestRankCandidates:
 
     def test_respects_top_n(self, simple_vault):
         idx = build_index(simple_vault)
-        result = rank_candidates(idx, ["deep-learning"], top_n=1)
+        result = rank_candidates(idx, "deep-learning", top_n=1)
         assert len(result) <= 1
+
+    def test_lexical_kind_precedes_degree_and_tier(self, vault):
+        _page(vault, "exact", title="Topic", tier="peripheral")
+        _page(vault, "substring", title="Topic Overview", tier="core")
+        for index in range(20):
+            _page(vault, f"link-{index}", links=["substring"])
+
+        result = rank_candidates(build_index(vault), "Topic")
+
+        assert result[0]["slug"] == "exact"
+        assert result[0]["match_kind"] == "exact"
+        assert result[1]["match_kind"] == "title"
 
 
 # ---------------------------------------------------------------------------
@@ -579,70 +594,176 @@ class TestFindPath:
 
 
 # ---------------------------------------------------------------------------
-# classify_query
-# ---------------------------------------------------------------------------
-
-class TestClassifyQuery:
-    def test_direct_query(self):
-        qt, terms = classify_query("What is a transformer?")
-        assert qt == "direct"
-        assert any("transformer" in t.lower() for t in terms)
-
-    def test_path_query(self):
-        qt, terms = classify_query("How is transformer connected to embedding?")
-        assert qt == "path"
-        assert len(terms) == 2
-
-    def test_gap_query(self):
-        qt, _ = classify_query("What do I not know about reinforcement learning?")
-        assert qt == "gap"
-
-    def test_list_query(self):
-        qt, _ = classify_query("List all pages about deep learning")
-        assert qt == "list"
-
-    def test_stop_words_filtered(self):
-        _, terms = classify_query("What is the difference?")
-        assert "the" not in terms
-        assert "is" not in terms
-
-
-# ---------------------------------------------------------------------------
 # query (integration)
 # ---------------------------------------------------------------------------
 
 class TestQuery:
     def test_returns_required_keys(self, simple_vault):
-        result = query(simple_vault, "What is a transformer?")
-        assert set(result.keys()) >= {"answer_type", "candidates", "path",
-                                       "god_nodes_relevant", "should_read", "index_only"}
+        result = query(simple_vault, QuerySpec(mode="find", term="transformer"))
+        assert set(result) >= {
+            "grammar_version",
+            "mode",
+            "status",
+            "candidates",
+            "path",
+            "god_nodes_relevant",
+            "should_read",
+            "should_read_metadata",
+            "index_only",
+            "stats",
+        }
+        assert result["grammar_version"] == "query-language/v1"
+        assert result["mode"] == "find"
+        assert result["status"] == "ok"
+        assert result["stats"] == {
+            "indexed_pages": 4,
+            "query_operands": {"term": "transformer"},
+        }
+        assert "answer_type" not in result
+        assert "query_terms" not in result["stats"]
 
-    def test_finds_exact_match(self, simple_vault):
-        result = query(simple_vault, "transformer architecture")
-        pages = [c["page"] for c in result["candidates"]]
-        assert any("transformer" in p for p in pages)
+    def test_chinese_phrase_matches_without_query_tokenization(self, vault):
+        _page(
+            vault,
+            "attention",
+            title="注意力机制",
+            summary="用于序列建模的加权聚合方法",
+            tags=["深度学习"],
+        )
 
-    def test_path_query_populated(self, simple_vault):
-        result = query(simple_vault, "How is transformer connected to embedding?")
-        assert result["answer_type"] == "path"
+        result = query(vault, QuerySpec(mode="find", term="注意力机制"))
 
-    def test_index_only_on_exact_with_summary(self, simple_vault):
-        result = query(simple_vault, "Transformer Architecture")
-        # Title exact match + summary → index_only should be True
-        assert result["index_only"] is True
+        assert result["status"] == "ok"
+        assert result["candidates"][0]["page"] == "attention.md"
 
-    def test_should_read_empty_when_index_only(self, simple_vault):
-        result = query(simple_vault, "Transformer Architecture")
-        if result["index_only"]:
-            assert result["should_read"] == []
+    def test_find_does_not_split_or_expand_a_phrase(self, simple_vault):
+        result = query(
+            simple_vault,
+            QuerySpec(mode="find", term="attention unknown"),
+        )
 
-    def test_empty_vault(self, vault):
-        result = query(vault, "anything")
+        assert result["status"] == "no_matches"
         assert result["candidates"] == []
-        assert result["index_only"] is True
+
+    def test_list_reports_total_and_truncation(self, vault):
+        for index in range(3):
+            _page(vault, f"page-{index}", summary="共享主题摘要", tags=["共享主题"])
+
+        result = query(
+            vault,
+            QuerySpec(mode="list", term="共享主题"),
+            top_n=2,
+        )
+
+        assert result["status"] == "ok"
+        assert result["total_matches"] == 3
+        assert result["truncated"] is True
+        assert len(result["candidates"]) == 2
+        assert result["index_only"] is False
+        assert len(result["should_read"]) <= 3
+
+    def test_mixed_language_path_query(self, vault):
+        _page(vault, "attention", title="注意力机制", links=["embedding"])
+        _page(vault, "embedding", title="Word Embedding")
+
+        result = query(
+            vault,
+            QuerySpec(mode="path", source="注意力机制", target="Word Embedding"),
+        )
+
+        assert result["status"] == "ok"
+        assert result["path"] == ["attention.md", "embedding.md"]
+        assert result["index_only"] is False
+        assert result["should_read"] == ["attention.md", "embedding.md"]
+
+    def test_path_distinguishes_no_match_from_no_path(self, vault):
+        _page(vault, "left", title="Left")
+        _page(vault, "right", title="Right")
+
+        missing = query(
+            vault,
+            QuerySpec(mode="path", source="Missing", target="Right"),
+        )
+        disconnected = query(
+            vault,
+            QuerySpec(mode="path", source="Left", target="Right"),
+        )
+
+        assert missing["status"] == "no_matches"
+        assert missing["unresolved_operands"] == ["source"]
+        assert disconnected["status"] == "no_path"
+
+    def test_path_rejects_ambiguous_endpoint_alias(self, vault):
+        for folder in ("concepts", "projects"):
+            directory = vault / folder
+            directory.mkdir()
+            _page(directory, "agent", title=f"{folder} agent")
+        _page(vault, "target", title="Target")
+
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            query(
+                vault,
+                QuerySpec(mode="path", source="agent", target="Target"),
+            )
+
+        assert raised.value.code == "ambiguous_operand"
+        assert raised.value.details["operand"] == "source"
+        assert raised.value.details["candidates"] == [
+            "concepts/agent.md",
+            "projects/agent.md",
+        ]
+
+    def test_path_rejects_ambiguous_best_substring_kind(self, vault):
+        _page(vault, "agent-alpha", title="Agent Alpha", tier="peripheral")
+        _page(vault, "agent-beta", title="Agent Beta", tier="core")
+        _page(vault, "target", title="Target", links=["agent-beta"])
+
+        with pytest.raises(graphrag.QueryExecutionError) as raised:
+            query(
+                vault,
+                QuerySpec(mode="path", source="Agent", target="Target"),
+            )
+
+        assert raised.value.code == "ambiguous_operand"
+        assert raised.value.details == {
+            "operand": "source",
+            "candidates": ["agent-alpha.md", "agent-beta.md"],
+        }
+
+    def test_index_only_requires_exact_title_or_identity_match(self, simple_vault):
+        exact = query(
+            simple_vault,
+            QuerySpec(mode="find", term="Transformer Architecture"),
+        )
+        partial = query(
+            simple_vault,
+            QuerySpec(mode="find", term="Architecture"),
+        )
+
+        assert exact["index_only"] is True
+        assert exact["should_read"] == []
+        assert partial["index_only"] is False
+        assert partial["should_read"] == ["transformer.md"]
+
+    @pytest.mark.parametrize(
+        ("spec", "mode"),
+        [
+            (QuerySpec(mode="find", term="anything"), "find"),
+            (QuerySpec(mode="list", term="anything"), "list"),
+            (QuerySpec(mode="path", source="left", target="right"), "path"),
+        ],
+    )
+    def test_empty_vault_returns_mode_specific_no_matches(self, vault, spec, mode):
+        result = query(vault, spec)
+
+        assert result["grammar_version"] == "query-language/v1"
+        assert result["mode"] == mode
+        assert result["status"] == "no_matches"
+        assert result["candidates"] == []
+        assert result["index_only"] is False
 
     def test_json_serialisable(self, simple_vault):
-        result = query(simple_vault, "deep learning")
+        result = query(simple_vault, QuerySpec(mode="find", term="deep-learning"))
         json.dumps(result)
 
     def test_public_result_has_trust_metadata_without_private_identity(self, vault):
@@ -661,7 +782,11 @@ class TestQuery:
             tags=["visibility/pii"],
         )
 
-        result = query(vault, "launch", public_only=True)
+        result = query(
+            vault,
+            QuerySpec(mode="find", term="launch"),
+            public_only=True,
+        )
 
         assert result["stats"]["indexed_pages"] == 1
         assert "secret-roadmap" not in json.dumps(result)

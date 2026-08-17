@@ -1,29 +1,18 @@
-"""GraphRAG query index for wiki-query.
+"""GraphRAG retrieval for validated query-language/v1 operations.
 
-Builds a compact in-memory index from bounded vault frontmatter and eligible-page
-wikilinks, then answers structural and factual queries against it without requiring
-an agent to open page bodies. Equivalent to graphify's "query the compiled graph instead of
-raw files" — saves reading 10–50 pages for questions answerable from the
-graph structure.
+The strict natural form is discovered from the query language and can be called as::
 
-The agent calls:
-  llmwikiops query "<question>" [options]
+    llmwikiops query 'find "注意力机制"'
 
-And gets back a JSON response:
-{
-  "answer_type": "direct" | "path" | "list" | "gap",
-  "candidates": [{"page": "...", "score": 0.N, "summary": "...",
-                  "visibility": [], "lifecycle": "...", "updated": "..."}, ...],
-  "path": ["page-a", "page-b", "page-c"],   # multi-hop, if applicable
-  "god_nodes_relevant": ["page", ...],        # hub pages related to query terms
-  "should_read": ["page-a.md", "page-b.md"], # pages worth opening for full detail
-  "should_read_metadata": [{"page": "page-a.md", "visibility": [],
-                            "lifecycle": "...", "updated": "..."}],
-  "index_only": true/false                    # true = answer is complete without page reads
-}
+The equivalent explicit form is::
 
-The `should_read` list is the key output: it tells the agent exactly which pages
-to open, replacing the current approach of opening 10+ pages speculatively.
+    llmwikiops query --mode find --term "注意力机制"
+
+Validated ``QuerySpec`` values select ``find``, ``list``, or ``path`` retrieval.
+Each operand is one opaque normalized phrase: retrieval never tokenizes, translates,
+or expands it. Results report ``grammar_version``, ``mode``, ``status``, ranked
+``candidates``, a repository-relative ``path``, bounded ``should_read`` suggestions
+with trust metadata, ``index_only``, and query statistics.
 """
 
 from __future__ import annotations
@@ -32,11 +21,11 @@ import posixpath
 import re
 from collections import defaultdict, deque
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
-from .query_language import normalize_match
+from .query_language import GRAMMAR_VERSION, QuerySpec, normalize_match
 from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 
@@ -52,10 +41,6 @@ SKIP_DIRS = frozenset(
 )
 BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
-
-
-def _slug(s: str) -> str:
-    return s.strip().lower().replace(" ", "-")
 
 
 def _page_id(relative: str) -> str:
@@ -241,56 +226,82 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
 # Scoring / ranking
 # ---------------------------------------------------------------------------
 
-_TIER_WEIGHT = {"core": 1.3, "supporting": 1.0, "peripheral": 0.7}
+_MATCH_PRIORITY = {"exact": 0, "title": 1, "tag": 2, "summary": 3}
 
 
-def _score(slug: str, entry: dict, terms: list[str]) -> float:
-    score = 0.0
-    title_lower = entry["title"].lower()
-    summary_lower = entry["summary"].lower()
-    tags_lower = [t.lower() for t in entry["tags"]]
-    for term in terms:
-        t = term.lower()
-        if t == slug or t == title_lower:
-            score += 10.0
-        elif t in title_lower:
-            score += 6.0
-        elif any(t in tag for tag in tags_lower):
-            score += 4.0
-        elif t in summary_lower:
-            score += 2.0
+class QueryExecutionError(RuntimeError):
+    """A stable retrieval error with a machine-readable code and details."""
 
-    if score > 0:
-        # Degree bonus only when at least one term matched — prevents degree
-        # noise from surfacing irrelevant pages
-        degree = len(entry["in_links"]) + len(entry["out_links"])
-        score += min(degree * 0.1, 2.0)
-        score *= _TIER_WEIGHT.get(entry.get("tier", "supporting"), 1.0)
-    return score
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
+
+def _score(
+    page_id: str,
+    entry: dict,
+    operand: str,
+) -> tuple[float, Optional[str]]:
+    term = normalize_match(operand)
+    title = normalize_match(entry["title"])
+    tags = [normalize_match(tag) for tag in entry["tags"]]
+    summary = normalize_match(entry["summary"])
+    basename = normalize_match(PurePosixPath(page_id).name)
+
+    if term in {page_id, basename, title}:
+        score, match_kind = 40.0, "exact"
+    elif term and term in title:
+        score, match_kind = 30.0, "title"
+    elif term and any(term in tag for tag in tags):
+        score, match_kind = 20.0, "tag"
+    elif term and term in summary:
+        score, match_kind = 10.0, "summary"
+    else:
+        return 0.0, None
+
+    degree = len(entry["in_links"]) + len(entry["out_links"])
+    tier_bonus = {
+        "core": 0.3,
+        "supporting": 0.0,
+        "peripheral": -0.3,
+    }.get(entry.get("tier", "supporting"), 0.0)
+    return score + min(degree * 0.1, 2.0) + tier_bonus, match_kind
 
 
 def rank_candidates(
     index: dict[str, dict],
-    terms: list[str],
-    top_n: int = 8,
+    operand: str,
+    top_n: Optional[int] = None,
 ) -> list[dict]:
-    scored = [
-        {
-            "slug": slug,
-            "page": entry["path"],
-            "title": entry["title"],
-            "score": _score(slug, entry, terms),
-            "summary": entry["summary"],
-            "tier": entry["tier"],
-            "visibility": entry["visibility"],
-            "lifecycle": entry["lifecycle"],
-            "updated": entry["updated"],
-            "in_degree": len(entry["in_links"]),
-        }
-        for slug, entry in index.items()
-    ]
-    scored.sort(key=lambda x: (-x["score"], -x["in_degree"]))
-    return [c for c in scored[:top_n] if c["score"] > 0]
+    scored = []
+    for page_id, entry in index.items():
+        score, match_kind = _score(page_id, entry, operand)
+        if match_kind is None:
+            continue
+        scored.append(
+            {
+                "slug": page_id,
+                "page": entry["path"],
+                "title": entry["title"],
+                "score": score,
+                "match_kind": match_kind,
+                "summary": entry["summary"],
+                "tier": entry["tier"],
+                "visibility": entry["visibility"],
+                "lifecycle": entry["lifecycle"],
+                "updated": entry["updated"],
+                "in_degree": len(entry["in_links"]),
+            }
+        )
+    scored.sort(key=lambda item: (-item["score"], -item["in_degree"], item["page"]))
+    return scored if top_n is None else scored[:top_n]
 
 
 # ---------------------------------------------------------------------------
@@ -328,120 +339,62 @@ def find_path(
 
 
 # ---------------------------------------------------------------------------
-# Query classification
+# Validated operand resolution and result construction
 # ---------------------------------------------------------------------------
 
-_PATH_PATTERNS = re.compile(
-    r"how (?:is|are|does) (.+?) (?:connected|related|linked) to (.+?)[\?]?$"
-    r"|trace (?:the )?(?:chain|path) from (.+?) to (.+?)[\?]?$"
-    r"|what connects (.+?) (?:to|and) (.+?)[\?]?$",
-    re.IGNORECASE,
-)
-
-_GAP_PATTERNS = re.compile(
-    r"what (?:do|don'?t) I (?:not )?know about|what.?s missing|what gaps|open questions",
-    re.IGNORECASE,
-)
-
-_LIST_PATTERNS = re.compile(
-    r"(?:list|show|find|give me) (?:all|every|pages about)",
-    re.IGNORECASE,
-)
+def _ambiguous_operand(
+    operand_name: str,
+    page_ids: list[str],
+    index: dict[str, dict],
+) -> QueryExecutionError:
+    candidates = sorted(index[page_id]["path"] for page_id in page_ids)
+    return QueryExecutionError(
+        "ambiguous_operand",
+        "query operand matches more than one page",
+        details={"operand": operand_name, "candidates": candidates},
+    )
 
 
-def classify_query(question: str) -> tuple[str, list[str]]:
-    """Return (answer_type, extracted_terms).
-
-    answer_type: "path" | "gap" | "list" | "direct"
-    """
-    m = _PATH_PATTERNS.search(question)
-    if m:
-        groups = [g for g in m.groups() if g]
-        terms = groups[:2] if len(groups) >= 2 else [question]
-        return "path", terms
-
-    if _GAP_PATTERNS.search(question):
-        # Extract what the gap is about
-        terms = re.sub(r"what (?:do|don't) I (?:not )?know about|what.?s missing", "", question, flags=re.IGNORECASE).strip().split()
-        return "gap", terms
-
-    if _LIST_PATTERNS.search(question):
-        terms = re.sub(r"(?:list|show|find|give me) (?:all|every|pages about)", "", question, flags=re.IGNORECASE).strip().split()
-        return "list", terms
-
-    # Default: extract meaningful terms (drop stop words)
-    stop = {"what", "the", "a", "an", "is", "are", "how", "does", "do", "in", "of", "to", "for", "and", "or"}
-    terms = [w.strip("?,.'\"") for w in question.split() if w.lower().strip("?,.'\"") not in stop and len(w) > 2]
-    return "direct", terms
-
-
-# ---------------------------------------------------------------------------
-# Main query entry point
-# ---------------------------------------------------------------------------
-
-def query(
-    vault: Path,
-    question: str,
+def resolve_operand(
+    index: dict[str, dict],
+    operand: str,
     *,
-    top_n: int = 8,
-    max_should_read: int = 3,
-    public_only: bool = False,
-) -> dict[str, Any]:
-    index = build_index(vault, public_only=public_only)
-    if not index:
-        return {
-            "answer_type": "direct",
-            "candidates": [],
-            "path": [],
-            "god_nodes_relevant": [],
-            "should_read": [],
-            "should_read_metadata": [],
-            "index_only": True,
-            "note": "Vault appears empty.",
-        }
+    operand_name: str,
+) -> Optional[str]:
+    """Resolve one opaque operand to a page identity, or report ambiguity."""
+    term = normalize_match(operand)
+    exact = sorted(
+        page_id
+        for page_id, entry in index.items()
+        if term in _aliases(page_id, entry)
+    )
+    if len(exact) > 1:
+        raise _ambiguous_operand(operand_name, exact, index)
+    if exact:
+        return exact[0]
 
-    answer_type, terms = classify_query(question)
+    matches = rank_candidates(index, operand)
+    if not matches:
+        return None
+    best_priority = min(_MATCH_PRIORITY[item["match_kind"]] for item in matches)
+    best = [
+        item["slug"]
+        for item in matches
+        if _MATCH_PRIORITY[item["match_kind"]] == best_priority
+    ]
+    if len(best) > 1:
+        raise _ambiguous_operand(operand_name, best, index)
+    return best[0]
 
-    # God nodes relevant to the query
-    degree = {s: len(e["in_links"]) + len(e["out_links"]) for s, e in index.items()}
-    god_slugs = sorted(degree, key=lambda s: -degree[s])[:10]
-    term_set = {t.lower() for t in terms}
-    god_relevant = [
-        index[s]["path"] for s in god_slugs
-        if any(t in index[s]["title"].lower() or t in " ".join(index[s]["tags"]).lower() for t in term_set)
-    ][:5]
 
-    path_result: list[str] = []
-    if answer_type == "path" and len(terms) >= 2:
-        src_slug = _slug(terms[0])
-        tgt_slug = _slug(terms[1])
-        # Try to find slugs by scoring if exact match fails
-        if src_slug not in index:
-            cands = rank_candidates(index, [terms[0]], top_n=1)
-            src_slug = cands[0]["slug"] if cands else src_slug
-        if tgt_slug not in index:
-            cands = rank_candidates(index, [terms[1]], top_n=1)
-            tgt_slug = cands[0]["slug"] if cands else tgt_slug
-        raw_path = find_path(index, src_slug, tgt_slug)
-        if raw_path:
-            path_result = [index[s]["path"] for s in raw_path if s in index]
+def _query_operands(spec: QuerySpec) -> dict[str, str]:
+    if spec.mode in {"find", "list"}:
+        return {"term": spec.term or ""}
+    return {"source": spec.source or "", "target": spec.target or ""}
 
-    candidates = rank_candidates(index, terms, top_n=top_n)
 
-    # Decide whether page reads are needed
-    top_candidate = candidates[0] if candidates else None
-    index_only = False
-    if top_candidate and top_candidate["score"] >= 10.0 and top_candidate["summary"]:
-        index_only = True  # Exact title match with a summary — likely answerable from index
-
-    should_read = [c["page"] for c in candidates[:max_should_read] if not index_only]
-    if path_result and not index_only:
-        # Add path pages to should_read, deduplicated
-        for p in path_result:
-            if p not in should_read:
-                should_read.append(p)
-        should_read = should_read[:max_should_read + 2]
-    trust_by_path = {
+def _trust_by_path(index: dict[str, dict]) -> dict[str, dict]:
+    return {
         entry["path"]: {
             "page": entry["path"],
             "visibility": entry["visibility"],
@@ -451,28 +404,182 @@ def query(
         for entry in index.values()
     }
 
+
+def _god_nodes_relevant(index: dict[str, dict], operands: list[str]) -> list[str]:
+    degree = {
+        page_id: len(entry["in_links"]) + len(entry["out_links"])
+        for page_id, entry in index.items()
+    }
+    god_pages = sorted(
+        index,
+        key=lambda page_id: (-degree[page_id], index[page_id]["path"]),
+    )[:10]
+    normalized = [normalize_match(operand) for operand in operands if operand]
+    return [
+        index[page_id]["path"]
+        for page_id in god_pages
+        if any(
+            term in normalize_match(index[page_id]["title"])
+            or any(term in normalize_match(tag) for tag in index[page_id]["tags"])
+            for term in normalized
+        )
+    ][:5]
+
+
+def _public_candidate(candidate: dict) -> dict:
     return {
-        "answer_type": answer_type,
-        "candidates": [
-            {
-                "page": c["page"],
-                "title": c["title"],
-                "score": round(c["score"], 2),
-                "summary": c["summary"],
-                "tier": c["tier"],
-                "visibility": c["visibility"],
-                "lifecycle": c["lifecycle"],
-                "updated": c["updated"],
-            }
-            for c in candidates
-        ],
-        "path": path_result,
-        "god_nodes_relevant": god_relevant,
+        "page": candidate["page"],
+        "title": candidate["title"],
+        "score": round(candidate["score"], 2),
+        "match_kind": candidate["match_kind"],
+        "summary": candidate["summary"],
+        "tier": candidate["tier"],
+        "visibility": candidate["visibility"],
+        "lifecycle": candidate["lifecycle"],
+        "updated": candidate["updated"],
+    }
+
+
+def _base_result(
+    spec: QuerySpec,
+    index: dict[str, dict],
+    *,
+    status: str,
+    candidates: list[dict],
+    path: list[str],
+    should_read: list[str],
+    index_only: bool,
+) -> dict[str, Any]:
+    operands = _query_operands(spec)
+    trust = _trust_by_path(index)
+    return {
+        "grammar_version": GRAMMAR_VERSION,
+        "mode": spec.mode,
+        "status": status,
+        "candidates": [_public_candidate(candidate) for candidate in candidates],
+        "path": path,
+        "god_nodes_relevant": _god_nodes_relevant(index, list(operands.values())),
         "should_read": should_read,
-        "should_read_metadata": [trust_by_path[path] for path in should_read],
+        "should_read_metadata": [trust[page] for page in should_read],
         "index_only": index_only,
         "stats": {
             "indexed_pages": len(index),
-            "query_terms": terms,
+            "query_operands": operands,
         },
     }
+
+
+def _candidate_result(
+    spec: QuerySpec,
+    index: dict[str, dict],
+    candidates: list[dict],
+    *,
+    max_should_read: int,
+    status: str,
+) -> dict[str, Any]:
+    top = candidates[0] if candidates else None
+    index_only = bool(
+        spec.mode == "find"
+        and top
+        and top["match_kind"] == "exact"
+        and top["summary"]
+    )
+    should_read = [] if index_only else [
+        item["page"] for item in candidates[:max(0, max_should_read)]
+    ]
+    return _base_result(
+        spec,
+        index,
+        status=status,
+        candidates=candidates,
+        path=[],
+        should_read=should_read,
+        index_only=index_only,
+    )
+
+
+def _path_result(
+    spec: QuerySpec,
+    index: dict[str, dict],
+    *,
+    status: str,
+    raw_path: Optional[list[str]] = None,
+    unresolved: Optional[list[str]] = None,
+    max_should_read: int,
+) -> dict[str, Any]:
+    path = [index[page_id]["path"] for page_id in (raw_path or [])]
+    result = _base_result(
+        spec,
+        index,
+        status=status,
+        candidates=[],
+        path=path,
+        should_read=path[:max(0, max_should_read)],
+        index_only=False,
+    )
+    if unresolved is not None:
+        result["unresolved_operands"] = unresolved
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Main query entry point
+# ---------------------------------------------------------------------------
+
+def query(
+    vault: Path,
+    spec: QuerySpec,
+    *,
+    top_n: int = 8,
+    max_should_read: int = 3,
+    public_only: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(spec, QuerySpec):
+        raise TypeError("query requires a validated QuerySpec")
+
+    index = build_index(vault, public_only=public_only)
+    if spec.mode in {"find", "list"}:
+        matches = rank_candidates(index, spec.term or "")
+        selected = matches[:max(0, top_n)]
+        result = _candidate_result(
+            spec,
+            index,
+            selected,
+            max_should_read=max_should_read,
+            status="ok" if selected else "no_matches",
+        )
+        if spec.mode == "list":
+            result["total_matches"] = len(matches)
+            result["truncated"] = len(matches) > len(selected)
+        return result
+
+    if spec.mode != "path":
+        raise QueryExecutionError(
+            "unsupported_operation",
+            "unsupported query mode: {}".format(spec.mode),
+        )
+
+    source = resolve_operand(index, spec.source or "", operand_name="source")
+    target = resolve_operand(index, spec.target or "", operand_name="target")
+    unresolved = [
+        name
+        for name, value in (("source", source), ("target", target))
+        if value is None
+    ]
+    if unresolved:
+        return _path_result(
+            spec,
+            index,
+            status="no_matches",
+            unresolved=unresolved,
+            max_should_read=max_should_read,
+        )
+
+    raw_path = find_path(index, source, target)
+    return _path_result(
+        spec,
+        index,
+        status="ok" if raw_path else "no_path",
+        raw_path=raw_path or [],
+        max_should_read=max_should_read,
+    )
