@@ -52,6 +52,8 @@ SKIP_DIRS = frozenset(
 )
 BLOCKED_PUBLIC_TAGS = frozenset({"visibility/internal", "visibility/pii"})
 ROOT_VIEW_FILES = frozenset({"index.md", "log.md", "hot.md"})
+MAX_AMBIGUOUS_LINK_DIAGNOSTICS = 20
+MAX_AMBIGUOUS_LINK_CANDIDATES = 20
 
 
 def _page_id(relative: str) -> str:
@@ -395,6 +397,8 @@ def resolve_operand(
 ) -> Optional[str]:
     """Resolve one opaque operand to a page identity, or report ambiguity."""
     term = normalize_match(operand)
+    if "/" in term and not term.endswith(".md") and term in index:
+        return term
     exact_ids = {
         page_id
         for page_id, entry in index.items()
@@ -580,6 +584,8 @@ def _path_result(
     status: str,
     raw_path: Optional[list[str]] = None,
     unresolved: Optional[list[str]] = None,
+    ambiguous_links: Optional[list[dict[str, Any]]] = None,
+    ambiguous_links_truncated: bool = False,
     max_should_read: int,
 ) -> dict[str, Any]:
     path = [index[page_id]["path"] for page_id in (raw_path or [])]
@@ -594,7 +600,65 @@ def _path_result(
     )
     if unresolved is not None:
         result["unresolved_operands"] = unresolved
+    result["ambiguous_links"] = ambiguous_links or []
+    result["ambiguous_links_truncated"] = ambiguous_links_truncated
     return result
+
+
+def _reachable_page_ids(
+    index: dict[str, dict],
+    start: str,
+    *,
+    max_depth: int = 4,
+) -> set[str]:
+    """Return pages whose links the bounded path search can inspect."""
+    reachable: set[str] = set()
+    queue: deque[tuple[str, int]] = deque([(start, 0)])
+    while queue:
+        page_id, depth = queue.popleft()
+        if page_id in reachable or depth >= max_depth:
+            continue
+        reachable.add(page_id)
+        neighbours = index[page_id]["out_links"] + index[page_id]["in_links"]
+        for neighbour in sorted(set(neighbours)):
+            if neighbour not in reachable:
+                queue.append((neighbour, depth + 1))
+    return reachable
+
+
+def _ambiguous_link_diagnostics(
+    index: dict[str, dict],
+    source: str,
+    target: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    relevant = _reachable_page_ids(index, source) | _reachable_page_ids(index, target)
+    diagnostics: list[dict[str, Any]] = []
+    for page_id in sorted(relevant, key=lambda item: index[item]["path"]):
+        links = sorted(
+            index[page_id]["ambiguous_links"],
+            key=lambda item: (
+                normalize_match(item["target"]),
+                tuple(index[candidate]["path"] for candidate in item["candidates"]),
+            ),
+        )
+        for link in links:
+            candidates = sorted(
+                index[candidate]["path"]
+                for candidate in link["candidates"]
+                if candidate in index
+            )
+            diagnostics.append(
+                {
+                    "page": index[page_id]["path"],
+                    "target": link["target"],
+                    "candidates": candidates[:MAX_AMBIGUOUS_LINK_CANDIDATES],
+                    "truncated": len(candidates) > MAX_AMBIGUOUS_LINK_CANDIDATES,
+                }
+            )
+    return (
+        diagnostics[:MAX_AMBIGUOUS_LINK_DIAGNOSTICS],
+        len(diagnostics) > MAX_AMBIGUOUS_LINK_DIAGNOSTICS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -649,10 +713,18 @@ def query(
         )
 
     raw_path = find_path(index, source, target)
+    ambiguous_links: list[dict[str, Any]] = []
+    ambiguous_links_truncated = False
+    if raw_path is None:
+        ambiguous_links, ambiguous_links_truncated = _ambiguous_link_diagnostics(
+            index, source, target
+        )
     return _path_result(
         spec,
         index,
         status="ok" if raw_path else "no_path",
         raw_path=raw_path or [],
+        ambiguous_links=ambiguous_links,
+        ambiguous_links_truncated=ambiguous_links_truncated,
         max_should_read=max_should_read,
     )

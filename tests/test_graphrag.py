@@ -786,6 +786,8 @@ class TestQuery:
         assert result["path"] == ["attention.md", "embedding.md"]
         assert result["index_only"] is False
         assert result["should_read"] == ["attention.md", "embedding.md"]
+        assert result["ambiguous_links"] == []
+        assert result["ambiguous_links_truncated"] is False
 
     def test_path_distinguishes_no_match_from_no_path(self, vault):
         _page(vault, "left", title="Left")
@@ -802,7 +804,11 @@ class TestQuery:
 
         assert missing["status"] == "no_matches"
         assert missing["unresolved_operands"] == ["source"]
+        assert missing["ambiguous_links"] == []
+        assert missing["ambiguous_links_truncated"] is False
         assert disconnected["status"] == "no_path"
+        assert disconnected["ambiguous_links"] == []
+        assert disconnected["ambiguous_links_truncated"] is False
 
     def test_path_rejects_ambiguous_endpoint_alias(self, vault):
         for folder in ("concepts", "projects"):
@@ -869,6 +875,124 @@ class TestQuery:
             "operand": "source",
             "candidates": ["foo.md", "foo.md.md"],
         }
+
+    def test_path_qualified_identity_wins_over_slash_title_alias(self, vault):
+        concepts = vault / "concepts"
+        concepts.mkdir()
+        _page(concepts, "agent", title="Qualified Agent", links=["target"])
+        _page(vault, "alias-page", title="concepts/agent")
+        _page(vault, "target", title="Target")
+
+        result = query(
+            vault,
+            QuerySpec(mode="path", source="concepts/agent", target="Target"),
+        )
+
+        assert result["status"] == "ok"
+        assert result["path"] == ["concepts/agent.md", "target.md"]
+
+    def test_no_path_reports_operation_relevant_ambiguous_links(self, vault):
+        concepts = vault / "concepts"
+        projects = vault / "projects"
+        concepts.mkdir()
+        projects.mkdir()
+        _page(concepts, "agent", title="Concept Agent")
+        _page(projects, "agent", title="Project Agent")
+        _page(vault, "source", title="Source", links=["agent"])
+        _page(vault, "target", title="Target")
+
+        result = query(
+            vault,
+            QuerySpec(mode="path", source="Source", target="Target"),
+        )
+
+        assert result["status"] == "no_path"
+        assert result["ambiguous_links"] == [
+            {
+                "page": "source.md",
+                "target": "agent",
+                "candidates": ["concepts/agent.md", "projects/agent.md"],
+                "truncated": False,
+            }
+        ]
+        assert result["ambiguous_links_truncated"] is False
+
+    def test_path_ambiguity_diagnostics_are_deterministic_and_bounded(self, vault):
+        candidates = vault / "candidates"
+        candidates.mkdir()
+        for index in range(25):
+            folder = candidates / f"candidate-{index:02d}"
+            folder.mkdir()
+            _page(folder, "agent", title=f"Agent {index}")
+            _page(vault, f"reachable-{index:02d}", links=["agent"])
+        _page(
+            vault,
+            "source",
+            title="Source",
+            links=[f"reachable-{index:02d}" for index in range(25)],
+        )
+        _page(vault, "target", title="Target")
+
+        first = query(
+            vault,
+            QuerySpec(mode="path", source="Source", target="Target"),
+        )
+        second = query(
+            vault,
+            QuerySpec(mode="path", source="Source", target="Target"),
+        )
+
+        assert first["ambiguous_links"] == second["ambiguous_links"]
+        assert len(first["ambiguous_links"]) <= 20
+        assert all(
+            len(item["candidates"]) <= 20
+            for item in first["ambiguous_links"]
+        )
+        assert first["ambiguous_links"][0]["page"] == "reachable-00.md"
+        assert first["ambiguous_links"][0]["truncated"] is True
+        assert first["ambiguous_links_truncated"] is True
+
+    def test_public_path_ambiguity_diagnostics_do_not_leak_private_pages(self, vault):
+        public = vault / "public"
+        community = vault / "community"
+        private = vault / "private"
+        public.mkdir()
+        community.mkdir()
+        private.mkdir()
+        _page(public, "agent", title="Public Agent", tags=["visibility/public"])
+        _page(
+            community,
+            "agent",
+            title="Community Agent",
+            tags=["visibility/public"],
+        )
+        _page(
+            private,
+            "agent",
+            title="PRIVATE-TITLE-SENTINEL",
+            tags=["visibility/internal"],
+        )
+        _page(vault, "source", title="Source", links=["agent"])
+        _page(vault, "target", title="Target")
+
+        result = query(
+            vault,
+            QuerySpec(mode="path", source="Source", target="Target"),
+            public_only=True,
+        )
+
+        assert result["status"] == "no_path"
+        assert result["ambiguous_links"] == [
+            {
+                "page": "source.md",
+                "target": "agent",
+                "candidates": ["community/agent.md", "public/agent.md"],
+                "truncated": False,
+            }
+        ]
+        assert result["ambiguous_links_truncated"] is False
+        assert "private" not in json.dumps(result).lower()
+        assert "PRIVATE-TITLE-SENTINEL" not in json.dumps(result)
 
     def test_index_only_requires_exact_title_or_identity_match(self, simple_vault):
         exact = query(
