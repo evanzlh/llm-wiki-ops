@@ -71,7 +71,7 @@ def payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
             "--json",
         ),
         ("trust-check", "--json"),
-        ("query", "question", "--json"),
+        ("query", "--mode", "find", "--term", "question", "--json"),
         ("context-pack", "topic", "--json"),
         ("transaction", "list", "--json"),
     ),
