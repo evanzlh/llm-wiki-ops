@@ -1068,22 +1068,60 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
         assert "--vault" not in text, name
 
 
-def test_packaged_skills_reject_legacy_bare_query_commands() -> None:
-    legacy_bare_query = re.compile(
-        r"^\s*llmwikiops\s+query\s+(?:"
-        r'"(?!(?:find |list pages about |find path from ))[^"\n]*"'
-        r"|<[^>\n]+>"
-        r"|(?!--)[^\s`\"']+)",
-        flags=re.MULTILINE,
+def _noncanonical_query_command_lines(text: str) -> list[str]:
+    canonical_prefixes = (
+        "llmwikiops query --describe --json",
+        "llmwikiops query --mode find --term ",
+        "llmwikiops query --mode list --term ",
+        "llmwikiops query --mode path --from ",
     )
-    skill_paths = sorted((ROOT / "obsidian_wiki/_data/skills").glob("*/SKILL.md"))
-    offenders = [
-        str(path.relative_to(ROOT))
-        for path in skill_paths
-        if legacy_bare_query.search(path.read_text(encoding="utf-8"))
+    return [
+        line
+        for raw_line in text.splitlines()
+        if (line := raw_line.strip()).startswith("llmwikiops query ")
+        and not line.startswith(canonical_prefixes)
     ]
 
-    assert offenders == []
+
+@pytest.mark.parametrize(
+    ("line", "expected_offenders"),
+    [
+        ("llmwikiops query 'topic'", ["llmwikiops query 'topic'"]),
+        (
+            'llmwikiops query "find this topic"',
+            ['llmwikiops query "find this topic"'],
+        ),
+        (
+            'llmwikiops query --mode list "<topic>"',
+            ['llmwikiops query --mode list "<topic>"'],
+        ),
+        ('llmwikiops query "<question>"', ['llmwikiops query "<question>"']),
+        ("llmwikiops query --describe --json", []),
+        ('llmwikiops query --mode find --term "topic"', []),
+        ('llmwikiops query --mode list --term "topic"', []),
+        (
+            'llmwikiops query --mode path --from "source" --to "target"',
+            [],
+        ),
+    ],
+)
+def test_query_command_allowlist_rejects_noncanonical_lines(
+    line: str, expected_offenders: list[str]
+) -> None:
+    assert _noncanonical_query_command_lines(line) == expected_offenders
+
+
+def test_packaged_skills_use_only_canonical_query_commands() -> None:
+    skill_paths = sorted((ROOT / "obsidian_wiki/_data/skills").glob("*/SKILL.md"))
+    offenders: dict[str, list[str]] = {}
+    for path in skill_paths:
+        command_lines = _noncanonical_query_command_lines(
+            path.read_text(encoding="utf-8")
+        )
+        if command_lines:
+            offenders[str(path.relative_to(ROOT))] = command_lines
+
+    assert offenders == {}
 
 
 def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
