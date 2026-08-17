@@ -129,16 +129,18 @@ are opaque Unicode and may be in any language. Operands are normalized with NFKC
 and surrounding whitespace removal; matching additionally uses casefolding against
 page slugs, titles, tags, and summaries. Do not invent aliases or paraphrases.
 
-`ok`, `no_matches`, and `no_path` are normal result statuses. Invalid structures,
-invalid argument combinations, ambiguous operands, and unsupported operations exit
-2; inspect the JSON error. For `unsupported_query_structure`, rewrite once from a
-returned template. For `ambiguous_operand`, present the candidate paths and ask for
-a choice. `--public-only` filters `visibility/internal` and `visibility/pii`
-metadata before body or link extraction.
+`ok`, `no_matches`, and `no_path` are normal result statuses. Query-language errors
+exit 2; the stable JSON error codes are `unsupported_query_structure`,
+`invalid_query_arguments`, `ambiguous_operand`, and `unsupported_operation`.
+For `unsupported_query_structure`, rewrite once from a returned template. For
+`ambiguous_operand`, present the candidate paths and ask for a choice.
+`--public-only` filters `visibility/internal` and `visibility/pii` metadata before
+body or link extraction.
 
 The former bare-query form, such as `llmwikiops query "topic"`, is a hard
-migration boundary and is rejected. Use one exact natural template or an explicit
-`--mode` command instead.
+migration boundary and is rejected. Replace it with
+`llmwikiops query --mode find --term "topic"`; alternatively, use one exact
+natural template.
 
 `context` is an alias of `context-pack`. A topic is optional only with `--recent`. `--public-only` excludes restricted visibility before body reads; `--metadata-only` omits body excerpts.
 

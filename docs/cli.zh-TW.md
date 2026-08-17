@@ -100,9 +100,9 @@ llmwikiops query --mode path --from "<source>" --to "<target>" --json --pretty
 
 英文外殼與參數組合固定，但引號內的運算元是可使用任何語言的 opaque Unicode 值。運算元會先做 NFKC 正規化並去除首尾空白；比對時再 casefold，且只比對頁面 slug、title、tags 與 summary。不可自行發明別名或改寫範本。
 
-`ok`、`no_matches` 與 `no_path` 都是正常結果狀態。無效結構、無效參數組合、模糊運算元與不支援的操作會以 exit 2 結束；請檢查 JSON error。遇到 `unsupported_query_structure` 時，只能依回傳範本重寫一次；遇到 `ambiguous_operand` 時，顯示候選路徑並請使用者選擇。`--public-only` 會在讀取本文或連結前，先依 metadata 排除 `visibility/internal` 與 `visibility/pii`。
+`ok`、`no_matches` 與 `no_path` 都是正常結果狀態。查詢語言錯誤會以 exit 2 結束；穩定的 JSON error code 為 `unsupported_query_structure`、`invalid_query_arguments`、`ambiguous_operand` 與 `unsupported_operation`。遇到 `unsupported_query_structure` 時，只能依回傳範本重寫一次；遇到 `ambiguous_operand` 時，顯示候選路徑並請使用者選擇。`--public-only` 會在讀取本文或連結前，先依 metadata 排除 `visibility/internal` 與 `visibility/pii`。
 
-舊式裸查詢（例如 `llmwikiops query "topic"`）是硬性遷移邊界，會被拒絕。請改用一個完全符合的自然語言範本，或明確的 `--mode` 命令。
+舊式裸查詢（例如 `llmwikiops query "topic"`）是硬性遷移邊界，會被拒絕。請改為 `llmwikiops query --mode find --term "topic"`；或者使用一個完全符合的自然語言範本。
 
 `context` 是 `context-pack` 的別名。工作階段旁路索引命令包括 `sessions-build`、`sessions-query`、`sessions-show`、`sessions-clusters` 與 `sessions-name`。程式碼結構可用 `ast-extract PATH` 擷取。完整選項以各命令的 `--help` 為準。
 
