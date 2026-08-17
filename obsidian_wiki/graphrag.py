@@ -25,7 +25,18 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from .frontmatter import FrontmatterError, frontmatter_values, split_frontmatter
-from .query_language import GRAMMAR_VERSION, QuerySpec, normalize_match
+from .query_language import (
+    DEGREE_BONUS_CAP,
+    DEGREE_BONUS_INCREMENT,
+    DEFAULT_TIER_BONUS,
+    GRAMMAR_VERSION,
+    MATCH_BASE_SCORES,
+    MATCH_KIND_PRIORITY,
+    QuerySpec,
+    TIER_BONUSES,
+    candidate_sort_key,
+    normalize_match,
+)
 from .safe_files import read_markdown_snapshot, scan_markdown_headers
 
 
@@ -226,9 +237,6 @@ def build_index(vault: Path, *, public_only: bool = False) -> dict[str, dict]:
 # Scoring / ranking
 # ---------------------------------------------------------------------------
 
-_MATCH_PRIORITY = {"exact": 0, "title": 1, "tag": 2, "summary": 3}
-
-
 class QueryExecutionError(RuntimeError):
     """A stable retrieval error with a machine-readable code and details."""
 
@@ -278,23 +286,22 @@ def _score(
     basename = normalize_match(PurePosixPath(page_id).name)
 
     if term in {page_id, basename, title}:
-        score, match_kind = 40.0, "exact"
+        score, match_kind = MATCH_BASE_SCORES["exact"], "exact"
     elif term and term in title:
-        score, match_kind = 30.0, "title"
+        score, match_kind = MATCH_BASE_SCORES["title"], "title"
     elif term and any(term in tag for tag in tags):
-        score, match_kind = 20.0, "tag"
+        score, match_kind = MATCH_BASE_SCORES["tag"], "tag"
     elif term and term in summary:
-        score, match_kind = 10.0, "summary"
+        score, match_kind = MATCH_BASE_SCORES["summary"], "summary"
     else:
         return 0.0, None
 
     degree = len(entry["in_links"]) + len(entry["out_links"])
-    tier_bonus = {
-        "core": 0.3,
-        "supporting": 0.0,
-        "peripheral": -0.3,
-    }.get(entry.get("tier", "supporting"), 0.0)
-    return score + min(degree * 0.1, 2.0) + tier_bonus, match_kind
+    tier_bonus = TIER_BONUSES.get(entry.get("tier", "supporting"), DEFAULT_TIER_BONUS)
+    return (
+        score + min(degree * DEGREE_BONUS_INCREMENT, DEGREE_BONUS_CAP) + tier_bonus,
+        match_kind,
+    )
 
 
 def rank_candidates(
@@ -325,7 +332,7 @@ def rank_candidates(
                 "in_degree": len(entry["in_links"]),
             }
         )
-    scored.sort(key=lambda item: (-item["score"], -item["in_degree"], item["page"]))
+    scored.sort(key=candidate_sort_key)
     return scored if top_n is None else scored[:top_n]
 
 
@@ -409,11 +416,11 @@ def resolve_operand(
     matches = rank_candidates(index, operand)
     if not matches:
         return None
-    best_priority = min(_MATCH_PRIORITY[item["match_kind"]] for item in matches)
+    best_priority = min(MATCH_KIND_PRIORITY[item["match_kind"]] for item in matches)
     best = [
         item["slug"]
         for item in matches
-        if _MATCH_PRIORITY[item["match_kind"]] == best_priority
+        if MATCH_KIND_PRIORITY[item["match_kind"]] == best_priority
     ]
     if len(best) > 1:
         raise _ambiguous_operand(operand_name, best, index)

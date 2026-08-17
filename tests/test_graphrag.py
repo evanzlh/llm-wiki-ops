@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 import obsidian_wiki.graphrag as graphrag
+import obsidian_wiki.query_language as query_language
 from obsidian_wiki.frontmatter import FrontmatterError
 from obsidian_wiki.graphrag import (
     build_index,
@@ -13,7 +14,7 @@ from obsidian_wiki.graphrag import (
     query,
     rank_candidates,
 )
-from obsidian_wiki.query_language import QuerySpec
+from obsidian_wiki.query_language import QuerySpec, describe_query_language
 
 
 def test_module_docs_use_current_portable_query_command() -> None:
@@ -512,6 +513,104 @@ class TestBuildIndex:
 # ---------------------------------------------------------------------------
 
 class TestRankCandidates:
+    def test_ranking_execution_matches_the_published_contract(self) -> None:
+        ranking = describe_query_language()["match_ranking"]
+        base_scores = {
+            item["match_kind"]: item["base_score"]
+            for item in ranking["lexical_precedence"]
+        }
+        modifiers = ranking["within_lexical_band"]["additive_score_modifiers"]
+        expected_exact = (
+            base_scores["exact"]
+            + modifiers["tier"]["bonuses"]["peripheral"]
+        )
+        expected_title = (
+            base_scores["title"]
+            + modifiers["total_degree"]["cap"]
+            + modifiers["tier"]["bonuses"]["core"]
+        )
+        expected_one_degree = (
+            base_scores["title"]
+            + modifiers["total_degree"]["increment"]
+            + modifiers["tier"]["bonuses"]["supporting"]
+        )
+        exact_entry = {
+            "title": "Topic Overview",
+            "tags": [],
+            "summary": "",
+            "in_links": [],
+            "out_links": [],
+            "tier": "peripheral",
+        }
+        title_entry = {
+            "title": "Topic Overview",
+            "tags": [],
+            "summary": "",
+            "in_links": ["in"] * 20,
+            "out_links": [],
+            "tier": "core",
+        }
+        one_degree_entry = {
+            "title": "Topic Overview",
+            "tags": [],
+            "summary": "",
+            "in_links": ["in"],
+            "out_links": [],
+            "tier": "supporting",
+        }
+
+        exact_score, exact_kind = graphrag._score("topic", exact_entry, "topic")
+        title_score, title_kind = graphrag._score("other", title_entry, "topic")
+        one_degree_score, one_degree_kind = graphrag._score(
+            "other", one_degree_entry, "topic"
+        )
+
+        assert (exact_kind, exact_score) == ("exact", expected_exact)
+        assert (title_kind, title_score) == ("title", expected_title)
+        assert (one_degree_kind, one_degree_score) == ("title", expected_one_degree)
+        assert exact_score > title_score
+        assert [definition.kind for definition in query_language.MATCH_DEFINITIONS] == [
+            item["match_kind"] for item in ranking["lexical_precedence"]
+        ]
+        assert modifiers["total_degree"] == {
+            "increment": query_language.DEGREE_BONUS_INCREMENT,
+            "cap": query_language.DEGREE_BONUS_CAP,
+        }
+        assert modifiers["tier"]["bonuses"] == dict(query_language.TIER_BONUSES)
+
+    def test_ranking_execution_uses_described_final_tie_breakers(self) -> None:
+        def entry(path: str, in_degree: int, out_degree: int) -> dict[str, object]:
+            return {
+                "title": "Topic overview",
+                "tags": [],
+                "summary": "",
+                "in_links": ["in"] * in_degree,
+                "out_links": ["out"] * out_degree,
+                "path": path,
+                "tier": "supporting",
+                "visibility": "public",
+                "lifecycle": "reviewed",
+                "updated": "2026-08-13",
+            }
+
+        candidates = rank_candidates(
+            {
+                "first": entry("z.md", in_degree=2, out_degree=0),
+                "second": entry("b.md", in_degree=1, out_degree=1),
+                "third": entry("a.md", in_degree=2, out_degree=0),
+            },
+            "topic",
+        )
+
+        assert describe_query_language()["match_ranking"]["sort_order"] == list(
+            query_language.CANDIDATE_SORT_ORDER
+        )
+        assert [candidate["page"] for candidate in candidates] == [
+            "a.md",
+            "z.md",
+            "b.md",
+        ]
+
     def test_exact_title_match_scores_highest(self, simple_vault):
         idx = build_index(simple_vault)
         result = rank_candidates(idx, "transformer")

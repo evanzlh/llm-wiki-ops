@@ -7,6 +7,7 @@ from typing import Optional
 
 import pytest
 
+import obsidian_wiki.query_language as query_language
 from obsidian_wiki.query_language import (
     GRAMMAR_VERSION,
     QueryLanguageError,
@@ -88,6 +89,42 @@ def test_natural_queries_require_exact_template_spaces(question: str) -> None:
 
 def test_query_language_description_is_complete_machine_readable_authority() -> None:
     description = describe_query_language()
+    match_ranking = {
+        "lexical_precedence": [
+            {
+                "match_kind": definition.kind,
+                "fields": list(definition.fields),
+                "base_score": definition.base_score,
+            }
+            for definition in query_language.MATCH_DEFINITIONS
+        ],
+        "within_lexical_band": {
+            "additive_score_modifiers": {
+                "total_degree": {
+                    "increment": query_language.DEGREE_BONUS_INCREMENT,
+                    "cap": query_language.DEGREE_BONUS_CAP,
+                },
+                "tier": {
+                    "bonuses": dict(query_language.TIER_BONUSES),
+                    "default": query_language.DEFAULT_TIER_BONUS,
+                },
+            },
+            "final_tie_breakers": list(query_language.CANDIDATE_SORT_ORDER[1:]),
+        },
+        "sort_order": list(query_language.CANDIDATE_SORT_ORDER),
+    }
+    base_scores = [
+        item["base_score"] for item in match_ranking["lexical_precedence"]
+    ]
+    tier_bonuses = match_ranking["within_lexical_band"][
+        "additive_score_modifiers"
+    ]["tier"]["bonuses"].values()
+    greatest_modifier = (
+        match_ranking["within_lexical_band"]["additive_score_modifiers"][
+            "total_degree"
+        ]["cap"]
+        + max(tier_bonuses)
+    )
 
     assert description == {
         "grammar_version": GRAMMAR_VERSION,
@@ -131,16 +168,7 @@ def test_query_language_description_is_complete_machine_readable_authority() -> 
             ],
         },
         "search_fields": ["slug", "title", "tags", "summary"],
-        "match_ranking": {
-            "lexical_precedence": [
-                {"match_kind": "exact", "fields": ["page identity", "basename", "title"]},
-                {"match_kind": "title", "fields": ["title substring"]},
-                {"match_kind": "tag", "fields": ["tag substring"]},
-                {"match_kind": "summary", "fields": ["summary substring"]},
-            ],
-            "within_lexical_band_order": ["degree", "tier"],
-            "tie_breaker": "path",
-        },
+        "match_ranking": match_ranking,
         "result_statuses": ["ok", "no_matches", "no_path"],
         "error_codes": [
             "unsupported_query_structure",
@@ -149,6 +177,10 @@ def test_query_language_description_is_complete_machine_readable_authority() -> 
             "unsupported_operation",
         ],
     }
+    assert all(
+        higher + min(tier_bonuses) > lower + greatest_modifier
+        for higher, lower in zip(base_scores, base_scores[1:])
+    )
     assert json.loads(json.dumps(description)) == description
 
 

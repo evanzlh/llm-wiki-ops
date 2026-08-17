@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from types import MappingProxyType
+from typing import Any, Literal, Mapping, Optional
 
 
 GRAMMAR_VERSION = "query-language/v1"
@@ -21,6 +22,15 @@ class QuerySpec:
     term: Optional[str] = None
     source: Optional[str] = None
     target: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MatchDefinition:
+    """One lexical ranking band shared by the description and retrieval."""
+
+    kind: str
+    base_score: float
+    fields: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -126,16 +136,30 @@ _OPERAND_POLICY = {
         "fuzzy matching",
     ),
 }
-_MATCH_RANKING = {
-    "lexical_precedence": (
-        ("exact", ("page identity", "basename", "title")),
-        ("title", ("title substring",)),
-        ("tag", ("tag substring",)),
-        ("summary", ("summary substring",)),
-    ),
-    "within_lexical_band_order": ("degree", "tier"),
-    "tie_breaker": "path",
-}
+MATCH_DEFINITIONS = (
+    MatchDefinition("exact", 40.0, ("page identity", "basename", "title")),
+    MatchDefinition("title", 30.0, ("title substring",)),
+    MatchDefinition("tag", 20.0, ("tag substring",)),
+    MatchDefinition("summary", 10.0, ("summary substring",)),
+)
+MATCH_KIND_PRIORITY = MappingProxyType(
+    {definition.kind: priority for priority, definition in enumerate(MATCH_DEFINITIONS)}
+)
+MATCH_BASE_SCORES = MappingProxyType(
+    {definition.kind: definition.base_score for definition in MATCH_DEFINITIONS}
+)
+DEGREE_BONUS_INCREMENT = 0.1
+DEGREE_BONUS_CAP = 2.0
+TIER_BONUSES = MappingProxyType(
+    {"core": 0.3, "supporting": 0.0, "peripheral": -0.3}
+)
+DEFAULT_TIER_BONUS = 0.0
+CANDIDATE_SORT_ORDER = ("score descending", "in_degree descending", "path ascending")
+
+
+def candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[float, int, str]:
+    """Return the stable candidate ordering shared by query retrieval."""
+    return (-candidate["score"], -candidate["in_degree"], candidate["page"])
 
 
 def build_explicit_query(
@@ -216,13 +240,27 @@ def describe_query_language() -> dict[str, Any]:
         "search_fields": ["slug", "title", "tags", "summary"],
         "match_ranking": {
             "lexical_precedence": [
-                {"match_kind": kind, "fields": list(fields)}
-                for kind, fields in _MATCH_RANKING["lexical_precedence"]
+                {
+                    "match_kind": definition.kind,
+                    "fields": list(definition.fields),
+                    "base_score": definition.base_score,
+                }
+                for definition in MATCH_DEFINITIONS
             ],
-            "within_lexical_band_order": list(
-                _MATCH_RANKING["within_lexical_band_order"]
-            ),
-            "tie_breaker": _MATCH_RANKING["tie_breaker"],
+            "within_lexical_band": {
+                "additive_score_modifiers": {
+                    "total_degree": {
+                        "increment": DEGREE_BONUS_INCREMENT,
+                        "cap": DEGREE_BONUS_CAP,
+                    },
+                    "tier": {
+                        "bonuses": dict(TIER_BONUSES),
+                        "default": DEFAULT_TIER_BONUS,
+                    },
+                },
+                "final_tie_breakers": list(CANDIDATE_SORT_ORDER[1:]),
+            },
+            "sort_order": list(CANDIDATE_SORT_ORDER),
         },
         "result_statuses": ["ok", "no_matches", "no_path"],
         "error_codes": [
@@ -235,10 +273,20 @@ def describe_query_language() -> dict[str, Any]:
 
 
 __all__ = [
+    "CANDIDATE_SORT_ORDER",
+    "DEFAULT_TIER_BONUS",
+    "DEGREE_BONUS_CAP",
+    "DEGREE_BONUS_INCREMENT",
     "GRAMMAR_VERSION",
+    "MATCH_BASE_SCORES",
+    "MATCH_DEFINITIONS",
+    "MATCH_KIND_PRIORITY",
+    "MatchDefinition",
     "QueryLanguageError",
     "QuerySpec",
+    "TIER_BONUSES",
     "build_explicit_query",
+    "candidate_sort_key",
     "describe_query_language",
     "normalize_match",
     "normalize_operand",
