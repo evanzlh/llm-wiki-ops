@@ -768,7 +768,20 @@ def _write_stage(
     capture: Callable[[ManagedTreeSnapshot], None],
 ) -> ManagedTreeSnapshot:
     os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-    stage_fd = os.open(name, _directory_flags(), dir_fd=parent_fd)
+    created = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(created.st_mode):
+        raise ValueError("staged adapter was replaced immediately after creation")
+    created_identity = _identity(created)
+    try:
+        stage_fd = os.open(name, _directory_flags(), dir_fd=parent_fd)
+    except BaseException:
+        try:
+            empty = _snapshot_child(parent_fd, name)
+            if empty.identity == created_identity and not empty.files:
+                capture(empty)
+        except (OSError, ValueError):
+            pass
+        raise
     try:
 
         def capture_bound_stage() -> None:
@@ -804,8 +817,8 @@ def _write_stage(
         try:
             capture_bound_stage()
         except (OSError, ValueError):
-            # A concurrently replaced tree is intentionally left in the active
-            # namespace; the last identity-bound snapshot will not match it.
+            # A concurrently replaced tree is left in its current namespace;
+            # the last identity-bound snapshot will not match it.
             pass
         raise
     finally:
@@ -914,18 +927,33 @@ def _rename_noreplace_between(
     """Rename between descriptor-bound directories without replacement."""
     safe_source = _safe_component(source)
     safe_destination = _safe_component(destination)
-    rename, flag = _resolve_atomic_noreplace()
-    ctypes.set_errno(0)
-    result = rename(
+    _call_atomic_noreplace(
         source_parent_fd,
         os.fsencode(safe_source),
         destination_parent_fd,
         os.fsencode(safe_destination),
+    )
+
+
+def _call_atomic_noreplace(
+    source_parent_fd: int,
+    source: bytes,
+    destination_parent_fd: int,
+    destination: bytes,
+) -> None:
+    """Call the selected host primitive with already encoded path arguments."""
+    rename, flag = _resolve_atomic_noreplace()
+    ctypes.set_errno(0)
+    result = rename(
+        source_parent_fd,
+        source,
+        destination_parent_fd,
+        destination,
         flag,
     )
     if result != 0:
         error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), safe_destination)
+        raise OSError(error, os.strerror(error), os.fsdecode(destination))
 
 
 def _resolve_atomic_noreplace(
@@ -970,30 +998,14 @@ def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
 def _probe_rename_noreplace(
     source_parent_fd: int, destination_parent_fd: int
 ) -> None:
-    """Exercise RENAME_NOREPLACE without creating a probe artifact."""
-    token = secrets.token_hex(16)
-    if type(token) is not str or re.fullmatch(r"[0-9a-f]{32}", token) is None:
-        raise ValueError("rename probe token must be 32 lowercase hexadecimal characters")
-    source = f".{ADAPTER_NAME}.probe-{token}-source"
-    destination = f".{ADAPTER_NAME}.probe-{token}-destination"
-    for descriptor, name in (
-        (source_parent_fd, source),
-        (destination_parent_fd, destination),
-    ):
-        try:
-            os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            continue
-        raise ValueError("rename capability probe name collision; preserving evidence")
+    """Exercise atomic no-replace with an uncreatable empty source path."""
     try:
-        _rename_noreplace_between(
-            source_parent_fd, source, destination_parent_fd, destination
-        )
+        _call_atomic_noreplace(source_parent_fd, b"", destination_parent_fd, b"")
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return
         raise
-    raise ValueError("rename capability probe unexpectedly moved an entry")
+    raise ValueError("empty-path rename capability probe unexpectedly succeeded")
 
 
 def _verified_artifact(
@@ -1124,18 +1136,19 @@ def install_adapter(
         if state.status in {"unmanaged", "owner-drift", "error"}:
             raise ValueError(f"{state.status} adapter detected; preserving live files")
 
-        retained_parent_fd: int | None = None
-        if state.status == "managed-upgrade":
-            retained_parent_fd = retention_stack.enter_context(
-                _open_retention_for_source(retention_root, parent_fd)
-            )
-
-        _probe_rename_noreplace(
-            parent_fd,
-            parent_fd if retained_parent_fd is None else retained_parent_fd,
+        retained_parent_fd = retention_stack.enter_context(
+            _open_retention_for_source(retention_root, parent_fd)
         )
-        stage_name = f".{ADAPTER_NAME}.stage-{secrets.token_hex(16)}"
-        if stage_name in os.listdir(parent_fd):
+
+        _probe_rename_noreplace(parent_fd, retained_parent_fd)
+        stage_token = secrets.token_hex(16)
+        if (
+            type(stage_token) is not str
+            or re.fullmatch(r"[0-9a-f]{32}", stage_token) is None
+        ):
+            raise ValueError("stage token must be 32 lowercase hexadecimal characters")
+        stage_name = _RETAINED_ADAPTER_PREFIX + stage_token
+        if stage_name in os.listdir(retained_parent_fd):
             raise ValueError("random stage name collision; preserving evidence")
         try:
 
@@ -1144,17 +1157,21 @@ def install_adapter(
                 stage_snapshot = snapshot
 
             stage_snapshot = _write_stage(
-                parent_fd, stage_name, desired, invoke, capture_stage
+                retained_parent_fd, stage_name, desired, invoke, capture_stage
             )
+            os.fsync(retained_parent_fd)
             if live_snapshot is None:
                 try:
-                    _rename_noreplace(parent_fd, stage_name, ADAPTER_NAME)
+                    _rename_noreplace_between(
+                        retained_parent_fd, stage_name, parent_fd, ADAPTER_NAME
+                    )
                 except FileExistsError as exc:
                     stage_snapshot = None
                     raise ValueError(
                         "live adapter appeared during promotion; preserving evidence"
                     ) from exc
                 stage_name = None
+                os.fsync(retained_parent_fd)
                 os.fsync(parent_fd)
                 invoke("stage-promoted")
                 verified = _snapshot_child(parent_fd, ADAPTER_NAME)
@@ -1172,20 +1189,21 @@ def install_adapter(
             os.fsync(parent_fd)
             invoke("live-moved-to-backup")
             try:
-                _rename_noreplace(parent_fd, stage_name, ADAPTER_NAME)
+                _rename_noreplace_between(
+                    retained_parent_fd, stage_name, parent_fd, ADAPTER_NAME
+                )
             except FileExistsError as exc:
                 stage_snapshot = None
                 raise ValueError(
                     "live adapter appeared during promotion; preserving evidence"
                 ) from exc
             stage_name = None
+            os.fsync(retained_parent_fd)
             os.fsync(parent_fd)
             invoke("stage-promoted")
             verified = _snapshot_child(parent_fd, ADAPTER_NAME)
             if _classify_snapshot(verified, desired).status != "current":
                 raise ValueError("upgraded adapter verification failed")
-            if retained_parent_fd is None:
-                raise AssertionError("managed upgrade requires retention storage")
             _retain_snapshot(parent_fd, retained_parent_fd, backup_snapshot)
             backup_name = None
             # Compatibility checkpoint: the backup left the active recovery
@@ -1193,23 +1211,7 @@ def install_adapter(
             invoke("backup-removed")
             return AdapterInstallResult("upgraded", desired.target, destination)
         except BaseException:
-            # Move only identity-bound artifacts out of the active recovery namespace.
-            if stage_name is not None:
-                try:
-                    if stage_snapshot is not None:
-                        if retained_parent_fd is not None:
-                            _retain_snapshot(
-                                parent_fd, retained_parent_fd, stage_snapshot
-                            )
-                        else:
-                            with _open_retention_for_source(
-                                retention_root, parent_fd
-                            ) as lazy_retained_fd:
-                                _retain_snapshot(
-                                    parent_fd, lazy_retained_fd, stage_snapshot
-                                )
-                except (OSError, ValueError):
-                    pass
+            # The new stage is already outside the active recovery namespace.
             if backup_name is not None:
                 try:
                     os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)

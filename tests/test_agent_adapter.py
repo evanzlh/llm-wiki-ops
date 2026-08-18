@@ -2026,7 +2026,7 @@ def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
     collection = discover_skill_collection(
         make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
     )
-    root = tmp_path / "home/.codex/skills"
+    retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
     desired = agent_adapter.build_desired_adapter("codex", "1", collection)
     evidence = tmp_path / "original-stage-evidence"
 
@@ -2036,7 +2036,7 @@ def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
     def replace_stage(name: str) -> None:
         if name != "staged-files":
             return
-        stage = next(root.glob(".llm-wiki-ops.stage-*"))
+        stage = next(retained_root.glob(".llmwikiops-retained-*"))
         stage.rename(evidence)
         stage.mkdir(mode=0o700)
         (stage / "SKILL.md").write_bytes(desired.skill_md)
@@ -2052,7 +2052,7 @@ def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
             checkpoint=replace_stage,
         )
 
-    replacement = next(root.glob(".llm-wiki-ops.stage-*"))
+    replacement = next(retained_root.glob(".llmwikiops-retained-*"))
     assert replacement.exists()
     assert (replacement / "SKILL.md").read_bytes() == desired.skill_md
     assert (evidence / "SKILL.md").read_bytes() == desired.skill_md
@@ -2064,7 +2064,7 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
     collection = discover_skill_collection(
         make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
     )
-    root = tmp_path / "home/.codex/skills"
+    retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
     desired = agent_adapter.build_desired_adapter("codex", "1", collection)
     evidence = tmp_path / "write-stage-evidence"
     real_write = os.write
@@ -2074,7 +2074,7 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
         nonlocal swapped
         written = real_write(descriptor, content)
         if content == desired.skill_md and not swapped:
-            stage = next(root.glob(".llm-wiki-ops.stage-*"))
+            stage = next(retained_root.glob(".llmwikiops-retained-*"))
             stage.rename(evidence)
             stage.mkdir(mode=0o700)
             (stage / "SKILL.md").write_bytes(desired.skill_md)
@@ -2092,7 +2092,7 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
             environ={},
         )
 
-    replacement = next(root.glob(".llm-wiki-ops.stage-*"))
+    replacement = next(retained_root.glob(".llmwikiops-retained-*"))
     assert swapped
     assert replacement.exists()
     assert (replacement / "SKILL.md").read_bytes() == desired.skill_md
@@ -2155,6 +2155,95 @@ def test_adapter_installation_retains_partial_stage_after_io_failure(
         "codex", cli_version="2", collection=collection, home=home, environ={}
     )
     assert rerun.status == "upgraded"
+
+
+def test_adapter_installation_retains_empty_stage_after_open_emfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    real_open = os.open
+    failed = False
+
+    def failing_stage_open(path: object, *args: object, **kwargs: object) -> int:
+        nonlocal failed
+        if (
+            not failed
+            and isinstance(path, str)
+            and path.startswith(
+                (".llm-wiki-ops.stage-", ".llmwikiops-retained-")
+            )
+        ):
+            failed = True
+            raise OSError(errno.EMFILE, "injected stage open failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", failing_stage_open)
+    with pytest.raises(OSError) as raised:
+        agent_adapter.install_adapter(
+            "codex", cli_version="1", collection=collection, home=home, environ={}
+        )
+
+    assert raised.value.errno == errno.EMFILE
+    assert failed
+    assert not list((home / ".codex/skills").glob(".llm-wiki-ops.stage-*"))
+    retained = list((home / ".codex/.llmwikiops-retained").iterdir())
+    assert len(retained) == 1
+    assert retained[0].is_dir() and not list(retained[0].iterdir())
+
+    rerun = agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    assert rerun.status == "installed"
+
+
+def test_adapter_installation_preserves_stage_replacement_on_open_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    retained_root = home / ".codex/.llmwikiops-retained"
+    evidence = tmp_path / "original-empty-stage"
+    real_open = os.open
+    replaced = False
+
+    def replacing_stage_open(path: object, *args: object, **kwargs: object) -> int:
+        nonlocal replaced
+        if (
+            not replaced
+            and isinstance(path, str)
+            and path.startswith(
+                (".llm-wiki-ops.stage-", ".llmwikiops-retained-")
+            )
+        ):
+            replaced = True
+            parent = retained_root if retained_root.exists() else home / ".codex/skills"
+            stage = parent / path
+            stage.rename(evidence)
+            stage.mkdir(mode=0o700)
+            (stage / "owner-evidence").write_bytes(b"preserve\n")
+            raise OSError(errno.EMFILE, "injected replaced stage failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replacing_stage_open)
+    with pytest.raises(OSError, match="replaced stage failure"):
+        agent_adapter.install_adapter(
+            "codex", cli_version="1", collection=collection, home=home, environ={}
+        )
+
+    assert replaced and evidence.is_dir()
+    assert not list((home / ".codex/skills").glob(".llm-wiki-ops.stage-*"))
+    replacements = [
+        path
+        for path in retained_root.iterdir()
+        if (path / "owner-evidence").exists()
+    ]
+    assert len(replacements) == 1
+    assert (replacements[0] / "owner-evidence").read_bytes() == b"preserve\n"
 
 
 def test_retention_preserves_source_swap_without_deleting_evidence(
@@ -2385,7 +2474,7 @@ def test_adapter_upgrade_probes_rename_noreplace_before_staging(
     )
     config_root = home / ".codex"
     retained_root = config_root / ".llmwikiops-retained"
-    retained_root.mkdir(mode=0o700)
+    retained_root.mkdir(mode=0o700, exist_ok=True)
 
     def config_snapshot() -> tuple[tuple[str, str, bytes | None, int], ...]:
         return tuple(
@@ -2413,7 +2502,7 @@ def test_adapter_upgrade_probes_rename_noreplace_before_staging(
         raise OSError(capability_errno, "injected rename capability failure")
 
     monkeypatch.setattr(agent_adapter, "_write_stage", observed_write_stage)
-    monkeypatch.setattr(agent_adapter, "_rename_noreplace_between", unsupported)
+    monkeypatch.setattr(agent_adapter, "_call_atomic_noreplace", unsupported)
 
     with pytest.raises(OSError, match="injected rename capability failure"):
         agent_adapter.install_adapter(
@@ -2425,39 +2514,211 @@ def test_adapter_upgrade_probes_rename_noreplace_before_staging(
     assert not list((config_root / "skills").glob(".llm-wiki-ops.stage-*"))
 
 
-@pytest.mark.parametrize("collision_side", ("source", "destination"))
-def test_rename_noreplace_probe_preserves_random_name_collisions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision_side: str
+@pytest.mark.parametrize("existing_live", (False, True))
+def test_actual_filesystem_rename_failure_leaves_stage_only_in_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_live: bool
 ) -> None:
-    source_root = tmp_path / "skills"
-    destination_root = tmp_path / "retained"
-    source_root.mkdir()
-    destination_root.mkdir()
-    token = "f" * 32
-    source_name = f".{ADAPTER_NAME}.probe-{token}-source"
-    destination_name = f".{ADAPTER_NAME}.probe-{token}-destination"
-    collision = (
-        source_root / source_name
-        if collision_side == "source"
-        else destination_root / destination_name
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
     )
-    collision.write_bytes(b"owner evidence\n")
-    monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: token)
+    home = tmp_path / "home"
+    root = home / ".codex/skills"
+    old = agent_adapter.build_desired_adapter("codex", "1", collection)
+    if existing_live:
+        agent_adapter.install_adapter(
+            "codex", cli_version="1", collection=collection, home=home, environ={}
+        )
+    real_call = agent_adapter._call_atomic_noreplace
 
-    def forbidden_rename(*args: object) -> None:
-        raise AssertionError("colliding probe names must not be renamed")
+    def unsupported_on_real_path(
+        source_parent: int,
+        source: bytes,
+        destination_parent: int,
+        destination: bytes,
+    ) -> None:
+        if source:
+            raise OSError(errno.EOPNOTSUPP, "filesystem rejects atomic rename")
+        real_call(source_parent, source, destination_parent, destination)
 
     monkeypatch.setattr(
-        agent_adapter, "_rename_noreplace_between", forbidden_rename
+        agent_adapter, "_call_atomic_noreplace", unsupported_on_real_path
     )
-    with (
-        agent_adapter._open_or_create_directory(source_root) as source_fd,
-        agent_adapter._open_or_create_directory(destination_root) as destination_fd,
-        pytest.raises(ValueError, match="probe name collision|preserv"),
-    ):
-        agent_adapter._probe_rename_noreplace(source_fd, destination_fd)
+    with pytest.raises(OSError) as raised:
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
 
-    assert collision.read_bytes() == b"owner evidence\n"
+    assert raised.value.errno == errno.EOPNOTSUPP
+    assert not list(root.glob(".llm-wiki-ops.stage-*"))
+    live = root / ADAPTER_NAME
+    if existing_live:
+        assert (live / "SKILL.md").read_bytes() == old.skill_md
+        assert (live / agent_adapter.MANAGED_ADAPTER_RECORD).read_bytes() == (
+            old.managed_record
+        )
+    else:
+        assert not live.exists()
+    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    retained = list((home / ".codex/.llmwikiops-retained").iterdir())
+    assert len(retained) == 1
+    assert (retained[0] / "SKILL.md").read_bytes() == desired.skill_md
+    assert (retained[0] / agent_adapter.MANAGED_ADAPTER_RECORD).read_bytes() == (
+        desired.managed_record
+    )
+
+
+def test_upgrade_restores_backup_when_retained_stage_promotion_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    root = home / ".codex/skills"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    old = agent_adapter.build_desired_adapter("codex", "1", collection)
+    real_call = agent_adapter._call_atomic_noreplace
+    real_path_calls = 0
+
+    def fail_stage_promotion_once(
+        source_parent: int,
+        source: bytes,
+        destination_parent: int,
+        destination: bytes,
+    ) -> None:
+        nonlocal real_path_calls
+        if source:
+            real_path_calls += 1
+            if real_path_calls == 2:
+                assert not list(root.glob(".llm-wiki-ops.stage-*"))
+                raise OSError(errno.EOPNOTSUPP, "stage promotion rejected")
+        real_call(source_parent, source, destination_parent, destination)
+
+    monkeypatch.setattr(
+        agent_adapter, "_call_atomic_noreplace", fail_stage_promotion_once
+    )
+    with pytest.raises(OSError, match="stage promotion rejected"):
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+
+    live = root / ADAPTER_NAME
+    assert (live / "SKILL.md").read_bytes() == old.skill_md
+    assert not list(root.glob(".llm-wiki-ops.backup-*"))
+    assert not list(root.glob(".llm-wiki-ops.stage-*"))
+    retained_before = tuple((home / ".codex/.llmwikiops-retained").iterdir())
+    assert retained_before
+
+    rerun = agent_adapter.install_adapter(
+        "codex", cli_version="2", collection=collection, home=home, environ={}
+    )
+    assert rerun.status == "upgraded"
+    assert all(path.exists() for path in retained_before)
+
+
+def test_rename_noreplace_probe_passes_uncreatable_empty_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "skills"
+    root.mkdir()
+    calls: list[tuple[bytes, bytes]] = []
+
+    def unavailable_source(
+        source_parent: int,
+        source: bytes,
+        destination_parent: int,
+        destination: bytes,
+        flag: int,
+    ) -> int:
+        calls.append((source, destination))
+        agent_adapter.ctypes.set_errno(errno.ENOENT)
+        return -1
+
+    monkeypatch.setattr(
+        agent_adapter,
+        "_resolve_atomic_noreplace",
+        lambda: (unavailable_source, 1),
+    )
+    with agent_adapter._open_or_create_directory(root) as parent_fd:
+        agent_adapter._probe_rename_noreplace(parent_fd, parent_fd)
+
+    assert calls == [(b"", b"")]
+    assert not list(root.iterdir())
+
+
+def test_adapter_rename_probe_cannot_move_racing_owner_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    skills_root = home / ".codex/skills"
+    retained_root = home / ".codex/.llmwikiops-retained"
+    retained_root.mkdir(mode=0o700, exist_ok=True)
+    calls: list[tuple[bytes, bytes]] = []
+
+    def racing_rename(
+        source_parent: int,
+        source: bytes,
+        destination_parent: int,
+        destination: bytes,
+        flag: int,
+    ) -> int:
+        calls.append((source, destination))
+        evidence_fd = os.open(
+            "owner-evidence",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=source_parent,
+        )
+        try:
+            os.write(evidence_fd, b"preserve\n")
+        finally:
+            os.close(evidence_fd)
+        if source:
+            raced_fd = os.open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=source_parent,
+            )
+            os.close(raced_fd)
+            os.rename(
+                source,
+                destination,
+                src_dir_fd=source_parent,
+                dst_dir_fd=destination_parent,
+            )
+            return 0
+        agent_adapter.ctypes.set_errno(errno.ENOENT)
+        return -1
+
+    monkeypatch.setattr(
+        agent_adapter, "_resolve_atomic_noreplace", lambda: (racing_rename, 1)
+    )
+
+    class StopBeforeStage(RuntimeError):
+        pass
+
+    def stop_before_stage(*args: object, **kwargs: object) -> object:
+        raise StopBeforeStage
+
+    monkeypatch.setattr(agent_adapter, "_write_stage", stop_before_stage)
+
+    with pytest.raises(StopBeforeStage):
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+
+    assert calls == [(b"", b"")]
+    assert (skills_root / "owner-evidence").read_bytes() == b"preserve\n"
+    assert not list(retained_root.iterdir())
 
 
 @pytest.mark.parametrize(
@@ -2541,20 +2802,28 @@ def test_adapter_installation_never_overwrites_racing_live_directory(
     )
     root = tmp_path / "home/.codex/skills"
     live = root / ADAPTER_NAME
-    real_rename = agent_adapter._rename_noreplace
+    retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
+    real_rename = agent_adapter._rename_noreplace_between
     raced = False
     raced_identity: tuple[int, int] | None = None
 
-    def racing_rename(parent_fd: int, source: str, destination: str) -> None:
+    def racing_rename(
+        source_parent_fd: int,
+        source: str,
+        destination_parent_fd: int,
+        destination: str,
+    ) -> None:
         nonlocal raced, raced_identity
         if destination == ADAPTER_NAME and not raced:
             live.mkdir()
             metadata = live.stat()
             raced_identity = (metadata.st_dev, metadata.st_ino)
             raced = True
-        real_rename(parent_fd, source, destination)
+        real_rename(
+            source_parent_fd, source, destination_parent_fd, destination
+        )
 
-    monkeypatch.setattr(agent_adapter, "_rename_noreplace", racing_rename)
+    monkeypatch.setattr(agent_adapter, "_rename_noreplace_between", racing_rename)
 
     with pytest.raises(ValueError, match="live|race|exist|preserv"):
         agent_adapter.install_adapter(
@@ -2569,7 +2838,7 @@ def test_adapter_installation_never_overwrites_racing_live_directory(
     metadata = live.stat()
     assert (metadata.st_dev, metadata.st_ino) == raced_identity
     assert not list(live.iterdir())
-    assert list(root.glob(".llm-wiki-ops.stage-*"))
+    assert list(retained_root.glob(".llmwikiops-retained-*"))
 
 
 @pytest.mark.parametrize("flag", ("O_NOFOLLOW", "O_DIRECTORY"))
