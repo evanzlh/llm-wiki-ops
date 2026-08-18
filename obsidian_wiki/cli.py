@@ -161,9 +161,13 @@ def cmd_agent_install_adapter(args: argparse.Namespace) -> int:
             collection=collection,
         )
     except (ValueError, OSError, RuntimeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_terminal_safe_text(exc)}", file=sys.stderr)
         return 1
-    print(f"{result.status} {result.target} adapter at {result.destination}")
+    print(
+        f"{_terminal_safe_text(result.status)} "
+        f"{_terminal_safe_text(result.target)} adapter at "
+        f"{_terminal_safe_text(result.destination)}"
+    )
     return 0
 
 

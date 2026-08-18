@@ -46,12 +46,17 @@ EXPECTED_TARGET_ROOTS = {
 
 
 def run_adapter_cli(
-    home: Path, cwd: Path, *arguments: str
+    home: Path,
+    cwd: Path,
+    *arguments: str,
+    environ: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PYTHONPATH"] = str(ROOT)
     env.pop("CODEX_HOME", None)
+    if environ is not None:
+        env.update(environ)
     return subprocess.run(
         [sys.executable, "-m", "obsidian_wiki", *arguments],
         cwd=cwd,
@@ -86,6 +91,7 @@ def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
     home.mkdir()
     work = tmp_path / "work"
     work.mkdir()
+    work_before = adapter_home_snapshot(work)
 
     installed = run_adapter_cli(
         home, work, "agent", "install-adapter", "--agent", target
@@ -102,6 +108,7 @@ def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
         for path in home.rglob(ADAPTER_NAME)
         if path.is_dir() and path != destination
     ] == []
+    assert adapter_home_snapshot(work) == work_before
     before = adapter_home_snapshot(home)
 
     unchanged = run_adapter_cli(
@@ -112,6 +119,7 @@ def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
     assert unchanged.stderr == ""
     assert unchanged.stdout == f"unchanged {target} adapter at {destination}\n"
     assert adapter_home_snapshot(home) == before
+    assert adapter_home_snapshot(work) == work_before
 
 
 @pytest.mark.parametrize(
@@ -152,12 +160,115 @@ def test_cli_rejects_implicit_or_expanded_adapter_installation_surface(
     work = tmp_path / "work"
     work.mkdir()
     before = adapter_home_snapshot(home)
+    work_before = adapter_home_snapshot(work)
 
     result = run_adapter_cli(home, work, *arguments)
 
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert adapter_home_snapshot(home) == before
+    assert adapter_home_snapshot(work) == work_before
+
+
+def test_cli_codex_uses_explicit_codex_home_and_escapes_destination(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    codex_home = tmp_path / "codex\nforged"
+
+    result = run_adapter_cli(
+        home,
+        work,
+        "agent",
+        "install-adapter",
+        "--agent",
+        "codex",
+        environ={"CODEX_HOME": str(codex_home)},
+    )
+
+    destination = codex_home / "skills" / ADAPTER_NAME
+    escaped_destination = str(destination).replace("\n", r"\n")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == [
+        f"installed codex adapter at {escaped_destination}"
+    ]
+    assert (destination / "SKILL.md").is_file()
+    assert adapter_home_snapshot(home) == ()
+    assert adapter_home_snapshot(work) == ()
+
+
+@pytest.mark.parametrize("target", sorted(set(EXPECTED_TARGET_ROOTS) - {"codex"}))
+def test_cli_non_codex_targets_ignore_codex_home(
+    target: str, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    override = tmp_path / "must-not-be-used"
+
+    result = run_adapter_cli(
+        home,
+        work,
+        "agent",
+        "install-adapter",
+        "--agent",
+        target,
+        environ={"CODEX_HOME": str(override)},
+    )
+
+    destination = home / EXPECTED_TARGET_ROOTS[target] / ADAPTER_NAME
+    assert result.returncode == 0, result.stderr
+    assert (destination / "SKILL.md").is_file()
+    assert not override.exists()
+    assert adapter_home_snapshot(work) == ()
+
+
+def test_cli_invalid_codex_home_is_error_without_writes(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    home_before = adapter_home_snapshot(home)
+    work_before = adapter_home_snapshot(work)
+
+    result = run_adapter_cli(
+        home,
+        work,
+        "agent",
+        "install-adapter",
+        "--agent",
+        "codex",
+        environ={"CODEX_HOME": "relative\nforged"},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        "error: CODEX_HOME must be a non-empty absolute path"
+    ]
+    assert adapter_home_snapshot(home) == home_before
+    assert adapter_home_snapshot(work) == work_before
+
+
+def test_adapter_command_escapes_control_characters_in_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("unsafe\nforged\tmessage")
+
+    monkeypatch.setattr(cli, "install_adapter", fail)
+
+    result = cli.cmd_agent_install_adapter(cli.argparse.Namespace(agent="codex"))
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == r"error: unsafe\nforged\tmessage" + "\n"
 
 EXPECTED_BUNDLED_CATALOG = (
     (

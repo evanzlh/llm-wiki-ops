@@ -283,7 +283,9 @@ def test_source_wheel_and_sdist_install_identical_explicit_adapters(
     original_source = source.resolve()
     moved_source = tmp_path / "artifact-source-moved"
     source.rename(moved_source)
-    generated: dict[tuple[str, str], tuple[bytes, dict[str, object]]] = {}
+    generated: dict[
+        tuple[str, str], tuple[bytes, bytes, dict[str, object]]
+    ] = {}
     for label, (base_env, executable) in installations.items():
         for target, relative_root in (
             ("codex", ".codex/skills"),
@@ -307,7 +309,11 @@ def test_source_wheel_and_sdist_install_identical_explicit_adapters(
             destination = home / relative_root / "llm-wiki-ops"
             skill = (destination / "SKILL.md").read_bytes()
             record_bytes = (destination / ".llmwikiops-managed.json").read_bytes()
-            generated[label, target] = (skill, json.loads(record_bytes))
+            generated[label, target] = (
+                skill,
+                record_bytes,
+                json.loads(record_bytes),
+            )
             forbidden = (
                 str(ROOT.resolve()).encode(),
                 str(original_source).encode(),
@@ -324,10 +330,11 @@ def test_source_wheel_and_sdist_install_identical_explicit_adapters(
                 )
 
     for target in ("codex", "claude"):
-        source_skill, source_record = generated["source", target]
+        source_skill, source_record_bytes, source_record = generated["source", target]
         for label in ("wheel", "sdist"):
-            skill, record = generated[label, target]
+            skill, record_bytes, record = generated[label, target]
             assert skill == source_skill, (label, target)
+            assert record_bytes == source_record_bytes, (label, target)
             assert record == source_record, (label, target)
 
 
