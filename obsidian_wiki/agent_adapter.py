@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import re
+import secrets
 import stat
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from . import IMPLEMENTATION_ID, skill_trees
 from .frontmatter import FrontmatterError, parse_frontmatter
@@ -477,3 +481,576 @@ def render_adapter_skill(collection: SkillCollection) -> str:
         raise ValueError("rendered adapter must use UTF-8/LF with one final newline")
     rendered.encode("utf-8")
     return rendered
+
+
+@dataclass(frozen=True)
+class ManagedFileSnapshot:
+    name: str
+    identity: tuple[int, ...]
+    content: bytes
+
+
+@dataclass(frozen=True)
+class ManagedTreeSnapshot:
+    name: str
+    identity: tuple[int, ...]
+    files: tuple[ManagedFileSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class AdapterInstallInspection:
+    status: Literal[
+        "missing", "current", "managed-upgrade", "owner-drift", "unmanaged", "error"
+    ]
+    snapshot: ManagedTreeSnapshot | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class AdapterInstallResult:
+    status: Literal["installed", "unchanged", "upgraded"]
+    target: str
+    destination: Path
+
+
+class _UnknownManagedEntry(ValueError):
+    pass
+
+
+def _identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+    )
+
+
+def _directory_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("O_NOFOLLOW is required for safe adapter access")
+    if not hasattr(os, "O_DIRECTORY"):
+        raise ValueError("O_DIRECTORY is required for safe adapter access")
+    return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _regular_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("O_NOFOLLOW is required for safe adapter access")
+    return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+
+
+def _safe_component(name: object) -> str:
+    if (
+        type(name) is not str
+        or not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+    ):
+        raise ValueError("unsafe filesystem component")
+    return name
+
+
+def _open_directory_path(path: Path) -> int:
+    root = _require_absolute_root(path, "directory")
+    descriptor = os.open("/", _directory_flags())
+    try:
+        for component in root.parts[1:]:
+            observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(observed.st_mode):
+                raise ValueError("directory topology contains a non-directory")
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            try:
+                opened = os.fstat(child)
+                if not stat.S_ISDIR(opened.st_mode) or not _same_file(observed, opened):
+                    raise ValueError("directory topology changed while opening")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _open_or_create_directory(path: Path) -> Iterator[int]:
+    """Open/create an absolute directory chain without following links."""
+    root = _require_absolute_root(path, "directory")
+    descriptor = os.open("/", _directory_flags())
+    try:
+        for component in root.parts[1:]:
+            try:
+                observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(observed.st_mode):
+                raise ValueError("directory topology contains a non-directory")
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            try:
+                opened = os.fstat(child)
+                if not stat.S_ISDIR(opened.st_mode) or not _same_file(observed, opened):
+                    raise ValueError("directory topology changed while opening")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _read_regular_file(parent_fd: int, name: str) -> ManagedFileSnapshot:
+    safe_name = _safe_component(name)
+    observed = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+        raise ValueError(
+            f"managed file is not a single-link ordinary file: {safe_name}"
+        )
+    descriptor = os.open(safe_name, _regular_flags(), dir_fd=parent_fd)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not _same_snapshot(observed, opened):
+            raise ValueError(f"managed file changed while opening: {safe_name}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        final = os.fstat(descriptor)
+        rebound = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not _same_snapshot(opened, final)
+            or not stat.S_ISREG(rebound.st_mode)
+            or not _same_snapshot(final, rebound)
+        ):
+            raise ValueError(f"managed file changed while reading: {safe_name}")
+        return ManagedFileSnapshot(safe_name, _identity(final), b"".join(chunks))
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_child(parent_fd: int, name: str) -> ManagedTreeSnapshot:
+    """Capture the small managed tree using only descriptor-relative operations."""
+    safe_name = _safe_component(name)
+    observed = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(observed.st_mode):
+        raise ValueError("managed adapter is not an ordinary directory")
+    descriptor = os.open(safe_name, _directory_flags(), dir_fd=parent_fd)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or not _same_file(observed, opened):
+            raise ValueError("managed adapter directory changed while opening")
+        names = tuple(sorted(os.listdir(descriptor)))
+        allowed = {"SKILL.md", MANAGED_ADAPTER_RECORD}
+        unknown = set(names) - allowed
+        if unknown:
+            raise _UnknownManagedEntry("managed adapter contains unknown entries")
+        files = tuple(_read_regular_file(descriptor, child) for child in names)
+        final_names = tuple(sorted(os.listdir(descriptor)))
+        final = os.fstat(descriptor)
+        rebound = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            final_names != names
+            or not _same_file(opened, final)
+            or not stat.S_ISDIR(rebound.st_mode)
+            or not _same_file(final, rebound)
+        ):
+            raise ValueError("managed adapter directory changed while reading")
+        return ManagedTreeSnapshot(safe_name, _identity(final), files)
+    finally:
+        os.close(descriptor)
+
+
+def _file_map(snapshot: ManagedTreeSnapshot) -> dict[str, bytes]:
+    return {item.name: item.content for item in snapshot.files}
+
+
+def _classify_snapshot(
+    snapshot: ManagedTreeSnapshot, desired: DesiredAdapter
+) -> AdapterInstallInspection:
+    files = _file_map(snapshot)
+    skill = files.get("SKILL.md")
+    record_bytes = files.get(MANAGED_ADAPTER_RECORD)
+    if record_bytes is None:
+        return AdapterInstallInspection("unmanaged", snapshot)
+    try:
+        record = parse_managed_record(record_bytes)
+    except (TypeError, ValueError):
+        return AdapterInstallInspection("unmanaged", snapshot)
+    if render_managed_record(record) != record_bytes or record.target != desired.target:
+        return AdapterInstallInspection("unmanaged", snapshot)
+    expected_digest = record.files.get("SKILL.md")
+    if (
+        skill is None
+        or set(record.files) != {"SKILL.md"}
+        or expected_digest != "sha256:" + sha256(skill).hexdigest()
+    ):
+        return AdapterInstallInspection("owner-drift", snapshot)
+    if skill == desired.skill_md and record_bytes == desired.managed_record:
+        return AdapterInstallInspection("current", snapshot)
+    return AdapterInstallInspection("managed-upgrade", snapshot)
+
+
+def inspect_adapter_installation(
+    destination: Path, desired: DesiredAdapter
+) -> AdapterInstallInspection:
+    """Classify one exact adapter destination without modifying it."""
+    _require_absolute_root(destination, "destination")
+    if type(desired) is not DesiredAdapter:
+        raise TypeError("desired must be a DesiredAdapter")
+    parent_fd: int | None = None
+    try:
+        try:
+            parent_fd = _open_directory_path(destination.parent)
+        except FileNotFoundError:
+            return AdapterInstallInspection("missing")
+        try:
+            os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return AdapterInstallInspection("missing")
+        try:
+            snapshot = _snapshot_child(parent_fd, destination.name)
+        except _UnknownManagedEntry as exc:
+            return AdapterInstallInspection("owner-drift", error=str(exc))
+        except (OSError, ValueError) as exc:
+            return AdapterInstallInspection("error", error=str(exc))
+        return _classify_snapshot(snapshot, desired)
+    except (OSError, ValueError) as exc:
+        return AdapterInstallInspection("error", error=str(exc))
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def _write_all(descriptor: int, content: bytes) -> None:
+    offset = 0
+    while offset < len(content):
+        written = os.write(descriptor, content[offset:])
+        if written <= 0:
+            raise OSError("short write while staging adapter")
+        offset += written
+
+
+def _write_stage(
+    parent_fd: int,
+    name: str,
+    desired: DesiredAdapter,
+    checkpoint: Callable[[str], None],
+    capture: Callable[[ManagedTreeSnapshot], None],
+) -> ManagedTreeSnapshot:
+    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    stage_fd = os.open(name, _directory_flags(), dir_fd=parent_fd)
+    try:
+
+        def capture_bound_stage() -> None:
+            opened = os.fstat(stage_fd)
+            rebound = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or not stat.S_ISDIR(rebound.st_mode)
+                or not _same_file(opened, rebound)
+            ):
+                raise ValueError("staged adapter directory changed during write")
+            snapshot = _snapshot_child(parent_fd, name)
+            if snapshot.identity[:2] != (opened.st_dev, opened.st_ino):
+                raise ValueError("staged adapter directory changed during snapshot")
+            capture(snapshot)
+
+        capture_bound_stage()
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        skill_fd = os.open("SKILL.md", flags, 0o600, dir_fd=stage_fd)
+        try:
+            _write_all(skill_fd, desired.skill_md)
+            os.fsync(skill_fd)
+        finally:
+            os.close(skill_fd)
+        os.fsync(stage_fd)
+        capture_bound_stage()
+        checkpoint("staged-files")
+        record_fd = os.open(MANAGED_ADAPTER_RECORD, flags, 0o600, dir_fd=stage_fd)
+        try:
+            _write_all(record_fd, desired.managed_record)
+            os.fsync(record_fd)
+        finally:
+            os.close(record_fd)
+        os.fsync(stage_fd)
+        capture_bound_stage()
+        checkpoint("staged-record")
+    finally:
+        os.close(stage_fd)
+    snapshot = _snapshot_child(parent_fd, name)
+    classified = _classify_snapshot(snapshot, desired)
+    if classified.status != "current":
+        raise ValueError("staged adapter verification failed")
+    return snapshot
+
+
+def _delete_snapshot(parent_fd: int, snapshot: ManagedTreeSnapshot) -> None:
+    current = _snapshot_child(parent_fd, snapshot.name)
+    if current != snapshot:
+        raise ValueError("refusing to delete changed recovery evidence")
+    descriptor = os.open(snapshot.name, _directory_flags(), dir_fd=parent_fd)
+    try:
+        opened = os.fstat(descriptor)
+        if snapshot.identity[:2] != (opened.st_dev, opened.st_ino):
+            raise ValueError("refusing to delete replaced recovery directory")
+        for item in snapshot.files:
+            current_file = _read_regular_file(descriptor, item.name)
+            if current_file != item:
+                raise ValueError("refusing to delete changed managed file")
+            os.unlink(item.name, dir_fd=descriptor)
+        os.fsync(descriptor)
+        rebound = os.stat(snapshot.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(rebound.st_mode) or not _same_file(opened, rebound):
+            raise ValueError("refusing to remove replaced recovery directory")
+    finally:
+        os.close(descriptor)
+    os.rmdir(snapshot.name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+def _artifact_names(parent_fd: int) -> tuple[str, ...]:
+    prefixes = (f".{ADAPTER_NAME}.stage-", f".{ADAPTER_NAME}.backup-")
+    return tuple(
+        sorted(name for name in os.listdir(parent_fd) if name.startswith(prefixes))
+    )
+
+
+def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+    """Rename within one directory without ever replacing the destination."""
+    safe_source = _safe_component(source)
+    safe_destination = _safe_component(destination)
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = library.renameat2
+    except AttributeError as exc:
+        raise OSError(errno.ENOTSUP, "renameat2(RENAME_NOREPLACE) is required") from exc
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = renameat2(
+        parent_fd,
+        os.fsencode(safe_source),
+        parent_fd,
+        os.fsencode(safe_destination),
+        1,  # RENAME_NOREPLACE
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), safe_destination)
+
+
+def _verified_artifact(
+    parent_fd: int, name: str, desired: DesiredAdapter
+) -> ManagedTreeSnapshot:
+    pattern = re.compile(
+        rf"^\.{re.escape(ADAPTER_NAME)}\.(?:stage|backup)-[0-9a-f]{{32}}$"
+    )
+    if pattern.fullmatch(name) is None:
+        raise ValueError("recovery artifact has a noncanonical name")
+    snapshot = _snapshot_child(parent_fd, name)
+    if ".stage-" in name and stat.S_IMODE(snapshot.identity[2]) != 0o700:
+        raise ValueError("recovery artifact has an unsafe directory mode")
+    classified = _classify_snapshot(snapshot, desired)
+    if classified.status not in {"current", "managed-upgrade"}:
+        raise ValueError("ambiguous recovery artifact; preserving evidence")
+    return snapshot
+
+
+def _recover_artifacts(parent_fd: int, desired: DesiredAdapter) -> None:
+    artifacts = _artifact_names(parent_fd)
+    if not artifacts:
+        return
+    if len(artifacts) != 1:
+        raise ValueError("ambiguous recovery artifacts; preserving evidence")
+    name = artifacts[0]
+    try:
+        snapshot = _verified_artifact(parent_fd, name, desired)
+    except (OSError, ValueError) as exc:
+        raise ValueError("ambiguous recovery artifact; preserving evidence") from exc
+    try:
+        os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        live = None
+    else:
+        try:
+            live = _snapshot_child(parent_fd, ADAPTER_NAME)
+        except FileNotFoundError as exc:
+            raise ValueError("live adapter changed during recovery") from exc
+    if ".backup-" in name:
+        if live is None:
+            _rename_noreplace(parent_fd, name, ADAPTER_NAME)
+            os.fsync(parent_fd)
+            return
+        live_state = _classify_snapshot(live, desired)
+        if live_state.status != "current":
+            raise ValueError("ambiguous live and backup trees; preserving evidence")
+        _delete_snapshot(parent_fd, snapshot)
+        return
+    if live is None:
+        if _classify_snapshot(snapshot, desired).status != "current":
+            raise ValueError("staged recovery tree is not desired; preserving evidence")
+        _rename_noreplace(parent_fd, name, ADAPTER_NAME)
+        os.fsync(parent_fd)
+        return
+    live_state = _classify_snapshot(live, desired)
+    if live_state.status == "current":
+        _delete_snapshot(parent_fd, snapshot)
+        return
+    if (
+        live_state.status == "managed-upgrade"
+        and _classify_snapshot(snapshot, desired).status == "current"
+    ):
+        _delete_snapshot(parent_fd, snapshot)
+        return
+    raise ValueError("ambiguous live and staged trees; preserving evidence")
+
+
+def _checkpoint_callback(
+    callback: Callable[[str], None] | None,
+) -> Callable[[str], None]:
+    return callback if callback is not None else lambda _name: None
+
+
+def install_adapter(
+    target: str,
+    *,
+    cli_version: str,
+    collection: SkillCollection,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    checkpoint: Callable[[str], None] | None = None,
+) -> AdapterInstallResult:
+    """Install or upgrade one explicitly selected globally managed adapter."""
+    actual_home = Path.home() if home is None else home
+    actual_environ = dict(os.environ) if environ is None else environ
+    destination = resolve_adapter_destination(
+        target, home=actual_home, environ=actual_environ
+    )
+    desired = build_desired_adapter(target, cli_version, collection)
+    invoke = _checkpoint_callback(checkpoint)
+    stage_name: str | None = None
+    stage_snapshot: ManagedTreeSnapshot | None = None
+    backup_name: str | None = None
+    backup_snapshot: ManagedTreeSnapshot | None = None
+    with _open_or_create_directory(destination.parent) as parent_fd:
+        _recover_artifacts(parent_fd, desired)
+        try:
+            os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            live_snapshot = None
+            state = AdapterInstallInspection("missing")
+        else:
+            try:
+                live_snapshot = _snapshot_child(parent_fd, ADAPTER_NAME)
+            except _UnknownManagedEntry as exc:
+                raise ValueError("owner drift detected; preserving live adapter") from exc
+            except (OSError, ValueError) as exc:
+                raise ValueError("unsafe live adapter; preserving evidence") from exc
+            else:
+                state = _classify_snapshot(live_snapshot, desired)
+        if state.status == "current":
+            return AdapterInstallResult("unchanged", desired.target, destination)
+        if state.status in {"unmanaged", "owner-drift", "error"}:
+            raise ValueError(f"{state.status} adapter detected; preserving live files")
+
+        stage_name = f".{ADAPTER_NAME}.stage-{secrets.token_hex(16)}"
+        if stage_name in os.listdir(parent_fd):
+            raise ValueError("random stage name collision; preserving evidence")
+        try:
+
+            def capture_stage(snapshot: ManagedTreeSnapshot) -> None:
+                nonlocal stage_snapshot
+                stage_snapshot = snapshot
+
+            stage_snapshot = _write_stage(
+                parent_fd, stage_name, desired, invoke, capture_stage
+            )
+            if live_snapshot is None:
+                try:
+                    _rename_noreplace(parent_fd, stage_name, ADAPTER_NAME)
+                except FileExistsError as exc:
+                    stage_snapshot = None
+                    raise ValueError(
+                        "live adapter appeared during promotion; preserving evidence"
+                    ) from exc
+                stage_name = None
+                os.fsync(parent_fd)
+                invoke("stage-promoted")
+                verified = _snapshot_child(parent_fd, ADAPTER_NAME)
+                if _classify_snapshot(verified, desired).status != "current":
+                    raise ValueError("installed adapter verification failed")
+                return AdapterInstallResult("installed", desired.target, destination)
+
+            backup_name = f".{ADAPTER_NAME}.backup-{secrets.token_hex(16)}"
+            if backup_name in os.listdir(parent_fd):
+                raise ValueError("random backup name collision; preserving evidence")
+            _rename_noreplace(parent_fd, ADAPTER_NAME, backup_name)
+            backup_snapshot = ManagedTreeSnapshot(
+                backup_name, live_snapshot.identity, live_snapshot.files
+            )
+            os.fsync(parent_fd)
+            invoke("live-moved-to-backup")
+            try:
+                _rename_noreplace(parent_fd, stage_name, ADAPTER_NAME)
+            except FileExistsError as exc:
+                stage_snapshot = None
+                raise ValueError(
+                    "live adapter appeared during promotion; preserving evidence"
+                ) from exc
+            stage_name = None
+            os.fsync(parent_fd)
+            invoke("stage-promoted")
+            verified = _snapshot_child(parent_fd, ADAPTER_NAME)
+            if _classify_snapshot(verified, desired).status != "current":
+                raise ValueError("upgraded adapter verification failed")
+            _delete_snapshot(parent_fd, backup_snapshot)
+            backup_name = None
+            invoke("backup-removed")
+            return AdapterInstallResult("upgraded", desired.target, destination)
+        except BaseException:
+            # Only remove artifacts whose exact identity/content this invocation captured.
+            if stage_name is not None:
+                try:
+                    if stage_snapshot is not None:
+                        _delete_snapshot(parent_fd, stage_snapshot)
+                except (OSError, ValueError):
+                    pass
+            if backup_name is not None:
+                try:
+                    os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    try:
+                        current_backup = _snapshot_child(parent_fd, backup_name)
+                        if (
+                            backup_snapshot is not None
+                            and current_backup == backup_snapshot
+                        ):
+                            _rename_noreplace(parent_fd, backup_name, ADAPTER_NAME)
+                            os.fsync(parent_fd)
+                            backup_name = None
+                    except (OSError, ValueError):
+                        pass
+            raise

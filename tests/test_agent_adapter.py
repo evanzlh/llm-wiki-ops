@@ -1594,3 +1594,622 @@ def test_desired_adapter_rejects_unrepresented_extra_managed_files() -> None:
             skill_md=skill_md,
             managed_record=agent_adapter.render_managed_record(record),
         )
+
+
+def make_desired_install(
+    *, target: str = "codex", version: str = "2026.8.18", skill: bytes = b"skill\n"
+) -> agent_adapter.DesiredAdapter:
+    record = agent_adapter.ManagedAdapterRecord(
+        schema_version=1,
+        implementation="evanzlh/llm-wiki-ops",
+        cli_version=version,
+        target=target,
+        files={"SKILL.md": "sha256:" + sha256(skill).hexdigest()},
+    )
+    return agent_adapter.DesiredAdapter(
+        target=target,
+        skill_md=skill,
+        managed_record=agent_adapter.render_managed_record(record),
+    )
+
+
+def write_adapter_tree(path: Path, desired: agent_adapter.DesiredAdapter) -> None:
+    path.mkdir(parents=True)
+    (path / "SKILL.md").write_bytes(desired.skill_md)
+    (path / agent_adapter.MANAGED_ADAPTER_RECORD).write_bytes(desired.managed_record)
+
+
+def test_adapter_installation_types_are_frozen_and_exact() -> None:
+    file = agent_adapter.ManagedFileSnapshot("SKILL.md", (1, 2), b"skill\n")
+    tree = agent_adapter.ManagedTreeSnapshot("llm-wiki-ops", (3, 4), (file,))
+    inspection = agent_adapter.AdapterInstallInspection("current", tree, None)
+    result = agent_adapter.AdapterInstallResult(
+        "unchanged", "codex", Path("/tmp/skills/llm-wiki-ops")
+    )
+
+    assert file == agent_adapter.ManagedFileSnapshot(
+        name="SKILL.md", identity=(1, 2), content=b"skill\n"
+    )
+    assert tree.files == (file,)
+    assert inspection.snapshot == tree and inspection.error is None
+    assert result.status == "unchanged" and result.target == "codex"
+    with pytest.raises(FrozenInstanceError):
+        result.status = "installed"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    (
+        ("missing", "missing"),
+        ("current", "current"),
+        ("old", "managed-upgrade"),
+        ("drift", "owner-drift"),
+        ("missing-record", "unmanaged"),
+        ("malformed-record", "unmanaged"),
+        ("unknown-file", "owner-drift"),
+    ),
+)
+def test_adapter_installation_inspection_classification_is_read_only(
+    tmp_path: Path, fixture: str, expected: str
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    old = make_desired_install(version="2026.1.1", skill=b"old skill\n")
+    if fixture != "missing":
+        if fixture == "old":
+            write_adapter_tree(destination, old)
+        else:
+            write_adapter_tree(destination, desired)
+    if fixture == "drift":
+        (destination / "SKILL.md").write_bytes(b"owner changed\n")
+    elif fixture == "missing-record":
+        (destination / agent_adapter.MANAGED_ADAPTER_RECORD).unlink()
+    elif fixture == "malformed-record":
+        (destination / agent_adapter.MANAGED_ADAPTER_RECORD).write_bytes(b"not json")
+    elif fixture == "unknown-file":
+        (destination / "README.md").write_bytes(b"unknown\n")
+
+    before = sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes() if path.is_file() else None)
+        for path in tmp_path.rglob("*")
+    )
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+    after = sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes() if path.is_file() else None)
+        for path in tmp_path.rglob("*")
+    )
+
+    assert inspected.status == expected
+    assert before == after
+    assert (inspected.snapshot is not None) is (
+        fixture not in {"missing", "unknown-file"}
+    )
+
+
+@pytest.mark.parametrize("unsafe", ("symlink", "hardlink", "fifo", "directory"))
+def test_adapter_installation_inspection_rejects_unsafe_topology(
+    tmp_path: Path, unsafe: str
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    skill = destination / "SKILL.md"
+    original = skill.read_bytes()
+    skill.unlink()
+    try:
+        if unsafe == "symlink":
+            outside = tmp_path / "outside"
+            outside.write_bytes(original)
+            skill.symlink_to(outside)
+        elif unsafe == "hardlink":
+            outside = tmp_path / "outside"
+            outside.write_bytes(original)
+            os.link(outside, skill)
+        elif unsafe == "fifo":
+            os.mkfifo(skill)
+        else:
+            skill.mkdir()
+    except OSError as exc:
+        pytest.skip(f"{unsafe} unavailable: {exc}")
+
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+
+    assert inspected.status == "error"
+    assert inspected.error
+
+
+def test_adapter_installation_inspection_reports_open_errors_not_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    real_open = os.open
+
+    def denied(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if path == "SKILL.md":
+            raise PermissionError("denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", denied)
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+    assert inspected.status == "error"
+    assert "denied" in (inspected.error or "")
+
+
+def test_adapter_installation_inspection_reports_nested_disappearance_not_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    real_open = os.open
+
+    def disappearing(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if path == "SKILL.md":
+            raise FileNotFoundError("changed")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", disappearing)
+
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+
+    assert inspected.status == "error"
+    assert "changed" in (inspected.error or "")
+
+
+def test_adapter_installation_inspection_rejects_directory_name_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    moved = tmp_path / "moved"
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    real_listdir = os.listdir
+    swapped = False
+
+    def swapping_listdir(path: object) -> list[str]:
+        nonlocal swapped
+        names = real_listdir(path)
+        if (
+            isinstance(path, int)
+            and not swapped
+            and set(names)
+            == {
+                "SKILL.md",
+                agent_adapter.MANAGED_ADAPTER_RECORD,
+            }
+        ):
+            destination.rename(moved)
+            destination.mkdir()
+            (destination / "SKILL.md").write_bytes(b"replacement\n")
+            swapped = True
+        return names
+
+    monkeypatch.setattr(os, "listdir", swapping_listdir)
+
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+
+    assert swapped
+    assert inspected.status == "error"
+    assert "changed" in (inspected.error or "")
+
+
+def test_adapter_installation_inspection_rejects_file_name_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    skill = destination / "SKILL.md"
+    moved = tmp_path / "moved-skill"
+    real_read = os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        content = real_read(descriptor, size)
+        if content == desired.skill_md and not swapped:
+            skill.rename(moved)
+            skill.write_bytes(b"replacement\n")
+            swapped = True
+        return content
+
+    monkeypatch.setattr(os, "read", swapping_read)
+
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+
+    assert swapped
+    assert inspected.status == "error"
+    assert "changed" in (inspected.error or "")
+
+
+def test_adapter_installation_fresh_idempotent_and_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    tokens = iter(("1" * 32, "2" * 32, "3" * 32))
+    monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: next(tokens))
+
+    installed = agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    unchanged = agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    upgraded = agent_adapter.install_adapter(
+        "codex", cli_version="2", collection=collection, home=home, environ={}
+    )
+
+    expected = home / ".codex/skills" / ADAPTER_NAME
+    assert installed == agent_adapter.AdapterInstallResult(
+        "installed", "codex", expected
+    )
+    assert unchanged == agent_adapter.AdapterInstallResult(
+        "unchanged", "codex", expected
+    )
+    assert upgraded == agent_adapter.AdapterInstallResult("upgraded", "codex", expected)
+    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    assert (expected / "SKILL.md").read_bytes() == desired.skill_md
+    assert (
+        expected / agent_adapter.MANAGED_ADAPTER_RECORD
+    ).read_bytes() == desired.managed_record
+    assert not list(expected.parent.glob(".llm-wiki-ops.*-*"))
+
+
+@pytest.mark.parametrize("kind", ("unmanaged", "drift"))
+def test_adapter_installation_preserves_unmanaged_or_owner_drift(
+    tmp_path: Path, kind: str
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    destination = tmp_path / "home/.codex/skills" / ADAPTER_NAME
+    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    write_adapter_tree(destination, desired)
+    if kind == "unmanaged":
+        (destination / agent_adapter.MANAGED_ADAPTER_RECORD).unlink()
+    else:
+        (destination / "SKILL.md").write_bytes(b"owner edit\n")
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+
+    with pytest.raises(ValueError, match="unmanaged|drift|preserve"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="2",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+        )
+
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == before
+
+
+@pytest.mark.parametrize(
+    "point",
+    (
+        "staged-files",
+        "staged-record",
+        "live-moved-to-backup",
+        "stage-promoted",
+        "backup-removed",
+    ),
+)
+def test_adapter_installation_checkpoint_failure_recovers_on_rerun(
+    tmp_path: Path, point: str
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+
+    class InjectedFailure(RuntimeError):
+        pass
+
+    seen: list[str] = []
+
+    def checkpoint(name: str) -> None:
+        seen.append(name)
+        if name == point:
+            raise InjectedFailure(point)
+
+    with pytest.raises(InjectedFailure, match=point):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="2",
+            collection=collection,
+            home=home,
+            environ={},
+            checkpoint=checkpoint,
+        )
+    result = agent_adapter.install_adapter(
+        "codex", cli_version="2", collection=collection, home=home, environ={}
+    )
+
+    destination = home / ".codex/skills" / ADAPTER_NAME
+    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    assert result.status in {"unchanged", "upgraded"}
+    assert (destination / "SKILL.md").read_bytes() == desired.skill_md
+    assert (
+        agent_adapter.inspect_adapter_installation(destination, desired).status
+        == "current"
+    )
+    order = [
+        "staged-files",
+        "staged-record",
+        "live-moved-to-backup",
+        "stage-promoted",
+        "backup-removed",
+    ]
+    assert seen == order[: order.index(point) + 1]
+
+
+def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
+    tmp_path: Path,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    root = tmp_path / "home/.codex/skills"
+    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    evidence = tmp_path / "original-stage-evidence"
+
+    class InjectedFailure(RuntimeError):
+        pass
+
+    def replace_stage(name: str) -> None:
+        if name != "staged-files":
+            return
+        stage = next(root.glob(".llm-wiki-ops.stage-*"))
+        stage.rename(evidence)
+        stage.mkdir(mode=0o700)
+        (stage / "SKILL.md").write_bytes(desired.skill_md)
+        raise InjectedFailure(name)
+
+    with pytest.raises(InjectedFailure, match="staged-files"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+            checkpoint=replace_stage,
+        )
+
+    replacement = next(root.glob(".llm-wiki-ops.stage-*"))
+    assert replacement.exists()
+    assert (replacement / "SKILL.md").read_bytes() == desired.skill_md
+    assert (evidence / "SKILL.md").read_bytes() == desired.skill_md
+
+
+def test_adapter_installation_preserves_stage_replaced_during_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    root = tmp_path / "home/.codex/skills"
+    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    evidence = tmp_path / "write-stage-evidence"
+    real_write = os.write
+    swapped = False
+
+    def swapping_write(descriptor: int, content: bytes) -> int:
+        nonlocal swapped
+        written = real_write(descriptor, content)
+        if content == desired.skill_md and not swapped:
+            stage = next(root.glob(".llm-wiki-ops.stage-*"))
+            stage.rename(evidence)
+            stage.mkdir(mode=0o700)
+            (stage / "SKILL.md").write_bytes(desired.skill_md)
+            swapped = True
+        return written
+
+    monkeypatch.setattr(os, "write", swapping_write)
+
+    with pytest.raises(ValueError, match="changed|stage|unsafe"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+        )
+
+    replacement = next(root.glob(".llm-wiki-ops.stage-*"))
+    assert swapped
+    assert replacement.exists()
+    assert (replacement / "SKILL.md").read_bytes() == desired.skill_md
+    assert (evidence / "SKILL.md").read_bytes() == desired.skill_md
+
+
+def test_descriptor_delete_preserves_directory_replaced_before_rmdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "skills"
+    artifact_name = ".llm-wiki-ops.backup-" + "a" * 32
+    artifact = root / artifact_name
+    evidence = tmp_path / "delete-evidence"
+    desired = make_desired_install()
+    write_adapter_tree(artifact, desired)
+    artifact.chmod(0o700)
+    real_stat = os.stat
+    name_stats = 0
+
+    with agent_adapter._open_or_create_directory(root) as parent_fd:
+        snapshot = agent_adapter._snapshot_child(parent_fd, artifact_name)
+
+        def swapping_stat(
+            path: object, *args: object, **kwargs: object
+        ) -> os.stat_result:
+            nonlocal name_stats
+            if path == artifact_name and kwargs.get("dir_fd") == parent_fd:
+                name_stats += 1
+                if name_stats == 3:
+                    artifact.rename(evidence)
+                    artifact.mkdir(mode=0o700)
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", swapping_stat)
+        with pytest.raises(ValueError, match="replaced|refus"):
+            agent_adapter._delete_snapshot(parent_fd, snapshot)
+
+    assert artifact.exists()
+    assert evidence.exists()
+
+
+def test_adapter_installation_never_overwrites_racing_live_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    root = tmp_path / "home/.codex/skills"
+    live = root / ADAPTER_NAME
+    real_rename = agent_adapter._rename_noreplace
+    raced = False
+    raced_identity: tuple[int, int] | None = None
+
+    def racing_rename(parent_fd: int, source: str, destination: str) -> None:
+        nonlocal raced, raced_identity
+        if destination == ADAPTER_NAME and not raced:
+            live.mkdir()
+            metadata = live.stat()
+            raced_identity = (metadata.st_dev, metadata.st_ino)
+            raced = True
+        real_rename(parent_fd, source, destination)
+
+    monkeypatch.setattr(agent_adapter, "_rename_noreplace", racing_rename)
+
+    with pytest.raises(ValueError, match="live|race|exist|preserv"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+        )
+
+    assert raced
+    metadata = live.stat()
+    assert (metadata.st_dev, metadata.st_ino) == raced_identity
+    assert not list(live.iterdir())
+    assert list(root.glob(".llm-wiki-ops.stage-*"))
+
+
+@pytest.mark.parametrize("flag", ("O_NOFOLLOW", "O_DIRECTORY"))
+def test_adapter_installation_inspection_fails_closed_without_posix_open_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    destination = tmp_path / "skills" / ADAPTER_NAME
+    desired = make_desired_install()
+    write_adapter_tree(destination, desired)
+    monkeypatch.delattr(os, flag)
+
+    inspected = agent_adapter.inspect_adapter_installation(destination, desired)
+
+    assert inspected.status == "error"
+    assert flag in (inspected.error or "")
+
+
+def test_adapter_installation_preserves_ambiguous_recovery_artifacts(
+    tmp_path: Path,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    root = tmp_path / "home/.codex/skills"
+    ambiguous = root / (".llm-wiki-ops.stage-" + "a" * 32)
+    ambiguous.mkdir(parents=True)
+    (ambiguous / "evidence").write_bytes(b"do not delete")
+
+    with pytest.raises(ValueError, match="ambiguous|recovery|preserve"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+        )
+
+    assert (ambiguous / "evidence").read_bytes() == b"do not delete"
+
+
+def test_adapter_installation_recovers_verified_stage_beside_clean_old_live(
+    tmp_path: Path,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    root = tmp_path / "home/.codex/skills"
+    live = root / ADAPTER_NAME
+    old = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    write_adapter_tree(live, old)
+    stage = root / (".llm-wiki-ops.stage-" + "a" * 32)
+    write_adapter_tree(stage, desired)
+    stage.chmod(0o700)
+
+    result = agent_adapter.install_adapter(
+        "codex",
+        cli_version="2",
+        collection=collection,
+        home=tmp_path / "home",
+        environ={},
+    )
+
+    assert result.status == "upgraded"
+    assert (live / "SKILL.md").read_bytes() == desired.skill_md
+    assert not stage.exists()
+
+
+def test_adapter_installation_preserves_recovery_tree_with_wrong_mode(
+    tmp_path: Path,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    stage = tmp_path / "home/.codex/skills" / (".llm-wiki-ops.stage-" + "a" * 32)
+    write_adapter_tree(stage, desired)
+    stage.chmod(0o755)
+
+    with pytest.raises(ValueError, match="ambiguous|recovery|preserv"):
+        agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=tmp_path / "home",
+            environ={},
+        )
+
+    assert stage.exists()
+
+
+def test_adapter_installation_avoids_path_recursive_mutation_apis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("forbidden path-based recursive mutation")
+
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    destination_root = tmp_path / "prepared/.codex/skills"
+    os.makedirs(destination_root)
+    result = agent_adapter.install_adapter(
+        "codex",
+        cli_version="1",
+        collection=collection,
+        home=tmp_path / "prepared",
+        environ={},
+    )
+    assert result.status == "installed"
