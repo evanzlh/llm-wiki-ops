@@ -34,6 +34,7 @@ _MANAGED_ADAPTER_FIELDS = frozenset(
     {"schema_version", "implementation", "cli_version", "target", "files"}
 )
 _FILE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_CONCRETE_PATH_TYPE = type(Path())
 
 
 @dataclass(frozen=True)
@@ -80,8 +81,8 @@ def _require_target_name(target: object) -> str:
 
 
 def _require_absolute_root(root: object, label: str) -> Path:
-    if not isinstance(root, Path):
-        raise TypeError(f"{label} must be a pathlib.Path")
+    if type(root) is not _CONCRETE_PATH_TYPE:
+        raise TypeError(f"{label} must be the concrete platform pathlib.Path type")
     if not root.is_absolute() or "\x00" in str(root) or ".." in root.parts:
         raise ValueError(f"{label} must be an absolute contained path")
     return root
@@ -235,6 +236,18 @@ class DesiredAdapter:
         _require_target_name(self.target)
         if type(self.skill_md) is not bytes or type(self.managed_record) is not bytes:
             raise TypeError("desired adapter artifacts must be bytes")
+        record = parse_managed_record(self.managed_record)
+        if render_managed_record(record) != self.managed_record:
+            raise ValueError("desired adapter managed record must use canonical JSON bytes")
+        if record.target != self.target:
+            raise ValueError("desired adapter target does not match managed record target")
+        expected_files = {
+            "SKILL.md": "sha256:" + sha256(self.skill_md).hexdigest()
+        }
+        if record.files != expected_files:
+            raise ValueError(
+                "desired adapter record files must exactly match its SKILL.md artifact"
+            )
 
 
 def build_desired_adapter(

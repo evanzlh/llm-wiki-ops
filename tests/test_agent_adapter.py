@@ -1325,6 +1325,24 @@ def test_adapter_target_rejects_non_path_or_nonabsolute_home(home: object) -> No
         agent_adapter.resolve_adapter_destination("claude", home=home, environ={})
 
 
+def test_adapter_target_rejects_path_subclasses_before_calling_overrides() -> None:
+    class MaliciousPath(type(Path())):
+        def is_absolute(self) -> bool:
+            raise AssertionError("must reject subclass before calling is_absolute")
+
+        @property
+        def parts(self) -> tuple[str, ...]:
+            raise AssertionError("must reject subclass before reading parts")
+
+        def joinpath(self, *pathsegments: str) -> Path:
+            raise AssertionError("must reject subclass before calling joinpath")
+
+    with pytest.raises(TypeError, match="home|concrete|pathlib"):
+        agent_adapter.resolve_adapter_destination(
+            "claude", home=MaliciousPath("/users/demo"), environ={}
+        )
+
+
 def test_adapter_destination_resolution_performs_no_filesystem_io(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1515,3 +1533,64 @@ def test_desired_adapter_contains_exact_rendered_skill_and_matching_record(
     assert desired.managed_record == agent_adapter.render_managed_record(record)
     with pytest.raises(FrozenInstanceError):
         desired.target = "codex"
+
+
+def test_desired_adapter_rejects_malformed_or_noncanonical_record_bytes() -> None:
+    record = make_adapter_record()
+    canonical = agent_adapter.render_managed_record(record)
+    noncanonical = json.dumps(expected_adapter_record_payload()).encode("utf-8")
+
+    with pytest.raises(ValueError, match="record|JSON"):
+        agent_adapter.DesiredAdapter(
+            target="codex", skill_md=b"skill", managed_record=b"not json"
+        )
+    assert noncanonical != canonical
+    with pytest.raises(ValueError, match="canonical|record"):
+        agent_adapter.DesiredAdapter(
+            target="codex", skill_md=b"skill", managed_record=noncanonical
+        )
+
+
+def test_desired_adapter_rejects_record_target_or_skill_digest_mismatch() -> None:
+    skill_md = b"adapter skill bytes\n"
+    digest = "sha256:" + sha256(skill_md).hexdigest()
+    wrong_digest = "sha256:" + "0" * 64
+
+    wrong_target = agent_adapter.ManagedAdapterRecord(
+        schema_version=1,
+        implementation="evanzlh/llm-wiki-ops",
+        cli_version="2026.8.18",
+        target="claude",
+        files={"SKILL.md": digest},
+    )
+    with pytest.raises(ValueError, match="target"):
+        agent_adapter.DesiredAdapter(
+            target="codex",
+            skill_md=skill_md,
+            managed_record=agent_adapter.render_managed_record(wrong_target),
+        )
+
+    wrong_skill = make_adapter_record(files={"SKILL.md": wrong_digest})
+    with pytest.raises(ValueError, match="digest|SKILL.md"):
+        agent_adapter.DesiredAdapter(
+            target="codex",
+            skill_md=skill_md,
+            managed_record=agent_adapter.render_managed_record(wrong_skill),
+        )
+
+
+def test_desired_adapter_rejects_unrepresented_extra_managed_files() -> None:
+    skill_md = b"adapter skill bytes\n"
+    record = make_adapter_record(
+        files={
+            "SKILL.md": "sha256:" + sha256(skill_md).hexdigest(),
+            "README.md": SECOND_ADAPTER_DIGEST,
+        }
+    )
+
+    with pytest.raises(ValueError, match="files|SKILL.md|artifact"):
+        agent_adapter.DesiredAdapter(
+            target="codex",
+            skill_md=skill_md,
+            managed_record=agent_adapter.render_managed_record(record),
+        )
