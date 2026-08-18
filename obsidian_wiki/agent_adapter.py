@@ -34,6 +34,8 @@ BUILTIN_CATALOG_END = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_END -->"
 _ADAPTER_TEMPLATE = Path(__file__).parent / "_data" / "adapter" / "SKILL.md.in"
 MANAGED_ADAPTER_RECORD = ".llmwikiops-managed.json"
 MANAGED_ADAPTER_SCHEMA_VERSION = 1
+_RETAINED_ADAPTER_ROOT = ".llmwikiops-retained"
+_RETAINED_ADAPTER_PREFIX = ".llmwikiops-retained-"
 _MANAGED_ADAPTER_FIELDS = frozenset(
     {"schema_version", "implementation", "cli_version", "target", "files"}
 )
@@ -801,53 +803,75 @@ def _write_stage(
     return snapshot
 
 
-def _delete_snapshot(parent_fd: int, snapshot: ManagedTreeSnapshot) -> None:
-    current = _snapshot_child(parent_fd, snapshot.name)
-    if current != snapshot:
-        raise ValueError("refusing to delete changed recovery evidence")
-    descriptor = os.open(snapshot.name, _directory_flags(), dir_fd=parent_fd)
+def _same_filesystem(left_fd: int, right_fd: int) -> bool:
+    return os.fstat(left_fd).st_dev == os.fstat(right_fd).st_dev
+
+
+def _validate_retention_directory(descriptor: int) -> None:
+    observed = os.fstat(descriptor)
+    if not stat.S_ISDIR(observed.st_mode):
+        raise ValueError("adapter retention root must be an ordinary directory")
+    if stat.S_IMODE(observed.st_mode) != 0o700:
+        raise ValueError("adapter retention root must have mode 0700")
+
+
+def _verify_directory_path_binding(path: Path, descriptor: int) -> None:
+    expected = os.fstat(descriptor)
+    reopened = _open_directory_path(path)
     try:
-        opened = os.fstat(descriptor)
-        if snapshot.identity[:2] != (opened.st_dev, opened.st_ino):
-            raise ValueError("refusing to delete replaced recovery directory")
-        quarantines: list[tuple[ManagedFileSnapshot, ManagedFileSnapshot]] = []
-        for item in snapshot.files:
-            current_file = _read_regular_file(descriptor, item.name)
-            if current_file != item:
-                raise ValueError("refusing to delete changed managed file")
-            quarantine = f".llmwikiops-delete-{secrets.token_hex(16)}"
-            if quarantine in os.listdir(descriptor):
-                raise ValueError("delete quarantine collision; preserving evidence")
-            _rename_noreplace(descriptor, item.name, quarantine)
-            quarantined = _read_regular_file(descriptor, quarantine)
-            if quarantined != ManagedFileSnapshot(
-                quarantine, item.identity, item.content
-            ):
-                raise ValueError("delete quarantine changed; preserving evidence")
-            quarantines.append((item, quarantined))
-            try:
-                os.stat(item.name, dir_fd=descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                raise ValueError("managed filename was rebuilt; preserving evidence")
-        expected_quarantines = {quarantined.name for _, quarantined in quarantines}
-        if set(os.listdir(descriptor)) != expected_quarantines:
-            raise ValueError("managed directory is nonempty; preserving evidence")
-        for _, quarantined in quarantines:
-            if _read_regular_file(descriptor, quarantined.name) != quarantined:
-                raise ValueError("delete quarantine changed; preserving evidence")
-            os.unlink(quarantined.name, dir_fd=descriptor)
-        if os.listdir(descriptor):
-            raise ValueError("delete quarantine was rebuilt; preserving evidence")
-        os.fsync(descriptor)
-        rebound = os.stat(snapshot.name, dir_fd=parent_fd, follow_symlinks=False)
-        if not stat.S_ISDIR(rebound.st_mode) or not _same_file(opened, rebound):
-            raise ValueError("refusing to remove replaced recovery directory")
+        observed = os.fstat(reopened)
+        if not _same_file(expected, observed):
+            raise ValueError("adapter retention root identity changed")
     finally:
-        os.close(descriptor)
-    os.rmdir(snapshot.name, dir_fd=parent_fd)
-    os.fsync(parent_fd)
+        os.close(reopened)
+
+
+@contextmanager
+def _open_retention_directory(path: Path) -> Iterator[int]:
+    with _open_or_create_directory(path) as descriptor:
+        _validate_retention_directory(descriptor)
+        _verify_directory_path_binding(path, descriptor)
+        try:
+            yield descriptor
+        finally:
+            _verify_directory_path_binding(path, descriptor)
+
+
+def _retain_snapshot(
+    source_parent_fd: int,
+    retained_parent_fd: int,
+    snapshot: ManagedTreeSnapshot,
+) -> ManagedTreeSnapshot:
+    """Atomically move verified evidence out of the active recovery namespace."""
+    _validate_retention_directory(retained_parent_fd)
+    if not _same_filesystem(source_parent_fd, retained_parent_fd):
+        raise OSError(errno.EXDEV, "retention root is on a different filesystem")
+    current = _snapshot_child(source_parent_fd, snapshot.name)
+    if current != snapshot:
+        raise ValueError("managed evidence changed before retention")
+    token = secrets.token_hex(16)
+    if type(token) is not str or re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        raise ValueError("retention token must be 32 lowercase hexadecimal characters")
+    retained_name = _RETAINED_ADAPTER_PREFIX + token
+    _rename_noreplace_between(
+        source_parent_fd,
+        snapshot.name,
+        retained_parent_fd,
+        retained_name,
+    )
+    retained = _snapshot_child(retained_parent_fd, retained_name)
+    expected = ManagedTreeSnapshot(retained_name, snapshot.identity, snapshot.files)
+    if retained != expected:
+        raise ValueError("retained managed evidence changed; preserving evidence")
+    try:
+        os.stat(snapshot.name, dir_fd=source_parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError("active managed name was rebuilt; preserving evidence")
+    os.fsync(retained_parent_fd)
+    os.fsync(source_parent_fd)
+    return retained
 
 
 def _artifact_names(parent_fd: int) -> tuple[str, ...]:
@@ -857,8 +881,13 @@ def _artifact_names(parent_fd: int) -> tuple[str, ...]:
     )
 
 
-def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
-    """Rename within one directory without ever replacing the destination."""
+def _rename_noreplace_between(
+    source_parent_fd: int,
+    source: str,
+    destination_parent_fd: int,
+    destination: str,
+) -> None:
+    """Rename between descriptor-bound directories without replacement."""
     safe_source = _safe_component(source)
     safe_destination = _safe_component(destination)
     library = ctypes.CDLL(None, use_errno=True)
@@ -876,15 +905,20 @@ def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
     renameat2.restype = ctypes.c_int
     ctypes.set_errno(0)
     result = renameat2(
-        parent_fd,
+        source_parent_fd,
         os.fsencode(safe_source),
-        parent_fd,
+        destination_parent_fd,
         os.fsencode(safe_destination),
         1,  # RENAME_NOREPLACE
     )
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), safe_destination)
+
+
+def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+    """Rename within one directory without ever replacing the destination."""
+    _rename_noreplace_between(parent_fd, source, parent_fd, destination)
 
 
 def _verified_artifact(
@@ -904,7 +938,9 @@ def _verified_artifact(
     return snapshot
 
 
-def _recover_artifacts(parent_fd: int, desired: DesiredAdapter) -> None:
+def _recover_artifacts(
+    parent_fd: int, retained_parent_fd: int, desired: DesiredAdapter
+) -> None:
     artifacts = _artifact_names(parent_fd)
     if not artifacts:
         return
@@ -932,7 +968,7 @@ def _recover_artifacts(parent_fd: int, desired: DesiredAdapter) -> None:
         live_state = _classify_snapshot(live, desired)
         if live_state.status != "current":
             raise ValueError("ambiguous live and backup trees; preserving evidence")
-        _delete_snapshot(parent_fd, snapshot)
+        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
         return
     if live is None:
         if _classify_snapshot(snapshot, desired).status != "current":
@@ -942,13 +978,13 @@ def _recover_artifacts(parent_fd: int, desired: DesiredAdapter) -> None:
         return
     live_state = _classify_snapshot(live, desired)
     if live_state.status == "current":
-        _delete_snapshot(parent_fd, snapshot)
+        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
         return
     if (
         live_state.status == "managed-upgrade"
         and _classify_snapshot(snapshot, desired).status == "current"
     ):
-        _delete_snapshot(parent_fd, snapshot)
+        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
         return
     raise ValueError("ambiguous live and staged trees; preserving evidence")
 
@@ -976,12 +1012,20 @@ def install_adapter(
     )
     desired = build_desired_adapter(target, cli_version, collection)
     invoke = _checkpoint_callback(checkpoint)
+    retention_root = destination.parent.parent / _RETAINED_ADAPTER_ROOT
     stage_name: str | None = None
     stage_snapshot: ManagedTreeSnapshot | None = None
     backup_name: str | None = None
     backup_snapshot: ManagedTreeSnapshot | None = None
-    with _open_or_create_directory(destination.parent) as parent_fd:
-        _recover_artifacts(parent_fd, desired)
+    with (
+        _open_or_create_directory(destination.parent) as parent_fd,
+        _open_retention_directory(retention_root) as retained_parent_fd,
+    ):
+        if not _same_filesystem(parent_fd, retained_parent_fd):
+            raise OSError(
+                errno.EXDEV, "adapter skills and retention root must share a filesystem"
+            )
+        _recover_artifacts(parent_fd, retained_parent_fd, desired)
         try:
             os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1051,8 +1095,10 @@ def install_adapter(
             verified = _snapshot_child(parent_fd, ADAPTER_NAME)
             if _classify_snapshot(verified, desired).status != "current":
                 raise ValueError("upgraded adapter verification failed")
-            _delete_snapshot(parent_fd, backup_snapshot)
+            _retain_snapshot(parent_fd, retained_parent_fd, backup_snapshot)
             backup_name = None
+            # Compatibility checkpoint: the backup left the active recovery
+            # namespace; its verified bytes remain in the retention root.
             invoke("backup-removed")
             return AdapterInstallResult("upgraded", desired.target, destination)
         except BaseException:
@@ -1060,7 +1106,9 @@ def install_adapter(
             if stage_name is not None:
                 try:
                     if stage_snapshot is not None:
-                        _delete_snapshot(parent_fd, stage_snapshot)
+                        _retain_snapshot(
+                            parent_fd, retained_parent_fd, stage_snapshot
+                        )
                 except (OSError, ValueError):
                     pass
             if backup_name is not None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
+import stat
 from dataclasses import MISSING, FrozenInstanceError, fields, replace
 from hashlib import sha256
 from pathlib import Path
@@ -1856,11 +1858,20 @@ def test_adapter_installation_fresh_idempotent_and_upgrade(
     )
     assert upgraded == agent_adapter.AdapterInstallResult("upgraded", "codex", expected)
     desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    old_desired = agent_adapter.build_desired_adapter("codex", "1", collection)
     assert (expected / "SKILL.md").read_bytes() == desired.skill_md
     assert (
         expected / agent_adapter.MANAGED_ADAPTER_RECORD
     ).read_bytes() == desired.managed_record
     assert not list(expected.parent.glob(".llm-wiki-ops.*-*"))
+    retained_root = expected.parent.parent / ".llmwikiops-retained"
+    assert stat.S_IMODE(retained_root.stat().st_mode) == 0o700
+    retained = list(retained_root.iterdir())
+    assert len(retained) == 1
+    assert (retained[0] / "SKILL.md").read_bytes() == old_desired.skill_md
+    assert (
+        retained[0] / agent_adapter.MANAGED_ADAPTER_RECORD
+    ).read_bytes() == old_desired.managed_record
 
 
 @pytest.mark.parametrize("kind", ("unmanaged", "drift"))
@@ -1951,6 +1962,8 @@ def test_adapter_installation_checkpoint_failure_recovers_on_rerun(
         "backup-removed",
     ]
     assert seen == order[: order.index(point) + 1]
+    if point == "backup-removed":
+        assert list((home / ".codex/.llmwikiops-retained").iterdir())
 
 
 def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
@@ -2032,147 +2045,219 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
     assert (evidence / "SKILL.md").read_bytes() == desired.skill_md
 
 
-def test_descriptor_delete_preserves_directory_replaced_before_rmdir(
+def test_retention_preserves_source_swap_without_deleting_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "skills"
+    retained_root = tmp_path / "retained"
     artifact_name = ".llm-wiki-ops.backup-" + "a" * 32
     artifact = root / artifact_name
-    evidence = tmp_path / "delete-evidence"
+    evidence = tmp_path / "source-swap-evidence"
     desired = make_desired_install()
     write_adapter_tree(artifact, desired)
     artifact.chmod(0o700)
-    real_stat = os.stat
-    name_stats = 0
+    real_rename = agent_adapter._rename_noreplace_between
 
-    with agent_adapter._open_or_create_directory(root) as parent_fd:
-        snapshot = agent_adapter._snapshot_child(parent_fd, artifact_name)
+    with (
+        agent_adapter._open_or_create_directory(root) as source_fd,
+        agent_adapter._open_or_create_directory(retained_root) as retained_fd,
+    ):
+        snapshot = agent_adapter._snapshot_child(source_fd, artifact_name)
 
-        def swapping_stat(
-            path: object, *args: object, **kwargs: object
-        ) -> os.stat_result:
-            nonlocal name_stats
-            if path == artifact_name and kwargs.get("dir_fd") == parent_fd:
-                name_stats += 1
-                if name_stats == 3:
-                    artifact.rename(evidence)
-                    artifact.mkdir(mode=0o700)
-            return real_stat(path, *args, **kwargs)
-
-        monkeypatch.setattr(os, "stat", swapping_stat)
-        with pytest.raises(ValueError, match="replaced|refus"):
-            agent_adapter._delete_snapshot(parent_fd, snapshot)
-
-    assert artifact.exists()
-    assert evidence.exists()
-
-
-def test_descriptor_delete_never_unlinks_replacement_at_original_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "skills"
-    artifact_name = ".llm-wiki-ops.backup-" + "b" * 32
-    artifact = root / artifact_name
-    evidence = tmp_path / "original-file-evidence"
-    desired = make_desired_install()
-    write_adapter_tree(artifact, desired)
-    artifact.chmod(0o700)
-    real_rename = agent_adapter._rename_noreplace
-    replaced = False
-
-    with agent_adapter._open_or_create_directory(root) as parent_fd:
-        snapshot = agent_adapter._snapshot_child(parent_fd, artifact_name)
-
-        def replacing_before_quarantine(
-            parent: int, source: str, destination: str
+        def swapping_source(
+            source_parent: int,
+            source: str,
+            destination_parent: int,
+            destination: str,
         ) -> None:
-            nonlocal replaced
-            if source == "SKILL.md" and not replaced:
-                (artifact / "SKILL.md").rename(evidence)
-                (artifact / "SKILL.md").write_bytes(b"replacement must survive\n")
-                replaced = True
-            real_rename(parent, source, destination)
+            artifact.rename(evidence)
+            write_adapter_tree(artifact, desired)
+            artifact.chmod(0o700)
+            real_rename(
+                source_parent, source, destination_parent, destination
+            )
 
         monkeypatch.setattr(
-            agent_adapter, "_rename_noreplace", replacing_before_quarantine
+            agent_adapter, "_rename_noreplace_between", swapping_source
         )
-        with pytest.raises(ValueError, match="changed|replacement|evidence|refus"):
-            agent_adapter._delete_snapshot(parent_fd, snapshot)
+        with pytest.raises(ValueError, match="changed|retained|evidence|refus"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
 
-    assert replaced
-    assert any(
-        path.read_bytes() == b"replacement must survive\n"
-        for path in artifact.iterdir()
-        if path.is_file()
-    )
-    assert evidence.read_bytes() == desired.skill_md
+    assert evidence.exists()
+    assert list(retained_root.iterdir())
 
 
-def test_descriptor_delete_preserves_replaced_quarantine(
+def test_retention_preserves_replaced_retained_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "skills"
-    artifact_name = ".llm-wiki-ops.backup-" + "c" * 32
+    retained_root = tmp_path / "retained"
+    artifact_name = ".llm-wiki-ops.backup-" + "b" * 32
     artifact = root / artifact_name
-    evidence = tmp_path / "quarantine-evidence"
+    evidence = tmp_path / "retained-swap-evidence"
     desired = make_desired_install()
     write_adapter_tree(artifact, desired)
     artifact.chmod(0o700)
-    real_rename = agent_adapter._rename_noreplace
-    replaced = False
+    real_rename = agent_adapter._rename_noreplace_between
 
-    with agent_adapter._open_or_create_directory(root) as parent_fd:
-        snapshot = agent_adapter._snapshot_child(parent_fd, artifact_name)
+    with (
+        agent_adapter._open_or_create_directory(root) as source_fd,
+        agent_adapter._open_or_create_directory(retained_root) as retained_fd,
+    ):
+        snapshot = agent_adapter._snapshot_child(source_fd, artifact_name)
 
-        def replacing_quarantine(parent: int, source: str, destination: str) -> None:
-            nonlocal replaced
-            real_rename(parent, source, destination)
-            if source == "SKILL.md" and not replaced:
-                (artifact / destination).rename(evidence)
-                (artifact / destination).write_bytes(b"quarantine replacement\n")
-                replaced = True
+        def swapping_retained(
+            source_parent: int,
+            source: str,
+            destination_parent: int,
+            destination: str,
+        ) -> None:
+            real_rename(
+                source_parent, source, destination_parent, destination
+            )
+            retained = retained_root / destination
+            retained.rename(evidence)
+            write_adapter_tree(retained, desired)
+            retained.chmod(0o700)
 
-        monkeypatch.setattr(agent_adapter, "_rename_noreplace", replacing_quarantine)
-        with pytest.raises(ValueError, match="changed|quarantine|evidence|refus"):
-            agent_adapter._delete_snapshot(parent_fd, snapshot)
+        monkeypatch.setattr(
+            agent_adapter, "_rename_noreplace_between", swapping_retained
+        )
+        with pytest.raises(ValueError, match="changed|retained|evidence|refus"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
 
-    assert replaced
-    assert evidence.read_bytes() == desired.skill_md
-    assert any(
-        path.read_bytes() == b"quarantine replacement\n"
-        for path in artifact.iterdir()
-        if path.is_file()
+    assert evidence.exists()
+    assert list(retained_root.iterdir())
+
+
+def test_adapter_installation_fails_closed_if_retention_root_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    retained_root = home / ".codex/.llmwikiops-retained"
+    evidence = tmp_path / "retention-root-evidence"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    real_rename = agent_adapter._rename_noreplace_between
+    swapped = False
+
+    def replacing_root(
+        source_parent: int,
+        source: str,
+        destination_parent: int,
+        destination: str,
+    ) -> None:
+        nonlocal swapped
+        real_rename(source_parent, source, destination_parent, destination)
+        if destination.startswith(".llmwikiops-retained-") and not swapped:
+            retained_root.rename(evidence)
+            retained_root.mkdir(mode=0o700)
+            swapped = True
+
+    monkeypatch.setattr(
+        agent_adapter, "_rename_noreplace_between", replacing_root
     )
 
+    with pytest.raises(ValueError, match="retention|changed|replaced|identity"):
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
 
-def test_descriptor_delete_preserves_original_name_rebuilt_after_quarantine(
+    assert swapped
+    assert retained_root.exists()
+    assert list(evidence.iterdir())
+
+
+def test_retention_preserves_original_name_rebuilt_after_move(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "skills"
+    retained_root = tmp_path / "retained"
+    artifact_name = ".llm-wiki-ops.backup-" + "c" * 32
+    artifact = root / artifact_name
+    desired = make_desired_install()
+    write_adapter_tree(artifact, desired)
+    artifact.chmod(0o700)
+    real_rename = agent_adapter._rename_noreplace_between
+
+    with (
+        agent_adapter._open_or_create_directory(root) as source_fd,
+        agent_adapter._open_or_create_directory(retained_root) as retained_fd,
+    ):
+        snapshot = agent_adapter._snapshot_child(source_fd, artifact_name)
+
+        def rebuilding_original(
+            source_parent: int,
+            source: str,
+            destination_parent: int,
+            destination: str,
+        ) -> None:
+            real_rename(
+                source_parent, source, destination_parent, destination
+            )
+            artifact.mkdir(mode=0o700)
+            (artifact / "owner-evidence").write_bytes(b"preserve\n")
+
+        monkeypatch.setattr(
+            agent_adapter, "_rename_noreplace_between", rebuilding_original
+        )
+        with pytest.raises(ValueError, match="rebuilt|retained|evidence|refus"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
+
+    assert (artifact / "owner-evidence").read_bytes() == b"preserve\n"
+    assert list(retained_root.iterdir())
+
+
+def test_retention_collision_exdev_and_missing_capability_preserve_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "skills"
+    retained_root = tmp_path / "retained"
     artifact_name = ".llm-wiki-ops.backup-" + "d" * 32
     artifact = root / artifact_name
     desired = make_desired_install()
     write_adapter_tree(artifact, desired)
     artifact.chmod(0o700)
-    real_rename = agent_adapter._rename_noreplace
-    rebuilt = False
+    token = "e" * 32
+    collision = retained_root / (".llmwikiops-retained-" + token)
+    collision.mkdir(parents=True, mode=0o700)
+    retained_root.chmod(0o700)
+    (collision / "evidence").write_bytes(b"collision\n")
+    monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: token)
 
-    with agent_adapter._open_or_create_directory(root) as parent_fd:
-        snapshot = agent_adapter._snapshot_child(parent_fd, artifact_name)
+    with (
+        agent_adapter._open_or_create_directory(root) as source_fd,
+        agent_adapter._open_or_create_directory(retained_root) as retained_fd,
+    ):
+        snapshot = agent_adapter._snapshot_child(source_fd, artifact_name)
+        with pytest.raises((FileExistsError, ValueError), match="exist|collision"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
 
-        def rebuilding_original(parent: int, source: str, destination: str) -> None:
-            nonlocal rebuilt
-            real_rename(parent, source, destination)
-            if source == "SKILL.md" and not rebuilt:
-                (artifact / "SKILL.md").write_bytes(b"rebuilt owner evidence\n")
-                rebuilt = True
+        monkeypatch.setattr(
+            agent_adapter, "_same_filesystem", lambda left, right: False
+        )
+        with pytest.raises(OSError, match="filesystem|cross-device"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
 
-        monkeypatch.setattr(agent_adapter, "_rename_noreplace", rebuilding_original)
-        with pytest.raises(ValueError, match="nonempty|changed|evidence|refus"):
-            agent_adapter._delete_snapshot(parent_fd, snapshot)
+        monkeypatch.setattr(
+            agent_adapter, "_same_filesystem", lambda left, right: True
+        )
 
-    assert rebuilt
-    assert (artifact / "SKILL.md").read_bytes() == b"rebuilt owner evidence\n"
+        def unsupported(*args: object) -> None:
+            raise OSError(errno.ENOTSUP, "renameat2 unavailable")
+
+        monkeypatch.setattr(
+            agent_adapter, "_rename_noreplace_between", unsupported
+        )
+        with pytest.raises(OSError, match="unavailable"):
+            agent_adapter._retain_snapshot(source_fd, retained_fd, snapshot)
+
+    assert artifact.exists()
+    assert (collision / "evidence").read_bytes() == b"collision\n"
 
 
 def test_adapter_installation_never_overwrites_racing_live_directory(
@@ -2324,3 +2409,58 @@ def test_adapter_installation_avoids_path_recursive_mutation_apis(
         environ={},
     )
     assert result.status == "installed"
+
+
+def test_adapter_installation_never_unlinks_or_removes_managed_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("managed trees must only be retained")
+
+    monkeypatch.setattr(os, "unlink", forbidden)
+    monkeypatch.setattr(os, "rmdir", forbidden)
+
+    result = agent_adapter.install_adapter(
+        "codex", cli_version="2", collection=collection, home=home, environ={}
+    )
+
+    assert result.status == "upgraded"
+    assert list((home / ".codex/.llmwikiops-retained").iterdir())
+
+
+def test_adapter_installation_rejects_unsafe_retention_root_and_ignores_contents(
+    tmp_path: Path
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    retained_root = home / ".codex/.llmwikiops-retained"
+    retained_root.mkdir(mode=0o700, exist_ok=True)
+    ignored = retained_root / "owner-evidence"
+    ignored.mkdir(mode=0o700)
+    (ignored / "unknown").write_bytes(b"preserve\n")
+
+    unchanged = agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    assert unchanged.status == "unchanged"
+    assert (ignored / "unknown").read_bytes() == b"preserve\n"
+
+    retained_root.chmod(0o755)
+    with pytest.raises(ValueError, match="retention|mode|0700|unsafe"):
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+    assert (ignored / "unknown").read_bytes() == b"preserve\n"
