@@ -2663,11 +2663,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
 
     agent = sub.add_parser(
-        "agent", help="manage explicit global Agent integration"
+        "agent",
+        help="manage explicit global Agent integration",
+        allow_abbrev=False,
     )
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
     install_adapter_parser = agent_sub.add_parser(
-        "install-adapter", help="install the global external-wiki adapter"
+        "install-adapter",
+        help="install the global external-wiki adapter",
+        allow_abbrev=False,
     )
     install_adapter_parser.add_argument(
         "--agent", choices=tuple(TARGETS), required=True, action=_StoreAgentOnce

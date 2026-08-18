@@ -128,6 +128,9 @@ def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
             "claude",
         ),
         ("agent", "install-adapter", "--all"),
+        ("agent", "install-adapter", "--age", "codex"),
+        ("agent", "install-adapter", "--agen", "codex"),
+        ("agent", "install-adapter", "--a", "codex"),
         ("agent", "install-adapter", "--agent", "codex", "--force"),
         (
             "agent",
