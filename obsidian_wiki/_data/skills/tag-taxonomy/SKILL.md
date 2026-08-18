@@ -5,6 +5,23 @@ description: Use when auditing wiki tags, normalizing tag vocabulary, or proposi
 
 # Tag Taxonomy
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 Maintain a controlled vocabulary without erasing meaningful distinctions. Audits
 and tag proposals are read-only; accepted page normalization is transactional.
 
@@ -28,7 +45,7 @@ ordinary and single-link. It opens with `O_NOFOLLOW`, checks `fstat`, device/ino
 identity, link count, size, and attachment before and after bounded byte snapshots.
 An unsafe entry or unavailable no-follow support must fail closed before decoding or
 analysis. The agent must not use `read_text`, `rglob`, shell globbing, or follow
-links. `llmwikiops check` alone is not a sufficient scanner preflight. CLI graph
+links. `<wiki-cli> check` alone is not a sufficient scanner preflight. CLI graph
 and lint commands use this safe walker internally.
 
 ## Analysis
@@ -66,7 +83,7 @@ intent confirmation before selecting fixes. A pure audit stops after its report.
    Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
    filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
 2. Begin exactly one bounded transaction with the entire closure:
-   `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty`.
+   `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty`.
    Retain its `id` as the trusted transaction ID plus `candidate_vault` and
    `started_at`; do not change CWD.
 3. Write final candidates only at final vault-relative knowledge paths below
@@ -75,25 +92,25 @@ intent confirmation before selecting fixes. A pure audit stops after its report.
    started_at`; updates preserve `created` and set `updated = started_at`. Generate
    internal links with the resolved `OBSIDIAN_LINK_FORMAT`.
 4. Register all reviewed deletions with
-   `llmwikiops transaction delete <id> <vault-relative-page.md> --json --pretty`.
+   `<wiki-cli> transaction delete <id> <vault-relative-page.md> --json --pretty`.
    Never delete a live page directly.
-5. Run `llmwikiops transaction validate <id> --json --pretty`, fix every issue,
+5. Run `<wiki-cli> transaction validate <id> --json --pretty`, fix every issue,
    review every warning and the complete candidate/deletion diff, then run
-   `llmwikiops transaction commit <id> --json --pretty` only after validation
+   `<wiki-cli> transaction commit <id> --json --pretty` only after validation
    passes.
 6. Save the failed command envelope, including top-level `error` and `recovery`, on
    any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
-   when present, then run `llmwikiops transaction list --json --pretty` and
+   when present, then run `<wiki-cli> transaction list --json --pretty` and
    require exactly one retained record with the same ID and status. Follow only a
    reported `recommended_action` or entry in `allowed_actions`, after satisfying
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful
    `transaction commit` or `transaction retry` is a knowledge commit.
 7. Only after a successful `transaction commit` or `transaction retry`, run
-   `llmwikiops hot status --json`. If stale, run
-   `llmwikiops hot inputs --json --pretty`, write only the requested tracked
+   `<wiki-cli> hot status --json`. If stale, run
+   `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
    `hot.md` working-tree diff, then run
-   `llmwikiops hot mark-current --json`. Do not refresh after abort, restore, or
+   `<wiki-cli> hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit

@@ -5,11 +5,28 @@ description: Use when answering a focused question from selected sessions of a n
 
 # Targeted Agent History
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 Find a bounded set of sessions relevant to a query, preserve reviewed evidence, update knowledge through one repository transaction, then answer. For complete tool schemas, use the retained tool-specific history skill selected by `wiki-history-ingest`. Follow [source snapshot rules](../wiki-capture/references/source-snapshot.md).
 
 ## Mandatory authority preflight
 
-Complete this before cache discovery: walk from invocation CWD to the nearest ancestor `.llmwikiops/config.toml`, keep its repository root as CWD, and read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. If config is absent recommend `llmwikiops setup [DIR]` and stop; invalid/incomplete/unsafe config must fail closed. Then load exactly one retained tool skill and apply its cache-root precedence; reject empty or relative roots.
+Complete this before cache discovery using the retained repository context above. Read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when present, then this task skill. Missing or invalid configuration must fail closed; if local config is absent, stop and recommend `llmwikiops setup [DIR]`.
 
 ## Bounded safe input
 
@@ -31,7 +48,7 @@ Before writes, encode `{tool,native_session_id,slice_descriptor}` via canonical 
 
 Save the failed command envelope. Its `error`/`recovery` supply a trusted transaction ID/status; none means inspection-only. Require exactly one list record with same ID and status, use only `allowed_actions`, agree with `recommended_action` when chosen, satisfy every `requires`, and stop on empty, missing, mismatched, duplicated, or ambiguous results.
 
-Only a successful `transaction commit` or `transaction retry` permits `llmwikiops hot status --json`; if stale run `llmwikiops hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `llmwikiops hot mark-current --json`. The agent must not mark stale inputs current directly.
+Only a successful `transaction commit` or `transaction retry` permits `<wiki-cli> hot status --json`; if stale run `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked `hot.md` working-tree diff, then `<wiki-cli> hot mark-current --json`. The agent must not mark stale inputs current directly.
 
 ## Inventory and rank without broad reads
 
@@ -64,15 +81,15 @@ For an existing target, complete the pre-write owner preservation gate before an
 
 Snapshot identity state table: absent target -> create, and target must be absent only for creation. Existing hashed targets require ordinary single-link, Git-tracked state and exact `source_tool`, `native_session_id`, slice descriptor/logical identity match before owner-reviewed atomic replacement. Explicit ingest authorizes the parent source write; Git stage/commit remain owner-only. Changed append/Full reuses the same Source ID and recomputes `content_hash`; identity mismatch or hash collision fails closed.
 
-After snapshot owner review and the Git gate, run `llmwikiops cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
+After snapshot owner review and the Git gate, run `<wiki-cli> cache-check <Source ID> --json --pretty` on the real repository-relative Source ID.
 
 The cache and every absolute cache path remain transient and never appear in snapshot or page provenance.
 
 1. Parent writes each bounded reviewable UTF-8 Markdown snapshot below `sources/history/<tool>/`, recording `source_tool`, stable tool/session identity, stable slice identity, `captured_at`, `content_hash`, and `format`. Include only relevant excerpts and repository-relative labels; redact secret, private, and irrelevant content.
 2. Validate every Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty status output. Tracked is not reviewed: stop for owner review, stage, and commit externally, then rerun.
 3. Parent deduplicates live-page sources, accepted slice snapshots, and final candidate citations into the complete source closure and fails closed on missing/unsafe evidence.
-4. Parent runs `llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty` once.
+4. Parent runs `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty` once.
 5. Parent alone writes final candidates below the runtime candidate vault with non-empty accepted sources and declares deletions through CLI.
-6. Parent runs `llmwikiops transaction validate <id> --json --pretty`, reviews every warning and prospective diff, then runs `llmwikiops transaction commit <id> --json --pretty` only on pass.
-7. Parent refreshes `llmwikiops transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
-8. After successful commit/retry only, run `llmwikiops hot status --json`; if stale, run `llmwikiops hot inputs --json --pretty`, write only the bounded requested artifact, then `llmwikiops hot mark-current --json`. Then answer with selected sessions, synthesis, Source IDs, gaps, and pages. Do not commit, push, or open a pull request.
+6. Parent runs `<wiki-cli> transaction validate <id> --json --pretty`, reviews every warning and prospective diff, then runs `<wiki-cli> transaction commit <id> --json --pretty` only on pass.
+7. Parent refreshes `<wiki-cli> transaction list --json --pretty`; with the trusted envelope ID it requires exactly one same-ID/same-status record and satisfies the selected reported action requirements. No trusted ID is inspection-only; mismatch or ambiguity stops.
+8. After successful commit/retry only, run `<wiki-cli> hot status --json`; if stale, run `<wiki-cli> hot inputs --json --pretty`, write only the bounded requested artifact, then `<wiki-cli> hot mark-current --json`. Then answer with selected sessions, synthesis, Source IDs, gaps, and pages. Do not commit, push, or open a pull request.

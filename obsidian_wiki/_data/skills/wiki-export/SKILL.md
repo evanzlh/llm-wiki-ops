@@ -7,6 +7,23 @@ description: >
 
 # Wiki Export
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 Export to `.llmwikiops/local/exports/<timestamp>/`. The repository root
 `.gitignore` ignores `.llmwikiops/local/`, so exports are local review output,
 not knowledge, transaction candidates, or Git publication. This workflow must not

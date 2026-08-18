@@ -29,6 +29,35 @@ BOOTSTRAP_TARGETS = (
 CATALOG = DATA / "legacy-skill-digests-v1.json"
 CAPTURE_TOOL = ROOT / "tools/capture_legacy_skill_digests.py"
 ADAPTER_TEMPLATE = DATA / "adapter/SKILL.md.in"
+RUNTIME_BOOTSTRAPS = tuple(DATA / relative for relative in (
+    "bootstrap/AGENTS.md",
+    "bootstrap/agent/rules/llmwikiops.md",
+    "bootstrap/agent/workflows/llmwikiops.md",
+    "bootstrap/cursor/rules/llmwikiops.mdc",
+    "bootstrap/github/copilot-instructions.md",
+    "bootstrap/kiro/steering/llmwikiops.md",
+    "bootstrap/windsurf/rules/llmwikiops.md",
+))
+AUTHORITY_ORDER = """Read authority in this exact order:
+
+1. `<root>/AGENTS.md`
+2. `<root>/.skills/llm-wiki/SKILL.md`
+3. `<vault>/AGENTS.md` when present
+4. `<root>/.skills/<selected-task>/SKILL.md`"""
+IMMUTABLE_BINDING = "Once validated, keep `<root>` immutable for the whole workflow."
+METADATA_REROUTE = (
+    "Target repository metadata overrides the adapter's generated snapshot and "
+    "forces route reevaluation."
+)
+
+
+def test_runtime_bootstraps_share_exact_authority_and_binding_protocol() -> None:
+    assert len(RUNTIME_BOOTSTRAPS) == 7
+    for path in RUNTIME_BOOTSTRAPS:
+        contents = path.read_text(encoding="utf-8")
+        assert contents.count(AUTHORITY_ORDER) == 1, path
+        assert contents.count(IMMUTABLE_BINDING) == 1, path
+        assert contents.count(METADATA_REROUTE) == 1, path
 
 
 def _write_skill(source: Path, body: str = "# Demo\n") -> None:

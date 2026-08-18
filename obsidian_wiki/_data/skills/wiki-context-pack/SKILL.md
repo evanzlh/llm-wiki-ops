@@ -7,6 +7,23 @@ description: >
 
 # Wiki Context Pack
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 This is a strictly read-only knowledge workflow. It must not modify the vault. It does not create or modify wiki
 pages, `index.md`, `log.md`, `hot.md`, `.manifest.json`, or repository-local state.
 
@@ -41,8 +58,8 @@ Parse one topic, or `--recent`, plus the real CLI options `--budget` (default
 8000), `--public-only`, `--metadata-only`, `--json`, and `--pretty`.
 
 ```bash
-llmwikiops context-pack "<topic>" --budget 8000
-llmwikiops context-pack --recent --budget 8000
+<wiki-cli> context-pack "<topic>" --budget 8000
+<wiki-cli> context-pack --recent --budget 8000
 ```
 
 Reject a missing topic unless `--recent` is present. Forward requested options

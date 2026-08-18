@@ -13,10 +13,21 @@ second configuration path or a direct-write completion path.
 
 ## Configuration
 
-Start at the current working directory and walk upward. Use the nearest ancestor `.llmwikiops/config.toml`;
-do not continue searching after finding it. Resolve
-every configured path relative to that configuration file's repository root,
-then keep the repository root as the working directory for CLI commands.
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+Use `<wiki-cli> transaction <operation>`, `<wiki-cli> hot <operation>`, and
+`<wiki-cli> check` for repository-aware CLI work. For Git inspection, use
+`git -C <root>` only for external context and ordinary repository-root execution for local context.
 
 If no configuration exists, stop and recommend `llmwikiops setup [DIR]`. If
 the configuration is malformed, incomplete, unsafe, or resolves outside its
@@ -46,14 +57,15 @@ frontmatter only to close an update or deletion over the authoritative tracked
 files. Do not cite a compiled page as its own source.
 
 The repository uses manifest v2 with sharded entries and exactly one configured source root.
-The `llmwikiops transaction commit` command owns shard mutation and the tracked
+The `<wiki-cli> transaction commit` command owns shard mutation and the tracked
 authoritative operation log at `wiki/log.md`. It appends one canonical block last
 and returns `log_path`. Agents never edit manifest shards or `log.md` directly.
+In short, transaction commit owns `log.md`; agents do not.
 
 ## Knowledge write protocol
 
 Use the following eight steps for every create, update, or deletion. Keep the
-repository root as the command working directory throughout.
+validated repository binding unchanged throughout.
 
 1. **Close authority before wiki mutation.** Complete any explicitly authorized
    source materialization and owner review described above. Then keep the wiki
@@ -66,7 +78,7 @@ repository root as the command working directory throughout.
    the returned identifier:
 
    ```bash
-   llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty
+   <wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty
    ```
 
    Supply the complete source closure after that single option. Never substitute
@@ -86,15 +98,15 @@ repository root as the command working directory throughout.
    `OBSIDIAN_LINK_FORMAT` setting; do not force one link syntax.
 
 4. **Declare deletions.** For every obsolete compiled page, register its final
-   vault-relative path through `llmwikiops transaction delete <id> <path>
+   vault-relative path through `<wiki-cli> transaction delete <id> <path>
    --json --pretty`. Do not remove a live vault page or manifest entry by hand.
 
-5. **Validate and fix candidates.** Run `llmwikiops transaction validate
+5. **Validate and fix candidates.** Run `<wiki-cli> transaction validate
    <id> --json --pretty`. Treat validation output as authoritative, fix only the
    candidate files or declared deletions, and repeat validation until it passes.
 
 6. **Review and commit.** Review the complete candidate diff and deletion set.
-   When correct, run `llmwikiops transaction commit <id> --json --pretty`.
+   When correct, run `<wiki-cli> transaction commit <id> --json --pretty`.
    The CLI promotes validated pages, records manifest v2 ownership, and appends
    one canonical operation block to `log.md` last. Read `log_path` from the
    result. Do not commit, push, or open a pull request; those are separate user-controlled Git
@@ -105,7 +117,7 @@ repository root as the command working directory throughout.
    `recovery` holds the candidate transaction ID, status, inspection command,
    preferred action, alternatives, and each action's `requires` list.
 
-   With a trusted transaction ID from that envelope, run `llmwikiops
+   With a trusted transaction ID from that envelope, run `<wiki-cli>
    transaction list --json --pretty` and require exactly one retained record
    with the same ID and status. A list record provides `recommended_action` and
    `allowed_actions`; it does not repeat `error` or `recovery`. The selected
@@ -122,10 +134,10 @@ repository root as the command working directory throughout.
    successful `transaction commit` or `transaction retry` is a knowledge commit.
 
 8. **Refresh bounded tracked context after success.** Only after a successful
-   knowledge commit, run `llmwikiops hot status --json`.
-   If stale, obtain bounded inputs with `llmwikiops hot inputs --json --pretty`,
+   knowledge commit, run `<wiki-cli> hot status --json`.
+   If stale, obtain bounded inputs with `<wiki-cli> hot inputs --json --pretty`,
    let the agent write only the requested tracked `hot.md` working-tree diff,
-   and finish with `llmwikiops hot mark-current --json`. `hot status`
+   and finish with `<wiki-cli> hot mark-current --json`. `hot status`
    is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.

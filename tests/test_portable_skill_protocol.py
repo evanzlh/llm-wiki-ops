@@ -14,6 +14,7 @@ from obsidian_wiki.frontmatter import parse_frontmatter
 from obsidian_wiki.graph_analysis import analyse_vault
 from obsidian_wiki.portable_manifest import ShardedManifest
 from obsidian_wiki.safe_files import stable_directory_identity
+from obsidian_wiki.skill_trees import discover_skill_collection
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,94 @@ BOOTSTRAPS = (
     "obsidian_wiki/_data/bootstrap/kiro/steering/llmwikiops.md",
     "obsidian_wiki/_data/bootstrap/windsurf/rules/llmwikiops.md",
 )
+REPOSITORY_AWARE_SKILLS = (
+    "claude-history-ingest",
+    "codex-history-ingest",
+    "copilot-history-ingest",
+    "cross-linker",
+    "daily-update",
+    "graph-colorize",
+    "hermes-history-ingest",
+    "llm-wiki",
+    "obsidian-layout-adjustment",
+    "openclaw-history-ingest",
+    "pi-history-ingest",
+    "tag-taxonomy",
+    "vault-skill-factory",
+    "wiki-agent",
+    "wiki-capture",
+    "wiki-context-pack",
+    "wiki-dedup",
+    "wiki-digest",
+    "wiki-export",
+    "wiki-import",
+    "wiki-ingest",
+    "wiki-lint",
+    "wiki-narrate",
+    "wiki-query",
+    "wiki-rebuild",
+    "wiki-research",
+    "wiki-setup",
+    "wiki-status",
+    "wiki-synthesize",
+    "wiki-transaction-review",
+    "wiki-update",
+)
+NON_REPOSITORY_RUNTIME_SKILLS = frozenset(
+    {
+        "impl-validator",
+        "session-brain",
+        "session-search",
+        "skill-creator",
+        "wiki-history-ingest",
+    }
+)
+DUAL_CONTEXT_PROTOCOL = """Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use."""
+REPOSITORY_COMMAND = re.compile(
+    r"(?<!-C <root> )\bllmwikiops\s+"
+    r"(?:info|doctor|check|repo|transaction|manifest|hot|batch-plan|"
+    r"graph-analyse|cache-check|lint|trust-record|trust-check|query|"
+    r"context-pack|context)\b"
+)
+
+
+def test_repository_aware_skill_inventory_and_dual_context_are_exact() -> None:
+    collection = discover_skill_collection(
+        ROOT / "obsidian_wiki/_data/skills", ignore_source_artifacts=True
+    )
+    discovered = {skill.name for skill in collection.skills}
+
+    assert set(REPOSITORY_AWARE_SKILLS) <= discovered
+    assert set(REPOSITORY_AWARE_SKILLS).isdisjoint(NON_REPOSITORY_RUNTIME_SKILLS)
+    assert len(REPOSITORY_AWARE_SKILLS) == 31
+    for name in REPOSITORY_AWARE_SKILLS:
+        contents = skill_text(name)
+        assert parse_frontmatter(contents).scalars["name"] == name
+        assert contents.count(DUAL_CONTEXT_PROTOCOL) == 1, name
+        assert "<wiki-cli>" in contents, name
+
+
+def test_repository_aware_skills_use_one_prefix_without_cwd_only_semantics() -> None:
+    cwd_only = (
+        "start at the current working directory",
+        "keep its repository root as cwd",
+        "keep repository-root cwd",
+        "repository-root cwd",
+        "keep the repository root as the working directory",
+        "repository root as the command working directory throughout",
+        "walk upward from the invocation cwd",
+    )
+    for name in REPOSITORY_AWARE_SKILLS:
+        contents = skill_text(name)
+        assert not REPOSITORY_COMMAND.search(contents), name
+        lowered = contents.lower()
+        assert not [phrase for phrase in cwd_only if phrase in lowered], name
 FORBIDDEN_RUNTIME_TERMS = (
     "Personal mode",
     "Portable Repository mode",
@@ -288,8 +377,8 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
         "check",
         "`.skills/`",
         "managed mirrors",
-        "llmwikiops repo sync-skills",
-        "llmwikiops repo upgrade-skills",
+        "<wiki-cli> repo sync-skills",
+        "<wiki-cli> repo upgrade-skills",
         "--apply",
         "requires_cli",
         "Git",
@@ -325,7 +414,7 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
         "root `AGENTS.md`",
         "vault `AGENTS.md`",
         "canonical `llm-wiki`",
-        "llmwikiops transaction list --json --pretty",
+        "<wiki-cli> transaction list --json --pretty",
         "Do not infer",
     ):
         assert required in flat
@@ -356,7 +445,7 @@ def test_quick_capture_is_a_snapshot_only_terminal_section() -> None:
         "exact reviewed text",
         "pending ingest",
         "stop",
-        "Do not run `llmwikiops transaction begin`",
+        "Do not run `<wiki-cli> transaction begin`",
         "write a knowledge page",
         "create a manifest entry",
         "create an operation page",
@@ -451,8 +540,8 @@ def test_maintenance_skills_are_repository_native(name: str) -> None:
         "complete source closure",
         "final candidates",
         "reviewed deletions",
-        "llmwikiops transaction validate <id> --json --pretty",
-        "llmwikiops transaction commit <id> --json --pretty",
+        "<wiki-cli> transaction validate <id> --json --pretty",
+        "<wiki-cli> transaction commit <id> --json --pretty",
         "recommended_action",
         "allowed_actions",
     ):
@@ -511,9 +600,9 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
     flat = " ".join(contents.split())
     for required in (
         "manual",
-        "llmwikiops transaction list --json --pretty",
-        "llmwikiops cache-check <source1> [source2 ...] --json --pretty",
-        "llmwikiops hot status --json",
+        "<wiki-cli> transaction list --json --pretty",
+        "<wiki-cli> cache-check <source1> [source2 ...] --json --pretty",
+        "<wiki-cli> hot status --json",
         "selected page repair",
         "does not change knowledge pages, sources, manifest shards, or transactions",
         "read-only",
@@ -543,7 +632,7 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         "retained transactions",
         "graph",
         "freshness",
-        "llmwikiops cache-check <source1> [source2 ...] --json --pretty",
+        "<wiki-cli> cache-check <source1> [source2 ...] --json --pretty",
         "synthesis/wiki-insights.md",
         "does not change knowledge pages, sources, manifest shards, or transactions",
         "read-only",
@@ -616,7 +705,7 @@ def test_maintenance_inventory_uses_safe_markdown_snapshots_before_reads(
         "bounded byte snapshots",
         "fail closed before decoding or analysis",
         "must not use `read_text`, `rglob`, shell globbing, or follow links",
-        "`llmwikiops check` alone is not a sufficient scanner preflight",
+        "`<wiki-cli> check` alone is not a sufficient scanner preflight",
     ):
         assert required in flat, f"{name}: missing {required!r}"
     assert flat.index("## Mandatory authority preflight") < flat.index(
@@ -961,8 +1050,8 @@ def test_all_active_runtime_markdown_uses_tracked_hot_and_log_contract() -> None
         for phrase in forbidden:
             assert phrase not in contents, (path, phrase)
         if (
-            "llmwikiops hot inputs --json --pretty" in contents
-            and "llmwikiops hot mark-current --json" in contents
+            "<wiki-cli> hot inputs --json --pretty" in contents
+            and "<wiki-cli> hot mark-current --json" in contents
             and "Never directly modify" not in contents
         ):
             flat = " ".join(contents.split())

@@ -195,12 +195,34 @@ def test_canonical_protocol_defines_configuration_and_authority() -> None:
         "nearest ancestor `.llmwikiops/config.toml`",
         "llmwikiops setup [DIR]",
         "fail closed",
-        "repository root",
+        "user-supplied exact root",
         "vault `AGENTS.md` when present",
         "repository-relative Source ID",
         "reviewed Markdown snapshot",
     ):
         assert required in flat
+
+
+def test_canonical_protocol_defines_dual_context_cli_and_git_forms() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    for required in (
+        "Repository-local context: `<wiki-cli>` is `llmwikiops`.",
+        "External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the\n"
+        "  validated immutable root.",
+        "`<wiki-cli> transaction <operation>`",
+        "`<wiki-cli> hot <operation>`",
+        "`<wiki-cli> check`",
+        "`git -C <root>` only for external context",
+        "ordinary repository-root execution for local context",
+    ):
+        assert required in text
+    for preserved in (
+        "Do not commit, push, or open a pull request",
+        "repository-relative Source ID",
+        "candidate_vault",
+        "transaction commit owns `log.md`",
+    ):
+        assert preserved in text
 
 
 def test_canonical_protocol_is_one_eight_step_transaction() -> None:
@@ -229,7 +251,7 @@ def test_canonical_protocol_is_one_eight_step_transaction() -> None:
 def test_begin_passes_the_complete_source_closure_to_one_option() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     command = (
-        "llmwikiops transaction begin --source <source1> [source2 ...] "
+        "<wiki-cli> transaction begin --source <source1> [source2 ...] "
         "--json --pretty"
     )
     assert command in text
@@ -364,7 +386,7 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
     flat = " ".join(text.split())
 
     for required in (
-        "llmwikiops transaction list --json --pretty",
+        "<wiki-cli> transaction list --json --pretty",
         "candidate_vault",
         "source_ids",
         "candidate_pages",
@@ -382,8 +404,8 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
         "hard link",
         "special file",
         "Do not recursively diff",
-        "llmwikiops transaction validate <id> --json --pretty",
-        "llmwikiops transaction commit <id> --json --pretty",
+        "<wiki-cli> transaction validate <id> --json --pretty",
+        "<wiki-cli> transaction commit <id> --json --pretty",
         "explicit user approval",
         "refresh the list immediately",
         "commit action",
@@ -422,14 +444,14 @@ def test_external_material_is_snapshotted_before_transaction_begin() -> None:
         ):
             assert required in flat, f"{path}: missing {required!r}"
         assert flat.index("reviewable UTF-8 Markdown") < flat.index(
-            "llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty"
+            "<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty"
         )
 
 
 def test_documented_cache_commands_are_accepted_by_real_parser() -> None:
     parser = build_parser()
     expected = (
-        "llmwikiops cache-check <repository-relative-source> "
+        "<wiki-cli> cache-check <repository-relative-source> "
         "[additional-source ...] --json --pretty"
     )
     for path in SOURCE_WORKFLOW_SKILLS:
@@ -481,7 +503,7 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             steps.append(" ".join(workflow[match.start() : end].split()))
 
         for required in (
-            "nearest `.llmwikiops/config.toml`",
+                "retained immutable repository context",
             "owner",
             "canonical `llm-wiki`",
         ):
@@ -1110,7 +1132,7 @@ def test_history_authority_and_canonical_recovery_are_complete() -> None:
         )
         for required in (
             "nearest ancestor `.llmwikiops/config.toml`",
-            "repository root as CWD",
+            "retained repository context",
             "llmwikiops setup [DIR]",
             "fail closed",
             "before cache discovery",
@@ -1249,7 +1271,7 @@ def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
             "format",
             "exact reviewed body bytes",
             "exactly one LF",
-            "llmwikiops cache-check <Source ID> --json --pretty",
+            "<wiki-cli> cache-check <Source ID> --json --pretty",
             "Changed append/Full reuses the same Source ID",
             "owner-reviewed atomic replacement",
             "identity mismatch or hash collision",
@@ -1258,7 +1280,7 @@ def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
 
     parser = build_parser()
     cache_argv = shlex.split(
-        "llmwikiops cache-check sources/history/claude/example.md --json --pretty"
+        "<wiki-cli> cache-check sources/history/claude/example.md --json --pretty"
     )[1:]
     parsed = parser.parse_args(_normalize_cache_check_argv(cache_argv))
     assert parsed.sources == ["sources/history/claude/example.md"]
@@ -1430,9 +1452,9 @@ def test_history_workers_revalidate_and_merge_evidence_safely() -> None:
 
 def test_history_hot_sequence_is_complete_and_parser_valid() -> None:
     commands = (
-        "llmwikiops hot status --json",
-        "llmwikiops hot inputs --json --pretty",
-        "llmwikiops hot mark-current --json",
+        "<wiki-cli> hot status --json",
+        "<wiki-cli> hot inputs --json --pretty",
+        "<wiki-cli> hot mark-current --json",
     )
     parser = build_parser()
     for command in commands:
@@ -1591,13 +1613,13 @@ def test_maintenance_writes_have_one_canonical_transaction_completion() -> None:
         assert contents.count("transaction validate <id>") == 1, path
         assert contents.count("transaction commit <id>") == 1, path
         for required in (
-            "llmwikiops transaction begin --source <source1> [source2 ...] --json --pretty",
+            "<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty",
             "candidate_vault",
             "started_at",
             "non-empty subset",
             "Preserve valid Unicode and CJK",
             "OBSIDIAN_LINK_FORMAT",
-            "llmwikiops transaction delete <id> <vault-relative-page.md> --json --pretty",
+            "<wiki-cli> transaction delete <id> <vault-relative-page.md> --json --pretty",
             "Save the failed command envelope",
             "top-level `error` and `recovery`",
             "preferred_action",
@@ -1615,9 +1637,9 @@ def test_maintenance_writes_have_one_canonical_transaction_completion() -> None:
 
 def test_maintenance_noop_and_hot_gates_match_canonical_protocol() -> None:
     hot_commands = (
-        "llmwikiops hot status --json",
-        "llmwikiops hot inputs --json --pretty",
-        "llmwikiops hot mark-current --json",
+        "<wiki-cli> hot status --json",
+        "<wiki-cli> hot inputs --json --pretty",
+        "<wiki-cli> hot mark-current --json",
     )
     parser = build_parser()
     for command in hot_commands:
@@ -1643,7 +1665,7 @@ def test_daily_cache_check_command_is_real_and_has_no_removed_option() -> None:
     daily = (ROOT / "obsidian_wiki/_data/skills/daily-update/SKILL.md").read_text(
         encoding="utf-8"
     )
-    command = "llmwikiops cache-check <source1> [source2 ...] --json --pretty"
+    command = "<wiki-cli> cache-check <source1> [source2 ...] --json --pretty"
     assert command in daily
     assert "--configured" not in daily
 
@@ -1694,9 +1716,9 @@ def test_status_graph_and_audit_commands_use_real_parser() -> None:
         ROOT / "obsidian_wiki/_data/skills/wiki-status/SKILL.md"
     ).read_text(encoding="utf-8")
     commands = (
-        "llmwikiops graph-analyse --pretty",
-        "llmwikiops transaction list --json --pretty",
-        "llmwikiops hot status --json",
+        "<wiki-cli> graph-analyse --pretty",
+        "<wiki-cli> transaction list --json --pretty",
+        "<wiki-cli> hot status --json",
     )
     parser = build_parser()
     for command in commands:
@@ -1706,6 +1728,6 @@ def test_status_graph_and_audit_commands_use_real_parser() -> None:
     lint = (
         ROOT / "obsidian_wiki/_data/skills/wiki-lint/SKILL.md"
     ).read_text(encoding="utf-8")
-    lint_command = "llmwikiops lint --json --pretty"
+    lint_command = "<wiki-cli> lint --json --pretty"
     assert lint_command in lint
     parser.parse_args(shlex.split(lint_command)[1:])

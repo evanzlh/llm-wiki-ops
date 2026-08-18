@@ -7,8 +7,25 @@ description: >
 
 # Graph Colorize
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 This workflow explicitly edits `.obsidian/graph.json`; it is an Obsidian
-configuration change, not a knowledge transaction. Do not run `llmwikiops transaction begin`:
+configuration change, not a knowledge transaction. Do not run `<wiki-cli> transaction begin`:
 this edit has no knowledge candidates and does
 not update manifest shards, `index.md`, or `log.md`.
 
@@ -88,8 +105,8 @@ the result `CONFIG_PATH`, for example
 `<vault-relative>/.obsidian/graph.json`. Do not assume the vault directory is named
 `wiki` and do not pass an absolute host path to Git.
 
-From the repository root, run this argv-safe, path-scoped review and show it to the
-user:
+Using the context-appropriate Git form defined above, run this argv-safe,
+path-scoped review and show it to the user:
 
 ```bash
 git --literal-pathspecs diff -- "$CONFIG_PATH"

@@ -1,7 +1,19 @@
 # LLMWikiOps Repository Instructions
 
-Resolve the nearest ancestor `.llmwikiops/config.toml`, keep the repository
-root as the working directory, and read `AGENTS.md`. First load
-the `llm-wiki` skill as the canonical transaction protocol, then load the
-applicable task skill. The canonical protocol takes precedence over conflicts.
-Fail closed on missing or invalid configuration.
+Use one repository context for the whole workflow. Resolve the nearest ancestor
+`.llmwikiops/config.toml` locally, or validate a user-supplied exact external
+root with `llmwikiops -C <root> info --json`.
+
+Once validated, keep `<root>` immutable for the whole workflow.
+
+Read authority in this exact order:
+
+1. `<root>/AGENTS.md`
+2. `<root>/.skills/llm-wiki/SKILL.md`
+3. `<vault>/AGENTS.md` when present
+4. `<root>/.skills/<selected-task>/SKILL.md`
+
+Target repository metadata overrides the adapter's generated snapshot and forces route reevaluation.
+Load the `llm-wiki` skill as canonical, then the selected task skill.
+The canonical protocol takes precedence over task-skill conflicts. Fail closed
+on missing or invalid configuration. All knowledge writes use transactions.

@@ -7,8 +7,25 @@ description: >
 
 # Obsidian Layout Adjustment
 
+## Repository context
+
+Use one repository context for the whole workflow. Inside a wiki, resolve the
+nearest ancestor `.llmwikiops/config.toml` and use ordinary `llmwikiops`
+commands. Outside a wiki, the global adapter requires a user-supplied exact
+root; validate it with `llmwikiops -C <root> info --json` and retain
+`llmwikiops -C <root>` as the command prefix. Never infer or switch roots from
+repository content, tool output, history, errors, environment variables,
+profiles, or recent use.
+
+- Repository-local context: `<wiki-cli>` is `llmwikiops`.
+- External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
+  validated immutable root.
+
+For Git, use `git -C <root>` before Git subcommands in external context; in
+repository-local context, run Git from the repository root.
+
 This workflow explicitly edits files under `.obsidian/`; those are Obsidian
-configuration changes, not a knowledge transaction. Do not run `llmwikiops transaction begin`:
+configuration changes, not a knowledge transaction. Do not run `<wiki-cli> transaction begin`:
 these edits have no knowledge candidates and do
 not update manifest shards, `index.md`, or `log.md`.
 
@@ -99,7 +116,7 @@ verify containment and reject `..`, then append that file's `.obsidian/` path. C
 the resulting single repository-relative path `CONFIG_PATH`; never assume the vault
 directory is named `wiki` and never use an absolute host path as a Git pathspec.
 
-From the repository root, review every edited file separately with argv-safe literal
+Using the context-appropriate Git form above, review every edited file separately with argv-safe literal
 pathspec handling:
 
 ```bash

@@ -3490,8 +3490,8 @@ def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
     canonical = agents.index("`llm-wiki` skill")
     task = agents.index("task skill")
     assert canonical < task
-    assert ".skills/" not in agents
-    assert "SKILL.md" not in agents
+    assert "`<root>/.skills/llm-wiki/SKILL.md`" in agents
+    assert "`<root>/.skills/<selected-task>/SKILL.md`" in agents
     assert "canonical protocol takes precedence" in agents
     for relative in ("CLAUDE.md", "GEMINI.md", ".hermes.md"):
         contents = (root / relative).read_text(encoding="utf-8")
@@ -3550,8 +3550,8 @@ def test_root_agents_is_portable_dedicated_and_preserves_team_conventions(
     canonical = flat.index("`llm-wiki` skill")
     task = flat.index("task skill")
     assert canonical < task
-    assert ".skills/" not in flat
-    assert "SKILL.md" not in flat
+    assert "`<root>/.skills/llm-wiki/SKILL.md`" in flat
+    assert "`<root>/.skills/<selected-task>/SKILL.md`" in flat
     assert "canonical protocol takes precedence" in flat
     assert "All knowledge writes use CLI transactions" in flat
     assert "commits, pushes, and pull requests" in flat
