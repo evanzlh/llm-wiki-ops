@@ -189,6 +189,93 @@ def test_repository_selector_is_rejected_for_version_even_with_aware_command(
     assert "repository option is not valid for this command" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("-C", "{root}", "setup", "--help"),
+        ("--repo={root}", "list", "--help"),
+        ("-C{root}", "--version", "info", "--help"),
+        ("--repo", "{root}", "-V", "doctor", "--help"),
+        ("--help", "-C{root}", "setup"),
+        ("-C{root}", "info", "--version", "--help"),
+    ),
+)
+def test_help_cannot_bypass_repository_selector_scope(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "repository option is not valid for this command" in result.stderr
+    assert "show this help message" not in result.stderr
+    assert cli.version_label() not in result.stderr
+
+
+def test_ordinary_and_repository_aware_help_remain_available(tmp_path: Path) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    ordinary = run_cli(tmp_path, "setup", "--help")
+    aware = run_cli(tmp_path, "-C", str(repository), "info", "--help")
+
+    assert ordinary.returncode == aware.returncode == 0
+    assert ordinary.stderr == aware.stderr == ""
+    assert ordinary.stdout.startswith("usage: llmwikiops setup")
+    assert aware.stdout.startswith("usage: llmwikiops info")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--rep={root}", "setup", "--help"),
+        ("--rep", "{root}", "setup", "--help"),
+    ),
+)
+def test_abbreviated_repository_options_are_rejected_before_help(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "show this help message" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("-VC{root}", "setup", "--help"),
+        ("info", "-C{root}", "--help"),
+    ),
+)
+def test_clustered_or_late_repository_selector_cannot_hide_behind_help(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "show this help message" not in result.stderr
+
+
 REPOSITORY_INDEPENDENT_INVOCATIONS = (
     ("setup", "created"),
     ("list",),
@@ -326,6 +413,139 @@ def test_explicit_query_parse_failure_keeps_structured_json_error(
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "invalid_query_arguments"
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ("--repo={repository}", "-C{repository}"),
+)
+def test_attached_selector_transaction_parse_failure_keeps_bound_recovery(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    business = tmp_path / "business"
+    repository = setup_repository(tmp_path / "knowledge")
+    business.mkdir()
+    relative = os.path.relpath(repository, business)
+
+    result = run_cli(
+        business,
+        selector.format(repository=relative),
+        "transaction",
+        "commit",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "transaction-error"
+    assert payload["recovery"]["inspect_command"] == (
+        f"{shlex.join(['llmwikiops', '-C', str(repository)])} "
+        "transaction list --json"
+    )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ("--repo={repository}", "-C{repository}"),
+)
+def test_attached_selector_query_parse_failure_keeps_structured_json(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    business = tmp_path / "business"
+    repository = setup_repository(tmp_path / "knowledge")
+    business.mkdir()
+
+    result = run_cli(
+        business,
+        selector.format(repository=repository),
+        "query",
+        "--j",
+        "--json",
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["error"]["code"] == (
+        "invalid_query_arguments"
+    )
+
+
+def test_empty_attached_repository_is_a_structured_configuration_error(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "business"
+    business.mkdir()
+
+    result = run_cli(
+        business,
+        "--repo=",
+        "transaction",
+        "list",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "config-error"
+    assert "explicit repository path must be non-empty" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("-C{root}", "--repo", "{root}", "info"),
+        ("--repo={root}", "-C{root}", "info"),
+        ("-C{root}", "--repo={root}", "setup", "--help"),
+        ("-C{root}", "info", "--repo={root}", "--help"),
+        ("-C{root}", "info", "--rep={root}", "--help"),
+        ("-C{root}", "info", "-VC{root}", "--help"),
+    ),
+)
+def test_repeated_attached_repository_mixtures_are_rejected_once(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "repository option may be supplied only once" in result.stderr
+    assert "show this help message" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("-C", "--version", "transaction", "commit", "--json"),
+        ("--repo", "--help", "info"),
+        ("-C", "--repo={root}", "info", "--help"),
+    ),
+)
+def test_option_token_is_never_consumed_as_repository_value(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "expected one argument" in result.stderr
+    assert "transaction list --json" not in result.stderr
+    assert "show this help message" not in result.stderr
 
 
 def test_main_resolves_explicit_repository_once(

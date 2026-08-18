@@ -2275,9 +2275,111 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
 def _leading_repository_option(
     argv: list[str],
 ) -> tuple[list[str], list[str], str | None]:
-    if len(argv) >= 2 and argv[0] in {"-C", "--repo"}:
-        return argv[:2], argv[2:], argv[1]
+    for index, token in enumerate(argv):
+        if token == "--" or not token.startswith("-"):
+            break
+        if token in {"-C", "--repo"}:
+            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+                return [], argv, None
+            end = index + 2
+            return (
+                argv[index:end],
+                [*argv[:index], *argv[end:]],
+                argv[index + 1],
+            )
+        if token.startswith("--repo="):
+            return (
+                [token],
+                [*argv[:index], *argv[index + 1 :]],
+                token.partition("=")[2],
+            )
+        if token.startswith("-C") and token != "-C":
+            return (
+                [token],
+                [*argv[:index], *argv[index + 1 :]],
+                token[2:],
+            )
     return [], argv, None
+
+
+def _repository_syntax(
+    argv: list[str],
+) -> tuple[int, bool, bool, bool]:
+    occurrences = 0
+    missing_value = False
+    abbreviated = False
+    clustered = False
+    index = 0
+    long_abbreviations = {"--r", "--re", "--rep"}
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            break
+        if token in {"-C", "--repo"}:
+            occurrences += 1
+            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+                missing_value = True
+                index += 1
+            else:
+                index += 2
+            continue
+        if token.startswith("--repo=") or (
+            token.startswith("-C") and token != "-C"
+        ):
+            occurrences += 1
+            index += 1
+            continue
+        option_name = token.partition("=")[0]
+        if option_name in long_abbreviations:
+            occurrences += 1
+            abbreviated = True
+            if "=" not in token and index + 1 < len(argv):
+                index += 2
+            else:
+                index += 1
+            continue
+        if token.startswith(("-VC", "-hC")):
+            occurrences += 1
+            clustered = True
+        index += 1
+    return occurrences, missing_value, abbreviated, clustered
+
+
+def _repository_scope_tokens(
+    argv: list[str],
+) -> tuple[bool, bool, str | None]:
+    repeated = False
+    show_version = False
+    command: str | None = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            index += 1
+            if command is None and index < len(argv):
+                command = argv[index]
+            break
+        if token in {"-C", "--repo"}:
+            repeated = True
+            index += 2
+            continue
+        if token.startswith("--repo=") or (
+            token.startswith("-C") and token != "-C"
+        ):
+            repeated = True
+            index += 1
+            continue
+        if token in {"-V", "--version"}:
+            show_version = True
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if command is None:
+            command = token
+        index += 1
+    return repeated, show_version, command
 
 
 def _query_option_intent(argv: list[str]) -> tuple[bool, bool]:
@@ -2381,6 +2483,7 @@ def _normalize_transaction_parent_separator(argv: list[str]) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(
         prog="llmwikiops",
+        allow_abbrev=False,
         description=(
             "LLMWikiOps: deterministic, repository-native LLM Wiki operations."
         ),
@@ -3003,9 +3106,64 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         parser.print_help()
         return 0
+    (
+        repository_occurrences,
+        repository_value_missing,
+        repository_abbreviated,
+        repository_clustered,
+    ) = _repository_syntax(argv)
+    if repository_value_missing:
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: argument -C/--repo: expected one argument\n",
+        )
+    if repository_occurrences > 1:
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: repository option may be supplied only once\n",
+        )
+    if repository_abbreviated:
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: abbreviated repository option is not accepted\n",
+        )
+    if repository_clustered:
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: repository option may not be clustered\n",
+        )
     repository_prefix, command_argv, raw_repository = _leading_repository_option(
         argv
     )
+    if repository_occurrences and not repository_prefix:
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: repository option must precede the subcommand\n",
+        )
+    if repository_prefix:
+        repeated, show_version, scope_command = _repository_scope_tokens(
+            command_argv
+        )
+        if repeated:
+            parser.print_usage(sys.stderr)
+            parser.exit(
+                2,
+                "llmwikiops: error: repository option may be supplied only once\n",
+            )
+        if (
+            show_version
+            or scope_command not in _REPOSITORY_AWARE_COMMANDS
+        ):
+            parser.print_usage(sys.stderr)
+            parser.exit(
+                2,
+                "llmwikiops: error: repository option is not valid for this command\n",
+            )
     json_intent, pretty_intent, help_intent = _transaction_option_intent(
         command_argv
     )
