@@ -502,7 +502,7 @@ class AdapterInstallInspection:
     status: Literal[
         "missing", "current", "managed-upgrade", "owner-drift", "unmanaged", "error"
     ]
-    snapshot: ManagedTreeSnapshot | None = None
+    snapshot: ManagedTreeSnapshot | None
     error: str | None = None
 
 
@@ -682,23 +682,23 @@ def _classify_snapshot(
     skill = files.get("SKILL.md")
     record_bytes = files.get(MANAGED_ADAPTER_RECORD)
     if record_bytes is None:
-        return AdapterInstallInspection("unmanaged", snapshot)
+        return AdapterInstallInspection("unmanaged", snapshot, None)
     try:
         record = parse_managed_record(record_bytes)
     except (TypeError, ValueError):
-        return AdapterInstallInspection("unmanaged", snapshot)
+        return AdapterInstallInspection("unmanaged", snapshot, None)
     if render_managed_record(record) != record_bytes or record.target != desired.target:
-        return AdapterInstallInspection("unmanaged", snapshot)
+        return AdapterInstallInspection("unmanaged", snapshot, None)
     expected_digest = record.files.get("SKILL.md")
     if (
         skill is None
         or set(record.files) != {"SKILL.md"}
         or expected_digest != "sha256:" + sha256(skill).hexdigest()
     ):
-        return AdapterInstallInspection("owner-drift", snapshot)
+        return AdapterInstallInspection("owner-drift", snapshot, None)
     if skill == desired.skill_md and record_bytes == desired.managed_record:
-        return AdapterInstallInspection("current", snapshot)
-    return AdapterInstallInspection("managed-upgrade", snapshot)
+        return AdapterInstallInspection("current", snapshot, None)
+    return AdapterInstallInspection("managed-upgrade", snapshot, None)
 
 
 def inspect_adapter_installation(
@@ -713,20 +713,20 @@ def inspect_adapter_installation(
         try:
             parent_fd = _open_directory_path(destination.parent)
         except FileNotFoundError:
-            return AdapterInstallInspection("missing")
+            return AdapterInstallInspection("missing", None, None)
         try:
             os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
-            return AdapterInstallInspection("missing")
+            return AdapterInstallInspection("missing", None, None)
         try:
             snapshot = _snapshot_child(parent_fd, destination.name)
         except _UnknownManagedEntry as exc:
-            return AdapterInstallInspection("owner-drift", error=str(exc))
+            return AdapterInstallInspection("owner-drift", None, str(exc))
         except (OSError, ValueError) as exc:
-            return AdapterInstallInspection("error", error=str(exc))
+            return AdapterInstallInspection("error", None, str(exc))
         return _classify_snapshot(snapshot, desired)
     except (OSError, ValueError) as exc:
-        return AdapterInstallInspection("error", error=str(exc))
+        return AdapterInstallInspection("error", None, str(exc))
     finally:
         if parent_fd is not None:
             os.close(parent_fd)
@@ -810,11 +810,36 @@ def _delete_snapshot(parent_fd: int, snapshot: ManagedTreeSnapshot) -> None:
         opened = os.fstat(descriptor)
         if snapshot.identity[:2] != (opened.st_dev, opened.st_ino):
             raise ValueError("refusing to delete replaced recovery directory")
+        quarantines: list[tuple[ManagedFileSnapshot, ManagedFileSnapshot]] = []
         for item in snapshot.files:
             current_file = _read_regular_file(descriptor, item.name)
             if current_file != item:
                 raise ValueError("refusing to delete changed managed file")
-            os.unlink(item.name, dir_fd=descriptor)
+            quarantine = f".llmwikiops-delete-{secrets.token_hex(16)}"
+            if quarantine in os.listdir(descriptor):
+                raise ValueError("delete quarantine collision; preserving evidence")
+            _rename_noreplace(descriptor, item.name, quarantine)
+            quarantined = _read_regular_file(descriptor, quarantine)
+            if quarantined != ManagedFileSnapshot(
+                quarantine, item.identity, item.content
+            ):
+                raise ValueError("delete quarantine changed; preserving evidence")
+            quarantines.append((item, quarantined))
+            try:
+                os.stat(item.name, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("managed filename was rebuilt; preserving evidence")
+        expected_quarantines = {quarantined.name for _, quarantined in quarantines}
+        if set(os.listdir(descriptor)) != expected_quarantines:
+            raise ValueError("managed directory is nonempty; preserving evidence")
+        for _, quarantined in quarantines:
+            if _read_regular_file(descriptor, quarantined.name) != quarantined:
+                raise ValueError("delete quarantine changed; preserving evidence")
+            os.unlink(quarantined.name, dir_fd=descriptor)
+        if os.listdir(descriptor):
+            raise ValueError("delete quarantine was rebuilt; preserving evidence")
         os.fsync(descriptor)
         rebound = os.stat(snapshot.name, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISDIR(rebound.st_mode) or not _same_file(opened, rebound):
@@ -961,7 +986,7 @@ def install_adapter(
             os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             live_snapshot = None
-            state = AdapterInstallInspection("missing")
+            state = AdapterInstallInspection("missing", None, None)
         else:
             try:
                 live_snapshot = _snapshot_child(parent_fd, ADAPTER_NAME)
