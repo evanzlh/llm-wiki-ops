@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
-from pathlib import Path
+import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+from typing import Any
 
-from . import skill_trees
+from . import IMPLEMENTATION_ID, skill_trees
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .skill_names import is_safe_skill_name
 from .skill_trees import SkillCollection, SkillEntry, SkillTree
@@ -21,6 +28,234 @@ ADAPTER_DESCRIPTION = (
 BUILTIN_CATALOG_START = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_START -->"
 BUILTIN_CATALOG_END = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_END -->"
 _ADAPTER_TEMPLATE = Path(__file__).parent / "_data" / "adapter" / "SKILL.md.in"
+MANAGED_ADAPTER_RECORD = ".llmwikiops-managed.json"
+MANAGED_ADAPTER_SCHEMA_VERSION = 1
+_MANAGED_ADAPTER_FIELDS = frozenset(
+    {"schema_version", "implementation", "cli_version", "target", "files"}
+)
+_FILE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True)
+class AgentTarget:
+    """One explicitly supported agent skill installation location."""
+
+    name: str
+    relative_skill_root: PurePosixPath
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not is_safe_skill_name(self.name):
+            raise ValueError("adapter target name must be canonical and safe")
+        if type(self.relative_skill_root) is not PurePosixPath:
+            raise TypeError("adapter target skill root must be a PurePosixPath")
+        root = self.relative_skill_root
+        if (
+            root.is_absolute()
+            or not root.parts
+            or any(part in {"", ".", ".."} for part in root.parts)
+        ):
+            raise ValueError("adapter target skill root must be a safe relative path")
+
+
+TARGETS: Mapping[str, AgentTarget] = MappingProxyType(
+    {
+        target.name: target
+        for target in (
+            AgentTarget("codex", PurePosixPath(".codex/skills")),
+            AgentTarget("claude", PurePosixPath(".claude/skills")),
+            AgentTarget("cursor", PurePosixPath(".cursor/skills")),
+            AgentTarget("windsurf", PurePosixPath(".codeium/windsurf/skills")),
+            AgentTarget("opencode", PurePosixPath(".config/opencode/skills")),
+            AgentTarget("pi", PurePosixPath(".pi/agent/skills")),
+            AgentTarget("kiro", PurePosixPath(".kiro/skills")),
+        )
+    }
+)
+
+
+def _require_target_name(target: object) -> str:
+    if type(target) is not str or target not in TARGETS:
+        raise ValueError(f"unknown or noncanonical adapter target: {target!r}")
+    return target
+
+
+def _require_absolute_root(root: object, label: str) -> Path:
+    if not isinstance(root, Path):
+        raise TypeError(f"{label} must be a pathlib.Path")
+    if not root.is_absolute() or "\x00" in str(root) or ".." in root.parts:
+        raise ValueError(f"{label} must be an absolute contained path")
+    return root
+
+
+def resolve_adapter_destination(
+    target: object, *, home: Path, environ: Mapping[str, str]
+) -> Path:
+    """Resolve one explicit target without probing or mutating the filesystem."""
+    target_name = _require_target_name(target)
+    home_root = _require_absolute_root(home, "home")
+    if not isinstance(environ, Mapping):
+        raise TypeError("environ must be a mapping")
+
+    if target_name == "codex" and "CODEX_HOME" in environ:
+        override = environ["CODEX_HOME"]
+        if type(override) is not str or not override or "\x00" in override:
+            raise ValueError("CODEX_HOME must be a non-empty absolute path")
+        override_root = Path(override)
+        if not override_root.is_absolute() or ".." in override_root.parts:
+            raise ValueError("CODEX_HOME must be a non-empty absolute path")
+        return override_root / "skills" / ADAPTER_NAME
+
+    definition = TARGETS[target_name]
+    return home_root.joinpath(*definition.relative_skill_root.parts, ADAPTER_NAME)
+
+
+def _validate_cli_version(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or any(
+            character.isspace() or not character.isprintable() for character in value
+        )
+    ):
+        raise ValueError("cli_version must be a non-empty printable token")
+    return value
+
+
+def _validate_managed_filename(value: object) -> str:
+    if (
+        type(value) is not str
+        or unicodedata.normalize("NFC", value) != value
+        or not is_safe_skill_name(value)
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or value == MANAGED_ADAPTER_RECORD
+    ):
+        raise ValueError(f"unsafe or noncanonical managed adapter filename: {value!r}")
+    return value
+
+
+def _validate_managed_files(value: object) -> Mapping[str, str]:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("managed adapter files must be a non-empty mapping")
+    copied: dict[str, str] = {}
+    for filename, digest in value.items():
+        safe_name = _validate_managed_filename(filename)
+        if type(digest) is not str or _FILE_DIGEST.fullmatch(digest) is None:
+            raise ValueError(f"managed adapter file digest is invalid: {safe_name!r}")
+        copied[safe_name] = digest
+    if "SKILL.md" not in copied:
+        raise ValueError("managed adapter files must include SKILL.md")
+    return MappingProxyType(dict(sorted(copied.items())))
+
+
+@dataclass(frozen=True)
+class ManagedAdapterRecord:
+    """Strict ownership record for one managed adapter installation."""
+
+    schema_version: int
+    implementation: str
+    cli_version: str
+    target: str
+    files: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != MANAGED_ADAPTER_SCHEMA_VERSION
+        ):
+            raise ValueError("managed adapter schema_version must be exactly 1")
+        if (
+            type(self.implementation) is not str
+            or self.implementation != IMPLEMENTATION_ID
+        ):
+            raise ValueError("managed adapter record has wrong implementation")
+        _validate_cli_version(self.cli_version)
+        _require_target_name(self.target)
+        object.__setattr__(self, "files", _validate_managed_files(self.files))
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"managed adapter JSON contains duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def parse_managed_record(content: bytes) -> ManagedAdapterRecord:
+    """Parse one exact canonical-schema ownership record."""
+    if type(content) is not bytes:
+        raise TypeError("managed adapter record content must be bytes")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("managed adapter record must be valid UTF-8") from exc
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except json.JSONDecodeError as exc:
+        raise ValueError("managed adapter record is malformed JSON") from exc
+    if type(payload) is not dict or frozenset(payload) != _MANAGED_ADAPTER_FIELDS:
+        raise ValueError("managed adapter record fields do not match the exact schema")
+    return ManagedAdapterRecord(
+        schema_version=payload["schema_version"],
+        implementation=payload["implementation"],
+        cli_version=payload["cli_version"],
+        target=payload["target"],
+        files=payload["files"],
+    )
+
+
+def render_managed_record(record: ManagedAdapterRecord) -> bytes:
+    """Render canonical sorted UTF-8 JSON with exactly one final newline."""
+    if type(record) is not ManagedAdapterRecord:
+        raise TypeError("record must be a ManagedAdapterRecord")
+    payload = {
+        "schema_version": record.schema_version,
+        "implementation": record.implementation,
+        "cli_version": record.cli_version,
+        "target": record.target,
+        "files": dict(record.files),
+    }
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class DesiredAdapter:
+    """Exact bytes desired for one adapter target, without filesystem effects."""
+
+    target: str
+    skill_md: bytes
+    managed_record: bytes
+
+    def __post_init__(self) -> None:
+        _require_target_name(self.target)
+        if type(self.skill_md) is not bytes or type(self.managed_record) is not bytes:
+            raise TypeError("desired adapter artifacts must be bytes")
+
+
+def build_desired_adapter(
+    target: object, cli_version: object, collection: SkillCollection
+) -> DesiredAdapter:
+    """Build deterministic adapter and ownership-record bytes without writing them."""
+    target_name = _require_target_name(target)
+    version = _validate_cli_version(cli_version)
+    skill_md = render_adapter_skill(collection).encode("utf-8")
+    record = ManagedAdapterRecord(
+        schema_version=MANAGED_ADAPTER_SCHEMA_VERSION,
+        implementation=IMPLEMENTATION_ID,
+        cli_version=version,
+        target=target_name,
+        files={"SKILL.md": "sha256:" + sha256(skill_md).hexdigest()},
+    )
+    return DesiredAdapter(
+        target=target_name,
+        skill_md=skill_md,
+        managed_record=render_managed_record(record),
+    )
 
 
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:

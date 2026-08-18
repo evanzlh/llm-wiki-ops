@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -24,6 +25,18 @@ from obsidian_wiki.skill_trees import (
     SkillEntry,
     discover_skill_collection,
 )
+
+ADAPTER_DIGEST = "sha256:" + "a" * 64
+SECOND_ADAPTER_DIGEST = "sha256:" + "b" * 64
+EXPECTED_TARGET_ROOTS = {
+    "codex": ".codex/skills",
+    "claude": ".claude/skills",
+    "cursor": ".cursor/skills",
+    "windsurf": ".codeium/windsurf/skills",
+    "opencode": ".config/opencode/skills",
+    "pi": ".pi/agent/skills",
+    "kiro": ".kiro/skills",
+}
 
 EXPECTED_BUNDLED_CATALOG = (
     (
@@ -1237,3 +1250,268 @@ def test_renderer_rejects_multiply_linked_template(
 
     with pytest.raises(ValueError, match="single-link|multiply-linked"):
         render_adapter_skill(collection)
+
+
+@pytest.mark.parametrize("target", sorted(EXPECTED_TARGET_ROOTS))
+def test_adapter_target_registry_and_destinations_are_exact(
+    target: str,
+) -> None:
+    home = Path("/users/demo")
+
+    destination = agent_adapter.resolve_adapter_destination(
+        target, home=home, environ={}
+    )
+
+    assert destination == home / EXPECTED_TARGET_ROOTS[target] / ADAPTER_NAME
+    registered = agent_adapter.TARGETS[target]
+    assert registered == agent_adapter.AgentTarget(
+        name=target,
+        relative_skill_root=agent_adapter.PurePosixPath(EXPECTED_TARGET_ROOTS[target]),
+    )
+
+
+def test_adapter_target_registry_and_values_are_immutable() -> None:
+    assert isinstance(agent_adapter.TARGETS, MappingProxyType)
+    assert set(agent_adapter.TARGETS) == set(EXPECTED_TARGET_ROOTS)
+
+    with pytest.raises(TypeError):
+        agent_adapter.TARGETS["extra"] = agent_adapter.TARGETS["codex"]
+    with pytest.raises(FrozenInstanceError):
+        agent_adapter.TARGETS["codex"].name = "changed"
+
+
+def test_codex_target_honors_only_an_absolute_nonempty_codex_home() -> None:
+    home = Path("/users/demo")
+    override = Path("/opt/codex")
+
+    assert (
+        agent_adapter.resolve_adapter_destination(
+            "codex", home=home, environ={"CODEX_HOME": str(override)}
+        )
+        == override / "skills" / ADAPTER_NAME
+    )
+    for target in set(EXPECTED_TARGET_ROOTS) - {"codex"}:
+        assert (
+            agent_adapter.resolve_adapter_destination(
+                target, home=home, environ={"CODEX_HOME": str(override)}
+            )
+            == home / EXPECTED_TARGET_ROOTS[target] / ADAPTER_NAME
+        )
+
+
+@pytest.mark.parametrize("value", ["", "relative", "../codex", "./codex"])
+def test_codex_target_rejects_empty_or_relative_codex_home(value: str) -> None:
+    with pytest.raises(ValueError, match="CODEX_HOME|absolute|non-empty"):
+        agent_adapter.resolve_adapter_destination(
+            "codex", home=Path("/users/demo"), environ={"CODEX_HOME": value}
+        )
+
+
+@pytest.mark.parametrize(
+    "target", [None, "", "Codex", " codex", "codex ", "codex,claude", ["codex"]]
+)
+def test_adapter_target_rejects_missing_multiple_unknown_or_noncanonical_names(
+    target: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="target"):
+        agent_adapter.resolve_adapter_destination(
+            target, home=Path("/users/demo"), environ={}
+        )
+
+
+@pytest.mark.parametrize("home", ["/users/demo", Path("relative"), Path("../home")])
+def test_adapter_target_rejects_non_path_or_nonabsolute_home(home: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="home|absolute"):
+        agent_adapter.resolve_adapter_destination("claude", home=home, environ={})
+
+
+def test_adapter_destination_resolution_performs_no_filesystem_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "destination resolution must not inspect or write filesystem"
+        )
+
+    for method in ("exists", "is_dir", "resolve", "expanduser", "mkdir", "write_bytes"):
+        monkeypatch.setattr(Path, method, forbidden)
+
+    assert agent_adapter.resolve_adapter_destination(
+        "codex", home=Path("/users/demo"), environ={}
+    ) == Path("/users/demo/.codex/skills/llm-wiki-ops")
+
+
+def make_adapter_record(
+    *, files: dict[str, str] | None = None
+) -> agent_adapter.ManagedAdapterRecord:
+    return agent_adapter.ManagedAdapterRecord(
+        schema_version=1,
+        implementation="evanzlh/llm-wiki-ops",
+        cli_version="2026.8.18",
+        target="codex",
+        files={"SKILL.md": ADAPTER_DIGEST} if files is None else files,
+    )
+
+
+def expected_adapter_record_payload() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "implementation": "evanzlh/llm-wiki-ops",
+        "cli_version": "2026.8.18",
+        "target": "codex",
+        "files": {"SKILL.md": ADAPTER_DIGEST},
+    }
+
+
+def test_managed_adapter_record_round_trip_is_canonical_utf8_json() -> None:
+    record = make_adapter_record()
+
+    rendered = agent_adapter.render_managed_record(record)
+
+    assert rendered == (
+        json.dumps(
+            expected_adapter_record_payload(),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    assert agent_adapter.parse_managed_record(rendered) == record
+    assert rendered.endswith(b"\n") and not rendered.endswith(b"\n\n")
+
+
+def test_managed_adapter_record_and_files_are_immutable_and_copied() -> None:
+    source = {"SKILL.md": ADAPTER_DIGEST, "README.md": SECOND_ADAPTER_DIGEST}
+    record = make_adapter_record(files=source)
+    source["SKILL.md"] = SECOND_ADAPTER_DIGEST
+
+    assert isinstance(record.files, MappingProxyType)
+    assert list(record.files) == ["README.md", "SKILL.md"]
+    assert record.files["SKILL.md"] == ADAPTER_DIGEST
+    with pytest.raises(TypeError):
+        record.files["SKILL.md"] = SECOND_ADAPTER_DIGEST
+    with pytest.raises(FrozenInstanceError):
+        record.target = "claude"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("target"),
+        lambda payload: payload.__setitem__("unexpected", True),
+        lambda payload: payload.__setitem__("schema_version", True),
+        lambda payload: payload.__setitem__("schema_version", 2),
+        lambda payload: payload.__setitem__("implementation", "other/wiki"),
+        lambda payload: payload.__setitem__("target", "Codex"),
+        lambda payload: payload.__setitem__("target", "unknown"),
+        lambda payload: payload.__setitem__("cli_version", ""),
+        lambda payload: payload.__setitem__("cli_version", " 2026.8.18"),
+        lambda payload: payload.__setitem__("cli_version", "2026.8.18\n"),
+        lambda payload: payload.__setitem__("files", []),
+        lambda payload: payload.__setitem__("files", {}),
+        lambda payload: payload.__setitem__("files", {"README.md": ADAPTER_DIGEST}),
+        lambda payload: payload.__setitem__(
+            "files",
+            {"SKILL.md": ADAPTER_DIGEST, ".llmwikiops-managed.json": ADAPTER_DIGEST},
+        ),
+    ],
+)
+def test_managed_adapter_record_rejects_wrong_schema_and_scalar_values(
+    mutation,
+) -> None:
+    payload = expected_adapter_record_payload()
+    mutation(payload)
+
+    with pytest.raises(ValueError):
+        agent_adapter.parse_managed_record(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "",
+        ".",
+        "..",
+        "/SKILL.md",
+        "./SKILL.md",
+        "docs/SKILL.md",
+        r"docs\SKILL.md",
+        "bad\x00name",
+    ],
+)
+def test_managed_adapter_record_rejects_unsafe_or_noncanonical_filenames(
+    filename: str,
+) -> None:
+    payload = expected_adapter_record_payload()
+    payload["files"] = {"SKILL.md": ADAPTER_DIGEST, filename: SECOND_ADAPTER_DIGEST}
+
+    with pytest.raises(ValueError, match="file|name|safe"):
+        agent_adapter.parse_managed_record(json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [True, "", "sha256:" + "A" * 64, "sha256:" + "a" * 63, "md5:" + "a" * 64],
+)
+def test_managed_adapter_record_rejects_noncanonical_digests(digest: object) -> None:
+    payload = expected_adapter_record_payload()
+    payload["files"] = {"SKILL.md": digest}
+
+    with pytest.raises(ValueError, match="digest"):
+        agent_adapter.parse_managed_record(json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b"",
+        b"not json",
+        b"[]",
+        b"null",
+        b'{"schema_version": 1, "schema_version": 1}',
+        b"\xff",
+        "not bytes",
+    ],
+)
+def test_managed_adapter_record_parser_rejects_malformed_duplicate_or_nonbytes(
+    contents: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        agent_adapter.parse_managed_record(contents)
+
+
+def test_managed_adapter_record_parser_rejects_duplicate_nested_file_key() -> None:
+    payload = expected_adapter_record_payload()
+    text = json.dumps(payload)
+    text = text.replace(
+        json.dumps(payload["files"]),
+        '{"SKILL.md": "' + ADAPTER_DIGEST + '", "SKILL.md": "' + ADAPTER_DIGEST + '"}',
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        agent_adapter.parse_managed_record(text.encode())
+
+
+def test_desired_adapter_contains_exact_rendered_skill_and_matching_record(
+    tmp_path: Path,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "catalog", {"demo": "Use when demo is requested."}
+        )
+    )
+
+    desired = agent_adapter.build_desired_adapter("claude", "2026.8.18", collection)
+    expected_skill = render_adapter_skill(collection).encode("utf-8")
+    record = agent_adapter.parse_managed_record(desired.managed_record)
+
+    assert desired.target == "claude"
+    assert desired.skill_md == expected_skill
+    assert record.target == "claude"
+    assert record.files == {"SKILL.md": "sha256:" + sha256(expected_skill).hexdigest()}
+    assert desired.managed_record == agent_adapter.render_managed_record(record)
+    with pytest.raises(FrozenInstanceError):
+        desired.target = "codex"
