@@ -620,6 +620,36 @@ def test_resolve_repository_rejects_unsafe_config_file_without_parent_fallback(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX root identity contract")
+def test_resolve_repository_rejects_root_replaced_after_initial_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested = tmp_path / "requested"
+    write_portable(requested)
+    original_lstat = Path.lstat
+    replaced = False
+
+    def replace_after_initial_lstat(path: Path):
+        nonlocal replaced
+        metadata = original_lstat(path)
+        if path == requested and not replaced:
+            replaced = True
+            requested.rename(tmp_path / "original-requested")
+            write_portable(requested)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", replace_after_initial_lstat)
+
+    with pytest.raises(ConfigError, match="explicit repository changed while loading"):
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert replaced
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root identity contract")
 def test_resolve_repository_rejects_a_root_replaced_during_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

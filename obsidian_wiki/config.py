@@ -319,6 +319,7 @@ def resolve_repository(
         raise ConfigError(f"explicit repository must not be a symlink: {requested}")
     if not stat.S_ISDIR(metadata.st_mode):
         raise ConfigError(f"explicit repository must be a directory: {requested}")
+    initial_identity = stable_directory_identity(metadata)
 
     config_path = requested / CONFIG_RELATIVE
     if not _is_portable_config_candidate(config_path):
@@ -337,7 +338,8 @@ def resolve_repository(
         raise ConfigError(f"explicit repository changed while loading: {requested}") from exc
     if (
         not stat.S_ISDIR(attached.st_mode)
-        or stable_directory_identity(attached) != loaded.root_identity
+        or loaded.root_identity != initial_identity
+        or stable_directory_identity(attached) != initial_identity
         or loaded.root != requested
     ):
         raise ConfigError(f"explicit repository changed while loading: {requested}")
