@@ -21,8 +21,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 This workflow explicitly edits `.obsidian/graph.json`; it is an Obsidian
 configuration change, not a knowledge transaction. Do not run `<wiki-cli> transaction begin`:
@@ -31,13 +35,21 @@ not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and approval
 
-1. Resolve the nearest ancestor `.llmwikiops/config.toml`. If absent, stop with
-   `llmwikiops setup [DIR]`; invalid config fails closed.
-2. Read repository `AGENTS.md`, `.skills/llm-wiki/SKILL.md`, then this skill. The
-   canonical protocol wins on conflict. Never accept another vault path.
-3. Require an existing configured-vault `.obsidian/` directory. Do not create it;
+In repository-local context, resolve only the nearest ancestor
+`.llmwikiops/config.toml` from CWD and use the resulting root. If local discovery
+finds no config, stop with `llmwikiops setup [DIR]`; invalid config fails closed.
+
+In external adapter context, use the already validated retained exact `<root>`
+and `<wiki-cli>` binding. Do not search or resolve from CWD, do not change
+directories or `chdir`, and do not stop because CWD has no config.
+
+In either context, read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md`
+when present, then this task skill. The canonical protocol wins conflicts. Never
+accept another vault path.
+
+1. Require an existing configured-vault `.obsidian/` directory. Do not create it;
    ask the user to open the vault in Obsidian once if missing.
-4. Show the proposed mode and replacement `colorGroups`, and obtain explicit user approval
+2. Show the proposed mode and replacement `colorGroups`, and obtain explicit user approval
    before this subjective configuration edit. Warn that Obsidian may
    overwrite config on close; ask the user to close it or reload immediately after.
 
@@ -109,7 +121,7 @@ Using the context-appropriate Git form defined above, run this argv-safe,
 path-scoped review and show it to the user:
 
 ```bash
-git --literal-pathspecs diff -- "$CONFIG_PATH"
+<git-cli> --literal-pathspecs diff -- "$CONFIG_PATH"
 ```
 
 `CONFIG_PATH` is one validated repository-relative path argument, not shell text or

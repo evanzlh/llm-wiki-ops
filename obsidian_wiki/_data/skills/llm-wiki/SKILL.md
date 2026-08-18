@@ -26,8 +26,14 @@ profiles, or recent use.
   validated immutable root.
 
 Use `<wiki-cli> transaction <operation>`, `<wiki-cli> hot <operation>`, and
-`<wiki-cli> check` for repository-aware CLI work. For Git inspection, use
-`git -C <root>` only for external context and ordinary repository-root execution for local context.
+`<wiki-cli> check` for repository-aware CLI work.
+
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 If no configuration exists, stop and recommend `llmwikiops setup [DIR]`. If
 the configuration is malformed, incomplete, unsafe, or resolves outside its

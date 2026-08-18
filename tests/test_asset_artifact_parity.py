@@ -83,6 +83,28 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
     assert _normalized_wheel_inventory(first) == _normalized_wheel_inventory(second)
 
 
+def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.md text eol=lf" in attributes.splitlines()
+    assert "*.mdc text eol=lf" in attributes.splitlines()
+    paths = tuple(
+        path
+        for path in (ROOT / "obsidian_wiki/_data").rglob("*")
+        if path.is_file() and path.suffix in {".md", ".mdc"}
+    )
+    assert paths
+    for path in paths:
+        assert b"\r" not in path.read_bytes(), path
+        relative = path.relative_to(ROOT).as_posix()
+        blob = subprocess.run(
+            ["git", "show", f":{relative}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        assert b"\r" not in blob, relative
+
+
 def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
     paths = {
         "llm_wiki_ops-2026.9/obsidian_wiki/portable.py",
@@ -342,9 +364,16 @@ def test_distribution_assets_exactly_match_canonical_package_data(
         ), metadata
     expected = _source_inventory()
     assert expected
-    assert _wheel_inventory(direct_wheels[0]) == expected
-    assert _sdist_inventory(sdist_files[0]) == expected
-    assert _wheel_inventory(rebuilt_wheels[0]) == expected
+    artifact_inventories = {
+        "direct wheel": _wheel_inventory(direct_wheels[0]),
+        "sdist": _sdist_inventory(sdist_files[0]),
+        "rebuilt wheel": _wheel_inventory(rebuilt_wheels[0]),
+    }
+    for artifact, inventory in artifact_inventories.items():
+        assert inventory == expected
+        for relative, (contents, _) in inventory.items():
+            if Path(relative).suffix in {".md", ".mdc"}:
+                assert b"\r" not in contents, f"{artifact}:{relative}"
     assert PROTOCOL_BOOTSTRAP_PATHS <= set(expected)
     for relative, (contents, _) in expected.items():
         assert not FORMER_PROTOCOL_RESOURCE.search(contents), relative

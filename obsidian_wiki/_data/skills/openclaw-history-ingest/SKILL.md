@@ -19,8 +19,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Use [OpenClaw data format](references/openclaw-data-format.md) for exact formats and [source snapshot rules](../wiki-capture/references/source-snapshot.md) for evidence.
 
@@ -75,7 +79,7 @@ slice_descriptor: <bounded-redacted-human-description>
 
 The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
 
-For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `<git-cli> rev-parse --verify HEAD`; run `<git-cli> --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `<git-cli> --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
 ## Repository-native completion
 
@@ -86,7 +90,7 @@ After snapshot owner review and the Git gate, run `<wiki-cli> cache-check <Sourc
 An absolute cache path is transient and never provenance.
 
 1. Parent writes bounded reviewable UTF-8 Markdown snapshot files under `sources/history/<tool>/` (`sources/history/openclaw/`) with `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`; redact secret, private, and irrelevant data.
-2. Validate every Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty status. Stop for owner review, stage, and commit externally, then rerun when new/dirty; tracked is not reviewed.
+2. Validate every Unicode Source ID as a non-empty POSIX repository-relative path below configured sources using source_id semantics; reject NUL, backslash, absolute/parent paths, links, and special files. Run `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`; require HEAD and empty status. Stop for owner review, stage, and commit externally, then rerun when new/dirty; tracked is not reviewed.
 3. Parent deduplicates live-page sources, accepted snapshots, and candidate citations into the complete source closure.
 4. Parent runs `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty` once.
 5. Parent alone writes final candidates under the runtime candidate vault with non-empty sources and declares deletions through CLI.

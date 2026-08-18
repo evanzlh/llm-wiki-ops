@@ -21,8 +21,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 This workflow explicitly edits files under `.obsidian/`; those are Obsidian
 configuration changes, not a knowledge transaction. Do not run `<wiki-cli> transaction begin`:
@@ -31,10 +35,17 @@ not update manifest shards, `index.md`, or `log.md`.
 
 ## Authority and subjective approval
 
-Resolve the nearest ancestor `.llmwikiops/config.toml`. If absent, stop with
-`llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
-`.skills/llm-wiki/SKILL.md`, then this skill; the canonical protocol wins on conflict.
-Invalid config fails closed, and an invocation cannot select another vault.
+In repository-local context, resolve only the nearest ancestor
+`.llmwikiops/config.toml` from CWD and use the resulting root. If local discovery
+finds no config, stop with `llmwikiops setup [DIR]`; invalid config fails closed.
+
+In external adapter context, use the already validated retained exact `<root>`
+and `<wiki-cli>` binding. Do not search or resolve from CWD, do not change
+directories or `chdir`, and do not stop because CWD has no config.
+
+In either context, read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md`
+when present, then this task skill. The canonical protocol wins conflicts, and an
+invocation cannot select another vault.
 
 Read `<vault>/.obsidian/appearance.json` and treat `enabledCssSnippets` as the active
 styling source of truth. Require `.obsidian/` to exist. Explain the visible-object to
@@ -120,7 +131,7 @@ Using the context-appropriate Git form above, review every edited file separatel
 pathspec handling:
 
 ```bash
-git --literal-pathspecs diff -- "$CONFIG_PATH"
+<git-cli> --literal-pathspecs diff -- "$CONFIG_PATH"
 ```
 
 `CONFIG_PATH` is one validated argument, not shell text or a glob. Show each diff to
@@ -128,6 +139,6 @@ the user. The owner decides whether to commit tracked config; this workflow neve
 commits, pushes, or publishes. Reload Obsidian with Cmd/Ctrl+R after edit or restore
 and screenshot-check the result.
 
-Report changed files, backup paths, phrase-to-layer mapping, `git diff` status,
+Report changed files, backup paths, phrase-to-layer mapping, `<git-cli> diff` status,
 reload/screenshot result, and anything unverified. Do not mutate wiki pages,
 `log.md`, `index.md`, `hot.md`, or `.manifest.json`.

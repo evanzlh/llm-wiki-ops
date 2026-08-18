@@ -90,6 +90,58 @@ MAINTENANCE_SKILLS = tuple(
         "wiki-update",
     )
 )
+GIT_CONTEXT_PROTOCOL = """- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token."""
+NON_REPOSITORY_RUNTIME_SKILLS = {
+    "impl-validator",
+    "session-brain",
+    "session-search",
+    "skill-creator",
+    "wiki-history-ingest",
+}
+
+
+def test_git_examples_use_context_aware_argv_prefix(tmp_path: Path) -> None:
+    repository = tmp_path / "root with spaces"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=repository, check=True, capture_output=True, text=True
+    )
+    local_prefix = ["git"]
+    external_prefix = ["git", "-C", str(repository)]
+    local = subprocess.run(
+        [*local_prefix, "rev-parse", "--show-toplevel"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    external_cwd = tmp_path / "outside"
+    external_cwd.mkdir()
+    external = subprocess.run(
+        [*external_prefix, "rev-parse", "--show-toplevel"],
+        cwd=external_cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert local.stdout == external.stdout == f"{repository}\n"
+
+    for path in (
+        path
+        for path in (ROOT / "obsidian_wiki/_data/skills").glob("*/SKILL.md")
+        if path.parent.name not in NON_REPOSITORY_RUNTIME_SKILLS
+    ):
+        contents = path.read_text(encoding="utf-8")
+        assert contents.count(GIT_CONTEXT_PROTOCOL) == 1, path
+        examples = contents.replace(GIT_CONTEXT_PROTOCOL, "")
+        assert '["git",' not in examples, path
+        assert not re.search(r"(?m)^git (?:--literal-pathspecs|diff|status|rev-parse)", examples), path
+        assert not re.search(r"`git (?:--literal-pathspecs|diff|status|rev-parse)", examples), path
 
 
 def _history_file_topology_ok(root: Path, selected: Path) -> bool:
@@ -212,8 +264,8 @@ def test_canonical_protocol_defines_dual_context_cli_and_git_forms() -> None:
         "`<wiki-cli> transaction <operation>`",
         "`<wiki-cli> hot <operation>`",
         "`<wiki-cli> check`",
-        "`git -C <root>` only for external context",
-        "ordinary repository-root execution for local context",
+        "`<git-cli>` is the argv prefix `[\"git\"]`",
+        "`[\"git\", \"-C\", \"<root>\"]`",
     ):
         assert required in text
     for preserved in (
@@ -579,14 +631,14 @@ def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
             "new snapshot requires owner Git review",
             "becomes tracked authority",
             "framework and agent must not run `git add`, `git commit`, or `git push`",
-            '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
             "manifest-tracked",
             "Git-tracked",
             "owner review, stage, and commit externally, then rerun",
         ):
             assert required in flat, f"{path}: missing {required!r}"
         assert flat.index(
-            '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
+            '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
         ) < flat.index("cache-check") < flat.index("transaction begin --source")
 
 
@@ -797,11 +849,11 @@ def test_pageindex_preflight_precedes_invocation_and_postflight() -> None:
 
 def test_git_authority_commands_are_argv_safe_and_require_clean_head(tmp_path: Path) -> None:
     ls_template = (
-        '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
+        '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
         '"<Source ID>"]'
     )
     status_template = (
-        '["git", "--literal-pathspecs", "status", "--porcelain=v1", '
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
         '"--untracked-files=all", "--", "<Source ID>"]'
     )
     for path in SOURCE_WORKFLOW_SKILLS:
@@ -924,11 +976,11 @@ def test_pageindex_node_id_is_optional_but_validated_when_present() -> None:
 
 def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
     ls_template = (
-        '["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
+        '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", '
         '"<Source ID>"]'
     )
     status_template = (
-        '["git", "--literal-pathspecs", "status", "--porcelain=v1", '
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
         '"--untracked-files=all", "--", "<Source ID>"]'
     )
     for path in HISTORY_SKILLS:

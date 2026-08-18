@@ -1,2 +1,6 @@
 # Shell hooks must retain Unix line endings on every checkout.
 *.sh text eol=lf
+
+# Packaged runtime guidance must have byte-identical LF text in source and artifacts.
+*.md text eol=lf
+*.mdc text eol=lf

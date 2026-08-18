@@ -21,8 +21,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Import either a lossy `graph.json` skeleton as stubs or an OKF Markdown bundle
 as full pages. Detection, parsing, conflict selection, and candidate planning
@@ -193,8 +197,8 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    contains no `.` or `..` segment, NUL, or backslash, stays below configured
    sources, and is accepted by cache/manifest source_id semantics. Using the
    context-appropriate Git form above, execute
-   `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
-   and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
+   `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
    as exact read-only argument vectors. Require an existing HEAD, zero exits,
    and status output must be empty. The manifest-tracked and Git-tracked states
    differ, and tracked is not committed-reviewed. On any nonzero result, output,

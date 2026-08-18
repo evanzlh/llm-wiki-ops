@@ -19,8 +19,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Distill durable knowledge from selected Claude sessions without treating the tool cache as repository authority. Read [Claude data format](references/claude-data-format.md) for exact schemas and [source snapshot rules](../wiki-capture/references/source-snapshot.md) for the shared evidence contract.
 
@@ -82,7 +86,7 @@ slice_descriptor: <bounded-redacted-human-description>
 
 The hex is the same digest used in `<tool>-<digest>.md`: SHA-256 of the canonical UTF-8 tuple serialization. `slice_descriptor` is review-only, at most 256 UTF-8 bytes after redaction, with an explicit omission marker when shortened; it contains no absolute path, secret, private material, or cache-sensitive value. Logical comparison uses `slice_identity`, not the display text.
 
-For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `git rev-parse --verify HEAD`; run `git --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
+For an existing target, complete the pre-write owner preservation gate before any metadata read or write: require `<git-cli> rev-parse --verify HEAD`; run `<git-cli> --literal-pathspecs ls-files --error-unmatch -- <target>` for the exact target; then run `<git-cli> --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <target>` and require empty output. Any dirty, untracked, missing, or no HEAD state means stop and do not overwrite. Only after this gate, read existing frontmatter safely: parse the existing frontmatter and require exact `source_tool`, `native_session_id`, and `slice_identity` agreement with the computed tuple. A malformed, missing, duplicate, or mismatched field stops. Then perform the owner-reviewed atomic replacement. After the post-write, stop for owner review and commit; rerun the literal tracked/clean authority gate and require it to pass before transaction begin.
 
 ## Repository-native completion
 
@@ -93,7 +97,7 @@ After snapshot owner review and the Git gate, run `<wiki-cli> cache-check <Sourc
 The external Claude cache and every absolute cache path are transient selection inputs. Never place an absolute cache path, home directory, or cache-derived pseudo-source in snapshot or page provenance.
 
 1. **Materialize reviewed evidence.** The parent writes bounded reviewable UTF-8 Markdown snapshot files under `sources/history/<tool>/` (concretely `sources/history/claude/`). Metadata records `source_tool`, stable tool/session identity, `captured_at`, `content_hash`, and `format`. Compute the hash over the normalized reviewed body. Use repository-relative labels only; redact secret, private, and irrelevant material and mark omissions.
-2. **Require owner Git authority.** Validate each non-empty POSIX repository-relative Source ID under configured sources with source_id semantics. Reject NUL, backslash, absolute paths, `..`, symlinks, hard links, and special files. Run `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`. Require a HEAD and empty status output. Tracked is not committed-reviewed: for new or dirty evidence, stop for owner review, stage, and commit externally, then rerun.
+2. **Require owner Git authority.** Validate each non-empty POSIX repository-relative Source ID under configured sources with source_id semantics. Reject NUL, backslash, absolute paths, `..`, symlinks, hard links, and special files. Run `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]` and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`. Require a HEAD and empty status output. Tracked is not committed-reviewed: for new or dirty evidence, stop for owner review, stage, and commit externally, then rerun.
 3. **Build closure.** The parent computes the complete source closure from live-page sources, accepted snapshot Source IDs, and final candidate citations. Deduplicate literal Unicode Source IDs and fail closed if any source is missing or unsafe.
 4. **Begin once.** The parent runs `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty` and retains the returned ID and runtime-only candidate vault.
 5. **Write final candidates.** The parent alone writes final candidates below `candidate_vault`; every page has a non-empty subset of the accepted Source IDs. Use transaction delete for intended deletions.

@@ -21,8 +21,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Export to `.llmwikiops/local/exports/<timestamp>/`. The repository root
 `.gitignore` ignores `.llmwikiops/local/`, so exports are local review output,
@@ -31,11 +35,17 @@ edit the vault, run a knowledge transaction, commit, push, or open a pull reques
 
 ## Authority and safe reads
 
-Resolve the nearest ancestor `.llmwikiops/config.toml`; if absent, stop with
-`llmwikiops setup [DIR]`. Read repository `AGENTS.md`, then
-`.skills/llm-wiki/SKILL.md`, then this skill. Invalid config fails closed and the
-canonical protocol wins on conflict. Never accept another vault path from the
-invocation.
+In repository-local context, resolve only the nearest ancestor
+`.llmwikiops/config.toml` from CWD and use the resulting root. If local discovery
+finds no config, stop with `llmwikiops setup [DIR]`; invalid config fails closed.
+
+In external adapter context, use the already validated retained exact `<root>`
+and `<wiki-cli>` binding. Do not search or resolve from CWD, do not change
+directories or `chdir`, and do not stop because CWD has no config.
+
+In either context, read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md`
+when present, then this task skill. The canonical protocol wins conflicts. Never
+accept another vault path from the invocation.
 
 Inventory Markdown beneath the configured vault without following links. Reject a
 symbolic link, hard link, special file, path escaping the physical vault, or a file

@@ -19,11 +19,23 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
+
+## New-repository bootstrap exception
+
+The new-repository bootstrap exception applies before any repository binding:
+before setup there is no `<wiki-cli>` or validated root. Run the bare,
+repository-independent `llmwikiops setup <dir>` command. After it succeeds,
+validate the created root with `llmwikiops -C <dir> info --json` and retain
+`llmwikiops -C <dir>` as `<wiki-cli>` for the rest of the workflow.
 
 Use the installed CLI for deterministic repository setup. Run
-`llmwikiops setup [DIR]` to initialize the target directory, or clone an
+`llmwikiops setup <dir>` to initialize the target directory, or clone an
 existing wiki repository and inspect its checked-in `.llmwikiops/config.toml`.
 Do not invent configuration files or copy runtime assets manually.
 

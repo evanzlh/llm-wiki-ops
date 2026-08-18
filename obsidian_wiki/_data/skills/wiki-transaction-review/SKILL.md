@@ -19,18 +19,28 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Use this skill to inspect or resolve CLI-owned retained transaction state. It
 does not create candidate knowledge or invent filesystem paths or commands.
 
 ## Resolve authority
 
-Find the nearest ancestor `.llmwikiops/config.toml`; fail closed if absent,
-and use its repository root as the command working directory. Apply authority
-in this order: root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md` when
-present, then this task skill. The canonical protocol wins any conflict.
+In repository-local context, resolve only the nearest ancestor
+`.llmwikiops/config.toml` from CWD and use the resulting root. If local discovery
+finds no config, stop with `llmwikiops setup [DIR]`; invalid config fails closed.
+
+In external adapter context, use the already validated retained exact `<root>`
+and `<wiki-cli>` binding. Do not search or resolve from CWD, do not change
+directories or `chdir`, and do not stop because CWD has no config.
+
+In either context, read root `AGENTS.md`, canonical `llm-wiki`, vault `AGENTS.md`
+when present, then this task skill. The canonical protocol wins conflicts.
 
 ## Inspect the returned record
 

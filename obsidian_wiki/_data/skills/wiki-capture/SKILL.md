@@ -21,8 +21,12 @@ profiles, or recent use.
 - External adapter context: `<wiki-cli>` is `llmwikiops -C <root>` for the
   validated immutable root.
 
-For Git, use `git -C <root>` before Git subcommands in external context; in
-repository-local context, run Git from the repository root.
+- Repository-local context: `<git-cli>` is the argv prefix `["git"]`; run it
+  with the validated root as `cwd`.
+- External adapter context: `<git-cli>` is the argv prefix
+  `["git", "-C", "<root>"]`; keep the caller's CWD unchanged.
+Append every Git subcommand and path as separate argv elements; `<git-cli>` is
+an argv prefix, never one shell token.
 
 Capture conversation material without treating a transcript as knowledge by
 default.
@@ -115,8 +119,8 @@ Use these eight steps for Full and Correction.
    `..` segment, NUL, or backslash, stays below configured sources, and is
    accepted by cache/manifest source_id semantics. Using the context-appropriate
    Git form above, execute the exact read-only argument vectors
-   `["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
-   and `["git", "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
+   `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
    Also require an existing HEAD. Both commands must return zero and status
    output must be empty. The manifest-tracked and Git-tracked states differ,
    and tracked is not committed-reviewed. On any nonzero result, status output,

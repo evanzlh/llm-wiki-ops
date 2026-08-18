@@ -105,6 +105,90 @@ REPOSITORY_COMMAND = re.compile(
     r"graph-analyse|cache-check|lint|trust-record|trust-check|query|"
     r"context-pack|context)\b"
 )
+CONFLICTING_AUTHORITY_SKILLS = (
+    "cross-linker",
+    "daily-update",
+    "graph-colorize",
+    "obsidian-layout-adjustment",
+    "tag-taxonomy",
+    "vault-skill-factory",
+    "wiki-context-pack",
+    "wiki-dedup",
+    "wiki-digest",
+    "wiki-export",
+    "wiki-lint",
+    "wiki-narrate",
+    "wiki-query",
+    "wiki-rebuild",
+    "wiki-status",
+    "wiki-synthesize",
+    "wiki-transaction-review",
+    "wiki-update",
+)
+
+
+def _authority_section(contents: str) -> str:
+    match = re.search(
+        r"(?ms)^## [^\n]*(?:Authority|authority)[^\n]*\n(.*?)(?=^## |\Z)",
+        contents,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def test_authority_preflights_branch_on_local_or_external_context() -> None:
+    unconditional_discovery = re.compile(
+        r"(?mi)^(?:\d+\.\s+)?(?:locate|resolve|find|from the current directory).*"
+        r"nearest ancestor"
+    )
+    unconditional_absence = re.compile(
+        r"(?mi)^(?:\d+\.\s+)?if (?:no .*config|absent).*stop"
+    )
+    cwd_binding = re.compile(
+        r"(?i)(?:keep|use).*repository root as the command working directory"
+    )
+    for name in CONFLICTING_AUTHORITY_SKILLS:
+        authority = _authority_section(skill_text(name))
+        flat = " ".join(authority.split())
+        assert re.search(
+            r"repository-local context.*nearest ancestor", flat, re.IGNORECASE
+        ), name
+        assert re.search(
+            r"external adapter context.*(?:retained|already validated).*exact.*root",
+            flat,
+            re.IGNORECASE,
+        ), name
+        assert re.search(
+            r"external adapter context.*do not.*(?:search|resolve).*CWD",
+            flat,
+            re.IGNORECASE,
+        ), name
+        assert re.search(
+            r"external adapter context.*do not.*(?:change director|chdir)",
+            flat,
+            re.IGNORECASE,
+        ), name
+        assert re.search(
+            r"external adapter context.*do not stop.*CWD.*no config",
+            flat,
+            re.IGNORECASE,
+        ), name
+        assert not unconditional_discovery.search(authority), name
+        assert not unconditional_absence.search(authority), name
+        assert not cwd_binding.search(authority), name
+
+
+def test_wiki_setup_declares_unbound_bootstrap_exception() -> None:
+    setup = skill_text("wiki-setup")
+    flat = " ".join(setup.split())
+    exception = flat.index("new-repository bootstrap exception")
+    bare_setup = flat.index("`llmwikiops setup <dir>`")
+    validation = flat.index("`llmwikiops -C <dir> info --json`")
+
+    assert "before setup there is no `<wiki-cli>` or validated root" in flat
+    assert exception < bare_setup < validation
+    assert "repository-independent" in flat[exception:validation]
+    assert "retain `llmwikiops -C <dir>` as `<wiki-cli>`" in flat[validation:]
 
 
 def test_repository_aware_skill_inventory_and_dual_context_are_exact() -> None:
@@ -371,7 +455,7 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
     setup = text(SETUP)
     flat = " ".join(setup.split())
     for required in (
-        "llmwikiops setup [DIR]",
+        "llmwikiops setup <dir>",
         "clone",
         "doctor",
         "check",
@@ -410,7 +494,7 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
     assert frontmatter.scalars["description"].startswith("Use when ")
     for required in (
         "nearest ancestor `.llmwikiops/config.toml`",
-        "repository root",
+        "resulting root",
         "root `AGENTS.md`",
         "vault `AGENTS.md`",
         "canonical `llm-wiki`",
@@ -530,7 +614,7 @@ def test_maintenance_skills_are_repository_native(name: str) -> None:
     assert frontmatter.scalars["description"].startswith("Use when ")
     for required in (
         "nearest ancestor `.llmwikiops/config.toml`",
-        "repository root",
+        "resulting root",
         "root `AGENTS.md`",
         "canonical `llm-wiki`",
         "vault `AGENTS.md` when present",
@@ -719,17 +803,20 @@ def test_maintenance_authority_preflight_has_exact_config_stop_and_precedence(
 ) -> None:
     flat = " ".join(skill_text(name).split())
     for required in (
-        "If no nearest config exists, stop and recommend exactly",
+        "In repository-local context",
+        "If local discovery finds no config, stop with",
         "`llmwikiops setup [DIR]`",
-        "If the nearest config is invalid, fail closed",
-        "authority or instruction conflict",
-        "canonical `llm-wiki` wins",
+        "invalid config fails closed",
+        "In external adapter context",
+        "already validated retained exact `<root>`",
+        "do not stop because CWD has no config",
+        "canonical protocol wins conflicts",
     ):
         assert required in flat, f"{name}: missing {required!r}"
     preflight = flat.index("## Mandatory authority preflight")
     safe_boundary = flat.index("## Safe Markdown inventory boundary")
     assert preflight < flat.index("llmwikiops setup [DIR]") < safe_boundary
-    assert preflight < flat.index("canonical `llm-wiki` wins") < safe_boundary
+    assert preflight < flat.index("canonical protocol wins conflicts") < safe_boundary
 
 
 def test_update_links_canonical_source_snapshot_and_closes_both_topology_paths() -> None:
