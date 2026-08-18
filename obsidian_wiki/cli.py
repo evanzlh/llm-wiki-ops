@@ -2338,11 +2338,22 @@ def _repository_syntax(
             else:
                 index += 1
             continue
-        if token.startswith(("-VC", "-hC")):
+        if _is_repository_short_cluster(token):
             occurrences += 1
             clustered = True
         index += 1
     return occurrences, missing_value, abbreviated, clustered
+
+
+def _is_repository_short_cluster(token: str) -> bool:
+    if not token.startswith("-") or token.startswith("--"):
+        return False
+    prefix, separator, _repository_value = token[1:].partition("C")
+    return bool(
+        separator
+        and prefix
+        and set(prefix).issubset({"h", "V"})
+    )
 
 
 def _repository_scope_tokens(

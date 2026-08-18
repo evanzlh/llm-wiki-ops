@@ -276,6 +276,59 @@ def test_clustered_or_late_repository_selector_cannot_hide_behind_help(
     assert "show this help message" not in result.stderr
 
 
+SHORT_CLUSTER_PREFIXES = (
+    "h",
+    "V",
+    "hV",
+    "Vh",
+    "hh",
+    "VV",
+    "hVh",
+    "VhV",
+)
+
+
+@pytest.mark.parametrize("prefix", SHORT_CLUSTER_PREFIXES)
+@pytest.mark.parametrize(
+    "placement",
+    ("before-independent", "before-aware", "after-selector"),
+)
+def test_every_global_short_flag_cluster_containing_repository_is_rejected(
+    tmp_path: Path,
+    prefix: str,
+    placement: str,
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+    other = tmp_path / "other"
+    cluster = f"-{prefix}C{other}"
+    if placement == "before-independent":
+        arguments = (cluster, "setup")
+    elif placement == "before-aware":
+        arguments = (cluster, "info")
+    else:
+        arguments = ("-C", str(repository), cluster, "info")
+
+    result = run_cli(tmp_path, *arguments)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "show this help message" not in result.stderr
+    assert cli.version_label() not in result.stderr
+
+
+def test_characters_after_leading_repository_short_option_are_its_value(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "business"
+    business.mkdir()
+    repository = setup_repository(business / "hV-repository")
+
+    result = run_cli(business, "-ChV-repository", "info", "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["runtime"]["root"] == str(repository)
+
+
 REPOSITORY_INDEPENDENT_INVOCATIONS = (
     ("setup", "created"),
     ("list",),
