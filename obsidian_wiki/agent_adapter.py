@@ -8,10 +8,16 @@ import stat
 from pathlib import Path
 
 from . import skill_trees
+from .frontmatter import FrontmatterError, parse_frontmatter
 from .skill_names import is_safe_skill_name
 from .skill_trees import SkillCollection, SkillEntry, SkillTree
 
 ADAPTER_NAME = "llm-wiki-ops"
+ADAPTER_DESCRIPTION = (
+    "Use when any request asks to access or operate on an external LLMWikiOps wiki, "
+    "including querying, ingesting, maintaining, or recovering it, whether or not "
+    "the user has supplied its repository root."
+)
 BUILTIN_CATALOG_START = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_START -->"
 BUILTIN_CATALOG_END = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_END -->"
 _ADAPTER_TEMPLATE = Path(__file__).parent / "_data" / "adapter" / "SKILL.md.in"
@@ -173,10 +179,26 @@ def _encoded_catalog(catalog: list[dict[str, str]]) -> str:
     return encoded.replace("<", "\\u003c")
 
 
+def _validate_template_frontmatter(template: str) -> None:
+    try:
+        parsed = parse_frontmatter(template)
+    except FrontmatterError as exc:
+        raise ValueError("adapter template frontmatter is invalid") from exc
+    if parsed.fields != {"name", "description"}:
+        raise ValueError(
+            "adapter template frontmatter fields must be exactly name and description"
+        )
+    if parsed.scalars.get("name") != ADAPTER_NAME:
+        raise ValueError(f"adapter template frontmatter name must be {ADAPTER_NAME}")
+    if parsed.scalars.get("description") != ADAPTER_DESCRIPTION:
+        raise ValueError("adapter template frontmatter description is not approved")
+
+
 def render_adapter_skill(collection: SkillCollection) -> str:
     """Return one deterministic adapter skill containing catalog metadata only."""
     catalog = _validated_catalog(collection)
     template = _read_template(_ADAPTER_TEMPLATE)
+    _validate_template_frontmatter(template)
     placeholder = BUILTIN_CATALOG_START + "\n" + BUILTIN_CATALOG_END
     if (
         template.count(BUILTIN_CATALOG_START) != 1

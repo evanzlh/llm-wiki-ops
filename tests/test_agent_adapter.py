@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from dataclasses import replace
@@ -8,6 +9,7 @@ import pytest
 
 from obsidian_wiki import agent_adapter, cli
 from obsidian_wiki.agent_adapter import (
+    ADAPTER_DESCRIPTION,
     ADAPTER_NAME,
     BUILTIN_CATALOG_END,
     BUILTIN_CATALOG_START,
@@ -167,6 +169,18 @@ EXPECTED_BUNDLED_CATALOG = (
     ),
 )
 
+SAFE_READER_START = "<!-- LLMWIKIOPS_SAFE_READER_START -->"
+SAFE_READER_END = "<!-- LLMWIKIOPS_SAFE_READER_END -->"
+SAFE_READER_HEREDOC = (
+    "LLMWIKIOPS_SAFE_PATH_B64='BASE64URL_UTF8_ABSOLUTE_PATH' "
+    "LLMWIKIOPS_SAFE_MODE=full python - <<'PY'\n"
+)
+EXPECTED_ADAPTER_DESCRIPTION = (
+    "Use when any request asks to access or operate on an external LLMWikiOps wiki, "
+    "including querying, ingesting, maintaining, or recovering it, whether or not "
+    "the user has supplied its repository root."
+)
+
 
 def make_skill_collection(
     root: Path, descriptions: dict[str, str], *, body: str = "# Task body\n"
@@ -195,6 +209,35 @@ def encoded_catalog(rendered: str) -> list[dict[str, str]]:
         BUILTIN_CATALOG_END, 1
     )[0]
     return json.loads(encoded)
+
+
+def embedded_safe_reader_script(rendered: str) -> str:
+    region = rendered.split(SAFE_READER_START, 1)[1].split(SAFE_READER_END, 1)[0]
+    return region.split(SAFE_READER_HEREDOC, 1)[1].split("\nPY", 1)[0] + "\n"
+
+
+def render_demo_adapter(tmp_path: Path) -> str:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "catalog", {"demo": "Use when demo is requested."}
+        )
+    )
+    return render_adapter_skill(collection)
+
+
+def execute_safe_reader(
+    rendered: str,
+    path: Path,
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded_path = base64.urlsafe_b64encode(str(path).encode("utf-8")).decode("ascii")
+    monkeypatch.setenv("LLMWIKIOPS_SAFE_PATH_B64", encoded_path)
+    monkeypatch.setenv("LLMWIKIOPS_SAFE_MODE", mode)
+    exec(  # noqa: S102 - executes the exact embedded protocol under test
+        compile(embedded_safe_reader_script(rendered), "<safe-reader>", "exec"),
+        {"__name__": "__main__"},
+    )
 
 
 def forged_collection_with_entries(
@@ -398,6 +441,137 @@ def test_renderer_catalog_escapes_literal_marker_text_in_descriptions(
     assert rendered.index(BUILTIN_CATALOG_START) < rendered.index(BUILTIN_CATALOG_END)
 
 
+def test_template_contains_one_low_freedom_executable_safe_reader(
+    tmp_path: Path,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+
+    assert rendered.count(SAFE_READER_START) == 1
+    assert rendered.count(SAFE_READER_END) == 1
+    assert rendered.count(SAFE_READER_HEREDOC) == 1
+    script = embedded_safe_reader_script(rendered)
+    for required in (
+        "os.O_NOFOLLOW",
+        "os.lstat",
+        "os.fstat",
+        "os.read",
+        "os.lseek",
+        "hashlib.sha256",
+        "base64.b64decode",
+        "1048576",
+        "65536",
+        'decode("utf-8")',
+    ):
+        assert required in script
+    assert "MUST use only the deterministic safe reader" in rendered
+    assert "LLMWIKIOPS_SAFE_PATH='/absolute/path'" not in rendered
+    assert "raw path in the shell command" in rendered
+    assert "Never use `sed`, `cat`, `head`, `tail`, `awk`, separate `stat`" in rendered
+    assert "or `sha256sum`" in rendered
+
+
+def test_embedded_safe_reader_reads_complete_ordinary_utf8_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    target = tmp_path / "authority's complete body.md"
+    contents = "---\r\nname: demo\r\n---\r\n\r\n# Complete body\r\n"
+    target.write_bytes(contents.encode("utf-8"))
+
+    execute_safe_reader(rendered, target, "full", monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "mode": "full",
+        "path": str(target),
+        "sha256": "sha256:" + sha256(target.read_bytes()).hexdigest(),
+        "size": len(target.read_bytes()),
+        "text": contents,
+    }
+
+
+def test_embedded_safe_reader_returns_only_bounded_frontmatter_after_full_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    target = tmp_path / "route.md"
+    target.write_bytes(
+        b"---\r\nname: demo\r\ndescription: Route demo.\r\n---\r\nSECRET BODY\r\n"
+    )
+
+    execute_safe_reader(rendered, target, "frontmatter", monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "frontmatter"
+    assert payload["text"] == (
+        "---\r\nname: demo\r\ndescription: Route demo.\r\n---\r\n"
+    )
+    assert "SECRET BODY" not in payload["text"]
+
+
+def test_embedded_safe_reader_rejects_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    target = tmp_path / "target.md"
+    target.write_text("ordinary\n", encoding="utf-8")
+    linked = tmp_path / "linked.md"
+    try:
+        linked.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="safe-read-error"):
+        execute_safe_reader(rendered, linked, "full", monkeypatch)
+
+
+def test_embedded_safe_reader_rejects_oversize_and_invalid_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    oversize = tmp_path / "oversize.md"
+    oversize.write_bytes(b"x" * (1024 * 1024 + 1))
+    invalid = tmp_path / "invalid.md"
+    invalid.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(SystemExit, match="safe-read-error.*1 MiB"):
+        execute_safe_reader(rendered, oversize, "full", monkeypatch)
+    with pytest.raises(SystemExit, match="safe-read-error.*UTF-8"):
+        execute_safe_reader(rendered, invalid, "full", monkeypatch)
+
+
+def test_embedded_safe_reader_rejects_path_swap_during_same_fd_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    target = tmp_path / "authority.md"
+    replacement = tmp_path / "replacement.md"
+    target.write_bytes(b"trusted\n" * 16384)
+    replacement.write_bytes(b"attacker\n")
+    real_read = os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, count: int) -> bytes:
+        nonlocal swapped
+        data = real_read(descriptor, count)
+        if data and not swapped:
+            replacement.replace(target)
+            swapped = True
+        return data
+
+    monkeypatch.setattr(os, "read", swapping_read)
+
+    with pytest.raises(SystemExit, match="safe-read-error.*changed"):
+        execute_safe_reader(rendered, target, "full", monkeypatch)
+
+
 def test_renderer_rejects_unsafe_source_topology(tmp_path: Path) -> None:
     source = make_skill_collection(
         tmp_path / "source", {"demo": "Use when demo is requested."}
@@ -461,6 +635,49 @@ def test_renderer_requires_exactly_one_ordered_empty_catalog_placeholder(
             render_adapter_skill(collection)
 
 
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    (
+        (
+            "name: llm-wiki-ops\n",
+            "name: attacker-controlled-adapter\n",
+            "name",
+        ),
+        (
+            (
+                "description: Use when any request asks to access or operate on an "
+                "external LLMWikiOps wiki, including querying, ingesting, maintaining, "
+                "or recovering it, whether or not the user has supplied its repository "
+                "root.\n"
+            ),
+            "description: Use for unrelated attacker-controlled requests.\n",
+            "description",
+        ),
+        ("---\n\n# External", "allowed-tools: Bash\n---\n\n# External", "fields"),
+    ),
+)
+def test_renderer_rejects_unapproved_template_frontmatter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original: str,
+    replacement: str,
+    message: str,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    assert template.count(original) == 1
+    mutated = tmp_path / "mutated-SKILL.md.in"
+    mutated.write_text(template.replace(original, replacement, 1), encoding="utf-8")
+    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", mutated)
+
+    with pytest.raises(ValueError, match=message):
+        render_adapter_skill(collection)
+
+
 def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() -> None:
     collection = discover_skill_collection(
         cli.skills_dir(), ignore_source_artifacts=True
@@ -477,6 +694,22 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
     assert len(body.splitlines()) < 500
+
+
+def test_adapter_trigger_does_not_require_a_preexisting_repository_root() -> None:
+    collection = discover_skill_collection(
+        cli.skills_dir(), ignore_source_artifacts=True
+    )
+    rendered = render_adapter_skill(collection)
+    frontmatter = parse_frontmatter(rendered)
+
+    assert ADAPTER_DESCRIPTION == EXPECTED_ADAPTER_DESCRIPTION
+    assert frontmatter.scalars["description"] == EXPECTED_ADAPTER_DESCRIPTION
+    assert "access or operate on an external LLMWikiOps wiki" in ADAPTER_DESCRIPTION
+    assert "whether or not the user has supplied its repository root" in (
+        ADAPTER_DESCRIPTION
+    )
+    assert "Require the user to supply one exact external repository root." in rendered
 
 
 def test_rendered_bundled_inventory_matches_exact_complete_snapshot() -> None:
@@ -534,11 +767,7 @@ def test_rendered_output_passes_existing_strict_skill_parser(tmp_path: Path) -> 
     discovered = discover_skill_collection(installed_root)
 
     assert discovered.names == (ADAPTER_NAME,)
-    assert discovered.skills[0].description == (
-        "Use when an LLMWikiOps repository outside the current workspace must be "
-        "queried, ingested, maintained, or recovered and the user explicitly "
-        "supplies its repository root."
-    )
+    assert discovered.skills[0].description == EXPECTED_ADAPTER_DESCRIPTION
 
 
 def test_renderer_rejects_multiply_linked_template(

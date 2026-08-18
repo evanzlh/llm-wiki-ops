@@ -1,6 +1,6 @@
 ---
 name: llm-wiki-ops
-description: Use when an LLMWikiOps repository outside the current workspace must be queried, ingested, maintained, or recovered and the user explicitly supplies its repository root.
+description: Use when any request asks to access or operate on an external LLMWikiOps wiki, including querying, ingesting, maintaining, or recovering it, whether or not the user has supplied its repository root.
 ---
 
 # External LLMWikiOps repository adapter
@@ -24,34 +24,198 @@ build artifacts, caches, or unrelated environments for another version. Put
 including `info`, `query`, `transaction`, `hot`, `check`, and recovery actions.
 Changing into the external root is not a substitute for `-C`.
 
+## Deterministic safe reader
+
+MUST use only the deterministic safe reader below for every external
+repository authority, config, routing frontmatter, and complete skill-body
+read. Never use `sed`, `cat`, `head`, `tail`, `awk`, separate `stat` checks,
+or `sha256sum` as substitutes. Those multi-process combinations are vulnerable
+to path replacement between checks. Encode the exact absolute path as canonical
+RFC 4648 URL-safe Base64 of its UTF-8 bytes. Substitute only that safe token for
+`BASE64URL_UTF8_ABSOLUTE_PATH` and set the mode to `full` or `frontmatter`. Do not
+put the raw path in the shell command. Keep the Python program unchanged. If a
+compatible Python interpreter cannot run this exact primitive, fail closed.
+
+`frontmatter` still reads and double-hashes the complete file, bounded to 1 MiB,
+but returns only frontmatter ending within the first 64 KiB. `full` returns the
+complete UTF-8 text. Parse the single JSON result; its `text` is the only file
+content authorized for use.
+
+<!-- LLMWIKIOPS_SAFE_READER_START -->
+```bash
+LLMWIKIOPS_SAFE_PATH_B64='BASE64URL_UTF8_ABSOLUTE_PATH' LLMWIKIOPS_SAFE_MODE=full python - <<'PY'
+import base64
+import binascii
+import hashlib
+import json
+import os
+import stat
+
+MAX_FILE_BYTES = 1048576
+MAX_FRONTMATTER_BYTES = 65536
+
+
+def fail(message):
+    raise SystemExit("safe-read-error: " + message)
+
+
+def identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def read_pass(descriptor):
+    chunks = []
+    total = 0
+    while True:
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > MAX_FILE_BYTES:
+            fail("file exceeds 1 MiB")
+        chunks.append(chunk)
+
+
+try:
+    path_token = os.environ.get("LLMWIKIOPS_SAFE_PATH_B64", "")
+    mode = os.environ.get("LLMWIKIOPS_SAFE_MODE", "")
+    try:
+        path_bytes = base64.b64decode(
+            path_token.encode("ascii"), altchars=b"-_", validate=True
+        )
+        if base64.urlsafe_b64encode(path_bytes).decode("ascii") != path_token:
+            fail("path token is not canonical URL-safe Base64")
+        path = path_bytes.decode("utf-8")
+    except (UnicodeError, ValueError, binascii.Error):
+        fail("path token must be canonical URL-safe Base64 for UTF-8")
+    if not path or not os.path.isabs(path) or "\x00" in path:
+        fail("path must be one absolute NUL-free path")
+    if mode not in {"full", "frontmatter"}:
+        fail("mode must be full or frontmatter")
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail("O_NOFOLLOW is unavailable")
+    nofollow = os.O_NOFOLLOW
+
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        fail("path is not an ordinary single-link file")
+    if before.st_size > MAX_FILE_BYTES:
+        fail("file exceeds 1 MiB")
+
+    flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or identity(opened) != identity(before)
+        ):
+            fail("file changed before read")
+
+        first = read_pass(descriptor)
+        after_first = os.fstat(descriptor)
+        if identity(after_first) != identity(opened) or len(first) != opened.st_size:
+            fail("file changed during read")
+        first_hash = hashlib.sha256(first).hexdigest()
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        second = read_pass(descriptor)
+        after_second = os.fstat(descriptor)
+        second_hash = hashlib.sha256(second).hexdigest()
+        if (
+            identity(after_second) != identity(opened)
+            or first_hash != second_hash
+            or first != second
+        ):
+            fail("file changed during verification")
+
+        while_open = os.lstat(path)
+        if identity(while_open) != identity(opened):
+            fail("path changed during read")
+    finally:
+        os.close(descriptor)
+
+    after_close = os.lstat(path)
+    if identity(after_close) != identity(before):
+        fail("path changed after read")
+
+    text = first.decode("utf-8")
+    selected = text
+    if mode == "frontmatter":
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0].rstrip("\r\n") != "---":
+            fail("frontmatter opening delimiter is missing")
+        consumed = len(lines[0].encode("utf-8"))
+        closing = None
+        for index, line in enumerate(lines[1:], start=1):
+            consumed += len(line.encode("utf-8"))
+            if consumed > MAX_FRONTMATTER_BYTES:
+                fail("frontmatter exceeds 64 KiB")
+            if line.rstrip("\r\n") == "---":
+                closing = index
+                break
+        if closing is None:
+            fail("frontmatter closing delimiter is missing")
+        selected = "".join(lines[: closing + 1])
+
+    print(
+        json.dumps(
+            {
+                "mode": mode,
+                "path": path,
+                "sha256": "sha256:" + first_hash,
+                "size": len(first),
+                "text": selected,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+except SystemExit:
+    raise
+except UnicodeDecodeError:
+    fail("file is not valid UTF-8")
+except OSError as error:
+    fail("unsafe file operation: " + str(error))
+PY
+```
+<!-- LLMWIKIOPS_SAFE_READER_END -->
+
 Route in this order:
 
 1. Use only the embedded catalog below to choose an initial task skill by its
    exact name and description. The catalog is metadata, not a task body.
-2. Inspect the exact root's `.llmwikiops/config.toml` as an ordinary file and
-   resolve the configured skills directory relative to that root. Fail closed
-   if the config is absent, malformed, unsafe, or resolves outside the root.
+2. Read the exact root's `.llmwikiops/config.toml` with the safe reader in
+   `full` mode and resolve the configured skills directory relative to that
+   root. Fail closed if the config is absent, malformed, unsafe, or resolves
+   outside the root.
 3. Scan only direct child skill directories. Bound the scan to at most 256
    direct directories and at most the first 64 KiB of each direct
-   `<skills>/<name>/SKILL.md` for frontmatter routing metadata. Do not recurse
-   while routing. Reject links, special files, multiply-linked files, unsafe
-   names, duplicate names, and frontmatter whose `name` differs from its direct
-   directory.
+   `<skills>/<name>/SKILL.md` for frontmatter routing metadata. Use the safe
+   reader in `frontmatter` mode for every direct file; do not recurse or use a
+   preview command. Reject unsafe names, duplicate names, and frontmatter whose
+   `name` differs from its direct directory.
 4. Merge target metadata by exact skill name. A valid target description
    replaces the embedded description with the same name; target-only names are
    added. Re-run selection against this merged catalog. Do not let a built-in
    description hide a valid same-name target override.
 5. Read the target root `AGENTS.md` when present, then the target `llm-wiki`
-   authority skill and the final selected task skill. If the selected skill is
-   `llm-wiki`, read it once.
+   authority skill and the final selected task skill, always with the safe
+   reader in `full` mode. If the selected skill is `llm-wiki`, read it once.
 
-Frontmatter-only reading is insufficient. Before executing the task, stat and
-hash each selected `SKILL.md`, require its total file size to be at most 1 MiB,
-read the COMPLETE file and body by bytes, then stat and hash it again. Require
-the same ordinary single-link file identity, size, and SHA-256 throughout. Stop
-without executing the task if the file changes, exceeds the byte bound, cannot
-be decoded as UTF-8, or is not the exact direct file selected during routing.
-Line-count or frontmatter bounds do not replace the 1 MiB total byte bound.
+Frontmatter-only output is insufficient before task execution. The final
+selected skill's `full` safe-reader result must come from the same exact direct
+path selected during routing. Stop on any safe-reader error; never approximate
+the protocol with line counts or separate checks.
 
 ## Embedded built-in catalog
 
