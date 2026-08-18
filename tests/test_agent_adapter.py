@@ -5,6 +5,8 @@ import errno
 import json
 import os
 import stat
+import subprocess
+import sys
 from dataclasses import MISSING, FrozenInstanceError, fields, replace
 from hashlib import sha256
 from pathlib import Path
@@ -28,6 +30,8 @@ from obsidian_wiki.skill_trees import (
     discover_skill_collection,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+
 ADAPTER_DIGEST = "sha256:" + "a" * 64
 SECOND_ADAPTER_DIGEST = "sha256:" + "b" * 64
 EXPECTED_TARGET_ROOTS = {
@@ -39,6 +43,118 @@ EXPECTED_TARGET_ROOTS = {
     "pi": ".pi/agent/skills",
     "kiro": ".kiro/skills",
 }
+
+
+def run_adapter_cli(
+    home: Path, cwd: Path, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PYTHONPATH"] = str(ROOT)
+    env.pop("CODEX_HOME", None)
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki", *arguments],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def adapter_home_snapshot(home: Path) -> tuple[tuple[str, str, bytes | None], ...]:
+    if not home.exists():
+        return ()
+    snapshot: list[tuple[str, str, bytes | None]] = []
+    for path in sorted(home.rglob("*")):
+        relative = path.relative_to(home).as_posix()
+        if path.is_symlink():
+            snapshot.append((relative, "symlink", os.readlink(path).encode()))
+        elif path.is_dir():
+            snapshot.append((relative, "directory", None))
+        else:
+            snapshot.append((relative, "file", path.read_bytes()))
+    return tuple(snapshot)
+
+
+@pytest.mark.parametrize("target", sorted(EXPECTED_TARGET_ROOTS))
+def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
+    target: str, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+
+    installed = run_adapter_cli(
+        home, work, "agent", "install-adapter", "--agent", target
+    )
+
+    destination = home / EXPECTED_TARGET_ROOTS[target] / ADAPTER_NAME
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stderr == ""
+    assert installed.stdout == f"installed {target} adapter at {destination}\n"
+    assert (destination / "SKILL.md").is_file()
+    assert (destination / ".llmwikiops-managed.json").is_file()
+    assert [
+        path
+        for path in home.rglob(ADAPTER_NAME)
+        if path.is_dir() and path != destination
+    ] == []
+    before = adapter_home_snapshot(home)
+
+    unchanged = run_adapter_cli(
+        home, work, "agent", "install-adapter", "--agent", target
+    )
+
+    assert unchanged.returncode == 0, unchanged.stderr
+    assert unchanged.stderr == ""
+    assert unchanged.stdout == f"unchanged {target} adapter at {destination}\n"
+    assert adapter_home_snapshot(home) == before
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("agent", "install-adapter"),
+        ("agent", "install-adapter", "--agent", "unknown"),
+        (
+            "agent",
+            "install-adapter",
+            "--agent",
+            "codex",
+            "--agent",
+            "claude",
+        ),
+        ("agent", "install-adapter", "--all"),
+        ("agent", "install-adapter", "--agent", "codex", "--force"),
+        (
+            "agent",
+            "install-adapter",
+            "--agent",
+            "codex",
+            "--destination",
+            "elsewhere",
+        ),
+        ("-C", ".", "agent", "install-adapter", "--agent", "codex"),
+        ("--repo", ".", "agent", "install-adapter", "--agent", "codex"),
+    ],
+)
+def test_cli_rejects_implicit_or_expanded_adapter_installation_surface(
+    arguments: tuple[str, ...], tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    before = adapter_home_snapshot(home)
+
+    result = run_adapter_cli(home, work, *arguments)
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert adapter_home_snapshot(home) == before
 
 EXPECTED_BUNDLED_CATALOG = (
     (

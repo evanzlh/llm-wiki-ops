@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # Python 3.9/3.10
     import tomli as tomllib
 
 from obsidian_wiki import IMPLEMENTATION_ID, SOURCE_REINSTALL_COMMAND, __version__
+from obsidian_wiki.agent_adapter import TARGETS, install_adapter
 from obsidian_wiki.config import (
     ConfigError,
     PortableConfig,
@@ -44,6 +45,8 @@ from obsidian_wiki.portable import (
     upgrade_portable_skills,
 )
 from obsidian_wiki.protocol import CONFIG_RELATIVE, LLMWIKIOPS_REPO_ENV
+from obsidian_wiki.skill_trees import discover_skill_collection
+
 SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/llm-wiki-ops, then run "
     f"`{SOURCE_REINSTALL_COMMAND}` from the clone"
@@ -72,6 +75,19 @@ class _StoreRepositoryOnce(argparse.Action):
             raise argparse.ArgumentError(
                 self, "repository option may be supplied only once"
             )
+        setattr(namespace, self.dest, values)
+
+
+class _StoreAgentOnce(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(self, "--agent may be supplied only once")
         setattr(namespace, self.dest, values)
 
 
@@ -132,6 +148,23 @@ def bootstrap_dir() -> Path:
 
 def list_skills() -> list[str]:
     return sorted(p.name for p in skills_dir().iterdir() if p.is_dir())
+
+
+def cmd_agent_install_adapter(args: argparse.Namespace) -> int:
+    try:
+        collection = discover_skill_collection(
+            skills_dir(), ignore_source_artifacts=True
+        )
+        result = install_adapter(
+            args.agent,
+            cli_version=__version__,
+            collection=collection,
+        )
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{result.status} {result.target} adapter at {result.destination}")
+    return 0
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -2628,6 +2661,18 @@ def build_parser() -> argparse.ArgumentParser:
         version=version_label(),
     )
     sub = p.add_subparsers(dest="command")
+
+    agent = sub.add_parser(
+        "agent", help="manage explicit global Agent integration"
+    )
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    install_adapter_parser = agent_sub.add_parser(
+        "install-adapter", help="install the global external-wiki adapter"
+    )
+    install_adapter_parser.add_argument(
+        "--agent", choices=tuple(TARGETS), required=True, action=_StoreAgentOnce
+    )
+    install_adapter_parser.set_defaults(func=cmd_agent_install_adapter)
 
     sp = sub.add_parser("setup", help="create a portable knowledge repository")
     _add_setup_args(sp)

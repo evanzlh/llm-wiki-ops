@@ -43,6 +43,7 @@ REMOVED_SKILL_PATHS = {
     "obsidian_wiki/_data/skills/wiki-switch",
 }
 CURRENT_RUNTIME_ROOTS = (
+    ROOT / "obsidian_wiki/_data/adapter",
     ROOT / "obsidian_wiki/_data/bootstrap",
     ROOT / "obsidian_wiki/_data/skills",
 )
@@ -160,9 +161,12 @@ def test_bare_cli_prints_help_without_writing_repository_state(tmp_path: Path) -
     assert not (work / ".obsidian-wiki").exists()
 
 
-def test_cli_has_no_global_agent_installation_surface() -> None:
+def test_cli_has_only_explicit_global_agent_installation_surface() -> None:
     assert not hasattr(cli, "GLOBAL_AGENT_DIRS")
     assert not hasattr(cli, "_agent_install_payload")
+    parser = cli.build_parser()
+    topology = cli._parser_topology(parser)
+    assert topology[1]["agent"] == frozenset({"install-adapter"})
     assert cli.__doc__ is not None
     assert "deterministic, repository-native llm wiki operations" in cli.__doc__.lower()
 

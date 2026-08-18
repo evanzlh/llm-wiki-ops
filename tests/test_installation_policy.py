@@ -185,6 +185,152 @@ def test_uv_tool_environment_ignores_parent_behavior_overrides(
     assert env["INSTALLATION_POLICY_UNRELATED"] == "retained"
 
 
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="uv is required by the supported installer"
+)
+def test_source_wheel_and_sdist_install_identical_explicit_adapters(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "artifact-source"
+    shutil.copytree(
+        ROOT,
+        source,
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", ".worktrees", "dist", "build", "__pycache__"
+        ),
+        symlinks=True,
+    )
+    build_env = _uv_tool_environment(tmp_path / "build-machine")
+    Path(build_env["HOME"]).mkdir(parents=True)
+    subprocess.run(
+        ["git", "init"],
+        cwd=source,
+        env=build_env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=source,
+        env=build_env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Adapter Artifact Test",
+            "-c",
+            "user.email=adapter-artifact@example.invalid",
+            "commit",
+            "-m",
+            "test: artifact source",
+        ],
+        cwd=source,
+        env=build_env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    build_dir = source / "dist"
+    subprocess.run(
+        ["uv", "build", "--out-dir", str(build_dir)],
+        cwd=source,
+        env=build_env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=180,
+    )
+    wheel = next(build_dir.glob("*.whl"))
+    sdist = next(build_dir.glob("*.tar.gz"))
+    install_inputs = {"source": source, "wheel": wheel, "sdist": sdist}
+    installations: dict[str, tuple[dict[str, str], str]] = {}
+    for label, install_input in install_inputs.items():
+        install_root = tmp_path / f"install-{label}"
+        env = _uv_tool_environment(install_root)
+        Path(env["HOME"]).mkdir(parents=True)
+        subprocess.run(
+            [
+                "uv",
+                "tool",
+                "install",
+                "--force",
+                "--reinstall",
+                "--link-mode",
+                "copy",
+                str(install_input),
+            ],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=180,
+        )
+        executable = shutil.which(
+            "llmwikiops", path=env["UV_TOOL_BIN_DIR"]
+        )
+        assert executable is not None
+        installations[label] = (env, executable)
+
+    original_source = source.resolve()
+    moved_source = tmp_path / "artifact-source-moved"
+    source.rename(moved_source)
+    generated: dict[tuple[str, str], tuple[bytes, dict[str, object]]] = {}
+    for label, (base_env, executable) in installations.items():
+        for target, relative_root in (
+            ("codex", ".codex/skills"),
+            ("claude", ".claude/skills"),
+        ):
+            home = tmp_path / f"home-{label}-{target}"
+            home.mkdir()
+            env = dict(base_env)
+            env["HOME"] = str(home)
+            env.pop("CODEX_HOME", None)
+            result = subprocess.run(
+                [executable, "agent", "install-adapter", "--agent", target],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            destination = home / relative_root / "llm-wiki-ops"
+            skill = (destination / "SKILL.md").read_bytes()
+            record_bytes = (destination / ".llmwikiops-managed.json").read_bytes()
+            generated[label, target] = (skill, json.loads(record_bytes))
+            forbidden = (
+                str(ROOT.resolve()).encode(),
+                str(original_source).encode(),
+                str(moved_source.resolve()).encode(),
+                str(build_dir.resolve()).encode(),
+                str(tmp_path / "selected-wiki").encode(),
+                str(Path.home()).encode(),
+            )
+            for name, payload in (("SKILL.md", skill), ("record", record_bytes)):
+                assert not [value for value in forbidden if value in payload], (
+                    label,
+                    target,
+                    name,
+                )
+
+    for target in ("codex", "claude"):
+        source_skill, source_record = generated["source", target]
+        for label in ("wheel", "sdist"):
+            skill, record = generated[label, target]
+            assert skill == source_skill, (label, target)
+            assert record == source_record, (label, target)
+
+
 def test_unsupported_install_entrypoints_are_absent() -> None:
     absent = (
         "setup.sh",
@@ -243,6 +389,7 @@ def test_distribution_artifacts_contain_runtime_assets_not_discovery_trees(
         for root in (
             ROOT / "obsidian_wiki/_data/skills",
             ROOT / "obsidian_wiki/_data/bootstrap",
+            ROOT / "obsidian_wiki/_data/adapter",
         )
         for path in root.rglob("*")
         if path.is_file() and not path.is_symlink()

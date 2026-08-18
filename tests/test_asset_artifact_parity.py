@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "obsidian_wiki" / "_data"
-ASSET_NAMES = ("skills", "bootstrap")
+ASSET_NAMES = ("skills", "bootstrap", "adapter")
 REMOVED_DISTRIBUTION_PATHS = {
     ".claude/hooks/wiki-stop-capture.sh",
     ".claude/settings.json",
@@ -206,6 +206,7 @@ def _source_inventory() -> dict[str, tuple[bytes, int]]:
             "--",
             "obsidian_wiki/_data/skills",
             "obsidian_wiki/_data/bootstrap",
+            "obsidian_wiki/_data/adapter",
         ],
         cwd=ROOT,
         capture_output=True,
