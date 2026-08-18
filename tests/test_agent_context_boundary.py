@@ -28,6 +28,7 @@ BOOTSTRAP_TARGETS = (
 )
 CATALOG = DATA / "legacy-skill-digests-v1.json"
 CAPTURE_TOOL = ROOT / "tools/capture_legacy_skill_digests.py"
+ADAPTER_TEMPLATE = DATA / "adapter/SKILL.md.in"
 
 
 def _write_skill(source: Path, body: str = "# Demo\n") -> None:
@@ -69,6 +70,15 @@ def test_package_data_is_the_only_runtime_asset_source() -> None:
     assert cli.bootstrap_dir() == DATA / "bootstrap"
     assert (DATA / "skills/llm-wiki/SKILL.md").is_file()
     assert (DATA / "bootstrap/AGENTS.md").is_file()
+
+
+def test_external_adapter_remains_a_packaged_template_not_a_discoverable_skill() -> None:
+    assert ADAPTER_TEMPLATE.is_file()
+    assert ADAPTER_TEMPLATE.name == "SKILL.md.in"
+    assert not (ADAPTER_TEMPLATE.parent / "SKILL.md").exists()
+    assert ADAPTER_TEMPLATE.parent.parent == DATA
+    for relative in DISCOVERY_DIRS:
+        assert not (ROOT / relative / "llm-wiki-ops").exists()
 
 
 def test_runtime_asset_lookup_has_no_checkout_fallback(
