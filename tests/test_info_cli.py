@@ -127,6 +127,29 @@ def test_info_json_reports_repository_local_runtime(tmp_path: Path) -> None:
     assert "agents" not in data["installation"]
 
 
+def test_info_command_namespace_accepts_explicit_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    business = tmp_path / "business"
+    repository = tmp_path / "repository"
+    business.mkdir()
+    write_portable(repository)
+    monkeypatch.chdir(business)
+
+    result = cli.cmd_info(
+        Namespace(
+            repository=repository,
+            json=True,
+            pretty=False,
+        )
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["runtime"]["root"] == str(repository)
+
+
 def test_info_json_without_config_is_available_with_exact_setup_guidance(
     tmp_path: Path,
 ) -> None:

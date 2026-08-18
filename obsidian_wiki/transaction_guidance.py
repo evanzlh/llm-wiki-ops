@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
 from obsidian_wiki.transaction import TransactionRecord
 
@@ -53,25 +55,47 @@ class RecoveryGuidance:
 
 
 def _action(
-    transaction_id: str, command: str, reason: str, *requires: str
+    prefix: str,
+    transaction_id: str,
+    command: str,
+    reason: str,
+    *requires: str,
 ) -> RecoveryAction:
     return RecoveryAction(
-        command=f"llmwikiops transaction {command} {transaction_id}",
+        command=f"{prefix} transaction {command} {transaction_id}",
         reason=reason,
         requires=requires,
     )
 
 
-def inspection_only_guidance() -> RecoveryGuidance:
-    return RecoveryGuidance(None, None, INSPECT_COMMAND, None, ())
+def _command_prefix(repository: Path | None) -> str:
+    tokens = ["llmwikiops"]
+    if repository is not None:
+        tokens.extend(("-C", str(repository)))
+    return shlex.join(tokens)
 
 
-def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
+def inspection_only_guidance(repository: Path | None = None) -> RecoveryGuidance:
+    return RecoveryGuidance(
+        None,
+        None,
+        f"{_command_prefix(repository)} transaction list --json",
+        None,
+        (),
+    )
+
+
+def guidance_for_record(
+    record: TransactionRecord,
+    repository: Path | None = None,
+) -> RecoveryGuidance:
     transaction_id = record.transaction_id
     status = record.status
+    prefix = _command_prefix(repository)
 
     if status == "active":
         preferred = _action(
+            prefix,
             transaction_id,
             "commit",
             "commit after fixing the original cause and reviewing the candidate",
@@ -80,6 +104,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
         alternatives = (
             _action(
+                prefix,
                 transaction_id,
                 "abort",
                 "abandon the active staged work",
@@ -88,6 +113,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
     elif status == "promoting":
         preferred = _action(
+            prefix,
             transaction_id,
             "restore",
             "restore an interrupted promotion from retained snapshots",
@@ -96,6 +122,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         alternatives = ()
     elif status == "failed":
         preferred = _action(
+            prefix,
             transaction_id,
             "retry",
             "retry after the original cause is removed",
@@ -104,18 +131,21 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
         alternatives = (
             _action(
+                prefix,
                 transaction_id,
                 "restore",
                 "restore recorded originals instead of retrying",
                 "the retained snapshots and current working tree have been inspected",
             ),
             _action(
+                prefix,
                 transaction_id,
                 "abort",
                 "abandon the failed staged work",
                 "no retry or restore is required",
             ),
             _action(
+                prefix,
                 transaction_id,
                 "discard",
                 "remove retained recovery state",
@@ -125,6 +155,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
     elif status == "complete":
         preferred = _action(
+            prefix,
             transaction_id,
             "discard",
             "remove retained recovery state after accepting the result",
@@ -132,6 +163,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
         alternatives = (
             _action(
+                prefix,
                 transaction_id,
                 "restore",
                 "roll back the completed transaction",
@@ -140,6 +172,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
     elif status == "restored":
         preferred = _action(
+            prefix,
             transaction_id,
             "discard",
             "remove retained state after verifying the restore",
@@ -147,6 +180,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
         )
         alternatives = (
             _action(
+                prefix,
                 transaction_id,
                 "restore",
                 "confirm the idempotent restored state",
@@ -159,7 +193,7 @@ def guidance_for_record(record: TransactionRecord) -> RecoveryGuidance:
     return RecoveryGuidance(
         transaction_id=transaction_id,
         transaction_status=status,
-        inspect_command=INSPECT_COMMAND,
+        inspect_command=f"{prefix} transaction list --json",
         preferred_action=preferred,
         alternatives=alternatives,
     )

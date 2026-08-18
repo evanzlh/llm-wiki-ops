@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import json
 from pathlib import Path
 
 import pytest
@@ -212,3 +213,24 @@ def test_guidance_does_not_mutate_record(record: TransactionRecord) -> None:
     guidance_for_record(record)
 
     assert record.__dict__ == before
+
+
+def test_explicit_repository_is_rendered_in_every_recovery_command(
+    record: TransactionRecord,
+) -> None:
+    guidance = guidance_for_record(record, repository=Path("/srv/wiki root"))
+
+    rendered = json.dumps(guidance.as_dict())
+    assert "llmwikiops -C '/srv/wiki root' transaction list --json" in rendered
+    for action in guidance.allowed_actions:
+        assert action.command.startswith(
+            "llmwikiops -C '/srv/wiki root' transaction "
+        )
+
+
+def test_explicit_repository_is_rendered_in_inspection_only_guidance() -> None:
+    guidance = inspection_only_guidance(Path("/srv/wiki root"))
+
+    assert guidance.inspect_command == (
+        "llmwikiops -C '/srv/wiki root' transaction list --json"
+    )

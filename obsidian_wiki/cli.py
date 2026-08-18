@@ -25,7 +25,9 @@ from obsidian_wiki.config import (
     ConfigError,
     PortableConfig,
     load_portable_config,
+    normalize_repository_path,
     resolve_config,
+    resolve_repository,
 )
 from obsidian_wiki.git_support import discover_git_root
 from obsidian_wiki.portable import (
@@ -55,6 +57,47 @@ class SchemaOptions(TypedDict):
     allowed_relationship_types: frozenset[str]
     required_trust_fields: tuple[str, ...]
     schema_source: str
+
+
+class _StoreRepositoryOnce(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(
+                self, "repository option may be supplied only once"
+            )
+        setattr(namespace, self.dest, values)
+
+
+_REPOSITORY_AWARE_COMMANDS = frozenset(
+    {
+        "info",
+        "doctor",
+        "check",
+        "repo",
+        "transaction",
+        "manifest",
+        "hot",
+        "batch-plan",
+        "graph-analyse",
+        "cache-check",
+        "lint",
+        "trust-record",
+        "trust-check",
+        "query",
+        "context-pack",
+        "context",
+    }
+)
+
+
+def _repository_argument(args: argparse.Namespace) -> Path | None:
+    return getattr(args, "repository", None)
 
 
 # ── Data resolution ──────────────────────────────────────────────────────────
@@ -100,9 +143,27 @@ def _runtime_error_detail(error: ConfigError) -> str:
 
 def _resolve_runtime(
     *,
+    repository: Path | None = None,
     error_sink: list[ConfigError] | None = None,
 ) -> PortableConfig | None:
     """Resolve one CLI runtime through the shared precedence protocol."""
+    if repository is not None:
+        try:
+            return resolve_repository(
+                repository,
+                installed_version=__version__,
+                implementation=IMPLEMENTATION_ID,
+            )
+        except ConfigError as exc:
+            error = exc
+        except OSError as exc:
+            error = ConfigError(f"repository resolution failed: {exc}")
+            error.__cause__ = exc
+        if error_sink is not None:
+            error_sink.append(error)
+            return None
+        raise error
+
     try:
         cwd = Path.cwd()
     except OSError as exc:
@@ -435,12 +496,16 @@ def _run_portable_doctor(portable: PortableConfig) -> dict[str, object]:
     return {"status": _doctor_status(checks), "checks": checks}
 
 
-def run_doctor(config: PortableConfig | None = None) -> dict[str, object]:
+def run_doctor(
+    config: PortableConfig | None = None,
+    *,
+    repository: Path | None = None,
+) -> dict[str, object]:
     if config is not None:
         return _run_portable_doctor(config)
 
     errors: list[ConfigError] = []
-    runtime = _resolve_runtime(error_sink=errors)
+    runtime = _resolve_runtime(repository=repository, error_sink=errors)
     if runtime is not None:
         return _run_portable_doctor(runtime)
 
@@ -526,7 +591,7 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
     from obsidian_wiki.batch import plan_batches
     from obsidian_wiki.portable_manifest import ManifestError
 
-    config = _resolve_runtime()
+    config = _resolve_runtime(repository=_repository_argument(args))
     if config is None:
         return 1
     source_dir = config.sources[0]
@@ -555,7 +620,7 @@ def cmd_batch_plan(args: argparse.Namespace) -> int:
 def cmd_graph_analyse(args: argparse.Namespace) -> int:
     from obsidian_wiki.graph_analysis import analyse_vault
 
-    runtime = _resolve_runtime()
+    runtime = _resolve_runtime(repository=_repository_argument(args))
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -763,7 +828,7 @@ def _cache_source_path(raw: str, *, root: Path | None = None) -> Path:
 def cmd_cache_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.cache import check_sources
 
-    config = _resolve_runtime()
+    config = _resolve_runtime(repository=_repository_argument(args))
     if config is None:
         return 1
     sources = [
@@ -791,7 +856,10 @@ def cmd_cache_hash(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     resolution_errors: list[ConfigError] = []
-    runtime = _resolve_runtime(error_sink=resolution_errors)
+    runtime = _resolve_runtime(
+        repository=_repository_argument(args),
+        error_sink=resolution_errors,
+    )
     if runtime is None:
         error = resolution_errors[0] if resolution_errors else ConfigError(
             "check requires a portable repository"
@@ -831,15 +899,27 @@ def cmd_check(args: argparse.Namespace) -> int:
     )
 
 
-def _portable_command_config(command: str) -> PortableConfig:
+def _portable_command_config(
+    command: str,
+    *,
+    repository: Path | None = None,
+) -> PortableConfig:
     try:
-        return resolve_config(
-            cwd=Path.cwd(),
-            installed_version=__version__,
-            implementation=IMPLEMENTATION_ID,
-        )
+        runtime = _resolve_runtime(repository=repository)
+        assert runtime is not None
+        return runtime
     except (ConfigError, OSError) as exc:
         raise ConfigError(f"{command} requires a repository: {exc}") from exc
+
+
+def _portable_command_config_for(
+    args: argparse.Namespace,
+    command: str,
+) -> PortableConfig:
+    repository = _repository_argument(args)
+    if repository is None:
+        return _portable_command_config(command)
+    return _portable_command_config(command, repository=repository)
 
 
 def _repository_error_message(error: Exception) -> str:
@@ -863,10 +943,22 @@ def _json_print(
     )
 
 
-def _transaction_manager():
+def _transaction_manager(*, repository: Path | None = None):
     from obsidian_wiki.transaction import TransactionManager
 
-    return TransactionManager(_portable_command_config("transaction"))
+    config = (
+        _portable_command_config("transaction")
+        if repository is None
+        else _portable_command_config("transaction", repository=repository)
+    )
+    return TransactionManager(config)
+
+
+def _transaction_manager_for(args: argparse.Namespace):
+    repository = _repository_argument(args)
+    if repository is None:
+        return _transaction_manager()
+    return _transaction_manager(repository=repository)
 
 
 def _transaction_error_code(error: Exception) -> str:
@@ -889,7 +981,12 @@ def _transaction_error_code(error: Exception) -> str:
     raise TypeError(f"unsupported transaction error: {type(error).__name__}")
 
 
-def _trusted_recovery_guidance(manager, transaction_id: str | None):
+def _trusted_recovery_guidance(
+    manager,
+    transaction_id: str | None,
+    *,
+    repository: Path | None = None,
+):
     from obsidian_wiki.transaction import TransactionError
     from obsidian_wiki.transaction_guidance import (
         guidance_for_record,
@@ -897,12 +994,14 @@ def _trusted_recovery_guidance(manager, transaction_id: str | None):
     )
 
     if manager is None or transaction_id is None:
-        return inspection_only_guidance()
+        return inspection_only_guidance(repository)
     try:
         record = manager.load(transaction_id)
     except (TransactionError, OSError, UnicodeError):
-        return inspection_only_guidance()
-    return guidance_for_record(record)
+        return inspection_only_guidance(repository)
+    if repository is None:
+        return guidance_for_record(record)
+    return guidance_for_record(record, repository=repository)
 
 
 def _terminal_safe_text(value: object) -> str:
@@ -921,7 +1020,11 @@ def _render_transaction_failure(
     manager=None,
     transaction_id: str | None = None,
 ) -> int:
-    guidance = _trusted_recovery_guidance(manager, transaction_id)
+    guidance = _trusted_recovery_guidance(
+        manager,
+        transaction_id,
+        repository=_repository_argument(args),
+    )
     payload = {
         "status": "error",
         "error": {
@@ -956,13 +1059,20 @@ def _render_transaction_failure(
     return 1
 
 
-def _transaction_source(config: PortableConfig, raw: str) -> Path:
+def _transaction_source(
+    config: PortableConfig,
+    raw: str,
+    *,
+    repository: Path | None = None,
+) -> Path:
     from obsidian_wiki.transaction import TransactionError
 
     try:
         source = Path(raw).expanduser()
         if source.is_absolute():
             return source
+        if repository is not None:
+            return (config.root / source).absolute()
         cwd_candidate = (Path.cwd() / source).absolute()
         if cwd_candidate.exists() or cwd_candidate.is_symlink():
             return cwd_candidate
@@ -1019,10 +1129,17 @@ def cmd_transaction_begin(args: argparse.Namespace) -> int:
 
     manager = None
     try:
-        config = _portable_command_config("transaction begin")
+        config = _portable_command_config_for(args, "transaction begin")
         manager = TransactionManager(config)
         record = manager.begin(
-            [_transaction_source(config, raw) for raw in args.sources]
+            [
+                _transaction_source(
+                    config,
+                    raw,
+                    repository=_repository_argument(args),
+                )
+                for raw in args.sources
+            ]
         )
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(args, exc, manager=manager)
@@ -1037,7 +1154,7 @@ def cmd_transaction_begin(args: argparse.Namespace) -> int:
 def cmd_manifest_resolve_conflict(args: argparse.Namespace) -> int:
     from obsidian_wiki.portable_manifest import ShardedManifest
 
-    config = _portable_command_config("manifest resolve-conflict")
+    config = _portable_command_config_for(args, "manifest resolve-conflict")
     result = ShardedManifest(config).resolve_conflict_keep_live()
     payload = {"status": "resolved", **result}
     if args.json:
@@ -1056,12 +1173,21 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
 
     manager = None
     try:
-        manager = _transaction_manager()
+        manager = _transaction_manager_for(args)
         records = manager.list_transactions()
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(args, exc, manager=manager)
+    repository = _repository_argument(args)
     guided_records = [
-        (record, guidance_for_record(record)) for record in records
+        (
+            record,
+            (
+                guidance_for_record(record)
+                if repository is None
+                else guidance_for_record(record, repository=repository)
+            ),
+        )
+        for record in records
     ]
     payload = [
         _list_record_payload(record, guidance)
@@ -1091,7 +1217,7 @@ def cmd_transaction_delete(args: argparse.Namespace) -> int:
 
     manager = None
     try:
-        manager = _transaction_manager()
+        manager = _transaction_manager_for(args)
         manager.mark_delete(args.transaction_id, args.path)
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(
@@ -1117,7 +1243,7 @@ def cmd_transaction_validate(args: argparse.Namespace) -> int:
 
     manager = None
     try:
-        manager = _transaction_manager()
+        manager = _transaction_manager_for(args)
         report = manager.validate(args.transaction_id)
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(
@@ -1149,7 +1275,7 @@ def _run_transaction_commit(args: argparse.Namespace, *, retry: bool) -> int:
 
     manager = None
     try:
-        manager = _transaction_manager()
+        manager = _transaction_manager_for(args)
         action = manager.retry if retry else manager.commit
         result = action(args.transaction_id)
     except (ConfigError, ManifestError, TransactionError) as exc:
@@ -1185,7 +1311,7 @@ def _transaction_state_action(args: argparse.Namespace, action_name: str) -> int
 
     manager = None
     try:
-        manager = _transaction_manager()
+        manager = _transaction_manager_for(args)
         action = getattr(manager, action_name)
         action(args.transaction_id)
     except (ConfigError, ManifestError, TransactionError) as exc:
@@ -1225,7 +1351,7 @@ def cmd_transaction_abort(args: argparse.Namespace) -> int:
 def cmd_hot_status(args: argparse.Namespace) -> int:
     from obsidian_wiki.local_state import hot_status
 
-    status = hot_status(_portable_command_config("hot status"))
+    status = hot_status(_portable_command_config_for(args, "hot status"))
     if args.json:
         _json_print(status, pretty=args.pretty)
     else:
@@ -1236,7 +1362,7 @@ def cmd_hot_status(args: argparse.Namespace) -> int:
 def cmd_hot_mark_current(args: argparse.Namespace) -> int:
     from obsidian_wiki.local_state import mark_hot_current
 
-    mark_hot_current(_portable_command_config("hot mark-current"))
+    mark_hot_current(_portable_command_config_for(args, "hot mark-current"))
     payload = {"stale": False, "status": "current"}
     if args.json:
         _json_print(payload, pretty=args.pretty)
@@ -1249,7 +1375,7 @@ def cmd_hot_inputs(args: argparse.Namespace) -> int:
     from obsidian_wiki.local_state import hot_inputs
 
     payload = hot_inputs(
-        _portable_command_config("hot inputs"),
+        _portable_command_config_for(args, "hot inputs"),
         page_limit=args.pages,
         operation_limit=args.operations,
     )
@@ -1276,7 +1402,7 @@ def cmd_ast_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    report = run_doctor()
+    report = run_doctor(repository=_repository_argument(args))
     if args.json:
         if args.pretty:
             print(json.dumps(report, indent=2))
@@ -1414,7 +1540,7 @@ def _schema_options(
 def cmd_lint(args: argparse.Namespace) -> int:
     from obsidian_wiki.lint import lint_vault
 
-    runtime = _resolve_runtime()
+    runtime = _resolve_runtime(repository=_repository_argument(args))
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -1462,7 +1588,7 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
         write_trust_ledger,
     )
 
-    runtime = _resolve_runtime()
+    runtime = _resolve_runtime(repository=_repository_argument(args))
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -1570,7 +1696,7 @@ def cmd_trust_record(args: argparse.Namespace) -> int:
 def cmd_trust_check(args: argparse.Namespace) -> int:
     from obsidian_wiki.trust import check_trust_ledger
 
-    runtime = _resolve_runtime()
+    runtime = _resolve_runtime(repository=_repository_argument(args))
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -1753,6 +1879,12 @@ def cmd_query(args: argparse.Namespace) -> int:
         parse_natural_query,
     )
 
+    repository = _repository_argument(args)
+    runtime = (
+        _resolve_runtime(repository=repository)
+        if repository is not None
+        else None
+    )
     explicit_values = (args.mode, args.term, args.source, args.target)
     try:
         if args.describe:
@@ -1814,7 +1946,8 @@ def cmd_query(args: argparse.Namespace) -> int:
     except QueryLanguageError as exc:
         return _render_query_error(args, exc)
 
-    runtime = _resolve_runtime()
+    if runtime is None:
+        runtime = _resolve_runtime()
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -1845,7 +1978,7 @@ def cmd_context_pack(args: argparse.Namespace) -> int:
         render_markdown,
     )
 
-    runtime = _resolve_runtime()
+    runtime = _resolve_runtime(repository=_repository_argument(args))
     if runtime is None:
         return 1
     vault = _resolved_vault(runtime)
@@ -1965,7 +2098,10 @@ def _print_info(payload: dict[str, object]) -> None:
 
 def cmd_info(args: argparse.Namespace) -> int:
     errors: list[ConfigError] = []
-    runtime = _resolve_runtime(error_sink=errors)
+    runtime = _resolve_runtime(
+        repository=_repository_argument(args),
+        error_sink=errors,
+    )
     resolution_error = errors[0] if errors else None
     installation, install_warnings = _installation_payload()
     warnings = install_warnings
@@ -1994,11 +2130,8 @@ def cmd_info(args: argparse.Namespace) -> int:
 def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
     warnings: list[dict[str, str]] = []
     try:
-        resolved = resolve_config(
-            cwd=Path.cwd(),
-            installed_version=__version__,
-            implementation=IMPLEMENTATION_ID,
-        )
+        resolved = _resolve_runtime(repository=_repository_argument(args))
+        assert resolved is not None
         root = resolved.root
         names = upgrade_portable_skills(
             root,
@@ -2022,11 +2155,8 @@ def cmd_repo_upgrade_skills(args: argparse.Namespace) -> int:
 def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
     root: Path | None = None
     try:
-        resolved = resolve_config(
-            cwd=Path.cwd(),
-            installed_version=__version__,
-            implementation=IMPLEMENTATION_ID,
-        )
+        resolved = _resolve_runtime(repository=_repository_argument(args))
+        assert resolved is not None
         root = resolved.root
         report = sync_portable_skill_mirrors(
             root,
@@ -2142,6 +2272,14 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
 )
 
 
+def _leading_repository_option(
+    argv: list[str],
+) -> tuple[list[str], list[str], str | None]:
+    if len(argv) >= 2 and argv[0] in {"-C", "--repo"}:
+        return argv[:2], argv[2:], argv[1]
+    return [], argv, None
+
+
 def _query_option_intent(argv: list[str]) -> tuple[bool, bool]:
     if not argv or argv[0] != "query":
         return False, False
@@ -2247,7 +2385,20 @@ def build_parser() -> argparse.ArgumentParser:
             "LLMWikiOps: deterministic, repository-native LLM Wiki operations."
         ),
     )
-    p.add_argument("-V", "--version", action="version", version=version_label())
+    p.add_argument(
+        "-C",
+        "--repo",
+        dest="repository",
+        action=_StoreRepositoryOnce,
+        metavar="REPOSITORY",
+        help="use this exact repository root for a repository-aware command",
+    )
+    p.add_argument(
+        "-V",
+        "--version",
+        action="store_true",
+        dest="show_version",
+    )
     sub = p.add_subparsers(dest="command")
 
     sp = sub.add_parser("setup", help="create a portable knowledge repository")
@@ -2852,19 +3003,32 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         parser.print_help()
         return 0
-    json_intent, pretty_intent, help_intent = _transaction_option_intent(argv)
+    repository_prefix, command_argv, raw_repository = _leading_repository_option(
+        argv
+    )
+    json_intent, pretty_intent, help_intent = _transaction_option_intent(
+        command_argv
+    )
     transaction_json_parse = json_intent and not help_intent
-    query_json_intent, query_pretty_intent = _query_option_intent(argv)
+    query_json_intent, query_pretty_intent = _query_option_intent(command_argv)
     query_json_parse = query_json_intent
-    argv = _normalize_cache_check_argv(argv)
-    argv = _normalize_transaction_parent_separator(argv)
+    command_argv = _normalize_cache_check_argv(command_argv)
+    command_argv = _normalize_transaction_parent_separator(command_argv)
+    argv = [*repository_prefix, *command_argv]
     try:
         args = parser.parse_args(argv)
     except _ArgumentParseError as exc:
+        parse_repository: Path | None = None
+        if raw_repository is not None:
+            try:
+                parse_repository = normalize_repository_path(raw_repository)
+            except ConfigError:
+                pass
         if transaction_json_parse:
             parse_args = argparse.Namespace(
                 json=True,
                 pretty=pretty_intent,
+                repository=parse_repository,
             )
             return _render_transaction_failure(
                 parse_args,
@@ -2878,6 +3042,7 @@ def main(argv: list[str] | None = None) -> int:
             parse_args = argparse.Namespace(
                 json=True,
                 pretty=query_pretty_intent,
+                repository=parse_repository,
             )
             return _render_query_error(
                 parse_args,
@@ -2891,10 +3056,27 @@ def main(argv: list[str] | None = None) -> int:
             2,
             f"{exc.parser.prog}: error: {exc.message}\n",
         )
-    if not getattr(args, "func", None):
-        parser.print_help()
-        return 0
+    if (
+        args.repository is not None
+        and (
+            args.show_version
+            or args.command not in _REPOSITORY_AWARE_COMMANDS
+        )
+    ):
+        parser.print_usage(sys.stderr)
+        parser.exit(
+            2,
+            "llmwikiops: error: repository option is not valid for this command\n",
+        )
     try:
+        if args.repository is not None:
+            args.repository = normalize_repository_path(args.repository)
+        if args.show_version:
+            print(version_label())
+            return 0
+        if not getattr(args, "func", None):
+            parser.print_help()
+            return 0
         return args.func(args)
     except (ConfigError, ManifestError, TransactionError) as exc:
         if getattr(args, "json", False):

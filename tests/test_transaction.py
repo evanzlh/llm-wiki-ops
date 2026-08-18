@@ -5169,6 +5169,35 @@ def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
     assert "requires: the candidate is no longer needed" in result.stderr
 
 
+def test_explicit_repository_transaction_source_is_relative_to_repository(
+    tmp_path: Path,
+) -> None:
+    root, _config = make_config(tmp_path)
+    business = tmp_path / "business"
+    business.mkdir()
+    (business / "sources").mkdir()
+    (business / "sources" / "input.md").write_text("business", encoding="utf-8")
+    selected_source = root / "sources" / "input.md"
+    selected_source.write_text("selected", encoding="utf-8")
+
+    result = run_cli(
+        tmp_path / "home",
+        business,
+        "-C",
+        str(root),
+        "transaction",
+        "begin",
+        "--source",
+        "sources/input.md",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["source_ids"] == ["sources/input.md"]
+    assert Path(payload["workspace"]).is_relative_to(root)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
 def test_transaction_command_rejects_hard_linked_repository_config(
     tmp_path: Path,
