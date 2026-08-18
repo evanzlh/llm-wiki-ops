@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -172,8 +174,12 @@ EXPECTED_BUNDLED_CATALOG = (
 SAFE_READER_START = "<!-- LLMWIKIOPS_SAFE_READER_START -->"
 SAFE_READER_END = "<!-- LLMWIKIOPS_SAFE_READER_END -->"
 SAFE_READER_HEREDOC = (
-    "LLMWIKIOPS_SAFE_PATH_B64='BASE64URL_UTF8_ABSOLUTE_PATH' "
-    "LLMWIKIOPS_SAFE_MODE=full python - <<'PY'\n"
+    "LLMWIKIOPS_SAFE_ROOT_B64='BASE64URL_UTF8_EXACT_ROOT' "
+    "LLMWIKIOPS_SAFE_REL_B64='BASE64URL_UTF8_RELATIVE_PATH_OR_EMPTY' "
+    "LLMWIKIOPS_SAFE_MODE=root-bind LLMWIKIOPS_SAFE_EXPECT_ROOT='' "
+    "LLMWIKIOPS_SAFE_EXPECT_REL_B64='' LLMWIKIOPS_SAFE_EXPECT_SIZE='' "
+    "LLMWIKIOPS_SAFE_EXPECT_SHA256='' "
+    "python - <<'PY'\n"
 )
 EXPECTED_ADAPTER_DESCRIPTION = (
     "Use when any request asks to access or operate on an external LLMWikiOps wiki, "
@@ -213,7 +219,7 @@ def encoded_catalog(rendered: str) -> list[dict[str, str]]:
 
 def embedded_safe_reader_script(rendered: str) -> str:
     region = rendered.split(SAFE_READER_START, 1)[1].split(SAFE_READER_END, 1)[0]
-    return region.split(SAFE_READER_HEREDOC, 1)[1].split("\nPY", 1)[0] + "\n"
+    return region.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0] + "\n"
 
 
 def render_demo_adapter(tmp_path: Path) -> str:
@@ -227,13 +233,48 @@ def render_demo_adapter(tmp_path: Path) -> str:
 
 def execute_safe_reader(
     rendered: str,
-    path: Path,
+    root: Path,
+    relative_path: str,
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    expected_relative_path: str | None = None,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
 ) -> None:
-    encoded_path = base64.urlsafe_b64encode(str(path).encode("utf-8")).decode("ascii")
-    monkeypatch.setenv("LLMWIKIOPS_SAFE_PATH_B64", encoded_path)
+    encoded_root = base64.urlsafe_b64encode(str(root).encode("utf-8")).decode("ascii")
+    encoded_relative = base64.urlsafe_b64encode(
+        relative_path.encode("utf-8")
+    ).decode("ascii")
+    root_metadata = root.stat()
+    monkeypatch.setenv("LLMWIKIOPS_SAFE_ROOT_B64", encoded_root)
+    monkeypatch.setenv("LLMWIKIOPS_SAFE_REL_B64", encoded_relative)
+    legacy_path = root if not relative_path else root.joinpath(*relative_path.split("/"))
+    monkeypatch.setenv(
+        "LLMWIKIOPS_SAFE_PATH_B64",
+        base64.urlsafe_b64encode(str(legacy_path).encode("utf-8")).decode("ascii"),
+    )
     monkeypatch.setenv("LLMWIKIOPS_SAFE_MODE", mode)
+    monkeypatch.setenv(
+        "LLMWIKIOPS_SAFE_EXPECT_ROOT",
+        "" if mode == "root-bind" else f"{root_metadata.st_dev}:{root_metadata.st_ino}",
+    )
+    monkeypatch.setenv(
+        "LLMWIKIOPS_SAFE_EXPECT_REL_B64",
+        ""
+        if expected_relative_path is None
+        else base64.urlsafe_b64encode(
+            expected_relative_path.encode("utf-8")
+        ).decode("ascii"),
+    )
+    monkeypatch.setenv(
+        "LLMWIKIOPS_SAFE_EXPECT_SIZE",
+        "" if expected_size is None else str(expected_size),
+    )
+    monkeypatch.setenv(
+        "LLMWIKIOPS_SAFE_EXPECT_SHA256",
+        "" if expected_sha256 is None else expected_sha256,
+    )
     exec(  # noqa: S102 - executes the exact embedded protocol under test
         compile(embedded_safe_reader_script(rendered), "<safe-reader>", "exec"),
         {"__name__": "__main__"},
@@ -452,22 +493,52 @@ def test_template_contains_one_low_freedom_executable_safe_reader(
     script = embedded_safe_reader_script(rendered)
     for required in (
         "os.O_NOFOLLOW",
+        "os.O_DIRECTORY",
         "os.lstat",
         "os.fstat",
         "os.read",
         "os.lseek",
+        "os.listdir",
+        "dir_fd=",
         "hashlib.sha256",
         "base64.b64decode",
+        "root_identity",
+        "skill-catalog",
+        "LLMWIKIOPS_SAFE_EXPECT_REL_B64",
+        "LLMWIKIOPS_SAFE_EXPECT_SIZE",
+        "LLMWIKIOPS_SAFE_EXPECT_SHA256",
         "1048576",
+        "256",
         "65536",
         'decode("utf-8")',
     ):
         assert required in script
     assert "MUST use only the deterministic safe reader" in rendered
-    assert "LLMWIKIOPS_SAFE_PATH='/absolute/path'" not in rendered
+    assert "LLMWIKIOPS_SAFE_PATH_B64" not in rendered
     assert "raw path in the shell command" in rendered
     assert "Never use `sed`, `cat`, `head`, `tail`, `awk`, separate `stat`" in rendered
     assert "or `sha256sum`" in rendered
+    assert "Never use `find` anywhere" in rendered
+    assert "full` mode requires the exact catalog-returned" in rendered
+
+
+def test_embedded_safe_reader_binds_an_ordinary_exact_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "exact root's directory"
+    root.mkdir()
+
+    execute_safe_reader(rendered, root, "", "root-bind", monkeypatch)
+
+    metadata = root.stat()
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "root-bind",
+        "root": str(root),
+        "root_identity": f"{metadata.st_dev}:{metadata.st_ino}",
+    }
 
 
 def test_embedded_safe_reader_reads_complete_ordinary_utf8_file(
@@ -476,20 +547,32 @@ def test_embedded_safe_reader_reads_complete_ordinary_utf8_file(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
-    target = tmp_path / "authority's complete body.md"
+    root = tmp_path / "root with a quote's"
+    target = root / "nested directory" / "authority's complete body.md"
+    target.parent.mkdir(parents=True)
     contents = "---\r\nname: demo\r\n---\r\n\r\n# Complete body\r\n"
     target.write_bytes(contents.encode("utf-8"))
 
-    execute_safe_reader(rendered, target, "full", monkeypatch)
+    execute_safe_reader(
+        rendered,
+        root,
+        "nested directory/authority's complete body.md",
+        "unbound",
+        monkeypatch,
+    )
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload == {
-        "mode": "full",
-        "path": str(target),
-        "sha256": "sha256:" + sha256(target.read_bytes()).hexdigest(),
-        "size": len(target.read_bytes()),
-        "text": contents,
-    }
+    assert payload["mode"] == "unbound"
+    assert payload["root"] == str(root)
+    assert payload["relative_path"] == (
+        "nested directory/authority's complete body.md"
+    )
+    assert payload["root_identity"] == (
+        f"{root.stat().st_dev}:{root.stat().st_ino}"
+    )
+    assert payload["sha256"] == "sha256:" + sha256(target.read_bytes()).hexdigest()
+    assert payload["size"] == len(target.read_bytes())
+    assert payload["text"] == contents
 
 
 def test_embedded_safe_reader_returns_only_bounded_frontmatter_after_full_read(
@@ -498,12 +581,14 @@ def test_embedded_safe_reader_returns_only_bounded_frontmatter_after_full_read(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
-    target = tmp_path / "route.md"
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "route.md"
     target.write_bytes(
         b"---\r\nname: demo\r\ndescription: Route demo.\r\n---\r\nSECRET BODY\r\n"
     )
 
-    execute_safe_reader(rendered, target, "frontmatter", monkeypatch)
+    execute_safe_reader(rendered, root, "route.md", "frontmatter", monkeypatch)
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "frontmatter"
@@ -518,16 +603,55 @@ def test_embedded_safe_reader_rejects_symlink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
-    target = tmp_path / "target.md"
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target.md"
     target.write_text("ordinary\n", encoding="utf-8")
-    linked = tmp_path / "linked.md"
+    linked = root / "linked.md"
     try:
         linked.symlink_to(target)
     except OSError as exc:
         pytest.skip(f"symbolic links unavailable: {exc}")
 
     with pytest.raises(SystemExit, match="safe-read-error"):
-        execute_safe_reader(rendered, linked, "full", monkeypatch)
+        execute_safe_reader(rendered, root, "linked.md", "unbound", monkeypatch)
+
+
+def test_embedded_safe_reader_rejects_root_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    try:
+        linked_root.symlink_to(real_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="safe-read-error"):
+        execute_safe_reader(rendered, linked_root, "", "root-bind", monkeypatch)
+
+
+def test_embedded_safe_reader_rejects_symlinked_ancestor_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    make_skill_collection(outside, {"demo": "Use when demo is requested."})
+    try:
+        (root / ".skills").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="safe-read-error"):
+        execute_safe_reader(
+            rendered, root, ".skills/demo/SKILL.md", "unbound", monkeypatch
+        )
 
 
 def test_embedded_safe_reader_rejects_oversize_and_invalid_utf8(
@@ -535,15 +659,43 @@ def test_embedded_safe_reader_rejects_oversize_and_invalid_utf8(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
-    oversize = tmp_path / "oversize.md"
+    root = tmp_path / "root"
+    root.mkdir()
+    oversize = root / "oversize.md"
     oversize.write_bytes(b"x" * (1024 * 1024 + 1))
-    invalid = tmp_path / "invalid.md"
+    invalid = root / "invalid.md"
     invalid.write_bytes(b"\xff\xfe")
 
     with pytest.raises(SystemExit, match="safe-read-error.*1 MiB"):
-        execute_safe_reader(rendered, oversize, "full", monkeypatch)
+        execute_safe_reader(rendered, root, "oversize.md", "unbound", monkeypatch)
     with pytest.raises(SystemExit, match="safe-read-error.*UTF-8"):
-        execute_safe_reader(rendered, invalid, "full", monkeypatch)
+        execute_safe_reader(rendered, root, "invalid.md", "unbound", monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "",
+        "/absolute.md",
+        "./file.md",
+        "nested//file.md",
+        "nested/../file.md",
+        "nested\\file.md",
+        "nested/file.md/",
+        "control\x00file.md",
+    ),
+)
+def test_embedded_safe_reader_rejects_unsafe_relative_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    with pytest.raises(SystemExit, match="safe-read-error"):
+        execute_safe_reader(rendered, root, relative_path, "unbound", monkeypatch)
 
 
 def test_embedded_safe_reader_rejects_path_swap_during_same_fd_read(
@@ -551,8 +703,10 @@ def test_embedded_safe_reader_rejects_path_swap_during_same_fd_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
-    target = tmp_path / "authority.md"
-    replacement = tmp_path / "replacement.md"
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "authority.md"
+    replacement = root / "replacement.md"
     target.write_bytes(b"trusted\n" * 16384)
     replacement.write_bytes(b"attacker\n")
     real_read = os.read
@@ -569,7 +723,249 @@ def test_embedded_safe_reader_rejects_path_swap_during_same_fd_read(
     monkeypatch.setattr(os, "read", swapping_read)
 
     with pytest.raises(SystemExit, match="safe-read-error.*changed"):
-        execute_safe_reader(rendered, target, "full", monkeypatch)
+        execute_safe_reader(rendered, root, "authority.md", "unbound", monkeypatch)
+
+
+def test_embedded_safe_reader_rejects_ancestor_swap_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    ancestor = root / "authority"
+    ancestor.mkdir(parents=True)
+    target = ancestor / "SKILL.md"
+    target.write_bytes(b"trusted\n" * 16384)
+    moved = root / "moved-authority"
+    real_read = os.read
+    swapped = False
+
+    def swapping_read(descriptor: int, count: int) -> bytes:
+        nonlocal swapped
+        data = real_read(descriptor, count)
+        if data and not swapped:
+            ancestor.rename(moved)
+            ancestor.mkdir()
+            (ancestor / "SKILL.md").write_text("attacker\n", encoding="utf-8")
+            swapped = True
+        return data
+
+    monkeypatch.setattr(os, "read", swapping_read)
+
+    with pytest.raises(SystemExit, match="safe-read-error.*changed"):
+        execute_safe_reader(
+            rendered, root, "authority/SKILL.md", "unbound", monkeypatch
+        )
+
+
+def test_embedded_safe_reader_returns_sorted_fd_anchored_skill_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    skills = make_skill_collection(
+        root / ".skills",
+        {
+            "zeta": "Use when zeta is requested.",
+            "alpha": "Use when alpha is requested.",
+        },
+    )
+
+    execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "skill-catalog"
+    assert payload["root_identity"] == f"{root.stat().st_dev}:{root.stat().st_ino}"
+    assert [item["name"] for item in payload["skills"]] == ["alpha", "zeta"]
+    for item in payload["skills"]:
+        target = skills / item["name"] / "SKILL.md"
+        assert item["relative_path"] == f".skills/{item['name']}/SKILL.md"
+        assert item["size"] == len(target.read_bytes())
+        assert item["sha256"] == "sha256:" + sha256(target.read_bytes()).hexdigest()
+        assert item["frontmatter"].startswith(f"---\nname: {item['name']}\n")
+        assert "# Task body" not in item["frontmatter"]
+
+
+def test_embedded_safe_reader_full_accepts_exact_catalog_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    make_skill_collection(
+        root / ".skills",
+        {"demo": "Use when demo is requested."},
+        body="# SAFE BODY\n",
+    )
+    execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+    record = json.loads(capsys.readouterr().out)["skills"][0]
+
+    execute_safe_reader(
+        rendered,
+        root,
+        record["relative_path"],
+        "full",
+        monkeypatch,
+        expected_relative_path=record["relative_path"],
+        expected_size=record["size"],
+        expected_sha256=record["sha256"],
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["relative_path"] == record["relative_path"]
+    assert payload["size"] == record["size"]
+    assert payload["sha256"] == record["sha256"]
+    assert payload["text"].endswith("# SAFE BODY\n")
+
+
+@pytest.mark.parametrize(
+    "invalid_binding",
+    (
+        "missing-relative",
+        "missing-size",
+        "missing-sha256",
+        "relative-mismatch",
+        "size-mismatch",
+        "sha256-mismatch",
+    ),
+)
+def test_embedded_safe_reader_full_rejects_missing_or_mismatched_catalog_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    invalid_binding: str,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    make_skill_collection(
+        root / ".skills", {"demo": "Use when demo is requested."}
+    )
+    execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+    record = json.loads(capsys.readouterr().out)["skills"][0]
+    expected_relative_path: str | None = record["relative_path"]
+    expected_size: int | None = record["size"]
+    expected_sha256: str | None = record["sha256"]
+    if invalid_binding == "missing-relative":
+        expected_relative_path = None
+    elif invalid_binding == "missing-size":
+        expected_size = None
+    elif invalid_binding == "missing-sha256":
+        expected_sha256 = None
+    elif invalid_binding == "relative-mismatch":
+        expected_relative_path = ".skills/other/SKILL.md"
+    elif invalid_binding == "size-mismatch":
+        expected_size += 1
+    else:
+        expected_sha256 = "sha256:" + "0" * 64
+
+    with pytest.raises(SystemExit, match="safe-read-error.*catalog"):
+        execute_safe_reader(
+            rendered,
+            root,
+            record["relative_path"],
+            "full",
+            monkeypatch,
+            expected_relative_path=expected_relative_path,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+
+
+def test_embedded_safe_reader_full_rejects_same_metadata_malicious_body_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    skills = make_skill_collection(
+        root / ".skills",
+        {"demo": "Use when demo is requested."},
+        body="# SAFE BODY\n",
+    )
+    execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+    record = json.loads(capsys.readouterr().out)["skills"][0]
+    target = skills / "demo" / "SKILL.md"
+    original = target.read_bytes()
+    malicious = original.replace(b"# SAFE BODY", b"# EVIL BODY")
+    assert len(malicious) == len(original)
+    replacement = root / "replacement-SKILL.md"
+    replacement.write_bytes(malicious)
+    replacement.replace(target)
+
+    with pytest.raises(SystemExit, match="safe-read-error.*catalog"):
+        execute_safe_reader(
+            rendered,
+            root,
+            record["relative_path"],
+            "full",
+            monkeypatch,
+            expected_relative_path=record["relative_path"],
+            expected_size=record["size"],
+            expected_sha256=record["sha256"],
+        )
+
+
+def test_embedded_safe_reader_rejects_skill_catalog_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    skills = make_skill_collection(
+        root / ".skills", {"demo": "Use when demo is requested."}
+    )
+    moved = root / "moved-skills"
+    real_listdir = os.listdir
+    swapped = False
+
+    def swapping_listdir(path: object) -> list[str]:
+        nonlocal swapped
+        names = real_listdir(path)
+        if not swapped:
+            skills.rename(moved)
+            make_skill_collection(
+                root / ".skills", {"demo": "Use when demo is requested."}
+            )
+            swapped = True
+        return names
+
+    monkeypatch.setattr(os, "listdir", swapping_listdir)
+
+    with pytest.raises(SystemExit, match="safe-read-error.*changed"):
+        execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+
+
+@pytest.mark.parametrize("entry_kind", ("symlink", "fifo", "file"))
+def test_embedded_safe_reader_rejects_unsafe_skill_catalog_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry_kind: str,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    skills = root / ".skills"
+    skills.mkdir(parents=True)
+    entry = skills / "unsafe"
+    try:
+        if entry_kind == "symlink":
+            outside = tmp_path / "outside"
+            make_skill_collection(
+                outside, {"unsafe": "Use when unsafe is requested."}
+            )
+            entry.symlink_to(outside / "unsafe", target_is_directory=True)
+        elif entry_kind == "fifo":
+            os.mkfifo(entry)
+        else:
+            entry.write_text("not a directory\n", encoding="utf-8")
+    except OSError as exc:
+        pytest.skip(f"{entry_kind} unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="safe-read-error"):
+        execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
 
 
 def test_renderer_rejects_unsafe_source_topology(tmp_path: Path) -> None:

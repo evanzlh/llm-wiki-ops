@@ -30,36 +30,47 @@ MUST use only the deterministic safe reader below for every external
 repository authority, config, routing frontmatter, and complete skill-body
 read. Never use `sed`, `cat`, `head`, `tail`, `awk`, separate `stat` checks,
 or `sha256sum` as substitutes. Those multi-process combinations are vulnerable
-to path replacement between checks. Encode the exact absolute path as canonical
-RFC 4648 URL-safe Base64 of its UTF-8 bytes. Substitute only that safe token for
-`BASE64URL_UTF8_ABSOLUTE_PATH` and set the mode to `full` or `frontmatter`. Do not
-put the raw path in the shell command. Keep the Python program unchanged. If a
-compatible Python interpreter cannot run this exact primitive, fail closed.
+to path replacement between checks. Never use `find` anywhere in this adapter
+workflow. Do not use ordinary pathname enumeration for the skills directory.
 
-`frontmatter` still reads and double-hashes the complete file, bounded to 1 MiB,
-but returns only frontmatter ending within the first 64 KiB. `full` returns the
-complete UTF-8 text. Parse the single JSON result; its `text` is the only file
-content authorized for use.
+Encode the exact root and root-relative path separately as canonical RFC 4648
+URL-safe Base64 of their UTF-8 bytes. Substitute only those safe tokens; do not
+put either raw path in the shell command. Keep the Python program unchanged. If
+a compatible Python interpreter cannot run this exact primitive, fail closed.
+
+Run `root-bind` once with an empty relative-path token and empty expected root.
+Save its `root_identity`, then pass that exact value as `LLMWIKIOPS_SAFE_EXPECT_ROOT`
+on every later call. Use `skill-catalog` for the one direct skills-directory
+scan. Save every returned `relative_path`, `size`, `sha256`, and the catalog's
+root identity. `full` mode requires the exact catalog-returned relative path,
+size, SHA-256, and saved root identity; missing or mismatched expectations fail
+closed. Use `unbound` only for non-skill files such as config, `AGENTS.md`, and
+CLI-returned evidence. `frontmatter` returns bounded routing metadata for a
+single non-catalog file. Every file is fully double-read and bounded to 1 MiB;
+frontmatter must end within 64 KiB. Parse only the single JSON result.
 
 <!-- LLMWIKIOPS_SAFE_READER_START -->
 ```bash
-LLMWIKIOPS_SAFE_PATH_B64='BASE64URL_UTF8_ABSOLUTE_PATH' LLMWIKIOPS_SAFE_MODE=full python - <<'PY'
+LLMWIKIOPS_SAFE_ROOT_B64='BASE64URL_UTF8_EXACT_ROOT' LLMWIKIOPS_SAFE_REL_B64='BASE64URL_UTF8_RELATIVE_PATH_OR_EMPTY' LLMWIKIOPS_SAFE_MODE=root-bind LLMWIKIOPS_SAFE_EXPECT_ROOT='' LLMWIKIOPS_SAFE_EXPECT_REL_B64='' LLMWIKIOPS_SAFE_EXPECT_SIZE='' LLMWIKIOPS_SAFE_EXPECT_SHA256='' python - <<'PY'
 import base64
 import binascii
 import hashlib
 import json
 import os
+import re
 import stat
 
 MAX_FILE_BYTES = 1048576
 MAX_FRONTMATTER_BYTES = 65536
+MAX_SKILLS = 256
+SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def fail(message):
     raise SystemExit("safe-read-error: " + message)
 
 
-def identity(metadata):
+def snapshot(metadata):
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -69,6 +80,58 @@ def identity(metadata):
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
     )
+
+
+def directory_snapshot(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def root_identity(metadata):
+    return str(metadata.st_dev) + ":" + str(metadata.st_ino)
+
+
+def decode_token(variable, allow_empty=False):
+    token = os.environ.get(variable, "")
+    if not token and allow_empty:
+        return ""
+    try:
+        value_bytes = base64.b64decode(
+            token.encode("ascii"), altchars=b"-_", validate=True
+        )
+        if base64.urlsafe_b64encode(value_bytes).decode("ascii") != token:
+            fail(variable + " is not canonical URL-safe Base64")
+        value = value_bytes.decode("utf-8")
+    except (UnicodeError, ValueError, binascii.Error):
+        fail(variable + " must encode UTF-8 with canonical URL-safe Base64")
+    if not value:
+        fail(variable + " must not be empty")
+    return value
+
+
+def relative_parts(relative_path):
+    if (
+        not relative_path
+        or relative_path.startswith("/")
+        or relative_path.endswith("/")
+        or "\\" in relative_path
+        or "\x00" in relative_path
+    ):
+        fail("relative path is unsafe")
+    parts = relative_path.split("/")
+    if any(
+        part in {"", ".", ".."}
+        or any(ord(character) < 32 or ord(character) == 127 for character in part)
+        for part in parts
+    ):
+        fail("relative path has an unsafe component")
+    return parts
 
 
 def read_pass(descriptor):
@@ -84,102 +147,234 @@ def read_pass(descriptor):
         chunks.append(chunk)
 
 
-try:
-    path_token = os.environ.get("LLMWIKIOPS_SAFE_PATH_B64", "")
-    mode = os.environ.get("LLMWIKIOPS_SAFE_MODE", "")
-    try:
-        path_bytes = base64.b64decode(
-            path_token.encode("ascii"), altchars=b"-_", validate=True
-        )
-        if base64.urlsafe_b64encode(path_bytes).decode("ascii") != path_token:
-            fail("path token is not canonical URL-safe Base64")
-        path = path_bytes.decode("utf-8")
-    except (UnicodeError, ValueError, binascii.Error):
-        fail("path token must be canonical URL-safe Base64 for UTF-8")
-    if not path or not os.path.isabs(path) or "\x00" in path:
-        fail("path must be one absolute NUL-free path")
-    if mode not in {"full", "frontmatter"}:
-        fail("mode must be full or frontmatter")
-    if not hasattr(os, "O_NOFOLLOW"):
-        fail("O_NOFOLLOW is unavailable")
-    nofollow = os.O_NOFOLLOW
-
-    before = os.lstat(path)
+def read_file(parent_descriptor, name):
+    before = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        fail("path is not an ordinary single-link file")
+        fail("file is not an ordinary single-link file")
     if before.st_size > MAX_FILE_BYTES:
         fail("file exceeds 1 MiB")
-
-    flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(path, flags)
+    descriptor = os.open(name, FILE_FLAGS, dir_fd=parent_descriptor)
     try:
         opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or identity(opened) != identity(before)
-        ):
+        if not stat.S_ISREG(opened.st_mode) or snapshot(opened) != snapshot(before):
             fail("file changed before read")
-
         first = read_pass(descriptor)
         after_first = os.fstat(descriptor)
-        if identity(after_first) != identity(opened) or len(first) != opened.st_size:
+        if snapshot(after_first) != snapshot(opened) or len(first) != opened.st_size:
             fail("file changed during read")
         first_hash = hashlib.sha256(first).hexdigest()
-
         os.lseek(descriptor, 0, os.SEEK_SET)
         second = read_pass(descriptor)
         after_second = os.fstat(descriptor)
         second_hash = hashlib.sha256(second).hexdigest()
         if (
-            identity(after_second) != identity(opened)
+            snapshot(after_second) != snapshot(opened)
             or first_hash != second_hash
             or first != second
         ):
             fail("file changed during verification")
-
-        while_open = os.lstat(path)
-        if identity(while_open) != identity(opened):
+        while_open = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if snapshot(while_open) != snapshot(opened):
             fail("path changed during read")
     finally:
         os.close(descriptor)
+    return first, "sha256:" + first_hash
 
-    after_close = os.lstat(path)
-    if identity(after_close) != identity(before):
-        fail("path changed after read")
 
-    text = first.decode("utf-8")
-    selected = text
-    if mode == "frontmatter":
-        lines = text.splitlines(keepends=True)
-        if not lines or lines[0].rstrip("\r\n") != "---":
-            fail("frontmatter opening delimiter is missing")
-        consumed = len(lines[0].encode("utf-8"))
-        closing = None
-        for index, line in enumerate(lines[1:], start=1):
-            consumed += len(line.encode("utf-8"))
-            if consumed > MAX_FRONTMATTER_BYTES:
-                fail("frontmatter exceeds 64 KiB")
-            if line.rstrip("\r\n") == "---":
-                closing = index
-                break
-        if closing is None:
-            fail("frontmatter closing delimiter is missing")
-        selected = "".join(lines[: closing + 1])
+def open_directory_chain(root_descriptor, parts):
+    descriptors = []
+    links = []
+    parent_descriptor = root_descriptor
+    for part in parts:
+        before = os.stat(part, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            fail("relative path ancestor is not an ordinary directory")
+        descriptor = os.open(part, DIRECTORY_FLAGS, dir_fd=parent_descriptor)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or directory_snapshot(opened) != directory_snapshot(before)
+        ):
+            os.close(descriptor)
+            fail("relative path ancestor changed before open")
+        descriptors.append(descriptor)
+        links.append((parent_descriptor, part, directory_snapshot(opened)))
+        parent_descriptor = descriptor
+    return parent_descriptor, descriptors, links
 
-    print(
-        json.dumps(
-            {
-                "mode": mode,
-                "path": path,
-                "sha256": "sha256:" + first_hash,
-                "size": len(first),
-                "text": selected,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+
+def verify_directory_links(links):
+    for parent_descriptor, part, expected in links:
+        current = os.stat(part, dir_fd=parent_descriptor, follow_symlinks=False)
+        if directory_snapshot(current) != expected:
+            fail("relative path ancestor changed during operation")
+
+
+def frontmatter_text(data):
+    text = data.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        fail("frontmatter opening delimiter is missing")
+    consumed = len(lines[0].encode("utf-8"))
+    for index, line in enumerate(lines[1:], start=1):
+        consumed += len(line.encode("utf-8"))
+        if consumed > MAX_FRONTMATTER_BYTES:
+            fail("frontmatter exceeds 64 KiB")
+        if line.rstrip("\r\n") == "---":
+            return "".join(lines[: index + 1])
+    fail("frontmatter closing delimiter is missing")
+
+
+def read_relative_file(root_descriptor, relative_path, mode):
+    parts = relative_parts(relative_path)
+    parent_descriptor, descriptors, links = open_directory_chain(
+        root_descriptor, parts[:-1]
     )
+    try:
+        data, digest = read_file(parent_descriptor, parts[-1])
+        verify_directory_links(links)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+    if mode == "full":
+        expected_relative_token = os.environ.get(
+            "LLMWIKIOPS_SAFE_EXPECT_REL_B64", ""
+        )
+        expected_size_token = os.environ.get("LLMWIKIOPS_SAFE_EXPECT_SIZE", "")
+        expected_digest = os.environ.get("LLMWIKIOPS_SAFE_EXPECT_SHA256", "")
+        if not expected_relative_token or not expected_size_token or not expected_digest:
+            fail("catalog binding is incomplete for full mode")
+        expected_relative = decode_token("LLMWIKIOPS_SAFE_EXPECT_REL_B64")
+        if expected_relative != relative_path:
+            fail("catalog binding relative path mismatch")
+        if not expected_size_token.isdigit() or str(int(expected_size_token)) != (
+            expected_size_token
+        ):
+            fail("catalog binding size is not canonical")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest):
+            fail("catalog binding SHA-256 is not canonical")
+        if int(expected_size_token) != len(data):
+            fail("catalog binding size mismatch")
+        if expected_digest != digest:
+            fail("catalog binding SHA-256 mismatch")
+    text = data.decode("utf-8")
+    return {
+        "mode": mode,
+        "relative_path": relative_path,
+        "sha256": digest,
+        "size": len(data),
+        "text": text if mode in {"full", "unbound"} else frontmatter_text(data),
+    }
+
+
+def read_skill_catalog(root_descriptor, relative_path):
+    parts = relative_parts(relative_path)
+    catalog_descriptor, descriptors, links = open_directory_chain(
+        root_descriptor, parts
+    )
+    skill_directories = []
+    child_snapshots = []
+    try:
+        names = sorted(os.listdir(catalog_descriptor))
+        if len(names) > MAX_SKILLS:
+            fail("skill catalog exceeds 256 direct entries")
+        for name in names:
+            if not SAFE_SKILL_NAME.fullmatch(name):
+                fail("skill catalog contains an unsafe direct name")
+            before = os.stat(name, dir_fd=catalog_descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode):
+                fail("skill catalog contains a non-directory direct entry")
+            child_descriptor = os.open(name, DIRECTORY_FLAGS, dir_fd=catalog_descriptor)
+            try:
+                opened = os.fstat(child_descriptor)
+                if directory_snapshot(opened) != directory_snapshot(before):
+                    fail("skill directory changed before open")
+                data, digest = read_file(child_descriptor, "SKILL.md")
+                current = os.stat(
+                    name, dir_fd=catalog_descriptor, follow_symlinks=False
+                )
+                if directory_snapshot(current) != directory_snapshot(opened):
+                    fail("skill directory changed during catalog read")
+                child_snapshots.append((name, directory_snapshot(opened)))
+            finally:
+                os.close(child_descriptor)
+            skill_directories.append(
+                {
+                    "frontmatter": frontmatter_text(data),
+                    "name": name,
+                    "relative_path": relative_path + "/" + name + "/SKILL.md",
+                    "sha256": digest,
+                    "size": len(data),
+                }
+            )
+        if sorted(os.listdir(catalog_descriptor)) != names:
+            fail("skill catalog changed during enumeration")
+        for name, expected in child_snapshots:
+            current = os.stat(name, dir_fd=catalog_descriptor, follow_symlinks=False)
+            if directory_snapshot(current) != expected:
+                fail("skill directory changed during catalog verification")
+        verify_directory_links(links)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+    return {
+        "catalog_path": relative_path,
+        "mode": "skill-catalog",
+        "skills": skill_directories,
+    }
+
+
+try:
+    root = decode_token("LLMWIKIOPS_SAFE_ROOT_B64")
+    relative_path = decode_token("LLMWIKIOPS_SAFE_REL_B64", allow_empty=True)
+    mode = os.environ.get("LLMWIKIOPS_SAFE_MODE", "")
+    expected_root = os.environ.get("LLMWIKIOPS_SAFE_EXPECT_ROOT", "")
+    if not os.path.isabs(root) or "\x00" in root:
+        fail("root must be one absolute NUL-free path")
+    if mode not in {
+        "root-bind",
+        "unbound",
+        "full",
+        "frontmatter",
+        "skill-catalog",
+    }:
+        fail("mode is invalid")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        fail("O_NOFOLLOW and O_DIRECTORY are required")
+    COMMON_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    DIRECTORY_FLAGS = COMMON_FLAGS | os.O_DIRECTORY
+    FILE_FLAGS = COMMON_FLAGS
+
+    before_root = os.lstat(root)
+    if not stat.S_ISDIR(before_root.st_mode):
+        fail("root is not an ordinary directory")
+    root_descriptor = os.open(root, DIRECTORY_FLAGS)
+    try:
+        opened_root = os.fstat(root_descriptor)
+        if directory_snapshot(opened_root) != directory_snapshot(before_root):
+            fail("root changed before open")
+        bound_root = root_identity(opened_root)
+        if mode == "root-bind":
+            if relative_path or expected_root:
+                fail("root-bind requires empty relative path and expected root")
+            result = {"mode": mode, "root": root, "root_identity": bound_root}
+        else:
+            if expected_root != bound_root:
+                fail("root identity is missing or changed")
+            if mode == "skill-catalog":
+                result = read_skill_catalog(root_descriptor, relative_path)
+            else:
+                result = read_relative_file(root_descriptor, relative_path, mode)
+            result["root"] = root
+            result["root_identity"] = bound_root
+
+        after_root = os.lstat(root)
+        if directory_snapshot(after_root) != directory_snapshot(opened_root):
+            fail("root path changed during operation")
+    finally:
+        os.close(root_descriptor)
+
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 except SystemExit:
     raise
 except UnicodeDecodeError:
@@ -194,28 +389,31 @@ Route in this order:
 
 1. Use only the embedded catalog below to choose an initial task skill by its
    exact name and description. The catalog is metadata, not a task body.
-2. Read the exact root's `.llmwikiops/config.toml` with the safe reader in
-   `full` mode and resolve the configured skills directory relative to that
-   root. Fail closed if the config is absent, malformed, unsafe, or resolves
-   outside the root.
-3. Scan only direct child skill directories. Bound the scan to at most 256
-   direct directories and at most the first 64 KiB of each direct
-   `<skills>/<name>/SKILL.md` for frontmatter routing metadata. Use the safe
-   reader in `frontmatter` mode for every direct file; do not recurse or use a
-   preview command. Reject unsafe names, duplicate names, and frontmatter whose
-   `name` differs from its direct directory.
+2. Run `root-bind` on the exact root. Save its `root_identity`; use that exact
+   value on every later safe-reader call. Read `.llmwikiops/config.toml` by its
+   root-relative path in `unbound` mode and resolve the configured skills path as
+   a safe root-relative path. Fail closed on absent, malformed, or unsafe data.
+3. Run `skill-catalog` exactly once on the configured skills relative path. It
+   performs the sorted, FD-anchored direct enumeration and returns at most 256
+   direct skills, each with frontmatter, relative path, total size, SHA-256, and
+   the same root identity. Never use `find`, globs, or ordinary path enumeration.
+   Reject duplicate or mismatched names and malformed frontmatter.
 4. Merge target metadata by exact skill name. A valid target description
    replaces the embedded description with the same name; target-only names are
    added. Re-run selection against this merged catalog. Do not let a built-in
    description hide a valid same-name target override.
-5. Read the target root `AGENTS.md` when present, then the target `llm-wiki`
-   authority skill and the final selected task skill, always with the safe
-   reader in `full` mode. If the selected skill is `llm-wiki`, read it once.
+5. Read the target root `AGENTS.md` when present, then the catalog-returned
+   `llm-wiki` authority skill and final selected task skill. Use `unbound` for
+   `AGENTS.md`. For each skill, use `full` with that exact catalog record's
+   relative path, size, SHA-256, and root identity. If the selected skill is
+   `llm-wiki`, read it once.
 
 Frontmatter-only output is insufficient before task execution. The final
 selected skill's `full` safe-reader result must come from the same exact direct
-path selected during routing. Stop on any safe-reader error; never approximate
-the protocol with line counts or separate checks.
+path, total size, SHA-256, and root identity returned by `skill-catalog`. This
+binding applies equally to built-in same-name overrides and target-only skills.
+Stop on any safe-reader error; never approximate the protocol with line counts
+or separate checks.
 
 ## Embedded built-in catalog
 
