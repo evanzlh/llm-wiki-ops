@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -641,6 +642,38 @@ def _read_regular_file(parent_fd: int, name: str) -> ManagedFileSnapshot:
         os.close(descriptor)
 
 
+def _snapshot_bound_directory(
+    parent_fd: int, name: str, descriptor: int
+) -> ManagedTreeSnapshot:
+    """Snapshot a managed directory through an already-open bound descriptor."""
+    safe_name = _safe_component(name)
+    opened = os.fstat(descriptor)
+    rebound = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(rebound.st_mode)
+        or not _same_file(opened, rebound)
+    ):
+        raise ValueError("managed adapter directory changed while opening")
+    names = tuple(sorted(os.listdir(descriptor)))
+    allowed = {"SKILL.md", MANAGED_ADAPTER_RECORD}
+    unknown = set(names) - allowed
+    if unknown:
+        raise _UnknownManagedEntry("managed adapter contains unknown entries")
+    files = tuple(_read_regular_file(descriptor, child) for child in names)
+    final_names = tuple(sorted(os.listdir(descriptor)))
+    final = os.fstat(descriptor)
+    rebound = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        final_names != names
+        or not _same_file(opened, final)
+        or not stat.S_ISDIR(rebound.st_mode)
+        or not _same_file(final, rebound)
+    ):
+        raise ValueError("managed adapter directory changed while reading")
+    return ManagedTreeSnapshot(safe_name, _identity(final), files)
+
+
 def _snapshot_child(parent_fd: int, name: str) -> ManagedTreeSnapshot:
     """Capture the small managed tree using only descriptor-relative operations."""
     safe_name = _safe_component(name)
@@ -652,23 +685,7 @@ def _snapshot_child(parent_fd: int, name: str) -> ManagedTreeSnapshot:
         opened = os.fstat(descriptor)
         if not stat.S_ISDIR(opened.st_mode) or not _same_file(observed, opened):
             raise ValueError("managed adapter directory changed while opening")
-        names = tuple(sorted(os.listdir(descriptor)))
-        allowed = {"SKILL.md", MANAGED_ADAPTER_RECORD}
-        unknown = set(names) - allowed
-        if unknown:
-            raise _UnknownManagedEntry("managed adapter contains unknown entries")
-        files = tuple(_read_regular_file(descriptor, child) for child in names)
-        final_names = tuple(sorted(os.listdir(descriptor)))
-        final = os.fstat(descriptor)
-        rebound = os.stat(safe_name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            final_names != names
-            or not _same_file(opened, final)
-            or not stat.S_ISDIR(rebound.st_mode)
-            or not _same_file(final, rebound)
-        ):
-            raise ValueError("managed adapter directory changed while reading")
-        return ManagedTreeSnapshot(safe_name, _identity(final), files)
+        return _snapshot_bound_directory(parent_fd, safe_name, descriptor)
     finally:
         os.close(descriptor)
 
@@ -755,18 +772,7 @@ def _write_stage(
     try:
 
         def capture_bound_stage() -> None:
-            opened = os.fstat(stage_fd)
-            rebound = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if (
-                not stat.S_ISDIR(opened.st_mode)
-                or not stat.S_ISDIR(rebound.st_mode)
-                or not _same_file(opened, rebound)
-            ):
-                raise ValueError("staged adapter directory changed during write")
-            snapshot = _snapshot_child(parent_fd, name)
-            if snapshot.identity[:2] != (opened.st_dev, opened.st_ino):
-                raise ValueError("staged adapter directory changed during snapshot")
-            capture(snapshot)
+            capture(_snapshot_bound_directory(parent_fd, name, stage_fd))
 
         capture_bound_stage()
         flags = (
@@ -794,6 +800,14 @@ def _write_stage(
         os.fsync(stage_fd)
         capture_bound_stage()
         checkpoint("staged-record")
+    except BaseException:
+        try:
+            capture_bound_stage()
+        except (OSError, ValueError):
+            # A concurrently replaced tree is intentionally left in the active
+            # namespace; the last identity-bound snapshot will not match it.
+            pass
+        raise
     finally:
         os.close(stage_fd)
     snapshot = _snapshot_child(parent_fd, name)
@@ -900,35 +914,86 @@ def _rename_noreplace_between(
     """Rename between descriptor-bound directories without replacement."""
     safe_source = _safe_component(source)
     safe_destination = _safe_component(destination)
-    library = ctypes.CDLL(None, use_errno=True)
-    try:
-        renameat2 = library.renameat2
-    except AttributeError as exc:
-        raise OSError(errno.ENOTSUP, "renameat2(RENAME_NOREPLACE) is required") from exc
-    renameat2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    renameat2.restype = ctypes.c_int
+    rename, flag = _resolve_atomic_noreplace()
     ctypes.set_errno(0)
-    result = renameat2(
+    result = rename(
         source_parent_fd,
         os.fsencode(safe_source),
         destination_parent_fd,
         os.fsencode(safe_destination),
-        1,  # RENAME_NOREPLACE
+        flag,
     )
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), safe_destination)
 
 
+def _resolve_atomic_noreplace(
+    platform: str | None = None, library: Any | None = None
+) -> tuple[Any, int]:
+    """Resolve the host's descriptor-relative atomic no-replace primitive."""
+    actual_platform = sys.platform if platform is None else platform
+    if actual_platform.startswith("linux"):
+        symbol = "renameat2"
+        flag = 1  # RENAME_NOREPLACE
+    elif actual_platform == "darwin":
+        symbol = "renameatx_np"
+        flag = 0x4  # RENAME_EXCL
+    else:
+        raise OSError(
+            errno.ENOTSUP,
+            f"atomic no-replace rename is unsupported on {actual_platform}",
+        )
+    actual_library = ctypes.CDLL(None, use_errno=True) if library is None else library
+    try:
+        rename = getattr(actual_library, symbol)
+    except AttributeError as exc:
+        raise OSError(
+            errno.ENOTSUP, f"{symbol} atomic no-replace rename is required"
+        ) from exc
+    rename.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    rename.restype = ctypes.c_int
+    return rename, flag
+
+
 def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
     """Rename within one directory without ever replacing the destination."""
     _rename_noreplace_between(parent_fd, source, parent_fd, destination)
+
+
+def _probe_rename_noreplace(
+    source_parent_fd: int, destination_parent_fd: int
+) -> None:
+    """Exercise RENAME_NOREPLACE without creating a probe artifact."""
+    token = secrets.token_hex(16)
+    if type(token) is not str or re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        raise ValueError("rename probe token must be 32 lowercase hexadecimal characters")
+    source = f".{ADAPTER_NAME}.probe-{token}-source"
+    destination = f".{ADAPTER_NAME}.probe-{token}-destination"
+    for descriptor, name in (
+        (source_parent_fd, source),
+        (destination_parent_fd, destination),
+    ):
+        try:
+            os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise ValueError("rename capability probe name collision; preserving evidence")
+    try:
+        _rename_noreplace_between(
+            source_parent_fd, source, destination_parent_fd, destination
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return
+        raise
+    raise ValueError("rename capability probe unexpectedly moved an entry")
 
 
 def _verified_artifact(
@@ -1017,7 +1082,12 @@ def install_adapter(
     environ: Mapping[str, str] | None = None,
     checkpoint: Callable[[str], None] | None = None,
 ) -> AdapterInstallResult:
-    """Install or upgrade one explicitly selected globally managed adapter."""
+    """Install or upgrade one explicitly selected globally managed adapter.
+
+    The legacy ``backup-removed`` checkpoint name is retained for callback
+    compatibility. It now means that the verified backup moved out of the active
+    recovery namespace into retention; no managed tree is deleted.
+    """
     actual_home = Path.home() if home is None else home
     actual_environ = dict(os.environ) if environ is None else environ
     destination = resolve_adapter_destination(
@@ -1060,6 +1130,10 @@ def install_adapter(
                 _open_retention_for_source(retention_root, parent_fd)
             )
 
+        _probe_rename_noreplace(
+            parent_fd,
+            parent_fd if retained_parent_fd is None else retained_parent_fd,
+        )
         stage_name = f".{ADAPTER_NAME}.stage-{secrets.token_hex(16)}"
         if stage_name in os.listdir(parent_fd):
             raise ValueError("random stage name collision; preserving evidence")

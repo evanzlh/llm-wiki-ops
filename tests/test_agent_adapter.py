@@ -1836,7 +1836,7 @@ def test_adapter_installation_fresh_idempotent_and_upgrade(
         make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
     )
     home = tmp_path / "home"
-    tokens = iter(tuple(str(index) * 32 for index in range(1, 6)))
+    tokens = iter(tuple(str(index) * 32 for index in range(1, 9)))
     monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: next(tokens))
 
     installed = agent_adapter.install_adapter(
@@ -2099,6 +2099,64 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
     assert (evidence / "SKILL.md").read_bytes() == desired.skill_md
 
 
+@pytest.mark.parametrize("failure_kind", ("partial-write", "fsync"))
+def test_adapter_installation_retains_partial_stage_after_io_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    root = home / ".codex/skills"
+    failed = False
+    if failure_kind == "partial-write":
+        real_write = os.write
+        wrote_partial = False
+
+        def failing_write(descriptor: int, content: bytes) -> int:
+            nonlocal failed, wrote_partial
+            if not wrote_partial:
+                wrote_partial = True
+                return real_write(descriptor, content[: max(1, len(content) // 2)])
+            if not failed:
+                failed = True
+                raise OSError(errno.ENOSPC, "injected partial write failure")
+            return real_write(descriptor, content)
+
+        monkeypatch.setattr(os, "write", failing_write)
+        expected_errno = errno.ENOSPC
+    else:
+        real_fsync = os.fsync
+
+        def failing_fsync(descriptor: int) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise OSError(errno.EIO, "injected fsync failure")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        expected_errno = errno.EIO
+
+    with pytest.raises(OSError) as raised:
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+
+    assert raised.value.errno == expected_errno
+    assert failed
+    assert not list(root.glob(".llm-wiki-ops.stage-*"))
+    assert list((home / ".codex/.llmwikiops-retained").iterdir())
+
+    rerun = agent_adapter.install_adapter(
+        "codex", cli_version="2", collection=collection, home=home, environ={}
+    )
+    assert rerun.status == "upgraded"
+
+
 def test_retention_preserves_source_swap_without_deleting_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2312,6 +2370,167 @@ def test_retention_collision_exdev_and_missing_capability_preserve_source(
 
     assert artifact.exists()
     assert (collision / "evidence").read_bytes() == b"collision\n"
+
+
+@pytest.mark.parametrize("capability_errno", (errno.ENOSYS, errno.ENOTSUP, errno.EINVAL))
+def test_adapter_upgrade_probes_rename_noreplace_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capability_errno: int
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    config_root = home / ".codex"
+    retained_root = config_root / ".llmwikiops-retained"
+    retained_root.mkdir(mode=0o700)
+
+    def config_snapshot() -> tuple[tuple[str, str, bytes | None, int], ...]:
+        return tuple(
+            sorted(
+                (
+                    str(path.relative_to(config_root)),
+                    "directory" if path.is_dir() else "file",
+                    path.read_bytes() if path.is_file() else None,
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in config_root.rglob("*")
+            )
+        )
+
+    before = config_snapshot()
+    events: list[str] = []
+    real_write_stage = agent_adapter._write_stage
+
+    def observed_write_stage(*args: object, **kwargs: object) -> object:
+        events.append("stage-write")
+        return real_write_stage(*args, **kwargs)
+
+    def unsupported(*args: object) -> None:
+        events.append("rename-probe")
+        raise OSError(capability_errno, "injected rename capability failure")
+
+    monkeypatch.setattr(agent_adapter, "_write_stage", observed_write_stage)
+    monkeypatch.setattr(agent_adapter, "_rename_noreplace_between", unsupported)
+
+    with pytest.raises(OSError, match="injected rename capability failure"):
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+
+    assert events == ["rename-probe"]
+    assert config_snapshot() == before
+    assert not list((config_root / "skills").glob(".llm-wiki-ops.stage-*"))
+
+
+@pytest.mark.parametrize("collision_side", ("source", "destination"))
+def test_rename_noreplace_probe_preserves_random_name_collisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision_side: str
+) -> None:
+    source_root = tmp_path / "skills"
+    destination_root = tmp_path / "retained"
+    source_root.mkdir()
+    destination_root.mkdir()
+    token = "f" * 32
+    source_name = f".{ADAPTER_NAME}.probe-{token}-source"
+    destination_name = f".{ADAPTER_NAME}.probe-{token}-destination"
+    collision = (
+        source_root / source_name
+        if collision_side == "source"
+        else destination_root / destination_name
+    )
+    collision.write_bytes(b"owner evidence\n")
+    monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: token)
+
+    def forbidden_rename(*args: object) -> None:
+        raise AssertionError("colliding probe names must not be renamed")
+
+    monkeypatch.setattr(
+        agent_adapter, "_rename_noreplace_between", forbidden_rename
+    )
+    with (
+        agent_adapter._open_or_create_directory(source_root) as source_fd,
+        agent_adapter._open_or_create_directory(destination_root) as destination_fd,
+        pytest.raises(ValueError, match="probe name collision|preserv"),
+    ):
+        agent_adapter._probe_rename_noreplace(source_fd, destination_fd)
+
+    assert collision.read_bytes() == b"owner evidence\n"
+
+
+@pytest.mark.parametrize(
+    ("platform", "symbol", "flag"),
+    (("linux", "renameat2", 1), ("darwin", "renameatx_np", 0x4)),
+)
+def test_atomic_noreplace_resolver_selects_platform_primitive_and_ctypes_signature(
+    platform: str, symbol: str, flag: int
+) -> None:
+    class FakeRename:
+        argtypes: tuple[object, ...] | None = None
+        restype: object | None = None
+
+    function = FakeRename()
+    library = type("FakeLibrary", (), {symbol: function})()
+
+    resolved, resolved_flag = agent_adapter._resolve_atomic_noreplace(
+        platform, library
+    )
+
+    assert resolved is function
+    assert resolved_flag == flag
+    assert function.argtypes == (
+        agent_adapter.ctypes.c_int,
+        agent_adapter.ctypes.c_char_p,
+        agent_adapter.ctypes.c_int,
+        agent_adapter.ctypes.c_char_p,
+        agent_adapter.ctypes.c_uint,
+    )
+    assert function.restype is agent_adapter.ctypes.c_int
+
+
+@pytest.mark.parametrize("platform", ("darwin", "unsupported-test-os"))
+def test_atomic_noreplace_resolver_rejects_missing_or_unsupported_primitive(
+    platform: str,
+) -> None:
+    with pytest.raises(OSError) as raised:
+        agent_adapter._resolve_atomic_noreplace(platform, object())
+
+    assert raised.value.errno == errno.ENOTSUP
+
+
+def test_adapter_installation_rejects_unsupported_platform_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    agent_adapter.install_adapter(
+        "codex", cli_version="1", collection=collection, home=home, environ={}
+    )
+    root = home / ".codex/skills"
+    live_before = {
+        path.name: path.read_bytes() for path in (root / ADAPTER_NAME).iterdir()
+    }
+    monkeypatch.setattr(agent_adapter.sys, "platform", "unsupported-test-os")
+
+    def forbidden_stage(*args: object, **kwargs: object) -> object:
+        raise AssertionError("unsupported platforms must fail before staging")
+
+    monkeypatch.setattr(agent_adapter, "_write_stage", forbidden_stage)
+
+    with pytest.raises(OSError) as raised:
+        agent_adapter.install_adapter(
+            "codex", cli_version="2", collection=collection, home=home, environ={}
+        )
+
+    assert raised.value.errno == errno.ENOTSUP
+    assert not list(root.glob(".llm-wiki-ops.stage-*"))
+    assert {
+        path.name: path.read_bytes() for path in (root / ADAPTER_NAME).iterdir()
+    } == live_before
 
 
 def test_adapter_installation_never_overwrites_racing_live_directory(
