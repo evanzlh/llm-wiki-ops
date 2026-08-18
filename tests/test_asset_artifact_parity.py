@@ -85,8 +85,35 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
 
 def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
-    assert "*.md text eol=lf" in attributes.splitlines()
-    assert "*.mdc text eol=lf" in attributes.splitlines()
+    assert "obsidian_wiki/_data/**/*.md text eol=lf" in attributes.splitlines()
+    assert "obsidian_wiki/_data/**/*.mdc text eol=lf" in attributes.splitlines()
+    scoped = subprocess.run(
+        [
+            "git",
+            "check-attr",
+            "text",
+            "eol",
+            "--",
+            "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md",
+            "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc",
+            "README.md",
+            "docs/cli.md",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert scoped == [
+        "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md: text: set",
+        "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md: eol: lf",
+        "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc: text: set",
+        "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc: eol: lf",
+        "README.md: text: unspecified",
+        "README.md: eol: unspecified",
+        "docs/cli.md: text: unspecified",
+        "docs/cli.md: eol: unspecified",
+    ]
     paths = tuple(
         path
         for path in (ROOT / "obsidian_wiki/_data").rglob("*")

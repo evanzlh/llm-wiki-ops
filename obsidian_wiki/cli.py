@@ -2328,6 +2328,7 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
 )
 
 _NESTED_SUBCOMMANDS = {
+    "agent": frozenset({"install-adapter"}),
     "repo": frozenset({"upgrade-skills", "sync-skills"}),
     "transaction": _TRANSACTION_SUBCOMMANDS,
     "manifest": frozenset({"resolve-conflict"}),
@@ -2335,6 +2336,7 @@ _NESTED_SUBCOMMANDS = {
 }
 _TOP_LEVEL_COMMANDS = _REPOSITORY_AWARE_COMMANDS | frozenset(
     {
+        "agent",
         "setup",
         "list",
         "sessions-build",

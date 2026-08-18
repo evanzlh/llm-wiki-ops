@@ -222,6 +222,39 @@ def test_repository_aware_skills_use_one_prefix_without_cwd_only_semantics() -> 
         assert not REPOSITORY_COMMAND.search(contents), name
         lowered = contents.lower()
         assert not [phrase for phrase in cwd_only if phrase in lowered], name
+
+
+def test_repository_aware_runtime_markdown_has_no_bare_repository_commands() -> None:
+    repository_commands = (
+        "batch-plan",
+        "cache-check",
+        "check",
+        "context",
+        "context-pack",
+        "doctor",
+        "graph-analyse",
+        "hot",
+        "info",
+        "lint",
+        "manifest",
+        "query",
+        "repo",
+        "transaction",
+        "trust-check",
+        "trust-record",
+    )
+    bare_command = re.compile(
+        r"(?<![\w-])llmwikiops[ \t]+(?:"
+        + "|".join(re.escape(command) for command in repository_commands)
+        + r")\b"
+    )
+    for name in REPOSITORY_AWARE_SKILLS:
+        skill_root = ROOT / "obsidian_wiki/_data/skills" / name
+        for path in sorted(skill_root.rglob("*")):
+            if path.is_file() and path.suffix in {".md", ".mdc"}:
+                assert not bare_command.search(
+                    path.read_text(encoding="utf-8")
+                ), path.relative_to(ROOT)
 FORBIDDEN_RUNTIME_TERMS = (
     "Personal mode",
     "Portable Repository mode",

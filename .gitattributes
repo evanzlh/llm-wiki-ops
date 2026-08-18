@@ -2,5 +2,5 @@
 *.sh text eol=lf
 
 # Packaged runtime guidance must have byte-identical LF text in source and artifacts.
-*.md text eol=lf
-*.mdc text eol=lf
+obsidian_wiki/_data/**/*.md text eol=lf
+obsidian_wiki/_data/**/*.mdc text eol=lf

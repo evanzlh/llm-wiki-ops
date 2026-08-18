@@ -131,6 +131,76 @@ def test_git_examples_use_context_aware_argv_prefix(tmp_path: Path) -> None:
     )
     assert local.stdout == external.stdout == f"{repository}\n"
 
+    source_id = "sources/tracked file.md"
+    source = repository / source_id
+    source.parent.mkdir()
+    source.write_text("reviewed\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "user.name", "Protocol Test"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "protocol@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(["git", "add", "--", source_id], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "review source"], cwd=repository, check=True
+    )
+
+    ls_files = (
+        "--literal-pathspecs",
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        source_id,
+    )
+    status = (
+        "--literal-pathspecs",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        source_id,
+    )
+    for prefix, cwd in (
+        (local_prefix, repository),
+        (external_prefix, external_cwd),
+    ):
+        listed = subprocess.run(
+            [*prefix, *ls_files],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        clean = subprocess.run(
+            [*prefix, *status],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert listed.stdout == f"{source_id}\n"
+        assert clean.stdout == ""
+
+    documented_ls_files = (
+        '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", '
+        '"--", "<Source ID>"]'
+    )
+    documented_status = (
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
+        '"--untracked-files=all", "--", "<Source ID>"]'
+    )
+    runtime_markdown = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "obsidian_wiki/_data/skills").rglob("*.md")
+    )
+    assert documented_ls_files in runtime_markdown
+    assert documented_status in runtime_markdown
+
     for path in (
         path
         for path in (ROOT / "obsidian_wiki/_data/skills").glob("*/SKILL.md")

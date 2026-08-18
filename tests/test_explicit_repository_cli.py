@@ -519,6 +519,7 @@ def test_repository_scanner_topology_matches_argparse_parser() -> None:
 
 
 REPOSITORY_INDEPENDENT_INVOCATIONS = (
+    ("agent", "install-adapter", "--agent", "codex"),
     ("setup", "created"),
     ("list",),
     ("ast-extract", "input.py"),
