@@ -1,6 +1,7 @@
 import json
 import os
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,11 @@ from obsidian_wiki.agent_adapter import (
     render_adapter_skill,
 )
 from obsidian_wiki.frontmatter import parse_frontmatter
-from obsidian_wiki.skill_trees import SkillCollection, discover_skill_collection
-
+from obsidian_wiki.skill_trees import (
+    SkillCollection,
+    SkillEntry,
+    discover_skill_collection,
+)
 
 EXPECTED_BUNDLED_CATALOG = (
     (
@@ -193,6 +197,32 @@ def encoded_catalog(rendered: str) -> list[dict[str, str]]:
     return json.loads(encoded)
 
 
+def forged_collection_with_entries(
+    collection: SkillCollection, entries: tuple[SkillEntry, ...]
+) -> SkillCollection:
+    skill = collection.skills[0]
+    digest = sha256()
+
+    def add(value: bytes) -> None:
+        digest.update(str(len(value)).encode("ascii"))
+        digest.update(b":")
+        digest.update(value)
+
+    add(skill.name.encode("utf-8"))
+    for entry in entries:
+        add(entry.path.encode("utf-8"))
+        add(entry.kind.encode("ascii"))
+        add(b"1" if entry.executable else b"0")
+        add(str(len(entry.content)).encode("ascii"))
+        add(entry.content)
+    forged = replace(
+        skill,
+        entries=entries,
+        digest="sha256:" + digest.hexdigest(),
+    )
+    return SkillCollection((forged,))
+
+
 def test_renderer_embeds_exact_sorted_name_description_catalog(tmp_path: Path) -> None:
     source = make_skill_collection(
         tmp_path,
@@ -268,6 +298,104 @@ def test_renderer_rejects_duplicate_unsorted_or_changed_collection_metadata(
         render_adapter_skill(
             SkillCollection((replace(alpha, description="Use when changed."),))
         )
+
+
+def test_renderer_rejects_forged_orphan_entry_before_reading_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    entries = tuple(
+        sorted(
+            collection.skills[0].entries
+            + (SkillEntry("references/orphan.md", "file", False, b"orphan\n"),),
+            key=lambda entry: entry.path,
+        )
+    )
+    forged = forged_collection_with_entries(collection, entries)
+    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", tmp_path / "missing.in")
+
+    with pytest.raises(ValueError, match="orphan|parent directory|topology"):
+        render_adapter_skill(forged)
+
+
+def test_renderer_rejects_forged_nul_entry_before_reading_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    entries = tuple(
+        sorted(
+            collection.skills[0].entries
+            + (SkillEntry("references/unsafe\x00.md", "file", False, b"unsafe\n"),),
+            key=lambda entry: entry.path,
+        )
+    )
+    forged = forged_collection_with_entries(collection, entries)
+    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", tmp_path / "missing.in")
+
+    with pytest.raises(ValueError, match="unsafe skill entry path"):
+        render_adapter_skill(forged)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "",
+        "/absolute.md",
+        "./relative.md",
+        "references//note.md",
+        "references/../note.md",
+        "references\\note.md",
+        "references/note.md/",
+    ),
+)
+def test_renderer_rejects_forged_non_posix_or_noncanonical_entry_paths(
+    tmp_path: Path, path: str
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    entries = tuple(
+        sorted(
+            collection.skills[0].entries
+            + (SkillEntry(path, "file", False, b"unsafe\n"),),
+            key=lambda entry: entry.path,
+        )
+    )
+    forged = forged_collection_with_entries(collection, entries)
+
+    with pytest.raises(ValueError, match="unsafe skill entry path"):
+        render_adapter_skill(forged)
+
+
+def test_renderer_catalog_escapes_literal_marker_text_in_descriptions(
+    tmp_path: Path,
+) -> None:
+    description = (
+        "Use when literal marker examples "
+        f"{BUILTIN_CATALOG_START} and {BUILTIN_CATALOG_END} are requested."
+    )
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path, {"demo": description})
+    )
+
+    rendered = render_adapter_skill(collection)
+
+    assert encoded_catalog(rendered) == [
+        {"name": "demo", "description": description}
+    ]
+    assert rendered.count(BUILTIN_CATALOG_START) == 1
+    assert rendered.count(BUILTIN_CATALOG_END) == 1
+    assert rendered.index(BUILTIN_CATALOG_START) < rendered.index(BUILTIN_CATALOG_END)
 
 
 def test_renderer_rejects_unsafe_source_topology(tmp_path: Path) -> None:
