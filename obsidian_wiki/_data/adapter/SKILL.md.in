@@ -59,11 +59,11 @@ import json
 import os
 import re
 import stat
+import unicodedata
 
 MAX_FILE_BYTES = 1048576
 MAX_FRONTMATTER_BYTES = 65536
 MAX_SKILLS = 256
-SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def fail(message):
@@ -95,6 +95,18 @@ def directory_snapshot(metadata):
 
 def root_identity(metadata):
     return str(metadata.st_dev) + ":" + str(metadata.st_ino)
+
+
+def is_safe_skill_name(value):
+    if type(value) is not str or not value or value in (".", ".."):
+        return False
+    if unicodedata.category(value[0])[:1] not in {"L", "N"}:
+        return False
+    return all(
+        character in "._-"
+        or unicodedata.category(character)[:1] in {"L", "M", "N"}
+        for character in value
+    )
 
 
 def decode_token(variable, allow_empty=False):
@@ -279,7 +291,7 @@ def read_skill_catalog(root_descriptor, relative_path):
         if len(names) > MAX_SKILLS:
             fail("skill catalog exceeds 256 direct entries")
         for name in names:
-            if not SAFE_SKILL_NAME.fullmatch(name):
+            if not is_safe_skill_name(name):
                 fail("skill catalog contains an unsafe direct name")
             before = os.stat(name, dir_fd=catalog_descriptor, follow_symlinks=False)
             if not stat.S_ISDIR(before.st_mode):

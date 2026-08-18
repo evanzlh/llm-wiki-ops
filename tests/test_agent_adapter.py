@@ -18,6 +18,7 @@ from obsidian_wiki.agent_adapter import (
     render_adapter_skill,
 )
 from obsidian_wiki.frontmatter import parse_frontmatter
+from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
@@ -786,6 +787,57 @@ def test_embedded_safe_reader_returns_sorted_fd_anchored_skill_catalog(
         assert item["sha256"] == "sha256:" + sha256(target.read_bytes()).hexdigest()
         assert item["frontmatter"].startswith(f"---\nname: {item['name']}\n")
         assert "# Task body" not in item["frontmatter"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    (
+        ("alpha-1", True),
+        ("团队知识", True),
+        ("e\u0301quipe", True),
+        ("٣-data", True),
+        ("_leading-separator", False),
+        ("\u0301leading-mark", False),
+        ("unsafe!", False),
+        ("bad name", False),
+        ("control\x01name", False),
+        ("back\\slash", False),
+    ),
+)
+def test_embedded_skill_catalog_matches_framework_skill_name_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    expected: bool,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    root = tmp_path / "root"
+    skills = root / ".skills"
+    skill = skills / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Use when this skill is requested.\n---\n",
+        encoding="utf-8",
+    )
+
+    assert is_safe_skill_name(name) is expected
+    if not expected:
+        with pytest.raises(SystemExit, match="safe-read-error.*unsafe direct name"):
+            execute_safe_reader(
+                rendered, root, ".skills", "skill-catalog", monkeypatch
+            )
+        return
+
+    execute_safe_reader(rendered, root, ".skills", "skill-catalog", monkeypatch)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [item["name"] for item in payload["skills"]] == [name]
+
+
+@pytest.mark.parametrize("name", ("", ".", "..", "a/b", "a\\b", "line\nbreak"))
+def test_framework_rejects_unrepresentable_or_unsafe_catalog_names(name: str) -> None:
+    assert not is_safe_skill_name(name)
 
 
 def test_embedded_safe_reader_full_accepts_exact_catalog_binding(
