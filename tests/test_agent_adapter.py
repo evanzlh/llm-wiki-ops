@@ -1902,6 +1902,60 @@ def test_adapter_installation_preserves_unmanaged_or_owner_drift(
     assert {path.name: path.read_bytes() for path in destination.iterdir()} == before
 
 
+@pytest.mark.parametrize("state", ("current", "unmanaged", "owner-drift"))
+def test_adapter_installation_read_only_outcomes_do_not_create_retention_root(
+    tmp_path: Path, state: str
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
+    )
+    home = tmp_path / "home"
+    config_root = home / ".codex"
+    destination = config_root / "skills" / ADAPTER_NAME
+    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    write_adapter_tree(destination, desired)
+    if state == "unmanaged":
+        (destination / agent_adapter.MANAGED_ADAPTER_RECORD).unlink()
+    elif state == "owner-drift":
+        (destination / "SKILL.md").write_bytes(b"owner edit\n")
+
+    def config_snapshot() -> tuple[tuple[str, str, bytes | None, int], ...]:
+        return tuple(
+            sorted(
+                (
+                    str(path.relative_to(config_root)),
+                    "directory" if path.is_dir() else "file",
+                    path.read_bytes() if path.is_file() else None,
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in config_root.rglob("*")
+            )
+        )
+
+    before = config_snapshot()
+    if state == "current":
+        result = agent_adapter.install_adapter(
+            "codex",
+            cli_version="1",
+            collection=collection,
+            home=home,
+            environ={},
+        )
+        assert result.status == "unchanged"
+    else:
+        with pytest.raises(ValueError, match="unmanaged|drift|preserv"):
+            agent_adapter.install_adapter(
+                "codex",
+                cli_version="2",
+                collection=collection,
+                home=home,
+                environ={},
+            )
+
+    assert config_snapshot() == before
+    assert not (config_root / ".llmwikiops-retained").exists()
+
+
 @pytest.mark.parametrize(
     "point",
     (

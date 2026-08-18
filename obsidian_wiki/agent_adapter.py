@@ -11,7 +11,7 @@ import secrets
 import stat
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -837,6 +837,16 @@ def _open_retention_directory(path: Path) -> Iterator[int]:
             _verify_directory_path_binding(path, descriptor)
 
 
+@contextmanager
+def _open_retention_for_source(path: Path, source_parent_fd: int) -> Iterator[int]:
+    with _open_retention_directory(path) as retained_parent_fd:
+        if not _same_filesystem(source_parent_fd, retained_parent_fd):
+            raise OSError(
+                errno.EXDEV, "adapter skills and retention root must share a filesystem"
+            )
+        yield retained_parent_fd
+
+
 def _retain_snapshot(
     source_parent_fd: int,
     retained_parent_fd: int,
@@ -939,7 +949,7 @@ def _verified_artifact(
 
 
 def _recover_artifacts(
-    parent_fd: int, retained_parent_fd: int, desired: DesiredAdapter
+    parent_fd: int, retention_root: Path, desired: DesiredAdapter
 ) -> None:
     artifacts = _artifact_names(parent_fd)
     if not artifacts:
@@ -968,7 +978,8 @@ def _recover_artifacts(
         live_state = _classify_snapshot(live, desired)
         if live_state.status != "current":
             raise ValueError("ambiguous live and backup trees; preserving evidence")
-        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
+        with _open_retention_for_source(retention_root, parent_fd) as retained_fd:
+            _retain_snapshot(parent_fd, retained_fd, snapshot)
         return
     if live is None:
         if _classify_snapshot(snapshot, desired).status != "current":
@@ -978,13 +989,15 @@ def _recover_artifacts(
         return
     live_state = _classify_snapshot(live, desired)
     if live_state.status == "current":
-        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
+        with _open_retention_for_source(retention_root, parent_fd) as retained_fd:
+            _retain_snapshot(parent_fd, retained_fd, snapshot)
         return
     if (
         live_state.status == "managed-upgrade"
         and _classify_snapshot(snapshot, desired).status == "current"
     ):
-        _retain_snapshot(parent_fd, retained_parent_fd, snapshot)
+        with _open_retention_for_source(retention_root, parent_fd) as retained_fd:
+            _retain_snapshot(parent_fd, retained_fd, snapshot)
         return
     raise ValueError("ambiguous live and staged trees; preserving evidence")
 
@@ -1019,13 +1032,9 @@ def install_adapter(
     backup_snapshot: ManagedTreeSnapshot | None = None
     with (
         _open_or_create_directory(destination.parent) as parent_fd,
-        _open_retention_directory(retention_root) as retained_parent_fd,
+        ExitStack() as retention_stack,
     ):
-        if not _same_filesystem(parent_fd, retained_parent_fd):
-            raise OSError(
-                errno.EXDEV, "adapter skills and retention root must share a filesystem"
-            )
-        _recover_artifacts(parent_fd, retained_parent_fd, desired)
+        _recover_artifacts(parent_fd, retention_root, desired)
         try:
             os.stat(ADAPTER_NAME, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1044,6 +1053,12 @@ def install_adapter(
             return AdapterInstallResult("unchanged", desired.target, destination)
         if state.status in {"unmanaged", "owner-drift", "error"}:
             raise ValueError(f"{state.status} adapter detected; preserving live files")
+
+        retained_parent_fd: int | None = None
+        if state.status == "managed-upgrade":
+            retained_parent_fd = retention_stack.enter_context(
+                _open_retention_for_source(retention_root, parent_fd)
+            )
 
         stage_name = f".{ADAPTER_NAME}.stage-{secrets.token_hex(16)}"
         if stage_name in os.listdir(parent_fd):
@@ -1095,6 +1110,8 @@ def install_adapter(
             verified = _snapshot_child(parent_fd, ADAPTER_NAME)
             if _classify_snapshot(verified, desired).status != "current":
                 raise ValueError("upgraded adapter verification failed")
+            if retained_parent_fd is None:
+                raise AssertionError("managed upgrade requires retention storage")
             _retain_snapshot(parent_fd, retained_parent_fd, backup_snapshot)
             backup_name = None
             # Compatibility checkpoint: the backup left the active recovery
@@ -1102,13 +1119,21 @@ def install_adapter(
             invoke("backup-removed")
             return AdapterInstallResult("upgraded", desired.target, destination)
         except BaseException:
-            # Only remove artifacts whose exact identity/content this invocation captured.
+            # Move only identity-bound artifacts out of the active recovery namespace.
             if stage_name is not None:
                 try:
                     if stage_snapshot is not None:
-                        _retain_snapshot(
-                            parent_fd, retained_parent_fd, stage_snapshot
-                        )
+                        if retained_parent_fd is not None:
+                            _retain_snapshot(
+                                parent_fd, retained_parent_fd, stage_snapshot
+                            )
+                        else:
+                            with _open_retention_for_source(
+                                retention_root, parent_fd
+                            ) as lazy_retained_fd:
+                                _retain_snapshot(
+                                    parent_fd, lazy_retained_fd, stage_snapshot
+                                )
                 except (OSError, ValueError):
                     pass
             if backup_name is not None:
