@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -2348,14 +2349,14 @@ def _repository_validation_argv(argv: list[str]) -> list[str]:
     return normalized
 
 
+_ARGPARSE_NEGATIVE_NUMBER = re.compile(r"^-(?:\d+|\d*\.\d+)$")
+
+
 def _repository_value_is_option(token: str) -> bool:
-    option_name = token.partition("=")[0]
     return bool(
-        token in {"-h", "--help", "-V", "--version", "-C", "--repo"}
-        or token.startswith("--repo=")
-        or (token.startswith("-C") and token != "-C")
-        or option_name in {"--r", "--re", "--rep"}
-        or _is_repository_short_cluster(token)
+        token.startswith("-")
+        and token != "-"
+        and _ARGPARSE_NEGATIVE_NUMBER.fullmatch(token) is None
     )
 
 
@@ -2445,6 +2446,28 @@ def _is_repository_short_cluster(token: str) -> bool:
         and prefix
         and set(prefix).issubset({"h", "V"})
     )
+
+
+def _structured_missing_repository_command_argv(
+    argv: list[str],
+) -> list[str] | None:
+    if (
+        len(argv) < 2
+        or argv[0] not in {"-C", "--repo"}
+        or not _repository_value_is_option(argv[1])
+    ):
+        return None
+    value_token = argv[1]
+    immediate_short_action = (
+        value_token.startswith("-")
+        and not value_token.startswith("--")
+        and value_token[1:2] in {"h", "V"}
+    )
+    if value_token in {"--help", "--version"} or immediate_short_action:
+        return None
+    if _repository_syntax([value_token])[0]:
+        return None
+    return _repository_validation_argv(argv[2:])
 
 
 def _repository_scope_tokens(
@@ -3189,6 +3212,27 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _subparser_choices(
+    parser: argparse.ArgumentParser,
+) -> dict[str, argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
+def _parser_topology(
+    parser: argparse.ArgumentParser,
+) -> tuple[frozenset[str], dict[str, frozenset[str]]]:
+    top_level_choices = _subparser_choices(parser)
+    nested = {
+        command: frozenset(children)
+        for command, subparser in top_level_choices.items()
+        if (children := _subparser_choices(subparser))
+    }
+    return frozenset(top_level_choices), nested
+
+
 def _add_setup_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument(
         "directory",
@@ -3215,7 +3259,30 @@ def main(argv: list[str] | None = None) -> int:
         repository_abbreviated,
         repository_clustered,
     ) = _repository_syntax(validation_argv)
-    if repository_value_missing:
+    structured_missing_command_argv = (
+        _structured_missing_repository_command_argv(argv)
+        if repository_value_missing
+        else None
+    )
+    if structured_missing_command_argv is not None:
+        missing_json_intent, missing_pretty_intent, missing_help_intent = (
+            _transaction_option_intent(structured_missing_command_argv)
+        )
+        missing_transaction_json_parse = (
+            missing_json_intent and not missing_help_intent
+        )
+        missing_query_json_intent, missing_query_pretty_intent = (
+            _query_option_intent(structured_missing_command_argv)
+        )
+    else:
+        missing_pretty_intent = False
+        missing_transaction_json_parse = False
+        missing_query_json_intent = False
+        missing_query_pretty_intent = False
+    structured_missing_parse = (
+        missing_transaction_json_parse or missing_query_json_intent
+    )
+    if repository_value_missing and not structured_missing_parse:
         parser.print_usage(sys.stderr)
         parser.exit(
             2,
@@ -3243,7 +3310,11 @@ def main(argv: list[str] | None = None) -> int:
         argv
     )
     _, validation_command_argv, _ = _leading_repository_option(validation_argv)
-    if repository_occurrences and not repository_prefix:
+    if (
+        repository_occurrences
+        and not repository_prefix
+        and not structured_missing_parse
+    ):
         parser.print_usage(sys.stderr)
         parser.exit(
             2,
@@ -3268,11 +3339,17 @@ def main(argv: list[str] | None = None) -> int:
                 2,
                 "llmwikiops: error: repository option is not valid for this command\n",
             )
-    json_intent, pretty_intent, help_intent = _transaction_option_intent(
-        command_argv
-    )
-    transaction_json_parse = json_intent and not help_intent
-    query_json_intent, query_pretty_intent = _query_option_intent(command_argv)
+    if structured_missing_parse:
+        transaction_json_parse = missing_transaction_json_parse
+        pretty_intent = missing_pretty_intent
+        query_json_intent = missing_query_json_intent
+        query_pretty_intent = missing_query_pretty_intent
+    else:
+        json_intent, pretty_intent, help_intent = _transaction_option_intent(
+            command_argv
+        )
+        transaction_json_parse = json_intent and not help_intent
+        query_json_intent, query_pretty_intent = _query_option_intent(command_argv)
     query_json_parse = query_json_intent
     command_argv = _normalize_cache_check_argv(command_argv)
     command_argv = _normalize_transaction_parent_separator(command_argv)

@@ -446,7 +446,7 @@ def test_characters_after_leading_repository_short_option_are_its_value(
     assert json.loads(result.stdout)["runtime"]["root"] == str(repository)
 
 
-@pytest.mark.parametrize("repository_name", ("-", "-1"))
+@pytest.mark.parametrize("repository_name", ("-", "-1", "-1.5", "-.5"))
 def test_two_token_repository_accepts_dash_prefixed_path_values(
     tmp_path: Path,
     repository_name: str,
@@ -459,6 +459,63 @@ def test_two_token_repository_accepts_dash_prefixed_path_values(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["runtime"]["root"] == str(repository)
+
+
+@pytest.mark.parametrize(
+    ("value", "is_option"),
+    (
+        ("-", False),
+        ("-1", False),
+        ("-1.5", False),
+        ("-.5", False),
+        ("--", True),
+        ("--json", True),
+        ("--arbitrary", True),
+        ("-x", True),
+        ("-1.", True),
+        ("-1e3", True),
+        ("-Cother", True),
+        ("-hVCother", True),
+    ),
+)
+def test_repository_value_option_classification_matches_argparse(
+    value: str,
+    is_option: bool,
+) -> None:
+    assert cli._repository_value_is_option(value) is is_option
+
+
+@pytest.mark.parametrize("missing_value", ("--", "--json", "-x"))
+def test_malformed_repository_value_keeps_transaction_recovery_rootless(
+    tmp_path: Path,
+    missing_value: str,
+) -> None:
+    result = run_cli(
+        tmp_path,
+        "-C",
+        missing_value,
+        "transaction",
+        "commit",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "transaction-error"
+    assert "argument -C/--repo: expected one argument" in payload["error"]["message"]
+    assert payload["recovery"]["inspect_command"] == (
+        "llmwikiops transaction list --json"
+    )
+    assert "llmwikiops -C" not in result.stdout
+
+
+def test_repository_scanner_topology_matches_argparse_parser() -> None:
+    top_level, nested = cli._parser_topology(cli.build_parser())
+
+    assert cli._TOP_LEVEL_COMMANDS == top_level
+    assert cli._NESTED_SUBCOMMANDS == nested
 
 
 REPOSITORY_INDEPENDENT_INVOCATIONS = (
@@ -741,6 +798,8 @@ def test_repeated_attached_repository_mixtures_are_rejected_once(
     (
         ("-C", "--version", "transaction", "commit", "--json"),
         ("--repo", "--help", "info"),
+        ("-C", "-hV", "transaction", "commit", "--json"),
+        ("-C", "-Vh", "transaction", "commit", "--json"),
         ("-C", "--repo={root}", "info", "--help"),
     ),
 )
