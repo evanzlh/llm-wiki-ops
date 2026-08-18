@@ -1750,17 +1750,27 @@ def _print_query(result: dict[str, object]) -> None:
             print(f"- {page}")
 
 
-def _query_command_forms() -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _command_prefix(repository: Path | None = None) -> str:
+    tokens = ["llmwikiops"]
+    if repository is not None:
+        tokens.extend(("-C", str(repository)))
+    return shlex.join(tokens)
+
+
+def _query_command_forms(
+    repository: Path | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return shell-facing query forms from the machine-readable authority."""
     from obsidian_wiki.query_language import describe_query_language
 
     description = describe_query_language()
+    prefix = _command_prefix(repository)
     natural_forms = tuple(
-        f"llmwikiops query {shlex.quote(item['template'])}"
+        f"{prefix} query {shlex.quote(item['template'])}"
         for item in description["natural_templates"]
     )
     explicit_forms = tuple(
-        f"llmwikiops query {command}"
+        f"{prefix} query {command}"
         for command in description["canonical_cli"].values()
     )
     return natural_forms, explicit_forms
@@ -1775,7 +1785,10 @@ def _query_help_epilog() -> str:
     return "\n".join(lines)
 
 
-def _query_recovery_forms(operand: str) -> tuple[str, str] | None:
+def _query_recovery_forms(
+    operand: str,
+    repository: Path | None = None,
+) -> tuple[str, str] | None:
     """Build concrete, shell-safe find rewrites for one rejected operand."""
     from obsidian_wiki.query_language import (
         describe_query_language,
@@ -1802,9 +1815,10 @@ def _query_recovery_forms(operand: str) -> tuple[str, str] | None:
         f"{explicit_tokens[value_option_index]}={normalized_operand}"
     ]
     explicit_arguments = shlex.join(explicit_tokens)
+    prefix = _command_prefix(repository)
     return (
-        f"llmwikiops query {shlex.quote(natural_question)}",
-        f"llmwikiops query {explicit_arguments}",
+        f"{prefix} query {shlex.quote(natural_question)}",
+        f"{prefix} query {explicit_arguments}",
     )
 
 
@@ -1832,6 +1846,7 @@ def _query_error_payload(error: Exception) -> dict[str, object]:
 def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
     payload = _query_error_payload(error)
     error_payload = payload["error"]
+    repository = _repository_argument(args)
     if args.json:
         _json_print(payload, pretty=args.pretty)
     else:
@@ -1839,7 +1854,7 @@ def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
         if error_payload.get("templates"):
             question = getattr(args, "question", None)
             rewrites = (
-                _query_recovery_forms(question)
+                _query_recovery_forms(question, repository=repository)
                 if isinstance(question, str)
                 else None
             )
@@ -1850,7 +1865,7 @@ def _render_query_error(args: argparse.Namespace, error: Exception) -> int:
                 print("canonical explicit rewrite:", file=sys.stderr)
                 print(f"  {explicit_rewrite}", file=sys.stderr)
             else:
-                natural_forms, explicit_forms = _query_command_forms()
+                natural_forms, explicit_forms = _query_command_forms(repository)
                 print("legal natural query forms:", file=sys.stderr)
                 for command in natural_forms:
                     print(f"  {command}", file=sys.stderr)
@@ -2191,7 +2206,10 @@ def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
             changes = len(target.added + target.changed + target.removed + target.unsafe)
             if changes:
                 print(f"  - {target.path}: {changes} change(s)")
-        print("Run `llmwikiops repo sync-skills --apply` to rebuild all mirrors.")
+        prefix = _command_prefix(_repository_argument(args))
+        print(
+            f"Run `{prefix} repo sync-skills --apply` to rebuild all mirrors."
+        )
     if not args.json:
         for warning in report.warnings:
             print(f"warning: {warning['path']}: {warning['message']}", file=sys.stderr)
@@ -2271,6 +2289,75 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
     }
 )
 
+_NESTED_SUBCOMMANDS = {
+    "repo": frozenset({"upgrade-skills", "sync-skills"}),
+    "transaction": _TRANSACTION_SUBCOMMANDS,
+    "manifest": frozenset({"resolve-conflict"}),
+    "hot": frozenset({"status", "mark-current", "inputs"}),
+}
+_TOP_LEVEL_COMMANDS = _REPOSITORY_AWARE_COMMANDS | frozenset(
+    {
+        "setup",
+        "list",
+        "sessions-build",
+        "sessions-query",
+        "sessions-show",
+        "sessions-clusters",
+        "sessions-name",
+        "cache-hash",
+        "ast-extract",
+    }
+)
+
+
+def _repository_validation_argv(argv: list[str]) -> list[str]:
+    """Remove only separators which hand parsing to a known subparser."""
+    normalized: list[str] = []
+    parser_scope: str | None = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            next_token = argv[index + 1] if index + 1 < len(argv) else None
+            introduces_subcommand = (
+                parser_scope is None
+                and next_token in _TOP_LEVEL_COMMANDS
+            ) or (
+                parser_scope in _NESTED_SUBCOMMANDS
+                and next_token in _NESTED_SUBCOMMANDS[parser_scope]
+            )
+            if introduces_subcommand:
+                index += 1
+                continue
+            normalized.extend(argv[index:])
+            break
+        normalized.append(token)
+        if token in {"-C", "--repo"} and index + 1 < len(argv):
+            normalized.append(argv[index + 1])
+            index += 2
+            continue
+        if not token.startswith("-"):
+            if parser_scope is None:
+                parser_scope = token
+            elif (
+                parser_scope in _NESTED_SUBCOMMANDS
+                and token in _NESTED_SUBCOMMANDS[parser_scope]
+            ):
+                parser_scope = f"{parser_scope}/{token}"
+        index += 1
+    return normalized
+
+
+def _repository_value_is_option(token: str) -> bool:
+    option_name = token.partition("=")[0]
+    return bool(
+        token in {"-h", "--help", "-V", "--version", "-C", "--repo"}
+        or token.startswith("--repo=")
+        or (token.startswith("-C") and token != "-C")
+        or option_name in {"--r", "--re", "--rep"}
+        or _is_repository_short_cluster(token)
+    )
+
 
 def _leading_repository_option(
     argv: list[str],
@@ -2279,7 +2366,9 @@ def _leading_repository_option(
         if token == "--" or not token.startswith("-"):
             break
         if token in {"-C", "--repo"}:
-            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+            if index + 1 >= len(argv) or _repository_value_is_option(
+                argv[index + 1]
+            ):
                 return [], argv, None
             end = index + 2
             return (
@@ -2317,7 +2406,9 @@ def _repository_syntax(
             break
         if token in {"-C", "--repo"}:
             occurrences += 1
-            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+            if index + 1 >= len(argv) or _repository_value_is_option(
+                argv[index + 1]
+            ):
                 missing_value = True
                 index += 1
             else:
@@ -2510,8 +2601,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "-V",
         "--version",
-        action="store_true",
-        dest="show_version",
+        action="version",
+        version=version_label(),
     )
     sub = p.add_subparsers(dest="command")
 
@@ -3117,12 +3208,13 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         parser.print_help()
         return 0
+    validation_argv = _repository_validation_argv(argv)
     (
         repository_occurrences,
         repository_value_missing,
         repository_abbreviated,
         repository_clustered,
-    ) = _repository_syntax(argv)
+    ) = _repository_syntax(validation_argv)
     if repository_value_missing:
         parser.print_usage(sys.stderr)
         parser.exit(
@@ -3150,6 +3242,7 @@ def main(argv: list[str] | None = None) -> int:
     repository_prefix, command_argv, raw_repository = _leading_repository_option(
         argv
     )
+    _, validation_command_argv, _ = _leading_repository_option(validation_argv)
     if repository_occurrences and not repository_prefix:
         parser.print_usage(sys.stderr)
         parser.exit(
@@ -3158,7 +3251,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if repository_prefix:
         repeated, show_version, scope_command = _repository_scope_tokens(
-            command_argv
+            validation_command_argv
         )
         if repeated:
             parser.print_usage(sys.stderr)
@@ -3227,10 +3320,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if (
         args.repository is not None
-        and (
-            args.show_version
-            or args.command not in _REPOSITORY_AWARE_COMMANDS
-        )
+        and args.command not in _REPOSITORY_AWARE_COMMANDS
     ):
         parser.print_usage(sys.stderr)
         parser.exit(
@@ -3240,9 +3330,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.repository is not None:
             args.repository = normalize_repository_path(args.repository)
-        if args.show_version:
-            print(version_label())
-            return 0
         if not getattr(args, "func", None):
             parser.print_help()
             return 0

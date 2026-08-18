@@ -233,6 +233,123 @@ def test_ordinary_and_repository_aware_help_remain_available(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "arguments",
     (
+        ("--version", "--help"),
+        ("--version", "garbage"),
+        ("-V", "garbage", "--help"),
+    ),
+)
+def test_version_remains_an_immediate_first_action(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    result = run_cli(tmp_path, *arguments)
+
+    assert result.returncode == 0
+    assert result.stdout == f"{cli.version_label()}\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        (("--", "info", "--repo={root}", "--help"), "must precede"),
+        (("--", "setup", "-C", "{root}", "--help"), "must precede"),
+        (
+            ("-C", "{root}", "--", "info", "--repo", "{other}", "--help"),
+            "only once",
+        ),
+        (
+            ("-C", "{root}", "--", "setup", "--help"),
+            "not valid for this command",
+        ),
+        (
+            (
+                "-C",
+                "{root}",
+                "repo",
+                "--",
+                "sync-skills",
+                "--repo={other}",
+                "--help",
+            ),
+            "only once",
+        ),
+        (
+            ("repo", "--", "sync-skills", "-C", "{root}", "--help"),
+            "must precede",
+        ),
+        (
+            (
+                "-C",
+                "{root}",
+                "repo",
+                "--",
+                "sync-skills",
+                "--version",
+                "--help",
+            ),
+            "not valid for this command",
+        ),
+        (
+            (
+                "transaction",
+                "--",
+                "commit",
+                "--repo={root}",
+                "--json",
+            ),
+            "must precede",
+        ),
+        (
+            (
+                "-C",
+                "{root}",
+                "transaction",
+                "--",
+                "commit",
+                "--repo",
+                "{other}",
+                "--json",
+            ),
+            "only once",
+        ),
+    ),
+)
+def test_subparser_separators_cannot_hide_repository_selector_errors(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+    message: str,
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+    other = tmp_path / "other"
+
+    result = run_cli(
+        tmp_path,
+        *(token.format(root=repository, other=other) for token in arguments),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert message in result.stderr
+    assert "show this help message" not in result.stderr
+    assert cli.version_label() not in result.stderr
+
+
+def test_leaf_positional_separator_keeps_repository_like_operand_literal(
+    tmp_path: Path,
+) -> None:
+    repository = setup_repository(tmp_path / "knowledge")
+
+    result = run_cli(tmp_path, "-C", str(repository), "query", "--", "-Cliteral")
+
+    assert result.returncode == 2
+    assert "repository option" not in result.stderr
+    assert "query does not match" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
         ("--rep={root}", "setup", "--help"),
         ("--rep", "{root}", "setup", "--help"),
     ),
@@ -329,6 +446,21 @@ def test_characters_after_leading_repository_short_option_are_its_value(
     assert json.loads(result.stdout)["runtime"]["root"] == str(repository)
 
 
+@pytest.mark.parametrize("repository_name", ("-", "-1"))
+def test_two_token_repository_accepts_dash_prefixed_path_values(
+    tmp_path: Path,
+    repository_name: str,
+) -> None:
+    business = tmp_path / "business"
+    business.mkdir()
+    repository = setup_repository(business / repository_name)
+
+    result = run_cli(business, "-C", repository_name, "info", "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["runtime"]["root"] == str(repository)
+
+
 REPOSITORY_INDEPENDENT_INVOCATIONS = (
     ("setup", "created"),
     ("list",),
@@ -379,6 +511,35 @@ def test_query_describe_validates_explicit_repository_first(tmp_path: Path) -> N
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "config-error"
     assert "must have direct" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("question", ("transformer", ""))
+def test_query_error_follow_up_commands_keep_explicit_repository(
+    tmp_path: Path,
+    question: str,
+) -> None:
+    business = tmp_path / "business"
+    business.mkdir()
+    repository = setup_repository(tmp_path / "knowledge root")
+
+    result = run_cli(business, "-C", "../knowledge root", "query", question)
+
+    assert result.returncode == 2
+    commands = [
+        shlex.split(line.strip())
+        for line in result.stderr.splitlines()
+        if line.strip().startswith("llmwikiops ")
+    ]
+    assert commands
+    for command in commands:
+        assert command[:4] == ["llmwikiops", "-C", str(repository), "query"]
+
+
+def test_implicit_query_rewrite_commands_remain_byte_identical() -> None:
+    assert cli._query_recovery_forms("transformer") == (
+        "llmwikiops query 'find \"transformer\"'",
+        "llmwikiops query --mode find --term=transformer",
+    )
 
 
 def test_empty_repository_selector_is_a_structured_configuration_error(
@@ -696,6 +857,38 @@ sources:
         root_identity=config.root_identity,
     )
     return root
+
+
+@pytest.mark.parametrize("explicit", (False, True))
+def test_repo_skill_drift_follow_up_keeps_repository_binding(
+    tmp_path: Path,
+    explicit: bool,
+) -> None:
+    repository = tmp_path / "knowledge root"
+    setup_portable_repo(
+        repository,
+        version=__version__,
+        source_skills=cli.skills_dir(),
+    )
+    (repository / ".claude" / "skills" / "wiki-digest" / "SKILL.md").unlink()
+    business = tmp_path / "business"
+    business.mkdir()
+    if explicit:
+        cwd = business
+        arguments = ("-C", "../knowledge root", "repo", "sync-skills")
+        prefix = shlex.join(("llmwikiops", "-C", str(repository)))
+    else:
+        cwd = repository
+        arguments = ("repo", "sync-skills")
+        prefix = "llmwikiops"
+
+    result = run_cli(cwd, *arguments)
+
+    assert result.returncode == 1
+    assert (
+        f"Run `{prefix} repo sync-skills --apply` to rebuild all mirrors."
+        in result.stdout
+    )
 
 
 def tree_snapshot(root: Path) -> tuple[tuple[str, int, bytes | None], ...]:
