@@ -17,6 +17,7 @@ from packaging.version import InvalidVersion, Version
 from obsidian_wiki.safe_files import (
     UnsafeVaultError,
     read_safe_file_snapshot,
+    stable_directory_identity,
     validate_safe_relative_directory_path,
     verify_safe_file_snapshot,
 )
@@ -290,6 +291,57 @@ def _is_portable_config_candidate(path: Path) -> bool:
             f"{path}: unable to inspect portable configuration: {exc}"
         ) from exc
     return True
+
+
+def normalize_repository_path(repository: str | os.PathLike[str]) -> Path:
+    raw = os.fspath(repository)
+    if not raw:
+        raise ConfigError("explicit repository path must be non-empty")
+    return Path(os.path.abspath(os.path.expanduser(raw)))
+
+
+def resolve_repository(
+    repository: str | os.PathLike[str],
+    *,
+    installed_version: str,
+    implementation: str,
+) -> PortableConfig:
+    requested = normalize_repository_path(repository)
+    try:
+        metadata = requested.lstat()
+    except FileNotFoundError as exc:
+        raise ConfigError(f"explicit repository does not exist: {requested}") from exc
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(
+            f"explicit repository cannot be inspected safely: {requested}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ConfigError(f"explicit repository must not be a symlink: {requested}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ConfigError(f"explicit repository must be a directory: {requested}")
+
+    config_path = requested / CONFIG_RELATIVE
+    if not _is_portable_config_candidate(config_path):
+        raise ConfigError(
+            "explicit repository must have direct "
+            f"{CONFIG_RELATIVE}: {requested}"
+        )
+    loaded = load_portable_config(
+        config_path,
+        installed_version=installed_version,
+        implementation=implementation,
+    )
+    try:
+        attached = requested.lstat()
+    except OSError as exc:
+        raise ConfigError(f"explicit repository changed while loading: {requested}") from exc
+    if (
+        not stat.S_ISDIR(attached.st_mode)
+        or stable_directory_identity(attached) != loaded.root_identity
+        or loaded.root != requested
+    ):
+        raise ConfigError(f"explicit repository changed while loading: {requested}")
+    return loaded
 
 
 def resolve_config(

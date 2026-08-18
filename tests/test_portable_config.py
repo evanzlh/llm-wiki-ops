@@ -13,6 +13,7 @@ from obsidian_wiki.config import (
     PortableConfig,
     load_portable_config,
     resolve_config,
+    resolve_repository,
 )
 from obsidian_wiki.safe_files import stable_directory_identity
 
@@ -496,3 +497,175 @@ def test_repository_discovery_error_is_a_path_qualified_config_error(
 
     assert str(candidate) in str(exc_info.value)
     assert "inspection denied" in str(exc_info.value)
+
+
+def test_resolve_repository_loads_only_the_requested_root(tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "child"
+    requested.mkdir(parents=True)
+    outer_config = write_portable(outer)
+
+    with pytest.raises(ConfigError, match="direct .llmwikiops/config.toml") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+
+
+def test_resolve_repository_accepts_a_relative_root_against_invocation_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invocation = tmp_path / "business"
+    repository = invocation / "knowledge"
+    invocation.mkdir()
+    path = write_portable(repository)
+    monkeypatch.chdir(invocation)
+
+    resolved = resolve_repository(
+        Path("knowledge"),
+        installed_version="2026.8",
+        implementation=IMPLEMENTATION_ID,
+    )
+
+    assert resolved.root == repository.absolute()
+    assert resolved.path == path.absolute()
+
+
+@pytest.mark.parametrize("raw", ["", Path("missing"), Path("ordinary.txt")])
+def test_resolve_repository_rejects_empty_missing_and_non_directory_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str | Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ordinary.txt").write_text("not a repository\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        resolve_repository(
+            raw,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_resolve_repository_rejects_a_root_symlink_without_parent_fallback(
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "requested"
+    target = tmp_path / "target"
+    outer_config = write_portable(outer)
+    write_portable(target)
+    requested.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="must not be a symlink") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX link safety contract")
+def test_resolve_repository_rejects_a_linked_config_directory_without_parent_fallback(
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "requested"
+    outer_config = write_portable(outer)
+    requested.mkdir(parents=True)
+    (requested / ".llmwikiops").symlink_to(
+        outer / ".llmwikiops", target_is_directory=True
+    )
+
+    with pytest.raises(ConfigError, match="configuration directory is a symlink") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX special-file safety contract")
+@pytest.mark.parametrize("link_kind", ["symbolic", "hard", "fifo"])
+def test_resolve_repository_rejects_unsafe_config_file_without_parent_fallback(
+    tmp_path: Path, link_kind: str
+) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "requested"
+    outer_config = write_portable(outer)
+    candidate = requested / ".llmwikiops" / "config.toml"
+    candidate.parent.mkdir(parents=True)
+    if link_kind == "symbolic":
+        candidate.symlink_to(outer_config)
+    elif link_kind == "hard":
+        os.link(outer_config, candidate)
+    else:
+        os.mkfifo(candidate)
+
+    with pytest.raises(ConfigError, match="symlink|single-link ordinary file") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root identity contract")
+def test_resolve_repository_rejects_a_root_replaced_during_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "requested"
+    outer_config = write_portable(outer)
+    path = write_portable(requested)
+    original_parse = config_module._parse_portable_config
+
+    def parse_then_rebind(*args, **kwargs):
+        parsed = original_parse(*args, **kwargs)
+        requested.rename(tmp_path / "original-requested")
+        replacement = write_portable(requested)
+        assert replacement == path
+        return parsed
+
+    monkeypatch.setattr(config_module, "_parse_portable_config", parse_then_rebind)
+
+    with pytest.raises(ConfigError, match="root changed|repository changed") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX bound path validation")
+def test_resolve_repository_rejects_configured_path_escape_without_parent_fallback(
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "outer"
+    requested = outer / "requested"
+    outer_config = write_portable(outer)
+    path = write_portable(requested)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (requested / "wiki").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="symlinks are not allowed") as exc_info:
+        resolve_repository(
+            requested,
+            installed_version="2026.8",
+            implementation=IMPLEMENTATION_ID,
+        )
+
+    assert str(outer_config) not in str(exc_info.value)
+    assert str(path) in str(exc_info.value)
