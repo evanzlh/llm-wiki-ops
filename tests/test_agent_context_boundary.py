@@ -174,7 +174,9 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
     for required in (
         "After successful preflight, use ordinary bounded file tools",
         "Read routing frontmatter within 64 KiB",
-        "Limit each complete external file read to 1 MiB",
+        "Limit each complete external file read—including authority, task, candidate, "
+        "query-result, hot, recovery, formatting, citation, JSON, hash, and preimage "
+        "reads—to 1 MiB.",
         "consumption limits, not a per-read metadata or TOCTOU protocol",
         "If relevant repository evidence changes after preflight",
     ):
