@@ -165,14 +165,29 @@ def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
     assert "do not retry with another term or mode" in template_text
 
 
-def test_external_adapter_checks_metadata_before_any_file_bytes() -> None:
+def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
-    assert "Before opening or reading any external file content" in template_text
-    assert "non-following metadata, type, and size check" in template_text
-    assert "CLI-returned candidates, query paths, hot files, and recovery evidence" in template_text
-    assert "An existence or `-f` test alone is not a size bound" in template_text
-    assert "before opening it for a full body read" in template_text
+    for required in (
+        "After successful preflight, use ordinary bounded file tools",
+        "read routing frontmatter within 64 KiB",
+        "limit each complete external file read to 1 MiB",
+        "consumption limits, not a per-read metadata or TOCTOU protocol",
+        "If relevant repository evidence changes after preflight",
+    ):
+        assert required in template_text
+
+    for forbidden in (
+        "os.lstat",
+        "stat.S_ISREG",
+        "os.path.isfile",
+        "Path.is_file",
+        "same process immediately before reading",
+        "A prior command's check never authorizes a later read",
+        "link-count",
+        "hash-only reads",
+    ):
+        assert forbidden not in template_text
 
 
 def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
@@ -216,17 +231,6 @@ def test_external_adapter_canonical_body_uses_verified_configured_skills_path() 
     assert "or another conventional canonical path" in template_text
 
 
-def test_external_adapter_forbids_following_and_gnu_only_stat_forms() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
-
-    assert "`stat -L` and `stat --dereference` follow links and are forbidden" in template_text
-    assert "`os.lstat` or another platform-appropriate non-following" in template_text
-    assert "the `st_mode` returned by that same `os.lstat`" in template_text
-    assert "`stat.S_ISREG(metadata.st_mode)`" in template_text
-    assert "`os.path.isfile`, `Path.is_file`, `-f`, or another following predicate" in template_text
-    assert "Do not require GNU-only `stat` flags" in template_text
-
-
 def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
@@ -234,24 +238,6 @@ def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None
     assert "A status or validation envelope alone is not review" in template_text
     assert "Reading existing `hot.md` is not regeneration" in template_text
     assert "never call `hot mark-current` after a read-only or no-write path" in template_text
-
-
-def test_external_adapter_rechecks_bounds_for_each_separate_byte_read() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
-
-    assert "repeat the type, link-count, and size check in the same process" in template_text
-    assert "A prior command's check never authorizes a later read" in template_text
-    assert "`read_text`, `read_bytes`, and hash-only reads" in template_text
-
-
-def test_external_adapter_rechecks_bounds_for_formatting_and_citation_rereads() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
-
-    assert "Formatting, citation, line-number, and snippet rereads" in template_text
-    assert "`nl`, `sed`, `cat`, `read_text`, or `read_bytes`" in template_text
-    assert "are fresh byte reads" in template_text
-    assert "repeat the same-process non-following type, link-count, and size check" in template_text
-    assert "Query `should_read` output does not waive this gate" in template_text
 
 
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:

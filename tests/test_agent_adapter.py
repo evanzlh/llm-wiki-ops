@@ -679,6 +679,13 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         "hashlib.sha256",
         "root_identity",
         "catalog-returned relative path",
+        "os.lstat",
+        "stat.S_ISREG",
+        "os.path.isfile",
+        "Path.is_file",
+        "same process immediately before reading",
+        "link-count",
+        "hash-only reads",
     )
     for value in forbidden:
         assert value not in rendered
@@ -692,6 +699,7 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         "<wiki-cli> info --json",
         "<wiki-cli> check",
         "ordinary bounded file tools",
+        "consumption limits, not a per-read metadata or TOCTOU protocol",
         "unsupported concurrent modification",
     )
     for value in required:

@@ -345,11 +345,18 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
         "direct `skill.md`",
         "do not recursively search or hunt",
         "repository or source tree",
-        "inspect ordinary-file metadata before every full read",
+        "limit each complete external file read to 1 MiB",
         "reject files larger than 1 mib",
         "routing frontmatter within 64 kib",
     ):
         assert discovery_boundary in agents_lower, discovery_boundary
+    for forbidden in (
+        "metadata before every full read",
+        "same-process metadata",
+        "os.lstat",
+        "stat.s_isreg",
+    ):
+        assert forbidden not in agents_lower, forbidden
     enumerate_skills = agents_lower.index("direct child skill directories")
     bounded_frontmatter = agents_lower.index("routing frontmatter within 64 kib")
     merge_metadata = agents_lower.index("merge repository metadata")
