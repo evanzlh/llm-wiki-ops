@@ -80,10 +80,11 @@ unbounded or recursive find or search from the root or configured skills directo
 Read routing frontmatter within 64 KiB, require one complete frontmatter block,
 and reject malformed or duplicate skill names. For every direct skill, catalog
 output must contain both the exact `name` and complete `description`. Missing
-either field is malformed. After each catalog or frontmatter command, inspect its
-exit status and parsed result before starting the next command. Any nonzero exit,
-missing or unterminated frontmatter, duplicate name, or malformed result stops
-immediately before any authority body. Never continue from partial catalog output.
+either field is malformed. Inspect every catalog result before another command.
+Invalid or partial output grants no routing authority: discard it completely.
+Before any authority body, a corrected bounded parser may replace it. Do not
+merge, select, or execute from discarded output. Proceed only with one final
+valid catalog covering every direct entry; otherwise stop.
 Limit each complete external file read—including authority, task, candidate,
 query-result, hot, recovery, formatting, citation, JSON, hash, and preimage
 reads—to 1 MiB.
@@ -91,16 +92,15 @@ Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication
 separate from delivered content. If the tool cannot establish completeness within
 that limit, reject the read. A token or tool-output limit is not a byte bound or
 proof of EOF. Do not treat truncated output as a complete read. A bare `cat` is
-allowed only after the file's at-most-1-MiB size is otherwise established.
+allowed only after its at-most-1-MiB size is otherwise established.
 
-These are consumption limits, not a per-read metadata or TOCTOU protocol. Never
-require per-open metadata or same-process revalidation. Successful CLI preflight
-is the only static-topology boundary. If relevant repository evidence changes
-after preflight, stop and restart only when quiescent.
+These are consumption limits, not a per-read metadata or TOCTOU protocol. CLI
+preflight is the only static-topology boundary. If relevant repository evidence
+changes after preflight, stop and restart only when quiescent.
 
 ## Route and load authority
 
-1. Select an initial task from the embedded catalog; complete exact preflight.
+1. Select from the embedded catalog; complete exact preflight.
 2. Only after every direct entry succeeds, merge repository descriptions by exact
    name and rerun selection before any authority body; same-name replaces;
    repository-only adds.
@@ -111,7 +111,7 @@ after preflight, stop and restart only when quiescent.
    selected task `SKILL.md`. Never invent `<root>/llm-wiki/SKILL.md` or another
    conventional canonical path.
 
-Step 3 is one synchronous authority sequence. Use one distinct sequential tool
+Use one synchronous authority sequence: one distinct sequential tool
 call or process per authority body; open exactly one authority body in that call
 or process. Never loop over or combine multiple authority bodies; complete each
 bounded read before opening the next file; never parallelize or reorder. Skip an
