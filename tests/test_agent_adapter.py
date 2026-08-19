@@ -697,7 +697,7 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         "<git-cli> = git -C <exact-root>",
         "<wiki-cli> info --json",
         "<wiki-cli> check",
-        "ordinary bounded file tools",
+        "After preflight, bounded tools use only verified CLI/config paths.",
         "consumption limits, not a per-read metadata or TOCTOU protocol",
         "unsupported concurrent modification",
     )

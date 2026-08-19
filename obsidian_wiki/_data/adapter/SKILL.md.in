@@ -72,8 +72,8 @@ not attempt ad hoc repair or change authority.
 
 ## Catalog and bounded reads
 
-After successful preflight, use ordinary bounded file tools. List the configured
-skills directory at exactly one level: only each direct child and its direct
+After preflight, bounded tools use only verified CLI/config paths. List exactly
+one level of the configured skills directory: each direct child and its direct
 `SKILL.md`. Never run an
 unbounded or recursive find or search from the root or configured skills directory.
 

@@ -117,9 +117,11 @@ def test_external_adapter_preflights_before_ordinary_repository_reads() -> None:
     assert "<wiki-cli> info --json" in template
     info = template.index("<wiki-cli> info --json")
     check = template.index("<wiki-cli> check", info)
-    ordinary = template.index("ordinary bounded file tools", check)
+    bounded = template.index(
+        "After preflight, bounded tools use only verified CLI/config paths.", check
+    )
 
-    assert info < check < ordinary
+    assert info < check < bounded
     assert "On either failure, stop before ordinary repository reads" in template
     assert "do not search for a different root" in template
     assert "Keep the current business working directory unchanged" in template
@@ -131,8 +133,8 @@ def test_external_adapter_catalog_enumeration_is_direct_and_nonrecursive() -> No
 
     assert "Never run an unbounded or recursive find or search" in template_text
     assert "from the root or configured skills directory" in template_text
-    assert "List the configured skills directory at exactly one level" in template_text
-    assert "only each direct child and its direct `SKILL.md`" in template_text
+    assert "List exactly one level of the configured skills directory" in template_text
+    assert "each direct child and its direct `SKILL.md`" in template_text
 
 
 def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
@@ -234,7 +236,7 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
     for required in (
-        "After successful preflight, use ordinary bounded file tools",
+        "After preflight, bounded tools use only verified CLI/config paths.",
         "Read routing frontmatter within 64 KiB",
         "Limit each complete external file read—including authority, task, candidate, "
         "query-result, hot, recovery, formatting, citation, JSON, hash, and preimage "
