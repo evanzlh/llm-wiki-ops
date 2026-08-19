@@ -150,10 +150,13 @@ def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
 def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
-    assert "frontmatter for every direct skill" in template_text
-    assert "finish the metadata merge and rerun routing" in template_text
-    assert "before reading any external authority or task body" in template_text
-    assert "root or vault `AGENTS.md`" in template_text
+    frontmatter = template_text.index("Read routing frontmatter within 64 KiB")
+    merge = template_text.index(
+        "read bounded frontmatter, and merge by exact name", frontmatter
+    )
+    reroute = template_text.index("Rerun selection against the merged catalog", merge)
+    authority = template_text.index("Read full ordinary UTF-8 files", reroute)
+    assert frontmatter < merge < reroute < authority
 
 
 def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
@@ -192,9 +195,9 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
 def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
-    assert "read at most 64 KiB" in template_text
-    assert "Never use `Path.read_text()`, `cat`, `sed`, or an equivalent" in template_text
-    assert "whole or unbounded read during the frontmatter phase" in template_text
+    assert "Read routing frontmatter within 64 KiB" in template_text
+    assert "require one complete frontmatter block" in template_text
+    assert "reject malformed or duplicate skill names" in template_text
 
 
 def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> None:
