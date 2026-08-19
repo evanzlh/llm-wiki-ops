@@ -107,6 +107,27 @@ empty, malformed, unresolved, or wrong-root `info --json`, or a failed `check`,
 still ends the operation without retrying another root or continuing to ordinary
 repository access.
 
+## Pre-dispatch command-construction correction
+
+One command-construction correction is allowed only when independent evaluation
+evidence proves that shell parsing failed before dispatching `llmwikiops`, Git,
+or another repository-accessing process. The failed construction must have made
+no repository call, read, or mutation. The corrected command must preserve the
+same exact root, recovery ID, action, and argument values, and the recording
+wrapper must observe no earlier invocation of that recovery action.
+
+The Agent may revalidate the still-reported recovery record before the corrected
+attempt. It then executes at most one real recovery action with structured argv,
+or with shell text whose decoded argv is proven byte-for-byte before dispatch.
+The allowance ends at the process boundary: a wrong-root or malformed argv that
+reaches the CLI, any CLI failure, partial execution, repository access, mutation,
+or inability to prove pre-dispatch failure remains terminal. A shell exit code or
+the Agent's assertion alone is not sufficient proof.
+
+This is not general command retry. It covers one no-side-effect construction
+error before repository dispatch and does not permit changing the selected
+recovery action, root, transaction, or authority.
+
 ## Behavioral evidence model
 
 Behavioral evaluation distinguishes repository behavior from the Codex JSONL
@@ -139,6 +160,8 @@ Contract tests will first fail against the repeated-read language, then require:
   hot-refresh, exact `-C`, unchanged business CWD, and no alternate-root behavior;
 - independent command-stream evidence for required CLI output, without treating
   Codex JSONL `aggregated_output` as the sole observation channel;
+- at most one command-construction correction proven to occur before any
+  repository-process dispatch, followed by at most one real recovery action;
 - unchanged deterministic portable/check coverage for static unsafe topology;
 - source, wheel, sdist, and installed Adapter byte parity.
 
@@ -146,10 +169,12 @@ Fresh behavioral evaluation will judge ordinary post-preflight bounded reads as
 valid without auditing a metadata syscall before each open. It will still fail
 preflight-order violations, unbounded or recursive hunting, wrong-root commands,
 use of a discarded catalog result, authority access before final catalog
-validation, authority-order/rerouting errors, reconstructed recovery commands,
-premature hot marking, unexpected writes, or evidence of concurrent repository
-change. A corrected read-only catalog parse completed before authority is not a
-failure.
+validation, authority-order/rerouting errors, recovery commands whose failed
+construction reached a repository process or cannot be proven side-effect-free,
+multiple real recovery actions, premature hot marking, unexpected writes, or
+evidence of concurrent repository change. A corrected read-only catalog parse
+completed before authority, or one proven pre-dispatch construction correction,
+is not a failure.
 
 ## Scope
 
