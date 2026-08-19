@@ -13,10 +13,13 @@ def read(relative: str) -> str:
 
 def test_context_skill_uses_cli_and_is_read_only() -> None:
     skill = read("obsidian_wiki/_data/skills/wiki-context-pack/SKILL.md")
-    assert 'llmwikiops context-pack "<topic>" --budget 8000' in skill
-    assert "llmwikiops context-pack --vault" not in skill
-    assert "owning portable repository" in skill.lower()
-    assert "nested" in skill.lower()
+    assert '<wiki-cli> context-pack "<topic>" --budget 8000' in skill
+    assert "<wiki-cli> context-pack --vault" not in skill
+    assert "Repository-local context: `<wiki-cli>` is `llmwikiops`" in skill
+    assert "External adapter context: `<wiki-cli>` is `llmwikiops -C <root>`" in skill
+    assert "configured portable llmwikiops" in skill.lower()
+    assert "already validated retained exact `<root>`" in skill
+    assert "nearest ancestor `.llmwikiops/config.toml`" in skill
     assert "read-only" in skill.lower()
     assert "must not modify" in skill
     assert "Append to" not in skill
@@ -65,8 +68,18 @@ def test_bootstraps_route_generic_tasks_and_context_pack_is_discoverable() -> No
         canonical = bootstrap.index("`llm-wiki` skill")
         task = bootstrap.index("task skill")
         assert canonical < task, relative
-        assert ".skills/" not in bootstrap, relative
-        assert "SKILL.md" not in bootstrap, relative
+        authority = (
+            "`<root>/AGENTS.md`",
+            "`<root>/.skills/llm-wiki/SKILL.md`",
+            "`<vault>/AGENTS.md` when present",
+            "`<root>/.skills/<selected-task>/SKILL.md`",
+        )
+        assert [bootstrap.index(item) for item in authority] == sorted(
+            bootstrap.index(item) for item in authority
+        ), relative
+        assert "user-supplied exact" in bootstrap, relative
+        assert "keep `<root>` immutable" in bootstrap, relative
+        assert "metadata overrides" in bootstrap, relative
 
     workflow = read(
         "obsidian_wiki/_data/bootstrap/agent/workflows/llmwikiops.md"

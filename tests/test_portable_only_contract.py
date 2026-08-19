@@ -1023,16 +1023,18 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     digest = _special_skill("wiki-digest")
 
     assert "nearest ancestor `.llmwikiops/config.toml`" in query
-    assert "llmwikiops query --describe --json" in query
+    assert "Repository-local context: `<wiki-cli>` is `llmwikiops`" in query
+    assert "External adapter context: `<wiki-cli>` is `llmwikiops -C <root>`" in query
+    assert "<wiki-cli> query --describe --json" in query
     assert "grammar_version" in query
     assert "query-language/v1" in query
     explicit_commands = re.findall(
-        r"^llmwikiops query --mode .+$", query, flags=re.MULTILINE
+        r"^<wiki-cli> query --mode .+$", query, flags=re.MULTILINE
     )
     assert explicit_commands == [
-        'llmwikiops query --mode find --term "<term>" --json --pretty',
-        'llmwikiops query --mode list --term "<term>" --json --pretty',
-        'llmwikiops query --mode path --from "<source>" --to "<target>" --json --pretty',
+        '<wiki-cli> query --mode find --term "<term>" --json --pretty',
+        '<wiki-cli> query --mode list --term "<term>" --json --pretty',
+        '<wiki-cli> query --mode path --from "<source>" --to "<target>" --json --pretty',
     ]
     natural_template_block = re.search(
         r"The only natural templates are:\n\n```text\n(.*?)\n```",
@@ -1060,11 +1062,11 @@ def test_read_only_workflows_use_canonical_config_and_real_cli_surfaces() -> Non
     assert "If the discovered grammar version is unsupported, stop." in flat_query
     assert "no_matches" in query
     assert "no_path" in query
-    assert 'llmwikiops query "<question>"' not in query
+    assert '<wiki-cli> query "<question>"' not in query
     assert "answer_type" not in query
     assert "gap-query" not in query
-    assert 'llmwikiops context-pack "<topic>" --budget 8000' in context
-    assert "llmwikiops hot status --json" in digest
+    assert '<wiki-cli> context-pack "<topic>" --budget 8000' in context
+    assert "<wiki-cli> hot status --json" in digest
     assert "Read `hot.md` only when `stale` is `false`" in " ".join(digest.split())
     for name in ("wiki-context-pack", "wiki-digest", "wiki-narrate", "wiki-query"):
         text = _special_skill(name)
@@ -1139,8 +1141,13 @@ def _noncanonical_query_command_lines(text: str) -> list[str]:
     return [
         line
         for raw_line in text.splitlines()
-        if (line := raw_line.strip()).startswith("llmwikiops query ")
-        and not is_valid_query_command(line)
+        if (
+            (line := raw_line.strip()).startswith("llmwikiops query ")
+            or line.startswith("<wiki-cli> query ")
+        )
+        and not is_valid_query_command(
+            line.replace("<wiki-cli> ", "llmwikiops ", 1)
+        )
     ]
 
 
@@ -1239,8 +1246,11 @@ def test_obsidian_config_diff_uses_resolved_repo_relative_literal_pathspecs() ->
 
     for name, text in (("graph-colorize", graph), ("obsidian-layout-adjustment", layout)):
         assert "configured vault path relative to the repository root" in text, name
-        assert 'git --literal-pathspecs diff -- "$CONFIG_PATH"' in text, name
-        assert "git diff -- .obsidian" not in text, name
+        assert '<git-cli> --literal-pathspecs diff -- "$CONFIG_PATH"' in text, name
+        assert "<git-cli> diff -- .obsidian" not in text, name
+        assert 'Repository-local context: `<git-cli>` is the argv prefix `["git"]`' in text, name
+        assert 'External adapter context: `<git-cli>` is the argv prefix' in text, name
+        assert '["git", "-C", "<root>"]' in text, name
     assert "<vault-relative>/.obsidian/graph.json" in graph
 
 
@@ -1248,7 +1258,7 @@ def test_obsidian_config_edits_are_explicitly_not_knowledge_transactions() -> No
     for name in ("graph-colorize", "obsidian-layout-adjustment"):
         text = _special_skill(name)
         assert "not a knowledge transaction" in text, name
-        assert "Do not run `llmwikiops transaction begin`" in text, name
+        assert "Do not run `<wiki-cli> transaction begin`" in text, name
         assert "manifest" in text.lower(), name
 
 
@@ -1259,7 +1269,7 @@ def test_factory_uses_fresh_repository_skill_validator(tmp_path: Path) -> None:
     assert "`sys.executable`" in factory
     assert "absolute interpreter" in factory
     assert "without a shell" in factory
-    assert "llmwikiops repo sync-skills --json --pretty" in factory
+    assert "<wiki-cli> repo sync-skills --json --pretty" in factory
     assert "Do not use `--apply`" in factory
     assert "`sys.executable`, `-c`, `import yaml`" in factory
     assert "dynamically resolve or download" in factory
@@ -1326,7 +1336,7 @@ def test_local_review_workflows_document_complete_safety_state_machines() -> Non
         "excluded identities/paths/counts",
     ):
         assert phrase in export_flat
-    assert "llmwikiops repo sync-skills --json --pretty" in factory
+    assert "<wiki-cli> repo sync-skills --json --pretty" in factory
     assert 'status: "clean"' in factory
     assert "validator checks only `SKILL.md` frontmatter" in factory
     for phrase in (

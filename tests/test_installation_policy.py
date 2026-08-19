@@ -690,7 +690,9 @@ def test_factory_uses_safe_managed_validator_from_nearest_repository(
     )
     assert "$OBSIDIAN_WIKI_REPO" not in factory
     assert ".skills/skill-creator/scripts/quick_validate.py" in factory
-    assert "llmwikiops repo sync-skills --json --pretty" in factory
+    assert "<wiki-cli> repo sync-skills --json --pretty" in factory
+    assert "Repository-local context: `<wiki-cli>` is `llmwikiops`" in factory
+    assert "External adapter context: `<wiki-cli>` is `llmwikiops -C <root>`" in factory
     assert 'status: "clean"' in factory
     assert "Do not use `--apply`" in factory
     assert "uv run --with" not in factory

@@ -2367,7 +2367,10 @@ def test_cmd_check_uses_shared_portable_config_discovery(
     monkeypatch.chdir(tmp_path)
     sinks: list[list[ConfigError]] = []
 
-    def resolution_failure(*, error_sink: list[ConfigError]) -> None:
+    def resolution_failure(
+        *, repository: Path | None, error_sink: list[ConfigError]
+    ) -> None:
+        assert repository is None
         sinks.append(error_sink)
         error_sink.append(ConfigError("portable config is invalid"))
         return None

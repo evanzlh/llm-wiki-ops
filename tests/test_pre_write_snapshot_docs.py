@@ -27,9 +27,11 @@ def test_maintenance_resolves_nearest_repository_and_closes_sources_before_write
 
 def test_maintenance_uses_cli_transaction_validation_and_commit() -> None:
     for path, text in _skill_texts():
-        assert "llmwikiops transaction begin --source" in text, path
-        assert "llmwikiops transaction validate <id>" in text, path
-        assert "llmwikiops transaction commit <id>" in text, path
+        assert "Repository-local context: `<wiki-cli>` is `llmwikiops`" in text, path
+        assert "External adapter context: `<wiki-cli>` is `llmwikiops -C <root>`" in text, path
+        assert "<wiki-cli> transaction begin --source" in text, path
+        assert "<wiki-cli> transaction validate <id>" in text, path
+        assert "<wiki-cli> transaction commit <id>" in text, path
 
 
 def test_maintenance_uses_trusted_recovery_and_leaves_git_to_owner() -> None:
