@@ -35,7 +35,7 @@ unsupported concurrent modification; stop until quiescent.
 
 ## Bind and preflight
 
-For supplied absolute root, `<exact-root>` is the once-normalized value.
+For absolute root, `<exact-root>` is the once-normalized value.
 Keep the current business working directory unchanged.
 
 `<wiki-cli> = llmwikiops -C <exact-root>`
@@ -63,7 +63,7 @@ Run once:
 ```
 
 Do not launch `info` and `check` concurrently or speculatively. The `info`
-process must complete successfully; require its JSON to show
+process must complete successfully; require JSON showing
 `runtime.status` is `resolved` and `runtime.root` equals `<exact-root>`.
 Only then start `check`; it must complete successfully before any ordinary
 external read or access.
@@ -147,13 +147,13 @@ preserving visibility and citation constraints.
 
 ## Transactions and recovery
 
-Use `transaction list`; match exact reported ID. Post-validate/list,
+Begin with `transaction list` for review/recovery; match exact reported ID. Post-validate/list,
 bounded-inspect every reported candidate before promotion. A status or validation
 envelope alone is not review. When requirements hold, execute a still-reported
 allowed/recommended action.
 
 After a knowledge commit/retry succeeds, run `hot status`. If stale, get
-`hot inputs`; update only the requested tracked hot file and verify a
+`hot inputs`; update only requested tracked hot file and verify a
 content-changing diff before `hot mark-current`.
 Reading existing `hot.md` is not regeneration; never call `hot mark-current`
 after a read-only or no-write path. Recovery without knowledge commit does
