@@ -38,6 +38,8 @@ llmwikiops -C /absolute/path/to/wiki transaction list --json
 
 Installing the CLI does not install the Adapter or write Agent integration files in the home directory. The explicit `agent install-adapter` command installs one optional global router for one Agent; see [Installation](docs/installation.md#install-the-external-wiki-adapter).
 
+Adapter upgrades and failed-installation recovery retain verified evidence below the target Agent configuration directory's `.llmwikiops-retained/` tree rather than deleting it automatically. Retained evidence can accumulate and consume disk space; inspect it and perform manual cleanup only after user confirmation. LLMWikiOps provides no automatic garbage collection, cleanup command, or uninstall command.
+
 ## Create a knowledge repository
 
 ```bash

@@ -38,6 +38,8 @@ llmwikiops -C /absolute/path/to/wiki transaction list --json
 
 安装 CLI 不会安装 Adapter，也不会在主目录中写入 Agent 集成文件。显式的 `agent install-adapter` 命令只为一个 Agent 安装一个可选的全局路由器；详见[安装说明](docs/installation.md#install-the-external-wiki-adapter)。
 
+Adapter 升级与失败安装恢复会把已验证的旧版本和证据移出活动命名空间，保留在目标 Agent 配置目录的 `.llmwikiops-retained` 树中，作为证据与恢复边界。安装器不会自动调用 `unlink` 或 `rmdir`，不会自动执行垃圾回收，也不提供清理命令或卸载命令。因此保留目录可能累积并占用磁盘空间；只能在用户确认后手工清理，LLMWikiOps 不会代为执行。
+
 ## 创建知识库仓库
 
 ```bash

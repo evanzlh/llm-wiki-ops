@@ -231,6 +231,78 @@ def test_external_adapter_docs_define_closed_installation_contract() -> None:
         assert required in combined, required
 
 
+def test_external_adapter_docs_publish_exact_target_destinations() -> None:
+    installation = _text("docs/installation.md")
+    rows = (
+        "| `codex` | `$CODEX_HOME/skills/llm-wiki-ops/` or `~/.codex/skills/llm-wiki-ops/` when unset |",
+        "| `claude` | `~/.claude/skills/llm-wiki-ops/` |",
+        "| `cursor` | `~/.cursor/skills/llm-wiki-ops/` |",
+        "| `windsurf` | `~/.codeium/windsurf/skills/llm-wiki-ops/` |",
+        "| `opencode` | `~/.config/opencode/skills/llm-wiki-ops/` |",
+        "| `pi` | `~/.pi/agent/skills/llm-wiki-ops/` |",
+        "| `kiro` | `~/.kiro/skills/llm-wiki-ops/` |",
+    )
+    for row in rows:
+        assert row in installation, row
+    for required in (
+        "`CODEX_HOME` override must be an absolute path",
+        "When `CODEX_HOME` is unset, Codex uses the invoking user's `~/.codex`",
+        "The CLI accepts no custom destination",
+    ):
+        assert required in installation, required
+
+
+def test_external_adapter_docs_explain_retained_evidence_policy() -> None:
+    english = "\n".join(
+        _text(relative)
+        for relative in (
+            "README.md",
+            "docs/agents.md",
+            "docs/architecture.md",
+            "docs/cli.md",
+            "docs/installation.md",
+            "docs/skills.md",
+        )
+    )
+    for required in (
+        "`<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`",
+        "active namespace",
+        "does not automatically call `unlink` or `rmdir`",
+        "no automatic garbage collection",
+        "accumulate and consume disk space",
+        "evidence and recovery boundary",
+        "only after user confirmation",
+        "manual cleanup",
+        "no cleanup command",
+    ):
+        assert required in english, required
+
+    localized = {
+        "README_ZH.md": (
+            "`.llmwikiops-retained`",
+            "不会自动调用 `unlink` 或 `rmdir`",
+            "不会自动执行垃圾回收",
+            "累积并占用磁盘空间",
+            "证据与恢复边界",
+            "用户确认后手工清理",
+            "不提供清理命令",
+        ),
+        "docs/cli.zh-TW.md": (
+            "`<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`",
+            "不會自動呼叫 `unlink` 或 `rmdir`",
+            "不會自動執行垃圾回收",
+            "累積並占用磁碟空間",
+            "證據與復原邊界",
+            "使用者確認後手動清理",
+            "不提供清理命令",
+        ),
+    }
+    for relative, phrases in localized.items():
+        text = _text(relative)
+        for phrase in phrases:
+            assert phrase in text, (relative, phrase)
+
+
 def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
     commands = (
         "llmwikiops agent install-adapter --agent codex",

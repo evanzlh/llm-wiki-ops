@@ -6,6 +6,8 @@ Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Out
 
 The optional global Adapter is only a router. It embeds the installed CLI's built-in names and descriptions, contains no selected wiki path or task bodies, and never installs the repository task skill tree globally. After the exact target repository is validated, direct `.skills/*/SKILL.md` frontmatter is loaded again: custom names extend the catalog, while repository-local skill metadata and body take precedence for a matching built-in name. If metadata differs, re-evaluate the route, then read the complete selected body from that repository under the same immutable repository binding.
 
+Updating this global router retains verified prior Adapter artifacts in the Agent configuration root's `.llmwikiops-retained/` evidence area. Runtime skills have no authority to delete or garbage-collect that area; cleanup is a separate user-confirmed manual filesystem action.
+
 ## Canonical protocol and review
 
 - `llm-wiki` defines repository resolution, Source IDs, page schema, manifest v2, and the transaction-only write contract.

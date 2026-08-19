@@ -21,6 +21,8 @@ llmwikiops -C /absolute/path/to/wiki transaction list --json
 
 The selected directory is the exact root: it must directly contain `.llmwikiops/config.toml`, and explicit selection never searches ancestors or falls back to invocation CWD. The aliases are single-valued and cannot be repeated. There is no default, profile, environment-variable, or recently used repository selection. Repository-independent commands reject the option; supported repository-aware families are `info`, `doctor`, `check`, `repo`, `transaction`, `manifest`, `hot`, `batch-plan`, `graph-analyse`, `cache-check`, `lint`, `trust-record`, `trust-check`, `query`, `context-pack`, and `context`.
 
+Adapter replacement is non-destructive. Verified old versions and retained failure evidence leave the active namespace under `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`. The installer never automatically unlinks these directories, garbage-collects them, or offers cleanup/uninstall commands. They may accumulate and consume disk space; inspect them and use manual cleanup only after user confirmation that their evidence and recovery value is no longer needed.
+
 ## Setup and inspection
 
 ```bash

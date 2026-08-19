@@ -36,6 +36,22 @@ llmwikiops agent install-adapter --agent codex
 
 `--agent` is required and accepts exactly one of `codex`, `claude`, `cursor`, `windsurf`, `opencode`, `pi`, or `kiro`. Run a separate command for every Agent that needs the Adapter. CLI installation, `setup`, and upgrade do not automatically install it. There is no automatic target detection, default target, `--all`, custom destination, or repository argument. There is no `--force` and no uninstall command. Conflicting unmanaged or owner-modified destinations fail closed; the owner must inspect and move or remove them manually.
 
+The destination registry is fixed:
+
+| `--agent` | Adapter destination |
+|---|---|
+| `codex` | `$CODEX_HOME/skills/llm-wiki-ops/` or `~/.codex/skills/llm-wiki-ops/` when unset |
+| `claude` | `~/.claude/skills/llm-wiki-ops/` |
+| `cursor` | `~/.cursor/skills/llm-wiki-ops/` |
+| `windsurf` | `~/.codeium/windsurf/skills/llm-wiki-ops/` |
+| `opencode` | `~/.config/opencode/skills/llm-wiki-ops/` |
+| `pi` | `~/.pi/agent/skills/llm-wiki-ops/` |
+| `kiro` | `~/.kiro/skills/llm-wiki-ops/` |
+
+The `CODEX_HOME` override must be an absolute path. When `CODEX_HOME` is unset, Codex uses the invoking user's `~/.codex`; other targets always use the listed home-relative location. The CLI accepts no custom destination.
+
+During an upgrade or recovery, verified old managed trees and interrupted-installation evidence move out of the active namespace to `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`, where `<agent-config>` is the directory containing that target's `skills/` directory. This retention is the evidence and recovery boundary: the installer does not automatically call `unlink` or `rmdir`, performs no automatic garbage collection, and provides no cleanup command. Retained directories can accumulate and consume disk space. An owner may inspect and perform manual cleanup only after user confirmation that the evidence is no longer needed; LLMWikiOps does not perform that cleanup.
+
 The Adapter stores routing metadata only. It does not store a wiki path or install a wiki's task skill tree globally. For every external operation, explicitly name the exact repository root and put the global option before the subcommand:
 
 ```bash

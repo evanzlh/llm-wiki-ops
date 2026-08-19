@@ -8,6 +8,20 @@
 
 以 `llmwikiops agent install-adapter --agent <target>` 為一個 Agent 安裝 Adapter。封閉的七個目標值為 `codex`、`claude`、`cursor`、`windsurf`、`opencode`、`pi` 與 `kiro`；每條命令只能安裝一個 Agent。安裝 CLI、setup 或升級都不會自動安裝 Adapter；第一版不提供自動偵測、預設目標、`--all`、自訂目的地、`--force` 或解除安裝命令。
 
+目的地登錄表固定如下：
+
+| `--agent` | Adapter 目的地 |
+|---|---|
+| `codex` | 設定時為 `$CODEX_HOME/skills/llm-wiki-ops/`；未設定時為 `~/.codex/skills/llm-wiki-ops/` |
+| `claude` | `~/.claude/skills/llm-wiki-ops/` |
+| `cursor` | `~/.cursor/skills/llm-wiki-ops/` |
+| `windsurf` | `~/.codeium/windsurf/skills/llm-wiki-ops/` |
+| `opencode` | `~/.config/opencode/skills/llm-wiki-ops/` |
+| `pi` | `~/.pi/agent/skills/llm-wiki-ops/` |
+| `kiro` | `~/.kiro/skills/llm-wiki-ops/` |
+
+`CODEX_HOME` 覆寫值必須是絕對路徑；CLI 不接受自訂目的地。
+
 `-C` 與 `--repo` 是全域選項，必須放在子命令之前：
 
 ```bash
@@ -18,6 +32,8 @@ llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
 
 選取的目錄就是精確根目錄，必須直接包含 `.llmwikiops/config.toml`；明確選取不會向上探索，也不會回退到呼叫時的工作目錄。兩個別名都是單值且不可重複。不存在預設、設定檔、環境變數或最近使用的儲存庫選取。與儲存庫無關的命令會拒絕此選項。
+
+Adapter 升級或失敗復原時，已驗證的舊版本與安裝證據會從作用中的命名空間移到 `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`。這是證據與復原邊界：安裝器不會自動呼叫 `unlink` 或 `rmdir`，不會自動執行垃圾回收，也不提供清理命令或解除安裝命令。因此保留目錄可能累積並占用磁碟空間；只能在使用者確認後手動清理不再需要的證據，LLMWikiOps 不會代為執行。
 
 ## 建立與驗證倉庫
 
