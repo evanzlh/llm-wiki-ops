@@ -231,11 +231,6 @@ Keep the migrated routing/frontmatter coverage in
 post-preflight catalog routing boundary rather than the removed safe-reader
 mechanics.
 
-Add the section-scoped
-`test_external_adapter_distinguishes_byte_bounds_from_output_truncation` to keep
-the 1 MiB delivered-content ceiling distinct from an explicit EOF or completeness
-indication and token/output truncation.
-
 - [ ] **Step 4: Update the human-facing authority read step**
 
 Replace step 4 in `docs/agents.md` with:
