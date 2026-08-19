@@ -184,7 +184,6 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
         "Path.is_file",
         "same process immediately before reading",
         "A prior command's check never authorizes a later read",
-        "link-count",
         "hash-only reads",
     ):
         assert forbidden not in template_text

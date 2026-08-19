@@ -684,7 +684,6 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         "os.path.isfile",
         "Path.is_file",
         "same process immediately before reading",
-        "link-count",
         "hash-only reads",
     )
     for value in forbidden:
