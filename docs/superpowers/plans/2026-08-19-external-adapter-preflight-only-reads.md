@@ -50,8 +50,10 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
 
     for required in (
         "After successful preflight, use ordinary bounded file tools",
-        "read routing frontmatter within 64 KiB",
-        "limit each complete external file read to 1 MiB",
+        "Read routing frontmatter within 64 KiB",
+        "Limit each complete external file read—including authority, task, candidate, "
+        "query-result, hot, recovery, formatting, citation, JSON, hash, and preimage "
+        "reads—to 1 MiB.",
         "consumption limits, not a per-read metadata or TOCTOU protocol",
         "If relevant repository evidence changes after preflight",
     ):
@@ -64,7 +66,6 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
         "Path.is_file",
         "same process immediately before reading",
         "A prior command's check never authorizes a later read",
-        "link-count",
         "hash-only reads",
     ):
         assert forbidden not in template_text
@@ -81,7 +82,6 @@ Extend the `forbidden` tuple in
         "os.path.isfile",
         "Path.is_file",
         "same process immediately before reading",
-        "link-count",
         "hash-only reads",
 ```
 
@@ -95,7 +95,7 @@ Extend its `required` tuple with:
 
 In `test_external_adapter_docs_state_static_quiescent_repository_boundary`,
 replace the required phrase `inspect ordinary-file metadata before every full read`
-with `limit each complete external file read to 1 MiB`, then add:
+with `limit each complete external file read to 1 mib`, then add:
 
 ```python
     for forbidden in (
@@ -167,6 +167,12 @@ repository is quiescent.
 Do not alter the complete-Adapter bootstrap gate, preflight ordering, catalog
 merge, authority sequence, execution, query, transaction, recovery, hot-refresh,
 or terminal EOF sections.
+
+Keep the migrated routing/frontmatter coverage in
+`test_external_adapter_finishes_catalog_reroute_before_any_authority_body` and
+`test_external_adapter_frontmatter_reads_are_bounded_to_64_kib`; both assert the
+post-preflight catalog routing boundary rather than the removed safe-reader
+mechanics.
 
 - [ ] **Step 2: Update the human-facing authority read step**
 

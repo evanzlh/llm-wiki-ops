@@ -194,6 +194,24 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
         assert forbidden not in template_text
 
 
+def test_external_adapter_distinguishes_byte_bounds_from_output_truncation() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Catalog and bounded reads", 1)[1].split(
+        "## Route and load authority", 1
+    )[0]
+    section_text = " ".join(section.split())
+
+    for required in (
+        "Attempt to read at most 1,048,577 bytes",
+        "If byte 1,048,577 exists, reject the file",
+        "token or tool-output limit is not a byte bound or proof of EOF",
+        "Do not treat truncated output as a complete read",
+        "bare `cat` is allowed only after",
+        "at-most-1-MiB size is otherwise established",
+    ):
+        assert required in section_text
+
+
 def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
