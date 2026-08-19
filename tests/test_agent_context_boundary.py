@@ -173,6 +173,7 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
             "Never use double quotes alone for a dynamic root because `$`, backticks, "
             "and `$()` can evaluate"
         ),
+        "Never pass the root as shell code",
         (
             "Before repository dispatch, verify that decoding produces one argv element "
             "byte-for-byte equal to `<exact-root>`"
@@ -187,6 +188,7 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
             "failure stops"
         ),
         "at most one real recovery action",
+        "This is not general command retry",
     ):
         assert required in section_text
 

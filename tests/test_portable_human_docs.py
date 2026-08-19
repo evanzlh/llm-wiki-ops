@@ -476,15 +476,28 @@ def test_agents_doc_allows_only_pre_authority_catalog_correction() -> None:
 
 
 def test_agents_doc_limits_command_correction_to_pre_dispatch() -> None:
-    text = " ".join((ROOT / "docs/agents.md").read_text(encoding="utf-8").split())
+    agents = (ROOT / "docs/agents.md").read_text(encoding="utf-8")
+    section = agents.split("For an external wiki request", 1)[1].split(
+        "External Adapter authority reads", 1
+    )[0]
+    text = " ".join(section.split())
+    cursor = 0
     for required in (
-        "One shell parse failure proven to occur before any repository process, read, or mutation may be corrected once",
+        (
+            "One shell parse failure proven to occur before any repository process, "
+            "read, or mutation may be corrected once"
+        ),
         "Preserve the exact root, recovery ID, action, and argument values",
-        "Any repository dispatch, partial execution, or second construction failure stops",
+        (
+            "Any repository dispatch, partial execution, or second construction "
+            "failure stops"
+        ),
         "at most one real recovery action",
         "This is not general command retry",
     ):
-        assert required in text
+        position = text.find(required, cursor)
+        assert position >= 0, required
+        cursor = position + len(required)
 
 
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
