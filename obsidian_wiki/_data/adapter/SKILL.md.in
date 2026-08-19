@@ -35,25 +35,27 @@ unsupported concurrent modification; stop until quiescent.
 
 ## Bind and preflight
 
-Normalize the supplied absolute root once; `<exact-root>` is the once-normalized
-value. Keep the current business working directory unchanged.
+For supplied absolute root, `<exact-root>` is the once-normalized value.
+Keep the current business working directory unchanged.
 
-```text
-<wiki-cli> = llmwikiops -C <exact-root>
-<git-cli> = git -C <exact-root>
-```
+`<wiki-cli> = llmwikiops -C <exact-root>`
+`<git-cli> = git -C <exact-root>`
 
 When available, a structured argv-array tool or API with shell execution disabled
 is required. When only POSIX shell text is available, single-quote every dynamic
 argv value and encode each literal apostrophe with `'"'"'`. Never use double quotes
 alone for a dynamic root because `$`, backticks, and `$()` can evaluate. Before
-execution, verify that decoding produces one argv element byte-for-byte equal to
-`<exact-root>`; stop if you cannot establish that. Never pass the root as shell code.
+repository dispatch, verify that decoding produces one argv element byte-for-byte
+equal to `<exact-root>`. One shell parse failure proven to occur before any
+repository process, read, or mutation may be corrected once. Preserve the exact
+root, recovery ID, action, and argument values. Any repository dispatch, partial
+execution, or second construction failure stops. Execute at most one real recovery
+action. Never pass the root as shell code. This is not general command retry.
 `check` may deterministically finish an already-recorded framework-managed skill
-maintenance recovery. That is part of establishing the preflight state. Do not
-begin task-directed repository mutation before preflight succeeds.
+maintenance recovery, part of establishing the preflight state. Do not begin
+task-directed repository mutation before preflight succeeds.
 
-Before ordinary external access, run once in order:
+Run once:
 
 ```bash
 <wiki-cli> info --json
@@ -61,14 +63,14 @@ Before ordinary external access, run once in order:
 ```
 
 Do not launch `info` and `check` concurrently or speculatively. The `info`
-process must complete successfully; parse its JSON and confirm that
+process must complete successfully; require its JSON to show
 `runtime.status` is `resolved` and `runtime.root` equals `<exact-root>`.
 Only then start `check`; it must complete successfully before any ordinary
-external read or other access.
+external read or access.
 
 On either failure, stop before ordinary repository reads;
-do not search for a different root. If recovered `check` fails, report its exact root and command; do
-not attempt ad hoc repair or change authority.
+do not search for a different root. If recovered `check` fails, report exact root and command; do not
+attempt ad hoc repair or authority change.
 
 ## Catalog and bounded reads
 
@@ -145,18 +147,17 @@ preserving visibility and citation constraints.
 
 ## Transactions and recovery
 
-Begin with `transaction list` for review/recovery; match its exact reported ID.
-After validate/list, bounded-inspect every reported candidate before any promoting
-recovery action. A status or validation envelope alone is not review. Execute only
-a still-reported allowed/recommended action once its requirements hold. Keep
-the same `-C` root throughout.
+Use `transaction list`; match exact reported ID. Post-validate/list,
+bounded-inspect every reported candidate before promotion. A status or validation
+envelope alone is not review. When requirements hold, execute a still-reported
+allowed/recommended action.
 
-After a successful knowledge commit or retry, run `hot status` with the same root.
-If stale, obtain `hot inputs`, update only the requested tracked hot file, and
-verify its content-changing working-tree diff before `hot mark-current`.
+After a knowledge commit/retry succeeds, run `hot status`. If stale, get
+`hot inputs`; update only the requested tracked hot file and verify a
+content-changing diff before `hot mark-current`.
 Reading existing `hot.md` is not regeneration; never call `hot mark-current`
-after a read-only or no-write path. Recovery without a knowledge commit does
-not imply hot refresh. Use the same `-C` throughout.
+after a read-only or no-write path. Recovery without knowledge commit does
+not imply hot refresh.
 
 ## Stop conditions
 
