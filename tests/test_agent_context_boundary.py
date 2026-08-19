@@ -195,6 +195,27 @@ def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> Non
     assert root_agents < canonical < vault_agents < selected
 
 
+def test_external_adapter_authority_bodies_use_distinct_sequential_processes() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "one distinct sequential tool call or process per authority body" in template_text
+    assert "open exactly one authority body in that call or process" in template_text
+    assert "Never loop over or combine multiple authority bodies" in template_text
+    assert "Skip an absent optional authority file" in template_text
+    assert "If the selected task is `llm-wiki`, read it once" in template_text
+    assert "load that delegated task body afterward in its own distinct bounded call" in template_text
+    assert "before executing its operation" in template_text
+
+
+def test_external_adapter_canonical_body_uses_verified_configured_skills_path() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "`<configured-skills-path>/llm-wiki/SKILL.md`" in template_text
+    assert "derived from verified info, config, and catalog evidence" in template_text
+    assert "Never invent `<root>/llm-wiki/SKILL.md`" in template_text
+    assert "or another conventional canonical path" in template_text
+
+
 def test_external_adapter_forbids_following_and_gnu_only_stat_forms() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
@@ -218,6 +239,16 @@ def test_external_adapter_rechecks_bounds_for_each_separate_byte_read() -> None:
     assert "repeat the type, link-count, and size check in the same process" in template_text
     assert "A prior command's check never authorizes a later read" in template_text
     assert "`read_text`, `read_bytes`, and hash-only reads" in template_text
+
+
+def test_external_adapter_rechecks_bounds_for_formatting_and_citation_rereads() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "Formatting, citation, line-number, and snippet rereads" in template_text
+    assert "`nl`, `sed`, `cat`, `read_text`, or `read_bytes`" in template_text
+    assert "are fresh byte reads" in template_text
+    assert "repeat the same-process non-following type, link-count, and size check" in template_text
+    assert "Query `should_read` output does not waive this gate" in template_text
 
 
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
