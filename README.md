@@ -27,6 +27,17 @@ uv tool install --link-mode copy .
 
 This is a fresh install from a local clone; no package-index release is supported. The installed command does not depend on the clone remaining in place. Reinstallation from a framework clone is part of the reviewed upgrade/development flow below. See [Installation](docs/installation.md) for details.
 
+Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command. The repository root is always supplied for that invocation; there is no default or remembered wiki.
+
+```bash
+llmwikiops agent install-adapter --agent codex
+llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
+llmwikiops -C /absolute/path/to/wiki transaction list --json
+```
+
+Installing the CLI does not install the Adapter or write Agent integration files in the home directory. The explicit `agent install-adapter` command installs one optional global router for one Agent; see [Installation](docs/installation.md#install-the-external-wiki-adapter).
+
 ## Create a knowledge repository
 
 ```bash

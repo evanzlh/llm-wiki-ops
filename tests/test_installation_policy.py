@@ -551,6 +551,16 @@ def test_bilingual_readmes_disclose_the_fork_and_only_source_install() -> None:
         assert "setup.sh" not in text
 
 
+def test_installation_docs_limit_home_writes_to_explicit_adapter_install() -> None:
+    installation = (ROOT / "docs/installation.md").read_text(encoding="utf-8")
+    for required in (
+        "Installing or reinstalling the CLI performs no home-directory integration writes.",
+        "The explicit `llmwikiops agent install-adapter --agent <target>` command is the only global integration write.",
+        "one agent per command",
+    ):
+        assert required in installation, required
+
+
 def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> None:
     english_paths = (
         "README.md",

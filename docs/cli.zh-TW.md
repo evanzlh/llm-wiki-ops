@@ -2,6 +2,23 @@
 
 `llmwikiops --help` 是命令的權威依據。需要倉庫內容的命令會解析最近祖先目錄中的 `.llmwikiops/config.toml`。目前支援的範圍只包含各命令 `--help` 列出的命令與選項；未列出的介面不屬於目前產品。
 
+## 儲存庫上下文與外部 Adapter
+
+在 wiki 內部，儲存庫感知命令使用基於目前工作目錄的最近祖先探索。在 wiki 外部，請使用明確安裝的全域 Adapter，並在每一條儲存庫感知命令上強制提供 `-C` / `--repo`。
+
+以 `llmwikiops agent install-adapter --agent <target>` 為一個 Agent 安裝 Adapter。封閉的七個目標值為 `codex`、`claude`、`cursor`、`windsurf`、`opencode`、`pi` 與 `kiro`；每條命令只能安裝一個 Agent。安裝 CLI、setup 或升級都不會自動安裝 Adapter；第一版不提供自動偵測、預設目標、`--all`、自訂目的地、`--force` 或解除安裝命令。
+
+`-C` 與 `--repo` 是全域選項，必須放在子命令之前：
+
+```bash
+llmwikiops agent install-adapter --agent codex
+llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
+llmwikiops -C /absolute/path/to/wiki transaction list --json
+```
+
+選取的目錄就是精確根目錄，必須直接包含 `.llmwikiops/config.toml`；明確選取不會向上探索，也不會回退到呼叫時的工作目錄。兩個別名都是單值且不可重複。不存在預設、設定檔、環境變數或最近使用的儲存庫選取。與儲存庫無關的命令會拒絕此選項。
+
 ## 建立與驗證倉庫
 
 ```bash

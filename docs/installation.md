@@ -22,6 +22,30 @@ llmwikiops --version
 
 Framework contributors can run commands from the checkout with `uv run python -m obsidian_wiki`.
 
+Installing or reinstalling the CLI performs no home-directory integration writes. The explicit `llmwikiops agent install-adapter --agent <target>` command is the only global integration write.
+
+## Install the external-wiki Adapter
+
+Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command.
+
+Install the optional router for one agent per command:
+
+```bash
+llmwikiops agent install-adapter --agent codex
+```
+
+`--agent` is required and accepts exactly one of `codex`, `claude`, `cursor`, `windsurf`, `opencode`, `pi`, or `kiro`. Run a separate command for every Agent that needs the Adapter. CLI installation, `setup`, and upgrade do not automatically install it. There is no automatic target detection, default target, `--all`, custom destination, or repository argument. There is no `--force` and no uninstall command. Conflicting unmanaged or owner-modified destinations fail closed; the owner must inspect and move or remove them manually.
+
+The Adapter stores routing metadata only. It does not store a wiki path or install a wiki's task skill tree globally. For every external operation, explicitly name the exact repository root and put the global option before the subcommand:
+
+```bash
+llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
+llmwikiops -C /absolute/path/to/wiki transaction list --json
+```
+
+The selected directory itself must directly contain `.llmwikiops/config.toml`; an unconfigured child is rejected without ancestor fallback. No default, profile, environment, or recently used repository is consulted.
+
 ## Create a repository
 
 Setup accepts an optional directory and uses the current directory when it is omitted. It does not initialize Git; repository creation and publication remain owner actions. One executable workflow is to initialize an otherwise empty target first, then scaffold it:

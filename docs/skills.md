@@ -2,6 +2,10 @@
 
 LLMWikiOps packages 36 skills. `setup` copies them into the repository's canonical `.skills/` tree and builds complete agent mirrors. Managed built-ins are upgraded with `llmwikiops repo upgrade-skills`; repository-authored custom skills are preserved.
 
+Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command.
+
+The optional global Adapter is only a router. It embeds the installed CLI's built-in names and descriptions, contains no selected wiki path or task bodies, and never installs the repository task skill tree globally. After the exact target repository is validated, direct `.skills/*/SKILL.md` frontmatter is loaded again: custom names extend the catalog, while repository-local skill metadata and body take precedence for a matching built-in name. If metadata differs, re-evaluate the route, then read the complete selected body from that repository under the same immutable repository binding.
+
 ## Canonical protocol and review
 
 - `llm-wiki` defines repository resolution, Source IDs, page schema, manifest v2, and the transaction-only write contract.

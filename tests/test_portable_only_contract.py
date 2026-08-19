@@ -171,6 +171,19 @@ def test_cli_has_only_explicit_global_agent_installation_surface() -> None:
     assert "deterministic, repository-native llm wiki operations" in cli.__doc__.lower()
 
 
+def test_human_docs_keep_global_adapter_outside_repository_authority() -> None:
+    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    skills = (ROOT / "docs/skills.md").read_text(encoding="utf-8")
+    combined = architecture + "\n" + skills
+    for required in (
+        "optional global router",
+        "contains no selected wiki path",
+        "never installs the repository task skill tree globally",
+        "does not persist the explicit host path",
+    ):
+        assert required in combined, required
+
+
 @pytest.mark.parametrize(
     ("command", "legacy_label", "expected_returncode"),
     [("info", "agent installs", 0), ("doctor", "agent-installs", 1)],

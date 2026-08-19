@@ -34,6 +34,27 @@ CURRENT_DOCS = (
     "docs/skills.md",
 )
 
+EXTERNAL_ADAPTER_ENGLISH_DOCS = (
+    "README.md",
+    "docs/agents.md",
+    "docs/architecture.md",
+    "docs/cli.md",
+    "docs/configuration.md",
+    "docs/installation.md",
+    "docs/skills.md",
+)
+
+EXTERNAL_ADAPTER_LOCALIZED_DOCS = {
+    "README_ZH.md": (
+        "在 wiki 内部，仓库感知命令使用基于当前工作目录的最近祖先发现。",
+        "在 wiki 外部，请使用显式安装的全局 Adapter，并在每条仓库感知命令上强制提供 `-C` / `--repo`。",
+    ),
+    "docs/cli.zh-TW.md": (
+        "在 wiki 內部，儲存庫感知命令使用基於目前工作目錄的最近祖先探索。",
+        "在 wiki 外部，請使用明確安裝的全域 Adapter，並在每一條儲存庫感知命令上強制提供 `-C` / `--repo`。",
+    ),
+}
+
 FORMER_EXTERNAL_PROTOCOL = re.compile(
     r"(?i)(?:\.obsidian-wiki(?:[/:]|\b)|"
     r"(?<![A-Za-z0-9_])obsidian-wiki(?:-(?:raw)|\.(?:md|mdc)|:[A-Za-z0-9:-]+)?"
@@ -174,6 +195,76 @@ def test_readmes_have_aligned_setup_and_upgrade_commands() -> None:
     for command in commands:
         assert command in _text("README.md")
         assert command in _text("README_ZH.md")
+
+
+def test_human_docs_distinguish_local_and_external_wiki_contexts() -> None:
+    local = (
+        "Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery."
+    )
+    external = (
+        "Outside a wiki, use an explicitly installed global adapter and mandatory "
+        "`-C` / `--repo` on every repository-aware command."
+    )
+    for relative in EXTERNAL_ADAPTER_ENGLISH_DOCS:
+        text = _text(relative)
+        assert local in text, relative
+        assert external in text, relative
+    for relative, phrases in EXTERNAL_ADAPTER_LOCALIZED_DOCS.items():
+        text = _text(relative)
+        for phrase in phrases:
+            assert phrase in text, (relative, phrase)
+
+
+def test_external_adapter_docs_define_closed_installation_contract() -> None:
+    installation = _text("docs/installation.md")
+    cli = _text("docs/cli.md")
+    combined = installation + "\n" + cli
+    for target in ("codex", "claude", "cursor", "windsurf", "opencode", "pi", "kiro"):
+        assert f"`{target}`" in combined, target
+    for required in (
+        "llmwikiops agent install-adapter --agent codex",
+        "one agent per command",
+        "does not automatically install",
+        "no `--force`",
+        "no uninstall command",
+    ):
+        assert required in combined, required
+
+
+def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
+    commands = (
+        "llmwikiops agent install-adapter --agent codex",
+        "llmwikiops -C /absolute/path/to/wiki info --json",
+        'llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json',
+        "llmwikiops -C /absolute/path/to/wiki transaction list --json",
+    )
+    for relative in ("README.md", "README_ZH.md", "docs/cli.md", "docs/cli.zh-TW.md"):
+        text = _text(relative)
+        for command in commands:
+            assert command in text, (relative, command)
+
+
+def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
+    cli = _text("docs/cli.md")
+    configuration = _text("docs/configuration.md")
+    agents = _text("docs/agents.md")
+    skills = _text("docs/skills.md")
+    assert "global option before the subcommand" in cli
+    for required in (
+        "exact root",
+        "does not search ancestors",
+        "no default repository",
+        "profile",
+        "environment variable",
+        "recently used repository",
+    ):
+        assert required in configuration, required
+    for required in (
+        "repository-local skill metadata and body take precedence",
+        "re-evaluate the route",
+        "same immutable repository binding",
+    ):
+        assert required in agents + "\n" + skills, required
 
 
 def test_current_docs_name_the_llmwikiops_protocol_and_hard_cutover() -> None:

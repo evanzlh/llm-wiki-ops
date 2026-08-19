@@ -28,9 +28,15 @@ team-knowledge/
 
 Bootstrap instructions at the repository root direct supported agents to the canonical skill tree. Mirrors contain ordinary files so clones do not depend on links or machine-global installation.
 
+Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command.
+
+## Optional external router
+
+The global `llm-wiki-ops` Adapter is an optional global router, not a second repository mode. It contains generated built-in routing descriptions but no task bodies, contains no selected wiki path, and never installs the repository task skill tree globally. Each external request binds one exact root through the CLI; the runtime does not persist the explicit host path in tracked content or in the Adapter. After validation, the target repository's bootstrap, canonical protocol, skill metadata, and skill bodies remain authoritative.
+
 ## Authority and data flow
 
-The nearest ancestor configuration selects the repository. The repository-root `sources/` directory is the tracked authority: owners review and track source snapshots before beginning a transaction. The agent reads the canonical protocol and a task skill, then opens a transaction for the exact sources. Candidate pages are composed in ignored local transaction workspaces, not in the live vault.
+Without an explicit root, the nearest ancestor configuration selects the repository. With `-C` / `--repo`, the exact selected root must directly contain `.llmwikiops/config.toml`; the runtime does not perform ancestor fallback. The repository-root `sources/` directory is the tracked authority: owners review and track source snapshots before beginning a transaction. The agent reads the canonical protocol and a task skill, then opens a transaction for the exact sources. Candidate pages are composed in ignored local transaction workspaces, not in the live vault.
 
 Stable repository-relative Source IDs identify inputs across clones. The Source ID retains the repository-relative configured source-root prefix. When mapping it to a shard, `ShardedManifest.entry_path` first removes that prefix, then appends `.json` below `wiki/.manifest/sources/`. For example, `sources/design/architecture.md` maps to `wiki/.manifest/sources/design/architecture.md.json`. This keeps concurrent updates merge-friendly.
 

@@ -27,6 +27,17 @@ uv tool install --link-mode copy .
 
 这是从本地 clone 完成的全新安装；本项目不支持从软件包索引安装。安装后的命令不依赖 clone 目录继续存在。从框架 clone 强制重装属于下述受审查的升级与开发流程。详情见[安装说明](docs/installation.md)。
 
+在 wiki 内部，仓库感知命令使用基于当前工作目录的最近祖先发现。在 wiki 外部，请使用显式安装的全局 Adapter，并在每条仓库感知命令上强制提供 `-C` / `--repo`。每次调用都必须提供仓库根目录；不存在默认或记忆的 wiki。
+
+```bash
+llmwikiops agent install-adapter --agent codex
+llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
+llmwikiops -C /absolute/path/to/wiki transaction list --json
+```
+
+安装 CLI 不会安装 Adapter，也不会在主目录中写入 Agent 集成文件。显式的 `agent install-adapter` 命令只为一个 Agent 安装一个可选的全局路由器；详见[安装说明](docs/installation.md#install-the-external-wiki-adapter)。
+
 ## 创建知识库仓库
 
 ```bash
