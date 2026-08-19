@@ -130,6 +130,7 @@ def test_external_adapter_catalog_enumeration_is_direct_and_nonrecursive() -> No
     template_text = " ".join(template.split())
 
     assert "Never run an unbounded or recursive find or search" in template_text
+    assert "from the root or configured skills directory" in template_text
     assert "List the configured skills directory at exactly one level" in template_text
     assert "only each direct child and its direct `SKILL.md`" in template_text
 
