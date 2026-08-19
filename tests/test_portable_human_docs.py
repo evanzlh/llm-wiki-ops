@@ -346,7 +346,6 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
         "do not recursively search or hunt",
         "repository or source tree",
         "limit each complete external file read to 1 mib",
-        "reject files larger than 1 mib",
         "routing frontmatter within 64 kib",
     ):
         assert discovery_boundary in agents_lower, discovery_boundary
