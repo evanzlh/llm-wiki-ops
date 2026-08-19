@@ -335,6 +335,14 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     check = agents.index("llmwikiops -C <root> check")
     direct_reads = agents.lower().index("direct agent reads")
     assert info < check < direct_reads
+    agents_lower = agents.lower()
+    for discovery_boundary in (
+        "direct child skill directories",
+        "direct `skill.md`",
+        "do not recursively search or hunt",
+        "repository or source tree",
+    ):
+        assert discovery_boundary in agents_lower, discovery_boundary
 
     for relative in (
         "docs/agents.md",
