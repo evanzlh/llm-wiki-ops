@@ -730,44 +730,39 @@ def test_renderer_catalog_escapes_literal_marker_text_in_descriptions(
     assert rendered.index(BUILTIN_CATALOG_START) < rendered.index(BUILTIN_CATALOG_END)
 
 
-def test_template_contains_one_low_freedom_executable_safe_reader(
+def test_template_uses_static_repository_preflight_instead_of_safe_reader(
     tmp_path: Path,
 ) -> None:
     rendered = render_demo_adapter(tmp_path)
 
-    assert rendered.count(SAFE_READER_START) == 1
-    assert rendered.count(SAFE_READER_END) == 1
-    assert rendered.count(SAFE_READER_HEREDOC) == 1
-    script = embedded_safe_reader_script(rendered)
-    for required in (
-        "os.O_NOFOLLOW",
-        "os.O_DIRECTORY",
-        "os.lstat",
-        "os.fstat",
-        "os.read",
-        "os.lseek",
-        "os.listdir",
-        "dir_fd=",
-        "hashlib.sha256",
-        "base64.b64decode",
-        "root_identity",
+    forbidden = (
+        "LLMWIKIOPS_SAFE_READER",
+        "LLMWIKIOPS_SAFE_MODE",
+        "root-bind",
         "skill-catalog",
-        "LLMWIKIOPS_SAFE_EXPECT_REL_B64",
-        "LLMWIKIOPS_SAFE_EXPECT_SIZE",
-        "LLMWIKIOPS_SAFE_EXPECT_SHA256",
-        "1048576",
-        "256",
-        "65536",
-        'decode("utf-8")',
-    ):
-        assert required in script
-    assert "MUST use only the deterministic safe reader" in rendered
-    assert "LLMWIKIOPS_SAFE_PATH_B64" not in rendered
-    assert "raw path in the shell command" in rendered
-    assert "Never use `sed`, `cat`, `head`, `tail`, `awk`, separate `stat`" in rendered
-    assert "or `sha256sum`" in rendered
-    assert "Never use `find` anywhere" in rendered
-    assert "full` mode requires the exact catalog-returned" in rendered
+        "O_NOFOLLOW",
+        "O_DIRECTORY",
+        "base64.b64decode",
+        "hashlib.sha256",
+        "root_identity",
+        "catalog-returned relative path",
+    )
+    for value in forbidden:
+        assert value not in rendered
+
+    required = (
+        "## Supported repository model",
+        "user-controlled local filesystem",
+        "quiescent",
+        "<wiki-cli> = llmwikiops -C <exact-root>",
+        "<git-cli> = git -C <exact-root>",
+        "<wiki-cli> info --json",
+        "<wiki-cli> check",
+        "ordinary bounded file tools",
+        "unsupported concurrent modification",
+    )
+    for value in required:
+        assert value in rendered
 
 
 def test_embedded_safe_reader_binds_an_ordinary_exact_root(
@@ -1448,7 +1443,8 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["name"]) <= 64
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
-    assert len(body.splitlines()) < 500
+    assert len(body.splitlines()) < 220
+    assert len(rendered.encode("utf-8")) < 16_384
     assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert rendered.count(ADAPTER_EOF) == 1
     assert rendered.index("## Bootstrap gate — read to EOF first") < rendered.index(

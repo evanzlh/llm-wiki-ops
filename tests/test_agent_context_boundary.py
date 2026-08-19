@@ -112,6 +112,19 @@ def test_external_adapter_remains_a_packaged_template_not_a_discoverable_skill()
         assert not (ROOT / relative / "llm-wiki-ops").exists()
 
 
+def test_external_adapter_preflights_before_ordinary_repository_reads() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    assert "<wiki-cli> info --json" in template
+    info = template.index("<wiki-cli> info --json")
+    check = template.index("<wiki-cli> check", info)
+    ordinary = template.index("ordinary bounded file tools", check)
+
+    assert info < check < ordinary
+    assert "On either failure, stop before ordinary repository reads" in template
+    assert "do not search for a different root" in template
+    assert "Keep the current business working directory unchanged" in template
+
+
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     body = template.split("---\n", 2)[2]
