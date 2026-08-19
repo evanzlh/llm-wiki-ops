@@ -26,16 +26,28 @@ For an external wiki request, require the user to supply one exact repository ro
 
 External Adapter authority reads support only a user-controlled local, quiescent repository. No repository path may be writable by another user or shared-writable, and a network-sync or network filesystem that requires consistency during concurrent mutation is unsupported. The owner guarantees that no sync, branch switch, `git pull`, editor automation, other Agent action, or other concurrent change can mutate the repository during the operation. These are environment and owner guarantees, not properties mechanically proved by the Adapter.
 
-Run these exact preflight commands in order:
+This static protocol does not claim adversarial TOCTOU protection after preflight. Run the first exact preflight command:
 
 ```bash
 llmwikiops -C <root> info --json
+```
+
+The JSON `runtime.status` must equal `resolved`, and `runtime.root` must exactly equal the normalized user-supplied root. Stop if either check fails. Only after both confirmations run:
+
+```bash
 llmwikiops -C <root> check
 ```
 
 `info --json` and `check` mechanically validate the exact root, configuration, accepted CLI version, and static repository topology. `check` may deterministically finish an already-recorded framework skill-maintenance recovery; it is not promised to be purely read-only. No task-directed writes start before both commands succeed.
 
-Only after success begin direct Agent reads: enumerate only direct child skill directories of the configured skills path, and read only the direct `SKILL.md` in each. Do not recursively search or hunt the repository or source tree for skills, routing metadata, or alternative authority. Make bounded UTF-8 reads of frontmatter and bodies from `<root>/AGENTS.md`, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task skill. Repository-local skill metadata and body take precedence over the Adapter catalog: custom names extend routing, and a changed description for a built-in name requires the Agent to re-evaluate and reroute before reading that target skill body. Preserve that authority order. If any concurrent change is detected or suspected, stop and restart the preflight and reads against a quiescent repository.
+Only after success begin direct Agent reads:
+
+1. Enumerate only direct child skill directories of the configured skills path, and inspect only the direct `SKILL.md` in each. Do not recursively search or hunt the repository or source tree for skills, routing metadata, or alternative authority.
+2. Read UTF-8 routing frontmatter within 64 KiB and reject incomplete or malformed frontmatter and duplicate names.
+3. Merge repository metadata by exact skill name with the Adapter catalog: repository-only names extend it, while a repository description replaces the embedded description with the same name. Then reroute against the merged catalog before selecting a task body.
+4. Load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Inspect ordinary-file metadata before every full read and reject files larger than 1 MiB; then make a bounded UTF-8 body read. If `llm-wiki` is selected, read it once.
+
+Preserve that authority order and require the full canonical and selected skill bodies before task execution. If any concurrent change is detected or suspected, stop and restart the preflight and reads against a quiescent repository.
 
 Adapter installer recovery evidence under the target Agent configuration directory's `.llmwikiops-retained/` tree is owner data. An Agent must not remove it as routine cleanup; present it for review and wait for explicit user confirmation before any manual cleanup.
 

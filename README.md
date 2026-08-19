@@ -37,7 +37,7 @@ llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
 
-External Adapter authority reads support only a user-controlled local, quiescent repository. Run `info --json` and then `check` before direct Agent reads. Concurrent mutation, shared-writable repositories, and network-sync activity are unsupported; stop and restart against a quiescent repository if any occurs.
+External Adapter authority reads support only a user-controlled local, quiescent repository. Run `info --json` and then `check` before direct Agent reads. Shared-writable repositories must not be used and are categorically unsupported. Concurrent modification and network-sync activity are unsupported during an operation; if either occurs, stop, make the otherwise supported local repository quiescent, and restart.
 
 Installing the CLI does not install the Adapter or write Agent integration files in the home directory. The explicit `agent install-adapter` command installs one optional global router for one Agent; see [Installation](docs/installation.md#install-the-external-wiki-adapter).
 

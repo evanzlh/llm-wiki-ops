@@ -336,13 +336,62 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     direct_reads = agents.lower().index("direct agent reads")
     assert info < check < direct_reads
     agents_lower = agents.lower()
+    resolved = agents.index("`runtime.status` must equal `resolved`")
+    returned_root = agents.index("`runtime.root` must exactly equal")
+    assert info < resolved < returned_root < check
+    assert "normalized user-supplied root" in agents[returned_root:check]
     for discovery_boundary in (
         "direct child skill directories",
         "direct `skill.md`",
         "do not recursively search or hunt",
         "repository or source tree",
+        "inspect ordinary-file metadata before every full read",
+        "reject files larger than 1 mib",
+        "routing frontmatter within 64 kib",
     ):
         assert discovery_boundary in agents_lower, discovery_boundary
+    enumerate_skills = agents_lower.index("direct child skill directories")
+    bounded_frontmatter = agents_lower.index("routing frontmatter within 64 kib")
+    merge_metadata = agents_lower.index("merge repository metadata")
+    reroute = agents_lower.index("reroute")
+    full_authorities = agents_lower.index("full ordinary utf-8 authorities")
+    assert (
+        enumerate_skills
+        < bounded_frontmatter
+        < merge_metadata
+        < reroute
+        < full_authorities
+    )
+    authority_order = (
+        "`<root>/AGENTS.md`",
+        "`<root>/.skills/llm-wiki/SKILL.md`",
+        "optional `<vault>/AGENTS.md`",
+        "selected task's direct `SKILL.md`",
+    )
+    cursor = full_authorities
+    for authority in authority_order:
+        cursor = agents.index(authority, cursor)
+
+    for relative in ("docs/agents.md", "docs/installation.md"):
+        text = _text(relative)
+        assert (
+            "may deterministically finish an already-recorded framework "
+            "skill-maintenance recovery"
+        ) in text, relative
+        assert re.search(
+            r"`?check`? (?:is|remains) (?:purely )?read-only",
+            text,
+            re.IGNORECASE,
+        ) is None, relative
+
+    for relative in ("docs/agents.md", "docs/architecture.md"):
+        text = _text(relative)
+        assert "does not claim adversarial TOCTOU protection" in text, relative
+        assert re.search(
+            r"(?:provides|guarantees|ensures) adversarial TOCTOU protection",
+            text,
+            re.IGNORECASE,
+        ) is None, relative
 
     for relative in (
         "docs/agents.md",
@@ -360,6 +409,15 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     readme_zh = _text("README_ZH.md")
     assert "用户控制的本地" in readme_zh
     assert "静止" in readme_zh
+    assert "共享可写仓库绝不可使用" in readme_zh
+    assert "无条件不支持" in readme_zh
+
+    readme = _text("README.md")
+    assert (
+        "Shared-writable repositories must not be used and are categorically "
+        "unsupported"
+    ) in readme
+    assert "Concurrent modification and network-sync activity" in readme
 
 
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:

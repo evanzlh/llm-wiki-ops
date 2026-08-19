@@ -37,7 +37,7 @@ llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
 
-外部 Adapter 的权威读取仅支持用户控制的本地、静止仓库。直接由 Agent 读取前，必须依次运行 `info --json` 和 `check`。不支持并发变更、共享可写仓库或网络同步活动；若发生其中任何情况，请停止操作，待仓库静止后重新开始。
+外部 Adapter 的权威读取仅支持用户控制的本地、静止仓库。直接由 Agent 读取前，必须依次运行 `info --json` 和 `check`。共享可写仓库绝不可使用，且属于无条件不支持的场景。操作期间也不支持并发修改或网络同步活动；若发生任一情况，请停止操作，让其他方面受支持的本地仓库恢复静止后再重新开始。
 
 安装 CLI 不会安装 Adapter，也不会在主目录中写入 Agent 集成文件。显式的 `agent install-adapter` 命令只为一个 Agent 安装一个可选的全局路由器；详见[安装说明](docs/installation.md#install-the-external-wiki-adapter)。
 
