@@ -1428,6 +1428,71 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
         render_adapter_skill(collection)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing-supported",
+        "duplicate-supported",
+        "late-supported",
+        "missing-info",
+        "duplicate-info",
+        "missing-check",
+        "duplicate-check",
+        "reordered-info-check",
+    ),
+)
+def test_renderer_rejects_invalid_static_repository_protocol_anchors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    supported = "## Supported repository model"
+    preflight = "## Bind and preflight"
+    info = "<wiki-cli> info --json"
+    check = "<wiki-cli> check"
+    catalog_reads = "## Catalog and bounded reads"
+    route = "## Route and load authority"
+    if mutation == "missing-supported":
+        mutated = template.replace(supported, "## Repository constraints", 1)
+    elif mutation == "duplicate-supported":
+        mutated = template.replace(preflight, supported + "\n\n" + preflight, 1)
+    elif mutation == "late-supported":
+        mutated = template.replace(supported, "", 1).replace(
+            route, route + "\n\n" + supported, 1
+        )
+    elif mutation == "missing-info":
+        mutated = template.replace(info, "<wiki-cli> inspect --json", 1)
+    elif mutation == "duplicate-info":
+        mutated = template.replace(info, info + "\n" + info, 1)
+    elif mutation == "missing-check":
+        mutated = template.replace(check, "<wiki-cli> verify", 1)
+    elif mutation == "duplicate-check":
+        mutated = template.replace(check, check + "\n" + check, 1)
+    else:
+        assert template.index(info) < template.index(check)
+        mutated = template.replace(info, "<static-info-anchor>", 1).replace(
+            check, info, 1
+        ).replace("<static-info-anchor>", check, 1)
+
+    assert mutated.count(BUILTIN_CATALOG_START) == 1
+    assert mutated.count(BUILTIN_CATALOG_END) == 1
+    assert mutated.count(ADAPTER_BOOTSTRAP_GATE_END) == 1
+    assert mutated.count(ADAPTER_EOF) == 1
+    assert catalog_reads in mutated
+    path = tmp_path / f"{mutation}.in"
+    path.write_text(mutated, encoding="utf-8")
+    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
+
+    with pytest.raises(ValueError, match="static repository anchors"):
+        render_adapter_skill(collection)
+
+
 def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() -> None:
     collection = discover_skill_collection(
         cli.skills_dir(), ignore_source_artifacts=True

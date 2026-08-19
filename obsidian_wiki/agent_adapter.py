@@ -463,6 +463,12 @@ def _validate_template_bootstrap_protocol(template: str) -> None:
     bootstrap = "## Bootstrap gate — read to EOF first"
     operation = "Operate on an external LLMWikiOps repository"
     authority = "## Authority and routing"
+    supported = "## Supported repository model"
+    preflight = "## Bind and preflight"
+    catalog_reads = "## Catalog and bounded reads"
+    route = "## Route and load authority"
+    info = "<wiki-cli> info --json"
+    check = "<wiki-cli> check"
     if any(
         template.count(anchor) != 1
         for anchor in (title, bootstrap, operation, authority)
@@ -477,6 +483,23 @@ def _validate_template_bootstrap_protocol(template: str) -> None:
         < template.index(ADAPTER_EOF)
     ):
         raise ValueError("adapter template bootstrap gate is not front-loaded")
+    if any(
+        template.count(anchor) != 1
+        for anchor in (supported, preflight, catalog_reads, route, info, check)
+    ):
+        raise ValueError("adapter template static repository anchors must be unique")
+    if template.count(BUILTIN_CATALOG_START) == 1 and not (
+        template.index(authority)
+        < template.index(supported)
+        < template.index(preflight)
+        < template.index(info)
+        < template.index(check)
+        < template.index(catalog_reads)
+        < template.index(route)
+        < template.index(BUILTIN_CATALOG_START)
+        < template.index(ADAPTER_EOF)
+    ):
+        raise ValueError("adapter template static repository anchors are out of order")
 
 
 def render_adapter_skill(collection: SkillCollection) -> str:
