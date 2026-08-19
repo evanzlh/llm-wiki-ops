@@ -314,6 +314,44 @@ def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
         text = _text(relative)
         for command in commands:
             assert command in text, (relative, command)
+    for relative in ("README.md", "README_ZH.md"):
+        assert "llmwikiops -C /absolute/path/to/wiki check" in _text(relative)
+
+
+def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> None:
+    english_docs = (
+        "README.md",
+        "docs/agents.md",
+        "docs/architecture.md",
+        "docs/installation.md",
+    )
+    for relative in english_docs:
+        text = _text(relative).lower()
+        assert "user-controlled local" in text, relative
+        assert "quiescent" in text, relative
+
+    agents = _text("docs/agents.md")
+    info = agents.index("llmwikiops -C <root> info --json")
+    check = agents.index("llmwikiops -C <root> check")
+    direct_reads = agents.lower().index("direct agent reads")
+    assert info < check < direct_reads
+
+    for relative in (
+        "docs/agents.md",
+        "docs/architecture.md",
+        "docs/installation.md",
+    ):
+        text = _text(relative).lower()
+        assert "owner guarantees" in text, relative
+        assert "mechanically" in text, relative
+        assert "static" in text, relative
+        assert "unsupported" in text, relative
+        for boundary in ("concurrent", "shared-writable", "network-sync"):
+            assert boundary in text, (relative, boundary)
+
+    readme_zh = _text("README_ZH.md")
+    assert "用户控制的本地" in readme_zh
+    assert "静止" in readme_zh
 
 
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:

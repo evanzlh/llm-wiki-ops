@@ -32,9 +32,12 @@ Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Out
 ```bash
 llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki check
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
+
+External Adapter authority reads support only a user-controlled local, quiescent repository. Run `info --json` and then `check` before direct Agent reads. Concurrent mutation, shared-writable repositories, and network-sync activity are unsupported; stop and restart against a quiescent repository if any occurs.
 
 Installing the CLI does not install the Adapter or write Agent integration files in the home directory. The explicit `agent install-adapter` command installs one optional global router for one Agent; see [Installation](docs/installation.md#install-the-external-wiki-adapter).
 

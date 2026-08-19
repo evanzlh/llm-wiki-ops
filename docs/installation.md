@@ -28,6 +28,8 @@ Installing or reinstalling the CLI performs no home-directory integration writes
 
 Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command.
 
+External Adapter authority reads require a user-controlled local, quiescent repository. The owner guarantees that concurrent mutation cannot occur; shared-writable repositories, network-sync activity, and network filesystems requiring concurrent consistency are unsupported.
+
 Install the optional router for one agent per command:
 
 ```bash
@@ -56,9 +58,12 @@ The Adapter stores routing metadata only. It does not store a wiki path or insta
 
 ```bash
 llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki check
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
+
+The environment conditions are owner guarantees; the Adapter does not mechanically prove quiescence. `info --json` and `check` mechanically perform static validation of the root, configuration, accepted CLI version, and repository topology. `check` may deterministically finish an already-recorded framework skill-maintenance recovery, so it is not promised to be purely read-only. Start no direct Agent reads or task-directed writes until both preflight commands succeed. If concurrent mutation or network-sync activity is detected or suspected, stop and restart the operation against a quiescent repository.
 
 The selected directory itself must directly contain `.llmwikiops/config.toml`; an unconfigured child is rejected without ancestor fallback. No default, profile, environment, or recently used repository is consulted.
 
