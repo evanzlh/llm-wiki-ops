@@ -666,3 +666,29 @@ earlier final-verifier harness failure receipt is
 `32a78017233432147c61edcfdfd6980e7779f0337e23990d4a5c39c4f5c39507`;
 it records that install, validator, and reinstall logs had succeeded before the
 bad hardcoded ownership assertion failed and does not invent stderr.
+
+#### Post-review old-evidence disclosure correction (2026-08-20)
+
+This note supersedes the incomplete three-file scope in both earlier post-seal
+disclosures without rewriting that historical text. Comparison of ordinary path
+and stat observations with the original sealed 5,699-entry manifest identified
+**seven** differences in the retained old root. The three previously disclosed
+changed entries remain `codex-home/goals_1.sqlite-shm`,
+`codex-home/logs_2.sqlite-shm`, and `codex-home/state_5.sqlite-shm`. Four
+additional files are absent from the original manifest:
+`codex-home/memories_1.sqlite-shm` (32,768 bytes),
+`codex-home/memories_1.sqlite-wal` (0 bytes),
+`codex-home/queue_1.sqlite-shm` (32,768 bytes), and
+`codex-home/queue_1.sqlite-wal` (0 bytes). All four have mtime
+`2026-08-20T00:00:20+08:00`, after the original seal at
+`2026-08-19T23:53:44+08:00`. Attribution is unknown; no cause is inferred.
+
+The complete post-review record is the explicitly post-seal addendum
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/post-review-old-evidence-addendum.json`,
+SHA-256 `283f3df6069a803aea84d2fccfb2a491ef71fbc90d4db3f0a137f66fffbea9e5`.
+It is not represented as part of the already sealed 4,925-entry new-root
+manifest. That manifest remains unchanged at SHA-256
+`df63a8c0021436be7d230b8a5e8d1c796f77d817629944178731541b64d8719f`,
+while the addendum is separately hashed. Neither original manifest was
+regenerated, no SQLite database was opened, and the original S1/S2 verdicts and
+all behavioral conclusions remain unchanged.
