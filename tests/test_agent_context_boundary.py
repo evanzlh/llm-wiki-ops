@@ -159,21 +159,7 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
     section_text = " ".join(section.split())
     apostrophe_escape = "'\"'\"'"
 
-    for required in (
-        "`<exact-root>` is the once-normalized value",
-        (
-            "When available, a structured argv-array tool or API with shell execution "
-            "disabled is required"
-        ),
-        (
-            "When only POSIX shell text is available, single-quote every dynamic argv "
-            f"value and encode each literal apostrophe with `{apostrophe_escape}`"
-        ),
-        (
-            "Never use double quotes alone for a dynamic root because `$`, backticks, "
-            "and `$()` can evaluate"
-        ),
-        "Never pass the root as shell code",
+    correction_phrases = (
         (
             "Before repository dispatch, verify that decoding produces one argv element "
             "byte-for-byte equal to `<exact-root>`"
@@ -189,6 +175,31 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
         ),
         "at most one real recovery action",
         "This is not general command retry",
+    )
+    cursor = 0
+    for required in correction_phrases:
+        position = section_text.find(required, cursor)
+        assert position >= 0, required
+        cursor = position + len(required)
+
+    for required in (
+        (
+            "Normalize the supplied absolute root once; `<exact-root>` is the "
+            "once-normalized value"
+        ),
+        (
+            "When available, a structured argv-array tool or API with shell execution "
+            "disabled is required"
+        ),
+        (
+            "When only POSIX shell text is available, single-quote every dynamic argv "
+            f"value and encode each literal apostrophe with `{apostrophe_escape}`"
+        ),
+        (
+            "Never use double quotes alone for a dynamic root because `$`, backticks, "
+            "and `$()` can evaluate"
+        ),
+        "Never pass the root as shell code",
     ):
         assert required in section_text
 
@@ -207,6 +218,16 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
         capture_output=True,
     )
     assert result.stdout.decode("utf-8") == exact_root
+
+
+def test_external_adapter_bind_section_requires_independent_decoding_evidence() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Bind and preflight", 1)[1].split(
+        "## Catalog and bounded reads", 1
+    )[0]
+    section_text = " ".join(section.split())
+
+    assert "A shell exit code or the Agent's assertion alone is not proof" in section_text
 
 
 def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
@@ -394,12 +415,17 @@ def test_external_adapter_canonical_body_uses_verified_configured_skills_path() 
 
 
 def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Transactions and recovery", 1)[1].split(
+        "## Stop conditions", 1
+    )[0]
+    section_text = " ".join(section.split())
 
-    assert "bounded-inspect every reported candidate" in template_text
-    assert "A status or validation envelope alone is not review" in template_text
-    assert "Reading existing `hot.md` is not regeneration" in template_text
-    assert "never call `hot mark-current` after a read-only or no-write path" in template_text
+    assert "bounded-inspect every reported candidate" in section_text
+    assert "A status or validation envelope alone is not review" in section_text
+    assert "verify its content-changing working-tree diff" in section_text
+    assert "Reading existing `hot.md` is not regeneration" in section_text
+    assert "never call `hot mark-current` after a read-only or no-write path" in section_text
 
 
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
