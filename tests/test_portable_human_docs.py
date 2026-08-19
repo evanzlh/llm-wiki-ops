@@ -431,8 +431,8 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     assert "Concurrent modification and network-sync activity" in readme
 
 
-def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> None:
-    agents = " ".join(_text("docs/agents.md").split())
+def test_agents_doc_allows_only_pre_authority_catalog_correction() -> None:
+    agents = " ".join((ROOT / "docs/agents.md").read_text(encoding="utf-8").split())
     apostrophe_escape = "'\"'\"'"
 
     for required in (
@@ -462,11 +462,12 @@ def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> Non
             "and complete `description`"
         ),
         "Missing either field is malformed",
-        (
-            "Any nonzero exit, missing or unterminated frontmatter, duplicate name, or "
-            "malformed result stops immediately before any authority body"
-        ),
-        "Never continue from partial catalog output",
+        "Invalid or partial output grants no routing authority",
+        "discard it completely",
+        "a corrected bounded parser may replace it",
+        "Do not merge, select, or execute from discarded output",
+        "one final valid catalog covering every direct entry",
+        "Only after every direct entry succeeds, merge repository metadata",
         (
             "Every required CLI response must be nonempty and parse successfully before "
             "the next action"

@@ -285,14 +285,20 @@ def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
     assert "reject malformed or duplicate skill names" in template_text
 
 
-def test_external_adapter_catalog_section_fails_closed_after_each_result() -> None:
+def test_external_adapter_allows_discarded_catalog_correction_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    section = template.split("## Catalog and bounded reads", 1)[1].split(
+    catalog = template.split("## Catalog and bounded reads", 1)[1].split(
         "## Route and load authority", 1
     )[0]
-    section_text = " ".join(section.split())
+    route = template.split("## Route and load authority", 1)[1].split(
+        "## Embedded built-in catalog", 1
+    )[0]
+    catalog_text = " ".join(catalog.split())
+    route_text = " ".join(route.split())
 
     for required in (
+        "List exactly one level of the configured skills directory",
+        "each direct child and its direct `SKILL.md`",
         (
             "For every direct skill, catalog output must contain both the exact `name` "
             "and complete `description`"
@@ -302,13 +308,20 @@ def test_external_adapter_catalog_section_fails_closed_after_each_result() -> No
             "After each catalog or frontmatter command, inspect its exit status and "
             "parsed result before starting the next command"
         ),
-        (
-            "Any nonzero exit, missing or unterminated frontmatter, duplicate name, or "
-            "malformed result stops immediately before any authority body"
-        ),
-        "Never continue from partial catalog output",
+        "Invalid or partial output grants no routing authority",
+        "discard it completely",
+        "a corrected bounded parser may replace it",
+        "Do not merge, select, or execute from discarded output",
+        "one final valid catalog covering every direct entry",
     ):
-        assert required in section_text
+        assert required in catalog_text
+
+    merge = route_text.index(
+        "Only after every direct entry succeeds, merge repository descriptions by "
+        "exact name and rerun selection before any authority body"
+    )
+    authority = route_text.index("Read full ordinary UTF-8 files", merge)
+    assert merge < authority
 
 
 def test_external_adapter_stop_section_rejects_empty_cli_output() -> None:
