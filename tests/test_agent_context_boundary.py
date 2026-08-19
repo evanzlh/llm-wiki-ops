@@ -144,6 +144,7 @@ def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
     )
     assert "The `info` process must complete successfully" in template_text
     assert "`runtime.status` is `resolved`" in template_text
+    assert "`runtime.root` equals `<exact-root>`" in template_text
     assert "Only then start `check`" in template_text
     assert "complete successfully before any ordinary external read" in template_text
 

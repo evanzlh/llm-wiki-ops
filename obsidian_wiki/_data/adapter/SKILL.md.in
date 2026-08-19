@@ -62,7 +62,7 @@ Before ordinary external access, run once in order:
 
 Do not launch `info` and `check` concurrently or speculatively. The `info`
 process must complete successfully; parse its JSON and confirm that
-`runtime.status` is `resolved` and `runtime.root` equals the supplied root.
+`runtime.status` is `resolved` and `runtime.root` equals `<exact-root>`.
 Only then start `check`; it must complete successfully before any ordinary
 external read or other access.
 
