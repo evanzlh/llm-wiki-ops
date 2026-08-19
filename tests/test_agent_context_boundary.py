@@ -196,15 +196,29 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
 
 
 def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    catalog = template.split("## Catalog and bounded reads", 1)[1].split(
+        "## Route and load authority", 1
+    )[0]
+    route = template.split("## Route and load authority", 1)[1].split(
+        "## Embedded built-in catalog", 1
+    )[0]
+    catalog_text = " ".join(catalog.split())
+    route_text = " ".join(route.split())
 
-    frontmatter = template_text.index("Read routing frontmatter within 64 KiB")
-    merge = template_text.index(
-        "read bounded frontmatter, and merge by exact name", frontmatter
+    frontmatter = catalog_text.index("Read routing frontmatter within 64 KiB")
+    complete_metadata = catalog_text.index(
+        "For every direct skill, catalog output must contain both the exact `name` "
+        "and complete `description`",
+        frontmatter,
     )
-    reroute = template_text.index("Rerun selection against the merged catalog", merge)
-    authority = template_text.index("Read full ordinary UTF-8 files", reroute)
-    assert frontmatter < merge < reroute < authority
+    merge = route_text.index(
+        "Only after every direct entry succeeds, merge repository descriptions by "
+        "exact name and rerun selection before any authority body"
+    )
+    authority = route_text.index("Read full ordinary UTF-8 files", merge)
+    assert frontmatter < complete_metadata
+    assert merge < authority
 
 
 def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
@@ -277,6 +291,11 @@ def test_external_adapter_catalog_section_fails_closed_after_each_result() -> No
     section_text = " ".join(section.split())
 
     for required in (
+        (
+            "For every direct skill, catalog output must contain both the exact `name` "
+            "and complete `description`"
+        ),
+        "Missing either field is malformed",
         (
             "After each catalog or frontmatter command, inspect its exit status and "
             "parsed result before starting the next command"

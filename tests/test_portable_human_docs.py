@@ -458,6 +458,11 @@ def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> Non
             "parsed result before starting the next command"
         ),
         (
+            "For every direct skill, catalog output must contain both the exact `name` "
+            "and complete `description`"
+        ),
+        "Missing either field is malformed",
+        (
             "Any nonzero exit, missing or unterminated frontmatter, duplicate name, or "
             "malformed result stops immediately before any authority body"
         ),

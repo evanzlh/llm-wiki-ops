@@ -364,6 +364,17 @@ proof. Use TDD to require deterministic exact-root argv, serialized fail-closed
 catalog parsing, and nonempty parsed CLI responses, then prove behavior by
 replaying Task 4 from wholly fresh fixtures and evidence on the fix commit.
 
+- [x] **Incident follow-up: require complete catalog metadata**
+
+A genuine S1 query cataloged direct skills but returned only names and paths, so
+it could not merge repository descriptions or rerun selection before authority
+bodies. Section-scoped tests first reproduce that failure by requiring exact
+`name` plus complete `description` output for every direct entry, treating either
+missing field as malformed, and gating merge, reroute, and authority bodies on
+all entries succeeding. The focused tests encode observed failure conditions;
+behavioral proof still requires a wholly fresh post-fix Task 4 replay. Step 5's
+post-campaign restriction remains unchanged.
+
 - [ ] **Step 1: Preserve automated external lifecycle coverage**
 
 Run:

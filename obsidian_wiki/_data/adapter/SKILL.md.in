@@ -72,17 +72,18 @@ not attempt ad hoc repair or change authority.
 
 ## Catalog and bounded reads
 
-After successful preflight, use ordinary bounded file tools on verified CLI/config
-paths. List the configured skills directory at exactly one
-level, inspecting only each direct child and its direct `SKILL.md`. Never run an
+After successful preflight, use ordinary bounded file tools. List the configured
+skills directory at exactly one level: only each direct child and its direct
+`SKILL.md`. Never run an
 unbounded or recursive find or search from the root or configured skills directory.
 
 Read routing frontmatter within 64 KiB, require one complete frontmatter block,
-and reject malformed or duplicate skill names. After each catalog or frontmatter
-command, inspect its exit status and parsed result before starting the next
-command. Any nonzero exit, missing or unterminated frontmatter, duplicate name,
-or malformed result stops immediately before any authority body. Never continue
-from partial catalog output.
+and reject malformed or duplicate skill names. For every direct skill, catalog
+output must contain both the exact `name` and complete `description`. Missing
+either field is malformed. After each catalog or frontmatter command, inspect its
+exit status and parsed result before starting the next command. Any nonzero exit,
+missing or unterminated frontmatter, duplicate name, or malformed result stops
+immediately before any authority body. Never continue from partial catalog output.
 Limit each complete external file read—including authority, task, candidate,
 query-result, hot, recovery, formatting, citation, JSON, hash, and preimage
 reads—to 1 MiB.
@@ -99,19 +100,18 @@ after preflight, stop and restart only when quiescent.
 
 ## Route and load authority
 
-1. Select an initial task skill from the embedded catalog.
-2. Complete the exact `info --json` and `check` preflight.
-3. Directly enumerate configured skills, read bounded frontmatter, and merge by
-   exact name: a repository description replaces its same-name embedded one;
-   repository-only names are added. Rerun selection against the merged catalog.
-4. Read full ordinary UTF-8 files in this exact authority order: root `AGENTS.md`
+1. Select an initial task from the embedded catalog; complete exact preflight.
+2. Only after every direct entry succeeds, merge repository descriptions by exact
+   name and rerun selection before any authority body; same-name replaces;
+   repository-only adds.
+3. Read full ordinary UTF-8 files in this exact authority order: root `AGENTS.md`
    if present; direct canonical `llm-wiki/SKILL.md` at
    `<configured-skills-path>/llm-wiki/SKILL.md` derived from verified info,
    config, and catalog evidence; configured vault `AGENTS.md` if present; direct
    selected task `SKILL.md`. Never invent `<root>/llm-wiki/SKILL.md` or another
    conventional canonical path.
 
-Step 4 is one synchronous authority sequence. Use one distinct sequential tool
+Step 3 is one synchronous authority sequence. Use one distinct sequential tool
 call or process per authority body; open exactly one authority body in that call
 or process. Never loop over or combine multiple authority bodies; complete each
 bounded read before opening the next file; never parallelize or reorder. Skip an
