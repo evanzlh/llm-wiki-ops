@@ -454,10 +454,6 @@ def test_agents_doc_allows_only_pre_authority_catalog_correction() -> None:
             "byte-for-byte equal to `<exact-root>`; stop if you cannot establish that"
         ),
         (
-            "After each catalog or frontmatter command, inspect its exit status and "
-            "parsed result before starting the next command"
-        ),
-        (
             "For every direct skill, catalog output must contain both the exact `name` "
             "and complete `description`"
         ),

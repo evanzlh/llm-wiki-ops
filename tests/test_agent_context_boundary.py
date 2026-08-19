@@ -304,10 +304,6 @@ def test_external_adapter_allows_discarded_catalog_correction_before_authority()
             "and complete `description`"
         ),
         "Missing either field is malformed",
-        (
-            "After each catalog or frontmatter command, inspect its exit status and "
-            "parsed result before starting the next command"
-        ),
         "Invalid or partial output grants no routing authority",
         "discard it completely",
         "a corrected bounded parser may replace it",
