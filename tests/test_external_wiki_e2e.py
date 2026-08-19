@@ -27,6 +27,7 @@ CLI_LAUNCHER = (str(Path(sys.executable).absolute()), "-m", "obsidian_wiki")
 
 def _environment(agent_home: Path) -> dict[str, str]:
     environment = os.environ.copy()
+    environment.pop("CODEX_HOME", None)
     environment.update(
         {
             "HOME": str(agent_home),
@@ -142,6 +143,30 @@ def _tree_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
     return tuple(snapshot)
 
 
+def _namespace_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            child.name,
+            child.lstat().st_dev,
+            child.lstat().st_ino,
+            child.lstat().st_mode,
+            child.lstat().st_nlink,
+        )
+        for child in sorted(root.iterdir())
+    )
+
+
+def _outside_repository_snapshot(
+    parent: Path,
+    repository: Path,
+) -> dict[str, tuple[tuple[object, ...], ...]]:
+    return {
+        child.name: _tree_snapshot(child)
+        for child in sorted(parent.iterdir())
+        if child != repository
+    }
+
+
 def _write_candidate(candidate_vault: Path, relative: str, title: str) -> Path:
     page = candidate_vault / relative
     page.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +183,33 @@ def _execute_recovery_command(
     tokens = shlex.split(command)
     assert tokens[0] == "llmwikiops"
     return _run_cli(cwd, agent_home, *tokens[1:])
+
+
+def test_adapter_install_isolated_home_ignores_inherited_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    business = tmp_path / "business"
+    agent_home = tmp_path / "agent-home"
+    outside = tmp_path / "hostile-inherited-codex-home"
+    business.mkdir()
+    agent_home.mkdir()
+    outside.mkdir()
+    outside_before = _tree_snapshot(outside)
+    monkeypatch.setenv("CODEX_HOME", str(outside))
+
+    installed = _run_cli(
+        business,
+        agent_home,
+        "agent",
+        "install-adapter",
+        "--agent",
+        "codex",
+    )
+
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+    assert (agent_home / ".codex/skills/llm-wiki-ops/SKILL.md").is_file()
+    assert _tree_snapshot(outside) == outside_before
 
 
 def test_external_wiki_adapter_lifecycle_from_unrelated_cwd(
@@ -184,6 +236,8 @@ def test_external_wiki_adapter_lifecycle_from_unrelated_cwd(
     )
     assert installed.returncode == 0, installed.stdout + installed.stderr
     assert (agent_home / ".codex/skills/llm-wiki-ops/SKILL.md").is_file()
+    namespace_after_install = _namespace_snapshot(tmp_path)
+    outside_wiki_after_install = _outside_repository_snapshot(tmp_path, wiki)
 
     info = _json_result(_run_selected(business, agent_home, wiki, "info", "--json"))
     assert isinstance(info, dict)
@@ -270,6 +324,13 @@ def test_external_wiki_adapter_lifecycle_from_unrelated_cwd(
     assert isinstance(hot_inputs, dict)
     assert len(hot_inputs["pages"]) <= 50
     assert len(hot_inputs["operations"]) <= 10
+    assert any(
+        page["path"] == "concepts/compiled.md" for page in hot_inputs["pages"]
+    )
+    assert any(
+        operation["transaction_id"] == transaction_id
+        for operation in hot_inputs["operations"]
+    )
     (wiki / "wiki/hot.md").write_text(
         "# Hot\n\n"
         + "\n".join(
@@ -285,6 +346,14 @@ def test_external_wiki_adapter_lifecycle_from_unrelated_cwd(
         )
     )
     assert marked == {"stale": False, "status": "current"}
+    current = _json_result(
+        _run_selected(business, agent_home, wiki, "hot", "status", "--json")
+    )
+    assert current == {
+        "stale": False,
+        "reason": "current",
+        "fingerprint": hot_inputs["fingerprint"],
+    }
 
     config = load_portable_config(
         wiki / ".llmwikiops/config.toml",
@@ -327,6 +396,8 @@ def test_external_wiki_adapter_lifecycle_from_unrelated_cwd(
     assert candidate_vault.is_relative_to(wiki)
     assert config.local_state.is_relative_to(wiki)
     assert (config.vault / str(committed["log_path"])).is_relative_to(wiki)
+    assert _namespace_snapshot(tmp_path) == namespace_after_install
+    assert _outside_repository_snapshot(tmp_path, wiki) == outside_wiki_after_install
 
 
 def test_external_wiki_binding_rejects_or_ignores_alternate_roots(
@@ -348,6 +419,9 @@ def test_external_wiki_binding_rejects_or_ignores_alternate_roots(
     child.mkdir()
     business_before = _tree_snapshot(business)
     alternate_before = _tree_snapshot(alternate)
+    selected_before = _tree_snapshot(wiki)
+    agent_home_before = _tree_snapshot(agent_home)
+    namespace_before = _namespace_snapshot(tmp_path)
 
     missing = _run_cli(
         business,
@@ -409,3 +483,6 @@ def test_external_wiki_binding_rejects_or_ignores_alternate_roots(
 
     assert _tree_snapshot(alternate) == alternate_before
     assert _tree_snapshot(business) == business_before
+    assert _tree_snapshot(wiki) == selected_before
+    assert _tree_snapshot(agent_home) == agent_home_before
+    assert _namespace_snapshot(tmp_path) == namespace_before
