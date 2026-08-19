@@ -765,6 +765,50 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         assert value in rendered
 
 
+def test_template_distinguishes_owner_guarantees_from_mechanical_preflight(
+    tmp_path: Path,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    supported = rendered.split("## Supported repository model", 1)[1].split(
+        "## Bind and preflight", 1
+    )[0]
+    supported_text = " ".join(supported.split())
+
+    assert "explicit user and repository-owner guarantees" in supported_text
+    assert "not mechanically established by preflight" in supported_text
+    assert "Supplying the root affirms these guarantees" in supported_text
+    assert "do not proceed if any condition is unsupported" in supported_text
+    assert (
+        "mechanically checks static topology, version, and configuration"
+        in supported_text
+    )
+
+
+def test_template_discloses_check_recovery_before_task_mutation(
+    tmp_path: Path,
+) -> None:
+    rendered = render_demo_adapter(tmp_path)
+    rendered_text = " ".join(rendered.split())
+    preflight = rendered.index("## Bind and preflight")
+    recovery = rendered.index("may deterministically finish")
+    commands = rendered.index("<wiki-cli> info --json")
+
+    assert preflight < recovery < commands
+    assert (
+        "may deterministically finish an already-recorded framework-managed skill "
+        "maintenance recovery"
+        in rendered_text
+    )
+    assert "part of establishing the preflight state" in rendered_text
+    assert (
+        "Do not begin task-directed repository mutation before preflight succeeds."
+        in rendered_text
+    )
+    assert "do not attempt ad hoc repair" in rendered_text
+    assert "Stop without task-directed mutation" in rendered_text
+    assert "Stop without mutation" not in rendered_text
+
+
 def test_embedded_safe_reader_binds_an_ordinary_exact_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1434,11 +1478,19 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
         "missing-supported",
         "duplicate-supported",
         "late-supported",
+        "missing-preflight",
+        "duplicate-preflight",
+        "missing-catalog-reads",
+        "duplicate-catalog-reads",
+        "missing-route",
+        "duplicate-route",
         "missing-info",
         "duplicate-info",
         "missing-check",
         "duplicate-check",
         "reordered-info-check",
+        "reordered-supported-preflight",
+        "reordered-catalog-route",
     ),
 )
 def test_renderer_rejects_invalid_static_repository_protocol_anchors(
@@ -1466,6 +1518,24 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
         mutated = template.replace(supported, "", 1).replace(
             route, route + "\n\n" + supported, 1
         )
+    elif mutation == "missing-preflight":
+        mutated = template.replace(preflight, "## Repository preflight", 1)
+    elif mutation == "duplicate-preflight":
+        mutated = template.replace(
+            catalog_reads, preflight + "\n\n" + catalog_reads, 1
+        )
+    elif mutation == "missing-catalog-reads":
+        mutated = template.replace(catalog_reads, "## Repository reads", 1)
+    elif mutation == "duplicate-catalog-reads":
+        mutated = template.replace(route, catalog_reads + "\n\n" + route, 1)
+    elif mutation == "missing-route":
+        mutated = template.replace(route, "## Authority loading", 1)
+    elif mutation == "duplicate-route":
+        mutated = template.replace(
+            "## Embedded built-in catalog",
+            route + "\n\n## Embedded built-in catalog",
+            1,
+        )
     elif mutation == "missing-info":
         mutated = template.replace(info, "<wiki-cli> inspect --json", 1)
     elif mutation == "duplicate-info":
@@ -1474,17 +1544,24 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
         mutated = template.replace(check, "<wiki-cli> verify", 1)
     elif mutation == "duplicate-check":
         mutated = template.replace(check, check + "\n" + check, 1)
-    else:
+    elif mutation == "reordered-info-check":
         assert template.index(info) < template.index(check)
         mutated = template.replace(info, "<static-info-anchor>", 1).replace(
             check, info, 1
         ).replace("<static-info-anchor>", check, 1)
+    elif mutation == "reordered-supported-preflight":
+        mutated = template.replace(supported, "<static-supported-anchor>", 1).replace(
+            preflight, supported, 1
+        ).replace("<static-supported-anchor>", preflight, 1)
+    else:
+        mutated = template.replace(catalog_reads, "<static-catalog-anchor>", 1).replace(
+            route, catalog_reads, 1
+        ).replace("<static-catalog-anchor>", route, 1)
 
     assert mutated.count(BUILTIN_CATALOG_START) == 1
     assert mutated.count(BUILTIN_CATALOG_END) == 1
     assert mutated.count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert mutated.count(ADAPTER_EOF) == 1
-    assert catalog_reads in mutated
     path = tmp_path / f"{mutation}.in"
     path.write_text(mutated, encoding="utf-8")
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)

@@ -31,6 +31,11 @@ user-controlled local filesystem. It must not be in a directory writable by
 another user or on a network filesystem that requires concurrent-consistency
 guarantees.
 
+These environmental conditions are explicit user and repository-owner
+guarantees, not mechanically established by preflight. Supplying the root
+affirms these guarantees; do not proceed if any condition is unsupported. The
+CLI preflight mechanically checks static topology, version, and configuration.
+
 The repository must remain quiescent for the entire operation: no sync, branch
 switch, `git pull`, editor automation, or another Agent may change config,
 authority, or skills. Static unsafe topology is rejected, but this protocol
@@ -48,9 +53,13 @@ Bind these exact, uniquely visible command forms:
 <git-cli> = git -C <exact-root>
 ```
 
-Pass the root as one argv value with normal quoting, never as shell code. Before
-any ordinary Agent file read, directory listing, or search, run these exact
-commands once in this order:
+Pass the root as one argv value with normal quoting, never as shell code. `check`
+may deterministically finish an already-recorded framework-managed skill
+maintenance recovery. That recovery is part of establishing the preflight
+state. Do not begin task-directed repository mutation before preflight succeeds.
+
+Before any ordinary Agent file read, directory listing, or search, run these
+exact commands once in this order:
 
 ```bash
 <wiki-cli> info --json
@@ -59,8 +68,10 @@ commands once in this order:
 
 The `info` result's root must equal the supplied root, and `check` must pass
 without errors. On either failure, stop before ordinary repository reads and
-do not search for a different root. Report the exact root and failed command;
-do not fall back to source checkouts, other executables, or alternate authority.
+do not search for a different root or start task work. If `check` fails after
+recovery, report the exact root and failed command and do not attempt ad hoc
+repair. Do not fall back to source checkouts, other executables, or alternate
+authority.
 
 ## Catalog and bounded reads
 
@@ -143,10 +154,11 @@ create a knowledge commit do not imply a hot refresh.
 
 ## Stop conditions
 
-Stop without mutation on an absent or ambiguous root, invalid config, version
-incompatibility, unsafe topology, unsupported concurrent modification, catalog
-ambiguity, conflicting authority, malformed CLI envelope, or any path that
-would escape the exact configured repository. Report the failure and the exact
-root and command involved; do not repair authority by searching elsewhere.
+Stop without task-directed mutation on an absent or ambiguous root, invalid
+config, version incompatibility, unsafe topology, unsupported concurrent
+modification, catalog ambiguity, conflicting authority, malformed CLI envelope,
+or any path that would escape the exact configured repository. Report the
+failure and the exact root and command involved; do not repair authority by
+searching elsewhere.
 
 <!-- LLMWIKIOPS_ADAPTER_EOF -->
