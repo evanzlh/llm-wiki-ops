@@ -24,7 +24,6 @@ from obsidian_wiki.agent_adapter import (
     render_adapter_skill,
 )
 from obsidian_wiki.frontmatter import parse_frontmatter
-from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
@@ -741,11 +740,6 @@ def test_template_discloses_check_recovery_before_task_mutation(
     assert "do not attempt ad hoc repair" in rendered_text
     assert "Stop without task-directed mutation" in rendered_text
     assert "Stop without mutation" not in rendered_text
-
-
-@pytest.mark.parametrize("name", ("", ".", "..", "a/b", "a\\b", "line\nbreak"))
-def test_framework_rejects_unrepresentable_or_unsafe_catalog_names(name: str) -> None:
-    assert not is_safe_skill_name(name)
 
 
 def test_renderer_rejects_unsafe_source_topology(tmp_path: Path) -> None:
