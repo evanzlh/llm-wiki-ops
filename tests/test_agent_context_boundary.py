@@ -212,6 +212,14 @@ def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None
     assert "never call `hot mark-current` after a read-only or no-write path" in template_text
 
 
+def test_external_adapter_rechecks_bounds_for_each_separate_byte_read() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "repeat the type, link-count, and size check in the same process" in template_text
+    assert "A prior command's check never authorizes a later read" in template_text
+    assert "`read_text`, `read_bytes`, and hash-only reads" in template_text
+
+
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     body = template.split("---\n", 2)[2]
