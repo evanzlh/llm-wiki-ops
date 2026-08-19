@@ -165,6 +165,36 @@ def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
     assert "do not retry with another term or mode" in template_text
 
 
+def test_external_adapter_checks_metadata_before_any_file_bytes() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "Before opening or reading any external file content" in template_text
+    assert "non-following metadata, type, and size check" in template_text
+    assert "CLI-returned candidates, query paths, hot files, and recovery evidence" in template_text
+    assert "An existence or `-f` test alone is not a size bound" in template_text
+    assert "before opening it for a full body read" in template_text
+
+
+def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "read at most 64 KiB" in template_text
+    assert "Never use `Path.read_text()`, `cat`, `sed`, or an equivalent" in template_text
+    assert "whole or unbounded read during the frontmatter phase" in template_text
+
+
+def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "one synchronous authority sequence" in template_text
+    assert "complete each bounded read before opening the next file" in template_text
+    root_agents = template_text.index("root `AGENTS.md` if present")
+    canonical = template_text.index("direct canonical `llm-wiki/SKILL.md`", root_agents)
+    vault_agents = template_text.index("configured vault `AGENTS.md` if present", canonical)
+    selected = template_text.index("direct selected task `SKILL.md`", vault_agents)
+    assert root_agents < canonical < vault_agents < selected
+
+
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     body = template.split("---\n", 2)[2]

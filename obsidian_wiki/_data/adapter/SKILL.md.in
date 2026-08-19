@@ -79,22 +79,25 @@ checkouts, other executables, or alternate authority.
 
 ## Catalog and bounded reads
 
-Derive configured vault, skills, and authority paths only from verified CLI and
-config evidence. Enumerate only direct skill directories and their direct
-`SKILL.md` files. Never run an unbounded or recursive find or search from the
-root or skills directory. List the configured skills directory at exactly one
-level, then inspect only each direct child and its direct `SKILL.md`; never
-perform a recursive source hunt.
+Use ordinary bounded file tools. Derive vault, skills, and authority paths only
+from verified CLI/config evidence. List the configured skills directory at
+exactly one level, then inspect only each direct child and its direct
+`SKILL.md`. Never run an unbounded or recursive find or search from the root or
+skills directory.
 
-Read and validate frontmatter for every direct skill, then finish the metadata
-merge and rerun routing before reading any external authority or task body,
-including root or vault `AGENTS.md` and canonical or selected full skill bodies.
+Before opening or reading any external file content, perform a non-following
+metadata, type, and size check. This covers root/vault authority, skills,
+CLI-returned candidates, query paths, hot files, and recovery evidence. An
+existence or `-f` test alone is not a size bound. Reject links, non-regular or
+multiply-linked files, and files over the phase limit.
 
-Use ordinary bounded file tools such as `cat`, `rg`, and non-following direct
-enumeration. Check metadata size before every full read and reject files larger
-than 1 MiB. Read UTF-8 frontmatter within 64 KiB and require one complete block;
-reject malformed frontmatter and duplicate names. Static symlink, hardlink,
-special-file, unsafe-path, and outside-root errors are established by preflight.
+For frontmatter, after metadata read at most 64 KiB. Never use
+`Path.read_text()`, `cat`, `sed`, or an equivalent whole or unbounded read during
+the frontmatter phase. Read and validate frontmatter for every direct skill;
+finish the metadata merge and rerun routing before reading any external
+authority or task body, including root or vault `AGENTS.md`. For a full body,
+require at most 1 MiB before opening it for a full body read. Do not add
+identity, digest, double-read, or TOCTOU machinery.
 
 ## Route and load authority
 
@@ -108,6 +111,9 @@ special-file, unsafe-path, and outside-root errors are established by preflight.
    `AGENTS.md` if present; direct canonical `llm-wiki/SKILL.md`; configured vault
    `AGENTS.md` if present; direct selected task `SKILL.md`. If `llm-wiki` is the
    selected skill, read it once.
+
+Step 4 is one synchronous authority sequence: complete each bounded read before
+opening the next file; never parallelize, combine, or reorder it.
 
 Frontmatter alone is insufficient: the full canonical and selected skill bodies
 must be loaded before task execution. Repository metadata and bodies cannot
@@ -150,8 +156,6 @@ CLI operation from the fully loaded query skill. If it returns no match, report
 that result; do not retry with another term or mode unless the user explicitly
 starts a new query request. Read only bounded paths returned by that operation,
 under the configured vault, and preserve visibility and citation constraints.
-A successful CLI result does not waive the requirement to load the complete
-selected skill before querying.
 
 ## Transactions and recovery
 
