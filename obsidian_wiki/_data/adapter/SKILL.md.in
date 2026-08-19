@@ -77,7 +77,10 @@ authority.
 
 Derive configured vault, skills, and authority paths only from verified CLI and
 config evidence. Enumerate only direct skill directories and their direct
-`SKILL.md` files; never perform a recursive source hunt.
+`SKILL.md` files. Never run an unbounded or recursive find or search from the
+root or skills directory. List the configured skills directory at exactly one
+level, then inspect only each direct child and its direct `SKILL.md`; never
+perform a recursive source hunt.
 
 Use ordinary bounded file tools such as `cat`, `rg`, and non-following direct
 enumeration. Check metadata size before every full read and reject files larger
