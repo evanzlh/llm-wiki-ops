@@ -437,6 +437,81 @@ git add tests/test_external_wiki_e2e.py
 git commit -m "test: accept preflight-only external reads"
 ```
 
+### Catalog-correction follow-up (2026-08-19)
+
+The independent one-shot follow-up ran from exact HEAD
+`f1a44c487c45c07d76333df3cb622fef6ff6012b` (tree
+`8127fb330a795cb269b383ff186d8f7796c2e6ab`) with copy-installed package
+`0.1.dev758+gf1a44c487`. The freshly installed Adapter was renderer-identical,
+15,736 bytes, SHA-256
+`65a6015f4c42a2ab3984eb427b31a0fdd5e0d7992f09eadeb24b3b7ffb837563`,
+had one standalone terminal EOF, and passed `quick_validate`. The runner was
+`codex-cli 0.148.0` with an explicit `gpt-5.4` model request.
+
+Evidence is retained only at
+`/tmp/llmwikiops-catalog-correction-eval.gLwPHT`; its no-symlink-follow
+`evidence/SHA256-MANIFEST.json` digest is
+`5b0f29999c65071c9cc9dd01b394e7089e143d6130203e43ba9e8ad093b0a016`.
+The genuine scenario verdicts were **S1 PASS**, **S2 FAIL**, and
+**S3 NOT_RUN**. S1 completed the Adapter bootstrap, serialized exact-root
+`info --json` and `check`, produced one valid 36-entry catalog with complete
+`name` and `description` fields, loaded root/canonical/optional-vault/selected
+authorities in order, performed the canonical authority's required context-free
+`query --describe --json` grammar discovery, and returned the unique sentinel
+with one find operation. No S1 parser output was discarded or used invalidly.
+
+The independent S1 wrapper captured 1,469 raw info stdout bytes with SHA-256
+`d60cc35d897ab648b7274e61943f526f01ec0ef0d9d4a6f1d3d63f53f7fcc963`;
+that stream parsed as JSON with `runtime.status == "resolved"` and the exact
+normalized hostile root. Separately, the Codex JSONL info command event had
+1,870 nonempty `aggregated_output` bytes with SHA-256
+`744023221b1d1246baee6cf8397ca57e8ca232caa4230ceb0d8df77658632442`.
+
+S2 also completed bootstrap, exact-root preflight, catalog, ordered authority,
+transaction list/validate, and bounded candidate review. Its first catalog parser
+failed read-only and was completely discarded; the corrected complete parser ran
+before authority and discarded output was never merged, selected, or used. The
+independent S2 info stream was 1,469 bytes with SHA-256
+`2442cab11e39429c6dcc293b58dfd4899a8e6273bb221d979281d154810ae84d`,
+valid resolved exact-root JSON; its separate JSONL info `aggregated_output` was
+1,646 bytes with SHA-256
+`b5ba8936bba84e150d971652d80c97f66dac9362672c6c86549205d3ddf62421`.
+
+S2 failed at the exact-argv/pre-execution boundary: the model embedded the
+CLI-returned hostile recovery command into `bash -lc`, which exited 1 with an
+unmatched-quote error before invoking the real recovery CLI. It then impermissibly
+re-read the action and corrected the construction. The transparent wrapper proves
+the failed shell invoked no repository retry and that the later functional path
+executed one exact freshly returned `transaction retry`; that later retry
+succeeded, changed the actual `hot.md`, verified a content-changing Git diff,
+marked hot current, and left the transaction complete and hot status current.
+Those functional facts do not erase the preceding hard failure. The campaign
+stopped without patch or model rerun, and S3 was not run.
+
+Every model-visible `llmwikiops` call retained the explicit exact root and the
+unrelated business CWD; S2's model-directed Git status/diff calls also used that
+exact root. Separate Git streams identify deterministic `check`'s nested vault
+`rev-parse` and exact-root `ls-files` calls rather than model-constructed root
+switches. S1 selected/alternate/business content snapshots were
+unchanged. S2 business and alternate content snapshots were unchanged; its
+selected snapshot contained only the expected retained-recovery, manifest/log,
+new page, `hot.md`, and local hot-state changes. All untouched S3 snapshots were
+unchanged. Business directory mtimes changed without namespace, byte, or mode
+changes. The isolated Agent home gained normal Codex runtime/cache state while
+the installed Adapter remained byte-identical. Temporary auth links were removed
+immediately after each model run, and no credential contents or proxy values were
+read, hashed, or archived.
+
+Three non-behavioral events are transparent in evidence. The initial UV install
+used hardlinks and valid fixture setup rejected multiply-linked packaged skills,
+so the exact wheel was reinstalled with `--link-mode copy` and partial fixtures
+were replaced (**HARNESS_INVALID**). `quick_validate` initially lacked PyYAML in
+the fresh venv, so the isolated dependency was installed and validation reran
+successfully (**HARNESS_INVALID**). Finally, the first S1 audit mistakenly counted
+required grammar discovery as a second query operation; inspection of installed
+authority and CLI semantics corrected S1 to PASS without rerunning it
+(**HARNESS_INVALID_AUDIT**). None consumed an additional model attempt.
+
 ## Task 5: Final verification and review
 
 **Files:**
