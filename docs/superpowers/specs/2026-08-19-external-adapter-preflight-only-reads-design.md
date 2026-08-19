@@ -83,6 +83,48 @@ repository evidence changed after preflight, the Agent stops and restarts only
 after the repository is quiescent. The Adapter does not attempt to distinguish
 benign from hostile concurrent replacement.
 
+## Read-only correction before authority
+
+Catalog routing is accepted by its final validated state, not by requiring the
+Agent's first parsing attempt to be perfect. Before opening any authority body,
+the Agent may discard an incomplete or invalid read-only catalog result and run
+a corrected bounded parser. A discarded attempt grants no routing authority and
+none of its fields may be merged, selected, or used for execution.
+
+The correction boundary closes only when one final catalog result:
+
+- covers every direct skill entry from the verified configured skills path;
+- contains each entry's exact nonempty `name` and complete nonempty
+  `description`;
+- has valid complete frontmatter and no duplicate or ambiguous name; and
+- has been inspected as a whole before repository descriptions are merged and
+  selection is rerun.
+
+Until that state exists, the Agent must not open an authority body, execute a
+Wiki task, or make a repository change. If it cannot obtain the final valid
+catalog, it stops. This allowance does not apply to root binding: a failed,
+empty, malformed, unresolved, or wrong-root `info --json`, or a failed `check`,
+still ends the operation without retrying another root or continuing to ordinary
+repository access.
+
+## Behavioral evidence model
+
+Behavioral evaluation distinguishes repository behavior from the Codex JSONL
+event renderer. The evaluated command wrapper records the exact argv, CWD, exit
+status, stdout bytes, and stderr bytes while passing those streams through
+unchanged. For required structured CLI calls, the audit validates the captured
+stdout as nonempty structured output and checks its required fields. A missing
+`aggregated_output` field, or an empty value there, is not by itself evidence
+that the underlying CLI emitted no output when the wrapper's independent stream
+record proves otherwise.
+
+Agent behavior must still be consistent with the validated result: `check` may
+start only after valid exact-root `info`, and authority loading may start only
+after completed `check` and a final valid catalog. If independent stream evidence
+also shows empty or malformed output, the run fails even if the Agent claims
+success. The wrapper is evaluation instrumentation only; it does not parse on
+the Agent's behalf or change production commands.
+
 ## Testing and acceptance
 
 Contract tests will first fail against the repeated-read language, then require:
@@ -91,16 +133,23 @@ Contract tests will first fail against the repeated-read language, then require:
 - no per-read `lstat`, `stat.S_ISREG`, `os.path.isfile`, same-process metadata,
   link-count, snapshot, or reread-revalidation protocol in the generated Adapter;
 - retained 64 KiB frontmatter and 1 MiB complete-read limits;
+- read-only catalog correction may replace a discarded invalid attempt, but no
+  authority read or execution may occur before one final complete valid catalog;
 - retained direct catalog enumeration, routing, authority order, recovery review,
   hot-refresh, exact `-C`, unchanged business CWD, and no alternate-root behavior;
+- independent command-stream evidence for required CLI output, without treating
+  Codex JSONL `aggregated_output` as the sole observation channel;
 - unchanged deterministic portable/check coverage for static unsafe topology;
 - source, wheel, sdist, and installed Adapter byte parity.
 
 Fresh behavioral evaluation will judge ordinary post-preflight bounded reads as
 valid without auditing a metadata syscall before each open. It will still fail
 preflight-order violations, unbounded or recursive hunting, wrong-root commands,
-authority-order/rerouting errors, reconstructed recovery commands, premature hot
-marking, unexpected writes, or evidence of concurrent repository change.
+use of a discarded catalog result, authority access before final catalog
+validation, authority-order/rerouting errors, reconstructed recovery commands,
+premature hot marking, unexpected writes, or evidence of concurrent repository
+change. A corrected read-only catalog parse completed before authority is not a
+failure.
 
 ## Scope
 
