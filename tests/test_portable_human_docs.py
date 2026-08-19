@@ -431,6 +431,37 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     assert "Concurrent modification and network-sync activity" in readme
 
 
+def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> None:
+    agents = " ".join(_text("docs/agents.md").split())
+
+    for required in (
+        "Prefer a structured argv-array tool or API with shell execution disabled",
+        (
+            "If the exact root contains a literal apostrophe, never interpolate it into "
+            "single-quoted shell command text"
+        ),
+        (
+            "Before execution, verify that the root is one argv element byte-for-byte "
+            "equal to the supplied exact root"
+        ),
+        (
+            "After each catalog or frontmatter command, inspect its exit status and "
+            "parsed result before starting the next command"
+        ),
+        (
+            "Any nonzero exit, missing or unterminated frontmatter, duplicate name, or "
+            "malformed result stops immediately before any authority body"
+        ),
+        "Never continue from partial catalog output",
+        (
+            "Every required CLI response must be nonempty and parse successfully before "
+            "the next action"
+        ),
+        "Empty output is malformed CLI output and triggers the same stop",
+    ):
+        assert required in agents
+
+
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
     cli = _text("docs/cli.md")
     configuration = _text("docs/configuration.md")

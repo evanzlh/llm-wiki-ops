@@ -147,6 +147,27 @@ def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
     assert "complete successfully before any ordinary external read" in template_text
 
 
+def test_external_adapter_bind_section_requires_exact_argv_construction() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Bind and preflight", 1)[1].split(
+        "## Catalog and bounded reads", 1
+    )[0]
+    section_text = " ".join(section.split())
+
+    for required in (
+        "Prefer a structured argv-array tool or API with shell execution disabled",
+        (
+            "If the exact root contains a literal apostrophe, never interpolate it into "
+            "single-quoted shell command text"
+        ),
+        (
+            "Before execution, verify that the root is one argv element byte-for-byte "
+            "equal to the supplied exact root"
+        ),
+    ):
+        assert required in section_text
+
+
 def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
@@ -219,6 +240,42 @@ def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
     assert "Read routing frontmatter within 64 KiB" in template_text
     assert "require one complete frontmatter block" in template_text
     assert "reject malformed or duplicate skill names" in template_text
+
+
+def test_external_adapter_catalog_section_fails_closed_after_each_result() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Catalog and bounded reads", 1)[1].split(
+        "## Route and load authority", 1
+    )[0]
+    section_text = " ".join(section.split())
+
+    for required in (
+        (
+            "After each catalog or frontmatter command, inspect its exit status and "
+            "parsed result before starting the next command"
+        ),
+        (
+            "Any nonzero exit, missing or unterminated frontmatter, duplicate name, or "
+            "malformed result stops immediately before any authority body"
+        ),
+        "Never continue from partial catalog output",
+    ):
+        assert required in section_text
+
+
+def test_external_adapter_stop_section_rejects_empty_cli_output() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Stop conditions", 1)[1].split(ADAPTER_EOF, 1)[0]
+    section_text = " ".join(section.split())
+
+    for required in (
+        (
+            "Every required CLI response must be nonempty and parse successfully before "
+            "the next action"
+        ),
+        "Empty output is malformed CLI output and triggers the same stop",
+    ):
+        assert required in section_text
 
 
 def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> None:

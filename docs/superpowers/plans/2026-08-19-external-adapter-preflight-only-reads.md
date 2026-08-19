@@ -348,6 +348,15 @@ git commit -m "fix: package preflight-only adapter"
 - Modify only if Step 1 observes an obsolete protocol expectation: `tests/test_external_wiki_e2e.py`
 - Evidence only: a fresh directory below `/tmp/llmwikiops-preflight-only-eval.*`
 
+- [x] **Incident follow-up: fail closed on command construction and parsed results**
+
+A genuine S2 recovery run misquoted a literal apostrophe in the supplied root,
+retried after failed preflight, ignored a nonzero frontmatter-catalog command,
+and continued from an empty required CLI response. Preserve that behavior as RED
+section-scoped tests, then use TDD to require structured exact-root argv,
+serialized fail-closed catalog parsing, and nonempty parsed CLI responses before
+replaying Task 4 from wholly fresh fixtures and evidence on the fix commit.
+
 - [ ] **Step 1: Preserve automated external lifecycle coverage**
 
 Run:
