@@ -603,3 +603,66 @@ Expected: clean worktree, all scoped commits visible, and no corrupt objects. A
 known unrelated dangling blob may remain informational. Report behavior evidence
 paths and the recoverable Git-corruption quarantine; do not reinstall live
 Adapters, update an external Wiki, push, or publish without separate authority.
+
+### Pre-dispatch correction follow-up (2026-08-20)
+
+The correction follow-up ran from exact HEAD
+`bd7d2e2772f67dffeb8f741721bb12bb9ae333ef` (tree
+`97f6c451138209eb243201bed8f28b58b18301a1`) with copy-installed package
+`0.1.dev769+gbd7d2e277`; the exact wheel SHA-256 was
+`2b3918426464d7e298b7775d5bc4be03760fe3cb0f3061881b9561a18004a3f4`.
+The final rendered and installed Adapter was renderer-identical, 15,734 bytes,
+SHA-256 `7e2dff2dbb1c75d3be22d51e34146300c896eacb184322b7dcdfea5dcab0bf73`,
+had one standalone terminal EOF, and passed `quick_validate`. Its textual change
+from the preserved 15,736-byte Adapter was reviewed as only the approved
+repository-dispatch/evidence clarification plus the spec-reviewed,
+semantics-preserving compaction. The runner remained `codex-cli 0.148.0` with an
+explicit `gpt-5.4` model request.
+
+No S1 or S2 model was rerun. Preserved S1 remains **PASS** at
+`/tmp/llmwikiops-catalog-correction-eval.gLwPHT`; its original manifest digest
+remains `5b0f29999c65071c9cc9dd01b394e7089e143d6130203e43ba9e8ad093b0a016`
+and was not regenerated despite the disclosed later changes to three Codex
+SQLite SHM files. Preserved S2 remains historically **FAIL**, while the separate
+approved-boundary reassessment is **PASS** at
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/s2-reassessment.json`.
+Its machine audit proves from command chronology, the Bash parser diagnostics,
+and complete wrapper absence—not from the Agent's claim alone—that the failed
+unmatched-quote construction stopped before any repository command, read, or
+mutation. The subsequent list returned the same exact root, transaction ID,
+recommended action, and argv; exactly one real retry reached the wrapper and
+completed, followed by the target-specific content-changing `hot.md` Git
+status/diff and successful `hot mark-current`. Business and alternate snapshots
+were unchanged, and selected changes were exactly the expected transaction,
+manifest/log, recovered page, hot page, and hot-state changes.
+
+Fresh S3 ran exactly once and is **PASS** at
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/s3/verdict.json`. From the
+unrelated business CWD it loaded the complete Adapter, serialized exact-root
+`info --json` then `check`, built one final valid 36-entry direct catalog,
+selected the repository's same-name `wiki-query` description/body override,
+loaded root, canonical, absent optional vault, and override authorities in
+order, exposed `CUSTOM_BODY_LOADED_PRE_DISPATCH_7F2C`, discovered the grammar,
+and executed exactly one find returning `S3_PRE_DISPATCH_SENTINEL_7F2C`. All
+four wrapped CLI calls used the selected hostile root; no wrapper accessed the
+alternate root. Selected, alternate, and business snapshots were exactly
+unchanged, the isolated Agent home contained only expected Codex runtime/cache
+writes, and the installed Adapter stayed byte-identical.
+
+The final three-scenario approved verdict is **PASS**: preserved S1 PASS,
+preserved S2 historical FAIL with approved-boundary reassessment PASS, and fresh
+S3 PASS. The new no-symlink-follow 4,925-entry manifest is
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/SHA256-MANIFEST.json`, SHA-256
+`df63a8c0021436be7d230b8a5e8d1c796f77d817629944178731541b64d8719f`.
+Five outside-model setup/audit events are disclosed separately as
+`HARNESS_INVALID` or `HARNESS_INVALID_AUDIT`; none consumed a model retry or
+reran behavior. The only runtime warning was a nonbehavioral available-model
+refresh timeout after the explicit model was already selected. A temporary
+live-auth symlink existed only for the S3 model process and was removed in the
+runner's `finally` block; credential contents and proxy values were never read,
+hashed, or archived, while proxy names record only `SET`/`UNSET`. The sanitized
+earlier final-verifier harness failure receipt is
+`/tmp/llmwikiops-final-verify.yhNnhf/verification-harness-failure.json`, SHA-256
+`32a78017233432147c61edcfdfd6980e7779f0337e23990d4a5c39c4f5c39507`;
+it records that install, validator, and reinstall logs had succeeded before the
+bad hardcoded ownership assertion failed and does not invent stderr.
