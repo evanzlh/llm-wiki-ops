@@ -104,5 +104,9 @@ promoting, failed, complete, and restored recovery. On missing or mismatched
 identity, conflict, multiple matches, or any ambiguous outcome, stop without
 mutation.
 
+Before a retry or other recovery action that promotes candidates, validate and
+bounded-inspect every page returned in `candidate_pages` using the sparse-diff
+rules above. A status or validation envelope alone is not candidate review.
+
 The CLI owns promotion and recovery. Do not edit managed manifests or stable
 generated pages directly. Do not commit, push, or open a pull request with Git.

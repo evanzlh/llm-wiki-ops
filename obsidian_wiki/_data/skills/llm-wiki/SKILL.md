@@ -143,8 +143,10 @@ validated repository binding unchanged throughout.
    knowledge commit, run `<wiki-cli> hot status --json`.
    If stale, obtain bounded inputs with `<wiki-cli> hot inputs --json --pretty`,
    let the agent write only the requested tracked `hot.md` working-tree diff,
-   and finish with `<wiki-cli> hot mark-current --json`. `hot status`
-   is read-only and must not remove the tracked file. Hot-state
+   and verify a content-changing working-tree diff before finishing with
+   `<wiki-cli> hot mark-current --json`. Reading existing `hot.md` is not
+   regeneration; never run `<wiki-cli> hot mark-current --json` after a
+   read-only or no-write path. `hot status` is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.
 

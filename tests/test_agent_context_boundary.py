@@ -195,6 +195,23 @@ def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> Non
     assert root_agents < canonical < vault_agents < selected
 
 
+def test_external_adapter_forbids_following_and_gnu_only_stat_forms() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "`stat -L` and `stat --dereference` follow links and are forbidden" in template_text
+    assert "`os.lstat` or another platform-appropriate non-following" in template_text
+    assert "Do not require GNU-only `stat` flags" in template_text
+
+
+def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "bounded-inspect every reported candidate" in template_text
+    assert "A status or validation envelope alone is not review" in template_text
+    assert "Reading existing `hot.md` is not regeneration" in template_text
+    assert "never call `hot mark-current` after a read-only or no-write path" in template_text
+
+
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     body = template.split("---\n", 2)[2]

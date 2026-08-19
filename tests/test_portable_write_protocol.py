@@ -370,6 +370,22 @@ def test_canonical_protocol_is_one_eight_step_transaction() -> None:
         assert required in protocol
 
 
+def test_canonical_hot_refresh_requires_a_real_update_before_mark_current() -> None:
+    flat = " ".join(CANONICAL.read_text(encoding="utf-8").split())
+
+    assert "Reading existing `hot.md` is not regeneration" in flat
+    assert "verify a content-changing working-tree diff" in flat
+    assert "never run `<wiki-cli> hot mark-current --json` after a read-only or no-write path" in flat
+
+
+def test_transaction_recovery_reviews_reported_candidates_before_retry() -> None:
+    flat = " ".join(TRANSACTION_REVIEW.read_text(encoding="utf-8").split())
+
+    assert "bounded-inspect every page returned in `candidate_pages`" in flat
+    assert "A status or validation envelope alone is not candidate review" in flat
+    assert "Before a retry or other recovery action that promotes candidates" in flat
+
+
 def test_begin_passes_the_complete_source_closure_to_one_option() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     command = (
