@@ -155,6 +155,11 @@ one complete frontmatter block, and reject malformed or duplicate skill names.
 Limit each complete external file read—including authority, task, candidate,
 query-result, hot, recovery, formatting, citation, JSON, hash, and preimage
 reads—to 1 MiB.
+Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication
+separate from delivered content. If the tool cannot establish completeness within
+that limit, reject the read. A token or tool-output limit is not a byte bound or
+proof of EOF. Do not treat truncated output as a complete read. A bare `cat` is
+allowed only after the file's at-most-1-MiB size is otherwise established.
 
 These are consumption limits, not a per-read metadata or TOCTOU protocol. Do not
 prescribe `lstat`, link-count checks, snapshots, same-process revalidation, or a
@@ -174,12 +179,17 @@ Keep the migrated routing/frontmatter coverage in
 post-preflight catalog routing boundary rather than the removed safe-reader
 mechanics.
 
+Add the section-scoped
+`test_external_adapter_distinguishes_byte_bounds_from_output_truncation` to keep
+the 1 MiB delivered-content ceiling distinct from an explicit EOF or completeness
+indication and token/output truncation.
+
 - [ ] **Step 2: Update the human-facing authority read step**
 
 Replace step 4 in `docs/agents.md` with:
 
 ```markdown
-4. Load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Limit each complete external file read to 1 MiB. This is a content-consumption bound after successful static preflight, not a requirement to repeat metadata or TOCTOU checks before each read. If `llm-wiki` is selected, read it once.
+4. Load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Limit each complete external file read to 1 MiB. Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication separate from delivered content. If the tool cannot establish completeness within that limit, reject the read. A token or tool-output limit is not a byte bound or proof of EOF. Do not treat truncated output as a complete read. This is a content-consumption bound after successful static preflight, not a requirement to repeat metadata or TOCTOU checks before each read. If `llm-wiki` is selected, read it once.
 ```
 
 - [ ] **Step 3: Run the focused contract tests and verify GREEN**

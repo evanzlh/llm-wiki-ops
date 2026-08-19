@@ -80,11 +80,11 @@ one complete frontmatter block, and reject malformed or duplicate skill names.
 Limit each complete external file read—including authority, task, candidate,
 query-result, hot, recovery, formatting, citation, JSON, hash, and preimage
 reads—to 1 MiB.
-Attempt to read at most 1,048,577 bytes. If byte 1,048,577 exists, reject the
-file without treating its prefix as complete. A token or tool-output limit is not
-a byte bound or proof of EOF. Do not treat truncated output as a complete read. A
-bare `cat` is allowed only after the file's at-most-1-MiB size is otherwise
-established.
+Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication
+separate from delivered content. If the tool cannot establish completeness within
+that limit, reject the read. A token or tool-output limit is not a byte bound or
+proof of EOF. Do not treat truncated output as a complete read. A bare `cat` is
+allowed only after the file's at-most-1-MiB size is otherwise established.
 
 These are consumption limits, not a per-read metadata or TOCTOU protocol. Do not
 prescribe `lstat`, link-count checks, snapshots, same-process revalidation, or a

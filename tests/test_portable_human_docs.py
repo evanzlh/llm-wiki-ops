@@ -347,7 +347,9 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
         "repository or source tree",
         "limit each complete external file read to 1 mib",
         "routing frontmatter within 64 kib",
-        "attempt to read at most 1,048,577 bytes",
+        "read at most 1,048,576 bytes",
+        "require an explicit eof or completeness indication separate from delivered content",
+        "if the tool cannot establish completeness within that limit, reject the read",
         "token or tool-output limit is not a byte bound or proof of eof",
         "do not treat truncated output as a complete read",
     ):

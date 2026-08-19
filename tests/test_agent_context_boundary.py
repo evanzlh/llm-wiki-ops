@@ -202,8 +202,9 @@ def test_external_adapter_distinguishes_byte_bounds_from_output_truncation() -> 
     section_text = " ".join(section.split())
 
     for required in (
-        "Attempt to read at most 1,048,577 bytes",
-        "If byte 1,048,577 exists, reject the file",
+        "Read at most 1,048,576 bytes",
+        "Require an explicit EOF or completeness indication separate from delivered content",
+        "If the tool cannot establish completeness within that limit, reject the read",
         "token or tool-output limit is not a byte bound or proof of EOF",
         "Do not treat truncated output as a complete read",
         "bare `cat` is allowed only after",
