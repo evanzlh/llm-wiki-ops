@@ -692,3 +692,63 @@ manifest. That manifest remains unchanged at SHA-256
 while the addendum is separately hashed. Neither original manifest was
 regenerated, no SQLite database was opened, and the original S1/S2 verdicts and
 all behavioral conclusions remain unchanged.
+
+#### Post-seal behavioral-accounting strengthening (2026-08-20)
+
+A deterministic, read-only cross-stream review strengthens the S2 evidence
+without changing its original reassessment. The audit script is
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/post-seal-behavioral-accounting-audit.py`
+(SHA-256 `8e47b304f32dda2f8c2660b941a402e7a55c801fa0f6793e2eb8bee9ea1e017f`).
+Its S2 result,
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/post-seal-s2-cross-stream-audit.json`
+(SHA-256 `d7118568baa741034fa397616e3b72b5d1e742423e64862f70a432e81368e9ad`),
+is **PASS**. It maps every repository-bound wrapper exactly once to the relevant
+completed command using exact argv, call-ID chronology, and retained
+stdout/stderr byte counts and hashes. It brackets failed item 23 between the
+last pre-failure transaction validation and the first post-failure transaction
+list, proves that no wrapper corresponds to the failed construction, rejects
+unmatched or extra repository wrappers and unexpected repository-wrapper exit
+codes, and proves that exactly one real transaction retry reached the wrapper.
+The retained exit-128 Codex `git remote -v` probe is disclosed separately as a
+non-repository wrapper: it had unrelated business CWD and no exact-root `-C`.
+Historical S2 remains **FAIL** and its approved-boundary reassessment remains
+**PASS**.
+
+The matching S3 result,
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/post-seal-s3-authority-command-audit.json`
+(SHA-256 `c15154f84287118e492017efce1d8c3a2243758adefbdcccd2aa5a976dad0c61`),
+is **PASS**. For each present authority it reconstructs and matches the complete
+emitted output byte-for-byte from the exact source bytes and observed audit and
+EOF framing; the retained commands emitted no size header, so no bytes were
+stripped. It separately proves the optional vault path was absent and its
+status output exact, confirms authority order and the custom marker, and scans
+every completed command's command text and any present argv for the exact
+alternate-root path with zero matches. The aggregate post-seal correction is
+`/tmp/llmwikiops-pre-dispatch-eval.PI5g2V/evidence/post-seal-review-correction.json`
+(SHA-256 `e41a430596d48af60882fd192f4c00d1a3c7780339ebbeb40bdbaca6e69fd7da`),
+also **PASS**. These script/result files are separately hashed post-seal
+artifacts and are excluded from, not retroactively included in, the unchanged
+4,925-entry manifest.
+
+The precise S2 snapshot statement is: business-namespace file bytes and modes
+were unchanged, but the business root-directory metadata changed; the
+alternate snapshot was exactly unchanged. The sealed campaign summary's
+three-file post-seal field is historically stale and is superseded by the
+seven-difference `post-review-old-evidence-addendum.json` cited above. Neither
+sealed manifest nor any original evidence or verdict was rewritten.
+
+The original sanitized verifier receipt remains unchanged at
+`/tmp/llmwikiops-final-verify.yhNnhf/verification-harness-failure.json`
+(806 bytes; SHA-256
+`32a78017233432147c61edcfdfd6980e7779f0337e23990d4a5c39c4f5c39507`).
+Its separately hashed accounting addendum is
+`/tmp/llmwikiops-final-verify.yhNnhf/verification-harness-failure-addendum.json`
+(4,429 bytes; SHA-256
+`a300c4af429c298240c18898fb5d21c531290cc2778c44c657bcab44a6792030`).
+The addendum records hashes, byte counts, filesystem-derived mtimes, and honest
+outcomes for all twelve retained install, validator, and reinstall logs. Their
+filesystem-derived interval is `2026-08-19T16:10:02.779812Z` through
+`2026-08-19T16:10:09.739811Z`, with `claude-validator.stdout` the latest
+retained artifact. That interval is not claimed as the failed harness execution
+interval: the failed harness command, script, and exit stderr were not retained
+and therefore cannot be independently reconstructed or invented.
