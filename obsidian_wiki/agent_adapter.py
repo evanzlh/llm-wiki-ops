@@ -32,6 +32,8 @@ ADAPTER_DESCRIPTION = (
 )
 BUILTIN_CATALOG_START = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_START -->"
 BUILTIN_CATALOG_END = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_END -->"
+ADAPTER_BOOTSTRAP_GATE_END = "<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->"
+ADAPTER_EOF = "<!-- LLMWIKIOPS_ADAPTER_EOF -->"
 _ADAPTER_TEMPLATE = Path(__file__).parent / "_data" / "adapter" / "SKILL.md.in"
 MANAGED_ADAPTER_RECORD = ".llmwikiops-managed.json"
 MANAGED_ADAPTER_SCHEMA_VERSION = 1
@@ -449,11 +451,38 @@ def _validate_template_frontmatter(template: str) -> None:
         raise ValueError("adapter template frontmatter description is not approved")
 
 
+def _validate_template_bootstrap_protocol(template: str) -> None:
+    if template.count(ADAPTER_BOOTSTRAP_GATE_END) != 1:
+        raise ValueError("adapter template bootstrap gate marker must be unique")
+    if template.count(ADAPTER_EOF) != 1 or not template.endswith(ADAPTER_EOF + "\n"):
+        raise ValueError("adapter template EOF marker must be unique and terminal")
+
+    title = "# External LLMWikiOps repository adapter"
+    bootstrap = "## Bootstrap gate — read to EOF first"
+    operation = "Operate on an external LLMWikiOps repository"
+    authority = "## Authority and routing"
+    if any(
+        template.count(anchor) != 1
+        for anchor in (title, bootstrap, operation, authority)
+    ):
+        raise ValueError("adapter template bootstrap gate anchors must be unique")
+    if not (
+        template.index(title)
+        < template.index(bootstrap)
+        < template.index(ADAPTER_BOOTSTRAP_GATE_END)
+        < template.index(operation)
+        < template.index(authority)
+        < template.index(ADAPTER_EOF)
+    ):
+        raise ValueError("adapter template bootstrap gate is not front-loaded")
+
+
 def render_adapter_skill(collection: SkillCollection) -> str:
     """Return one deterministic adapter skill containing catalog metadata only."""
     catalog = _validated_catalog(collection)
     template = _read_template(_ADAPTER_TEMPLATE)
     _validate_template_frontmatter(template)
+    _validate_template_bootstrap_protocol(template)
     placeholder = BUILTIN_CATALOG_START + "\n" + BUILTIN_CATALOG_END
     if (
         template.count(BUILTIN_CATALOG_START) != 1

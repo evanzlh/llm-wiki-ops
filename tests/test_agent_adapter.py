@@ -16,7 +16,9 @@ import pytest
 
 from obsidian_wiki import agent_adapter, cli
 from obsidian_wiki.agent_adapter import (
+    ADAPTER_BOOTSTRAP_GATE_END,
     ADAPTER_DESCRIPTION,
+    ADAPTER_EOF,
     ADAPTER_NAME,
     BUILTIN_CATALOG_END,
     BUILTIN_CATALOG_START,
@@ -419,8 +421,6 @@ EXPECTED_BUNDLED_CATALOG = (
 
 SAFE_READER_START = "<!-- LLMWIKIOPS_SAFE_READER_START -->"
 SAFE_READER_END = "<!-- LLMWIKIOPS_SAFE_READER_END -->"
-ADAPTER_BOOTSTRAP_GATE_END = "<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->"
-ADAPTER_EOF = "<!-- LLMWIKIOPS_ADAPTER_EOF -->"
 SAFE_READER_HEREDOC = (
     "LLMWIKIOPS_SAFE_ROOT_B64='BASE64URL_UTF8_EXACT_ROOT' "
     "LLMWIKIOPS_SAFE_REL_B64='BASE64URL_UTF8_RELATIVE_PATH_OR_EMPTY' "
@@ -1373,6 +1373,61 @@ def test_renderer_rejects_unapproved_template_frontmatter(
         render_adapter_skill(collection)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing-gate", "bootstrap gate"),
+        ("duplicate-gate", "bootstrap gate"),
+        ("late-gate", "bootstrap gate"),
+        ("missing-eof", "EOF marker"),
+        ("duplicate-eof", "EOF marker"),
+        ("nonterminal-eof", "EOF marker"),
+    ),
+)
+def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+) -> None:
+    collection = discover_skill_collection(
+        make_skill_collection(
+            tmp_path / "source", {"demo": "Use when demo is requested."}
+        )
+    )
+    template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    if mutation == "missing-gate":
+        mutated = template.replace(ADAPTER_BOOTSTRAP_GATE_END, "", 1)
+    elif mutation == "duplicate-gate":
+        mutated = template.replace(
+            ADAPTER_BOOTSTRAP_GATE_END,
+            ADAPTER_BOOTSTRAP_GATE_END + "\n" + ADAPTER_BOOTSTRAP_GATE_END,
+            1,
+        )
+    elif mutation == "late-gate":
+        mutated = template.replace(ADAPTER_BOOTSTRAP_GATE_END, "", 1).replace(
+            "## Authority and routing",
+            "## Authority and routing\n\n" + ADAPTER_BOOTSTRAP_GATE_END,
+            1,
+        )
+    elif mutation == "missing-eof":
+        prefix, marker, suffix = template.rpartition(ADAPTER_EOF)
+        assert marker and suffix == "\n"
+        mutated = prefix.rstrip("\n") + "\n"
+    elif mutation == "duplicate-eof":
+        mutated = template + ADAPTER_EOF + "\n"
+    else:
+        prefix, marker, suffix = template.rpartition(ADAPTER_EOF)
+        assert marker and suffix == "\n"
+        mutated = prefix + ADAPTER_EOF + "\n\ntrailing authority\n"
+    path = tmp_path / f"{mutation}.in"
+    path.write_text(mutated, encoding="utf-8")
+    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
+
+    with pytest.raises(ValueError, match=message):
+        render_adapter_skill(collection)
+
+
 def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() -> None:
     collection = discover_skill_collection(
         cli.skills_dir(), ignore_source_artifacts=True
@@ -1390,11 +1445,12 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(header) <= 1024
     assert len(body.splitlines()) < 500
     assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
-    assert rendered.splitlines().count(ADAPTER_EOF) == 1
+    assert rendered.count(ADAPTER_EOF) == 1
     assert rendered.index("## Bootstrap gate — read to EOF first") < rendered.index(
         "## Authority and routing"
     )
-    assert rendered.rstrip().endswith(ADAPTER_EOF)
+    assert rendered.endswith(ADAPTER_EOF + "\n")
+    assert ADAPTER_EOF not in rendered[: -len(ADAPTER_EOF + "\n")]
 
 
 def test_adapter_trigger_does_not_require_a_preexisting_repository_root() -> None:

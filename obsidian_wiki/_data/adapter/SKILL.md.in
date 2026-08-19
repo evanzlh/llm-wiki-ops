@@ -9,7 +9,7 @@ description: Use when any request asks to access or operate on an external LLMWi
 
 Before any external-repository tool call, file read, directory listing, search, or command, you MUST load this adapter's `SKILL.md` completely through EOF. A partial or range read with `sed`, `head`, `tail`, or an equivalent tool grants no authorization to access the external repository. If this adapter has only been read partially, the next action MUST continue reading this adapter; do not inspect, list, search, or run commands against the external repository.
 
-Do not access the external repository until `<!-- LLMWIKIOPS_ADAPTER_EOF -->` has been loaded from this adapter.
+Do not access the external repository until the terminal EOF marker has been loaded from this adapter.
 
 <!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->
 

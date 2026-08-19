@@ -122,8 +122,9 @@ def test_external_adapter_front_loads_a_complete_read_gate_before_authority() ->
     assert template.count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert gate_end < body.index("Operate on an external LLMWikiOps repository")
     assert gate_end < body.index("## Authority and routing")
-    assert template.splitlines().count(ADAPTER_EOF) == 1
-    assert template.rstrip().endswith(ADAPTER_EOF)
+    assert template.count(ADAPTER_EOF) == 1
+    assert template.endswith(ADAPTER_EOF + "\n")
+    assert ADAPTER_EOF not in template[: -len(ADAPTER_EOF + "\n")]
 
 
 def test_external_adapter_partial_read_grants_no_repository_authorization() -> None:
@@ -141,7 +142,7 @@ def test_external_adapter_partial_read_grants_no_repository_authorization() -> N
         "A partial or range read with `sed`, `head`, `tail`, or an equivalent tool",
         "grants no authorization to access the external repository",
         "next action MUST continue reading this adapter",
-        f"Do not access the external repository until `{ADAPTER_EOF}`",
+        "Do not access the external repository until the terminal EOF marker",
     ):
         assert required in gate
 
