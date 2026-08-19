@@ -512,6 +512,17 @@ required grammar discovery as a second query operation; inspection of installed
 authority and CLI semantics corrected S1 to PASS without rerunning it
 (**HARNESS_INVALID_AUDIT**). None consumed an additional model attempt.
 
+#### Post-finalization evidence note (2026-08-20)
+
+The original 5,699-entry manifest was independently and fully verified before
+reviewer inspection. A later reviewer Python SQLite `mode=ro` schema inspection
+changed exactly these three volatile files:
+`codex-home/goals_1.sqlite-shm`, `codex-home/logs_2.sqlite-shm`, and
+`codex-home/state_5.sqlite-shm`. The original manifest file and digest are
+intentionally preserved and were not regenerated. This post-seal event does not
+change the S1 or S2 raw campaign conclusions, but the currently retained tree no
+longer fully matches those three manifest entries.
+
 ## Task 5: Final verification and review
 
 **Files:**
