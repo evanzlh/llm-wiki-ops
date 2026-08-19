@@ -278,6 +278,19 @@ def test_external_adapter_stop_section_rejects_empty_cli_output() -> None:
         assert required in section_text
 
 
+def test_external_adapter_preserves_cli_managed_state_before_task_operations() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Repository execution", 1)[1].split(
+        "## Queries", 1
+    )[0]
+    section_text = " ".join(section.split())
+    template_text = " ".join(template.split())
+    gate = "Preserve owner changes and CLI-managed state"
+
+    assert gate in section_text
+    assert template_text.index(gate) < template_text.index("## Queries")
+
+
 def test_external_adapter_authority_bodies_are_one_synchronous_sequence() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
