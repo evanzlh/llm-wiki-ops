@@ -174,9 +174,19 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
             "and `$()` can evaluate"
         ),
         (
-            "Before execution, verify that decoding produces one argv element "
-            "byte-for-byte equal to `<exact-root>`; stop if you cannot establish that"
+            "Before repository dispatch, verify that decoding produces one argv element "
+            "byte-for-byte equal to `<exact-root>`"
         ),
+        (
+            "One shell parse failure proven to occur before any repository process, "
+            "read, or mutation may be corrected once"
+        ),
+        "Preserve the exact root, recovery ID, action, and argument values",
+        (
+            "Any repository dispatch, partial execution, or second construction "
+            "failure stops"
+        ),
+        "at most one real recovery action",
     ):
         assert required in section_text
 
