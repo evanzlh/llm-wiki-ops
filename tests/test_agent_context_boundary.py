@@ -221,6 +221,9 @@ def test_external_adapter_forbids_following_and_gnu_only_stat_forms() -> None:
 
     assert "`stat -L` and `stat --dereference` follow links and are forbidden" in template_text
     assert "`os.lstat` or another platform-appropriate non-following" in template_text
+    assert "the `st_mode` returned by that same `os.lstat`" in template_text
+    assert "`stat.S_ISREG(metadata.st_mode)`" in template_text
+    assert "`os.path.isfile`, `Path.is_file`, `-f`, or another following predicate" in template_text
     assert "Do not require GNU-only `stat` flags" in template_text
 
 
@@ -278,7 +281,9 @@ def test_external_adapter_partial_read_grants_no_repository_authorization() -> N
             "search, or command"
         ),
         "MUST load this adapter's `SKILL.md` completely through EOF",
+        "one complete, non-range read through EOF",
         "A partial or range read with `sed`, `head`, `tail`, or an equivalent tool",
+        "even when its requested range includes the whole file or terminal EOF marker",
         "grants no authorization to access the external repository",
         "next action MUST continue reading this adapter",
         "Do not access the external repository until the terminal EOF marker",
