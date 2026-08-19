@@ -1029,7 +1029,7 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
     assert len(body.splitlines()) < 220
-    assert len(rendered.encode("utf-8")) < 16_384
+    assert len(rendered.encode("utf-8")) < 15_800
     assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert rendered.count(ADAPTER_EOF) == 1
     assert rendered.index("## Bootstrap gate — read to EOF first") < rendered.index(

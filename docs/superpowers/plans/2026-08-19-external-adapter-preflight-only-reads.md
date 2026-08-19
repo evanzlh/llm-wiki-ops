@@ -345,6 +345,12 @@ git commit -m "fix: package preflight-only adapter"
 
 **Files:**
 
+- Modify for the pre-campaign incident fix: `obsidian_wiki/_data/adapter/SKILL.md.in`
+- Modify for the pre-campaign incident fix: `docs/agents.md`
+- Modify for the pre-campaign incident fix: `tests/test_agent_context_boundary.py`
+- Modify for the pre-campaign incident fix: `tests/test_agent_adapter.py`
+- Modify for the pre-campaign incident fix: `tests/test_portable_human_docs.py`
+- Modify for the pre-campaign incident fix: `docs/superpowers/plans/2026-08-19-external-adapter-preflight-only-reads.md`
 - Modify only if Step 1 observes an obsolete protocol expectation: `tests/test_external_wiki_e2e.py`
 - Evidence only: a fresh directory below `/tmp/llmwikiops-preflight-only-eval.*`
 
@@ -352,9 +358,10 @@ git commit -m "fix: package preflight-only adapter"
 
 A genuine S2 recovery run misquoted a literal apostrophe in the supplied root,
 retried after failed preflight, ignored a nonzero frontmatter-catalog command,
-and continued from an empty required CLI response. Preserve that behavior as RED
-section-scoped tests, then use TDD to require structured exact-root argv,
-serialized fail-closed catalog parsing, and nonempty parsed CLI responses before
+and continued from an empty required CLI response. Section-scoped tests encode
+these observed failure conditions; they are regression contracts, not behavioral
+proof. Use TDD to require deterministic exact-root argv, serialized fail-closed
+catalog parsing, and nonempty parsed CLI responses, then prove behavior by
 replaying Task 4 from wholly fresh fixtures and evidence on the fix commit.
 
 - [ ] **Step 1: Preserve automated external lifecycle coverage**
@@ -408,10 +415,11 @@ writes, or observed concurrent repository change.
 Archive raw JSONL, command audits, verdict JSON, snapshots, and a SHA-256 manifest.
 Do not commit fixtures or transcripts.
 
-- [ ] **Step 5: Commit only automated-test changes**
+- [ ] **Step 5: After the behavioral campaign, commit only automated-test changes**
 
-If `tests/test_external_wiki_e2e.py` changed through a real RED/GREEN loop, rerun
-its owner suites and commit it with:
+This restriction applies only after the campaign; it does not limit the
+pre-campaign incident fix files listed above. If `tests/test_external_wiki_e2e.py`
+changed through a real RED/GREEN loop, rerun its owner suites and commit it with:
 
 ```bash
 git add tests/test_external_wiki_e2e.py

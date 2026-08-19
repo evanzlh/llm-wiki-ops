@@ -153,19 +153,44 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
         "## Catalog and bounded reads", 1
     )[0]
     section_text = " ".join(section.split())
+    apostrophe_escape = "'\"'\"'"
 
     for required in (
-        "Prefer a structured argv-array tool or API with shell execution disabled",
+        "`<exact-root>` is the once-normalized value",
         (
-            "If the exact root contains a literal apostrophe, never interpolate it into "
-            "single-quoted shell command text"
+            "When available, a structured argv-array tool or API with shell execution "
+            "disabled is required"
         ),
         (
-            "Before execution, verify that the root is one argv element byte-for-byte "
-            "equal to the supplied exact root"
+            "When only POSIX shell text is available, single-quote every dynamic argv "
+            f"value and encode each literal apostrophe with `{apostrophe_escape}`"
+        ),
+        (
+            "Never use double quotes alone for a dynamic root because `$`, backticks, "
+            "and `$()` can evaluate"
+        ),
+        (
+            "Before execution, verify that decoding produces one argv element "
+            "byte-for-byte equal to `<exact-root>`; stop if you cannot establish that"
         ),
     ):
         assert required in section_text
+
+    assert apostrophe_escape.encode("ascii") == bytes((0x27, 0x22, 0x27, 0x22, 0x27))
+    assert f"`{apostrophe_escape}`" in section
+
+    exact_root = "root with ' apostrophe, $dollar, `backticks`, and $(substitution)"
+    shell_word = "'" + exact_root.replace("'", apostrophe_escape) + "'"
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'set -- {shell_word}; test "$#" -eq 1 && printf %s "$1"',
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert result.stdout.decode("utf-8") == exact_root
 
 
 def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
@@ -285,7 +310,7 @@ def test_external_adapter_preserves_cli_managed_state_before_task_operations() -
     )[0]
     section_text = " ".join(section.split())
     template_text = " ".join(template.split())
-    gate = "Preserve owner changes and CLI-managed state"
+    gate = "Preserve owner changes; let only the CLI manage CLI-owned state"
 
     assert gate in section_text
     assert template_text.index(gate) < template_text.index("## Queries")

@@ -433,16 +433,25 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
 
 def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> None:
     agents = " ".join(_text("docs/agents.md").split())
+    apostrophe_escape = "'\"'\"'"
 
     for required in (
-        "Prefer a structured argv-array tool or API with shell execution disabled",
+        "`<exact-root>` is the once-normalized value",
         (
-            "If the exact root contains a literal apostrophe, never interpolate it into "
-            "single-quoted shell command text"
+            "When available, a structured argv-array tool or API with shell execution "
+            "disabled is required"
         ),
         (
-            "Before execution, verify that the root is one argv element byte-for-byte "
-            "equal to the supplied exact root"
+            "When only POSIX shell text is available, single-quote every dynamic argv "
+            f"value and encode each literal apostrophe with `{apostrophe_escape}`"
+        ),
+        (
+            "Never use double quotes alone for a dynamic root because `$`, backticks, "
+            "and `$()` can evaluate"
+        ),
+        (
+            "Before execution, verify that decoding produces one argv element "
+            "byte-for-byte equal to `<exact-root>`; stop if you cannot establish that"
         ),
         (
             "After each catalog or frontmatter command, inspect its exit status and "
@@ -460,6 +469,8 @@ def test_agent_docs_fail_closed_on_external_command_and_catalog_results() -> Non
         "Empty output is malformed CLI output and triggers the same stop",
     ):
         assert required in agents
+
+    assert apostrophe_escape.encode("ascii") == bytes((0x27, 0x22, 0x27, 0x22, 0x27))
 
 
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
