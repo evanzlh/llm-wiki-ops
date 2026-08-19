@@ -138,11 +138,63 @@ git commit -m "test: define preflight-only adapter reads"
 
 - Modify: `obsidian_wiki/_data/adapter/SKILL.md.in:69-102`
 - Modify: `docs/agents.md:43-50`
-- Test: `tests/test_agent_context_boundary.py`
+- Modify: `docs/superpowers/plans/2026-08-19-external-adapter-preflight-only-reads.md`
+- Modify: `tests/test_agent_context_boundary.py`
 - Test: `tests/test_agent_adapter.py`
-- Test: `tests/test_portable_human_docs.py`
+- Modify: `tests/test_portable_human_docs.py`
 
-- [ ] **Step 1: Replace the metadata/reread program with the approved bounded-read text**
+- [ ] **Step 1: Add failing byte-bound and human-doc contract assertions**
+
+Add this section-scoped test to `tests/test_agent_context_boundary.py`:
+
+```python
+def test_external_adapter_distinguishes_byte_bounds_from_output_truncation() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("## Catalog and bounded reads", 1)[1].split(
+        "## Route and load authority", 1
+    )[0]
+    section_text = " ".join(section.split())
+
+    for required in (
+        "Read at most 1,048,576 bytes",
+        "Require an explicit EOF or completeness indication separate from delivered content",
+        "If the tool cannot establish completeness within that limit, reject the read",
+        "token or tool-output limit is not a byte bound or proof of EOF",
+        "Do not treat truncated output as a complete read",
+        "bare `cat` is allowed only after",
+        "at-most-1-MiB size is otherwise established",
+    ):
+        assert required in section_text
+```
+
+In the `discovery_boundary` tuple in
+`test_external_adapter_docs_state_static_quiescent_repository_boundary` in
+`tests/test_portable_human_docs.py`, add:
+
+```python
+        "read at most 1,048,576 bytes",
+        "require an explicit eof or completeness indication separate from delivered content",
+        "if the tool cannot establish completeness within that limit, reject the read",
+        "token or tool-output limit is not a byte bound or proof of eof",
+        "do not treat truncated output as a complete read",
+```
+
+- [ ] **Step 2: Run the smallest tests and verify RED**
+
+Run:
+
+```bash
+uv run --with pytest python -m pytest \
+  tests/test_agent_context_boundary.py \
+  tests/test_portable_human_docs.py \
+  -q -k 'distinguishes_byte_bounds_from_output_truncation or static_quiescent_repository_boundary'
+```
+
+Expected: both tests fail because the Adapter and human documentation do not yet
+state the 1,048,576-byte delivered-content maximum, explicit separate EOF or
+completeness indication, and rejection when the tool cannot establish it.
+
+- [ ] **Step 3: Replace the metadata/reread program with the approved bounded-read text**
 
 Keep the direct one-level enumeration paragraphs. Replace the current region from
 `Before opening or reading any external file content` through the sentence ending
@@ -184,7 +236,7 @@ Add the section-scoped
 the 1 MiB delivered-content ceiling distinct from an explicit EOF or completeness
 indication and token/output truncation.
 
-- [ ] **Step 2: Update the human-facing authority read step**
+- [ ] **Step 4: Update the human-facing authority read step**
 
 Replace step 4 in `docs/agents.md` with:
 
@@ -192,7 +244,7 @@ Replace step 4 in `docs/agents.md` with:
 4. Load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Limit each complete external file read to 1 MiB. Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication separate from delivered content. If the tool cannot establish completeness within that limit, reject the read. A token or tool-output limit is not a byte bound or proof of EOF. Do not treat truncated output as a complete read. This is a content-consumption bound after successful static preflight, not a requirement to repeat metadata or TOCTOU checks before each read. If `llm-wiki` is selected, read it once.
 ```
 
-- [ ] **Step 3: Run the focused contract tests and verify GREEN**
+- [ ] **Step 5: Run the focused contract tests and verify GREEN**
 
 Run:
 
@@ -201,13 +253,13 @@ uv run --with pytest python -m pytest \
   tests/test_agent_context_boundary.py \
   tests/test_agent_adapter.py \
   tests/test_portable_human_docs.py \
-  -q -k 'preflight_only or static_repository_preflight or static_quiescent or frontmatter or rendered_frontmatter'
+  -q -k 'preflight_only or static_repository_preflight or static_quiescent or frontmatter or rendered_frontmatter or byte_bounds'
 ```
 
 Expected: all selected tests pass; rendered Adapter remains below 16,384 bytes and
 retains one independent terminal EOF marker.
 
-- [ ] **Step 4: Run owner suites and documentation synchronization**
+- [ ] **Step 6: Run owner suites and documentation synchronization**
 
 Run:
 
@@ -224,14 +276,18 @@ Expected: all tests pass and `README_ZH.md is up to date with README.md.` No REA
 edit is expected because both landing pages already describe preflight and the
 quiescent boundary without prescribing per-read metadata.
 
-- [ ] **Step 5: Validate the generated Skill and commit**
+- [ ] **Step 7: Validate the generated Skill and commit**
 
 Render/install the Adapter into a fresh temporary Codex home, run the bundled
 strict validator, and require `Skill is valid!`. Then run:
 
 ```bash
 git diff --check
-git add obsidian_wiki/_data/adapter/SKILL.md.in docs/agents.md
+git add obsidian_wiki/_data/adapter/SKILL.md.in \
+  docs/agents.md \
+  docs/superpowers/plans/2026-08-19-external-adapter-preflight-only-reads.md \
+  tests/test_agent_context_boundary.py \
+  tests/test_portable_human_docs.py
 git commit -m "refactor: make adapter reads preflight-only"
 ```
 
