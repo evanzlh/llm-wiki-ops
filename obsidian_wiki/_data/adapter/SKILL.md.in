@@ -66,12 +66,16 @@ exact commands once in this order:
 <wiki-cli> check
 ```
 
-The `info` result's root must equal the supplied root, and `check` must pass
-without errors. On either failure, stop before ordinary repository reads and
-do not search for a different root or start task work. If `check` fails after
-recovery, report the exact root and failed command and do not attempt ad hoc
-repair. Do not fall back to source checkouts, other executables, or alternate
-authority.
+Do not launch `info` and `check` concurrently or speculatively. The `info`
+process must complete successfully; parse its JSON and confirm that
+`runtime.status` is `resolved` and `runtime.root` equals the supplied root.
+Only then start `check`; it must complete successfully before any ordinary
+external read, directory listing, or search.
+
+On either failure, stop before ordinary repository reads and do not search for a different root
+or start task work. If `check` fails after recovery, report the exact root and
+failed command and do not attempt ad hoc repair. Do not fall back to source
+checkouts, other executables, or alternate authority.
 
 ## Catalog and bounded reads
 
@@ -81,6 +85,10 @@ config evidence. Enumerate only direct skill directories and their direct
 root or skills directory. List the configured skills directory at exactly one
 level, then inspect only each direct child and its direct `SKILL.md`; never
 perform a recursive source hunt.
+
+Read and validate frontmatter for every direct skill, then finish the metadata
+merge and rerun routing before reading any external authority or task body,
+including root or vault `AGENTS.md` and canonical or selected full skill bodies.
 
 Use ordinary bounded file tools such as `cat`, `rg`, and non-following direct
 enumeration. Check metadata size before every full read and reject files larger
@@ -137,10 +145,13 @@ the adapter constraints still in force:
 
 ## Queries
 
-Use one exact `query-language/v1` operation from the fully loaded query skill.
-Read only bounded paths returned by that operation, under the configured vault,
-and preserve visibility and citation constraints. A successful CLI result does
-not waive the requirement to load the complete selected skill before querying.
+For one user query request, execute exactly one selected `query-language/v1`
+CLI operation from the fully loaded query skill. If it returns no match, report
+that result; do not retry with another term or mode unless the user explicitly
+starts a new query request. Read only bounded paths returned by that operation,
+under the configured vault, and preserve visibility and citation constraints.
+A successful CLI result does not waive the requirement to load the complete
+selected skill before querying.
 
 ## Transactions and recovery
 

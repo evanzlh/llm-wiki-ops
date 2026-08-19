@@ -134,6 +134,37 @@ def test_external_adapter_catalog_enumeration_is_direct_and_nonrecursive() -> No
     assert "only each direct child and its direct `SKILL.md`" in template_text
 
 
+def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert (
+        "Do not launch `info` and `check` concurrently or speculatively"
+        in template_text
+    )
+    assert "The `info` process must complete successfully" in template_text
+    assert "`runtime.status` is `resolved`" in template_text
+    assert "Only then start `check`" in template_text
+    assert "complete successfully before any ordinary external read" in template_text
+
+
+def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "frontmatter for every direct skill" in template_text
+    assert "finish the metadata merge and rerun routing" in template_text
+    assert "before reading any external authority or task body" in template_text
+    assert "root or vault `AGENTS.md`" in template_text
+
+
+def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+
+    assert "For one user query request, execute exactly one selected" in template_text
+    assert "`query-language/v1` CLI operation" in template_text
+    assert "If it returns no match, report that result" in template_text
+    assert "do not retry with another term or mode" in template_text
+
+
 def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     body = template.split("---\n", 2)[2]
