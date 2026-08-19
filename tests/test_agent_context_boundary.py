@@ -29,6 +29,8 @@ BOOTSTRAP_TARGETS = (
 CATALOG = DATA / "legacy-skill-digests-v1.json"
 CAPTURE_TOOL = ROOT / "tools/capture_legacy_skill_digests.py"
 ADAPTER_TEMPLATE = DATA / "adapter/SKILL.md.in"
+ADAPTER_BOOTSTRAP_GATE_END = "<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->"
+ADAPTER_EOF = "<!-- LLMWIKIOPS_ADAPTER_EOF -->"
 RUNTIME_BOOTSTRAPS = tuple(DATA / relative for relative in (
     "bootstrap/AGENTS.md",
     "bootstrap/agent/rules/llmwikiops.md",
@@ -108,6 +110,40 @@ def test_external_adapter_remains_a_packaged_template_not_a_discoverable_skill()
     assert ADAPTER_TEMPLATE.parent.parent == DATA
     for relative in DISCOVERY_DIRS:
         assert not (ROOT / relative / "llm-wiki-ops").exists()
+
+
+def test_external_adapter_front_loads_a_complete_read_gate_before_authority() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    body = template.split("---\n", 2)[2]
+    title_end = body.index("\n", body.index("# External LLMWikiOps repository adapter"))
+    gate_end = body.index(ADAPTER_BOOTSTRAP_GATE_END)
+
+    assert body[title_end:].lstrip().startswith("## Bootstrap gate — read to EOF first")
+    assert template.count(ADAPTER_BOOTSTRAP_GATE_END) == 1
+    assert gate_end < body.index("Operate on an external LLMWikiOps repository")
+    assert gate_end < body.index("## Authority and routing")
+    assert template.splitlines().count(ADAPTER_EOF) == 1
+    assert template.rstrip().endswith(ADAPTER_EOF)
+
+
+def test_external_adapter_partial_read_grants_no_repository_authorization() -> None:
+    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
+    gate = template.split("# External LLMWikiOps repository adapter", 1)[1].split(
+        ADAPTER_BOOTSTRAP_GATE_END, 1
+    )[0]
+
+    for required in (
+        (
+            "Before any external-repository tool call, file read, directory listing, "
+            "search, or command"
+        ),
+        "MUST load this adapter's `SKILL.md` completely through EOF",
+        "A partial or range read with `sed`, `head`, `tail`, or an equivalent tool",
+        "grants no authorization to access the external repository",
+        "next action MUST continue reading this adapter",
+        f"Do not access the external repository until `{ADAPTER_EOF}`",
+    ):
+        assert required in gate
 
 
 def test_runtime_asset_lookup_has_no_checkout_fallback(

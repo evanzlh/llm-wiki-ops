@@ -5,6 +5,14 @@ description: Use when any request asks to access or operate on an external LLMWi
 
 # External LLMWikiOps repository adapter
 
+## Bootstrap gate — read to EOF first
+
+Before any external-repository tool call, file read, directory listing, search, or command, you MUST load this adapter's `SKILL.md` completely through EOF. A partial or range read with `sed`, `head`, `tail`, or an equivalent tool grants no authorization to access the external repository. If this adapter has only been read partially, the next action MUST continue reading this adapter; do not inspect, list, search, or run commands against the external repository.
+
+Do not access the external repository until `<!-- LLMWIKIOPS_ADAPTER_EOF -->` has been loaded from this adapter.
+
+<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->
+
 Operate on an external LLMWikiOps repository without changing away from the
 current business working directory. The user-supplied repository root is the
 only authority for repository-aware paths and commands.
@@ -484,3 +492,5 @@ incompatibility, unsafe topology, changed file identity or digest, catalog
 ambiguity, conflicting authority, malformed CLI envelope, or any path that
 would escape the exact configured repository. Report the failure and the exact
 root and command involved; do not repair authority by searching elsewhere.
+
+<!-- LLMWIKIOPS_ADAPTER_EOF -->

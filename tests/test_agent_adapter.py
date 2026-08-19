@@ -419,6 +419,8 @@ EXPECTED_BUNDLED_CATALOG = (
 
 SAFE_READER_START = "<!-- LLMWIKIOPS_SAFE_READER_START -->"
 SAFE_READER_END = "<!-- LLMWIKIOPS_SAFE_READER_END -->"
+ADAPTER_BOOTSTRAP_GATE_END = "<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->"
+ADAPTER_EOF = "<!-- LLMWIKIOPS_ADAPTER_EOF -->"
 SAFE_READER_HEREDOC = (
     "LLMWIKIOPS_SAFE_ROOT_B64='BASE64URL_UTF8_EXACT_ROOT' "
     "LLMWIKIOPS_SAFE_REL_B64='BASE64URL_UTF8_RELATIVE_PATH_OR_EMPTY' "
@@ -1387,6 +1389,12 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
     assert len(body.splitlines()) < 500
+    assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
+    assert rendered.splitlines().count(ADAPTER_EOF) == 1
+    assert rendered.index("## Bootstrap gate — read to EOF first") < rendered.index(
+        "## Authority and routing"
+    )
+    assert rendered.rstrip().endswith(ADAPTER_EOF)
 
 
 def test_adapter_trigger_does_not_require_a_preexisting_repository_root() -> None:
