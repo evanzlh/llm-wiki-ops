@@ -454,7 +454,9 @@ def _validate_template_frontmatter(template: str) -> None:
 def _validate_template_bootstrap_protocol(template: str) -> None:
     if template.count(ADAPTER_BOOTSTRAP_GATE_END) != 1:
         raise ValueError("adapter template bootstrap gate marker must be unique")
-    if template.count(ADAPTER_EOF) != 1 or not template.endswith(ADAPTER_EOF + "\n"):
+    if template.count(ADAPTER_EOF) != 1 or not template.endswith(
+        "\n" + ADAPTER_EOF + "\n"
+    ):
         raise ValueError("adapter template EOF marker must be unique and terminal")
 
     title = "# External LLMWikiOps repository adapter"

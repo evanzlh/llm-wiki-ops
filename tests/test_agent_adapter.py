@@ -1382,6 +1382,7 @@ def test_renderer_rejects_unapproved_template_frontmatter(
         ("missing-eof", "EOF marker"),
         ("duplicate-eof", "EOF marker"),
         ("nonterminal-eof", "EOF marker"),
+        ("inline-eof", "EOF marker"),
     ),
 )
 def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
@@ -1416,10 +1417,14 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
         mutated = prefix.rstrip("\n") + "\n"
     elif mutation == "duplicate-eof":
         mutated = template + ADAPTER_EOF + "\n"
-    else:
+    elif mutation == "nonterminal-eof":
         prefix, marker, suffix = template.rpartition(ADAPTER_EOF)
         assert marker and suffix == "\n"
         mutated = prefix + ADAPTER_EOF + "\n\ntrailing authority\n"
+    else:
+        prefix, marker, suffix = template.rpartition(ADAPTER_EOF)
+        assert marker and suffix == "\n"
+        mutated = prefix.rstrip("\n") + "\nnot-independent " + ADAPTER_EOF + "\n"
     path = tmp_path / f"{mutation}.in"
     path.write_text(mutated, encoding="utf-8")
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
