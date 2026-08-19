@@ -83,10 +83,14 @@ def test_normalized_wheel_inventory_ignores_zip_timestamps(tmp_path: Path) -> No
     assert _normalized_wheel_inventory(first) == _normalized_wheel_inventory(second)
 
 
-def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
+def test_packaged_runtime_text_has_explicit_lf_policy_and_lf_only_bytes() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "obsidian_wiki/_data/**/*.md text eol=lf" in attributes.splitlines()
     assert "obsidian_wiki/_data/**/*.mdc text eol=lf" in attributes.splitlines()
+    assert (
+        "obsidian_wiki/_data/adapter/SKILL.md.in text eol=lf"
+        in attributes.splitlines()
+    )
     scoped = subprocess.run(
         [
             "git",
@@ -96,6 +100,7 @@ def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
             "--",
             "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md",
             "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc",
+            "obsidian_wiki/_data/adapter/SKILL.md.in",
             "README.md",
             "docs/cli.md",
         ],
@@ -109,6 +114,8 @@ def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
         "obsidian_wiki/_data/skills/wiki-ingest/references/pageindex.md: eol: lf",
         "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc: text: set",
         "obsidian_wiki/_data/bootstrap/cursor/rules/llmwikiops.mdc: eol: lf",
+        "obsidian_wiki/_data/adapter/SKILL.md.in: text: set",
+        "obsidian_wiki/_data/adapter/SKILL.md.in: eol: lf",
         "README.md: text: unspecified",
         "README.md: eol: unspecified",
         "docs/cli.md: text: unspecified",
@@ -130,6 +137,7 @@ def test_packaged_markdown_has_explicit_lf_policy_and_lf_only_bytes() -> None:
             capture_output=True,
         ).stdout
         assert b"\r" not in blob, relative
+    assert b"\r" not in (ROOT / "obsidian_wiki/_data/adapter/SKILL.md.in").read_bytes()
 
 
 def test_archive_path_audit_rejects_former_protocol_filenames() -> None:
