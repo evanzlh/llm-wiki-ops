@@ -450,8 +450,8 @@ def test_agents_doc_allows_only_pre_authority_catalog_correction() -> None:
             "and `$()` can evaluate"
         ),
         (
-            "Before execution, verify that decoding produces one argv element "
-            "byte-for-byte equal to `<exact-root>`; stop if you cannot establish that"
+            "Before repository dispatch, verify that decoding produces one argv element "
+            "byte-for-byte equal to `<exact-root>`"
         ),
         (
             "For every direct skill, catalog output must contain both the exact `name` "
