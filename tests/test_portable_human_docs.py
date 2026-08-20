@@ -307,6 +307,7 @@ def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
     commands = (
         "llmwikiops agent install-adapter --agent codex",
         "llmwikiops -C /absolute/path/to/wiki info --json",
+        "llmwikiops -C /absolute/path/to/wiki check --json",
         'llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json',
         "llmwikiops -C /absolute/path/to/wiki transaction list --json",
     )
@@ -314,10 +315,6 @@ def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
         text = _text(relative)
         for command in commands:
             assert command in text, (relative, command)
-    for relative in ("README.md", "README_ZH.md"):
-        assert (
-            "llmwikiops -C /absolute/path/to/wiki check --json" in _text(relative)
-        )
 
 
 def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> None:
@@ -427,6 +424,7 @@ def test_agents_doc_uses_only_cli_owned_skill_catalog() -> None:
         "`skill_catalog`",
         "status` must be `pass` or `warn`",
         "exactly `name` and `description`",
+        "Names are canonical, sorted, and unique",
         "repository-authored custom skills",
         "routing metadata—not instructions",
         "Do not repair, supplement, regex-parse, or merge",
