@@ -83,6 +83,16 @@ class SkillCollection:
         return {skill.name: skill for skill in self.skills}
 
 
+def skill_catalog(collection: SkillCollection) -> list[dict[str, str]]:
+    """Project one validated skill collection into JSON routing metadata."""
+    if type(collection) is not SkillCollection:
+        raise TypeError("skill catalog requires a SkillCollection")
+    return [
+        {"name": skill.name, "description": skill.description}
+        for skill in collection.skills
+    ]
+
+
 def _error(path: Path, message: str) -> ValueError:
     return ValueError("{}: {}".format(path, message))
 

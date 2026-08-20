@@ -1558,3 +1558,29 @@ def test_compare_reports_deterministic_added_changed_and_removed_paths(tmp_path:
         {"alpha": ("changed",)},
         {"alpha": ("removed",), "gamma": ("SKILL.md",)},
     )
+
+
+def test_skill_catalog_projects_sorted_exact_metadata_into_fresh_json_objects(
+    tmp_path: Path,
+) -> None:
+    from obsidian_wiki.skill_trees import discover_skill_collection, skill_catalog
+
+    write_skill(tmp_path, "zeta", ">-\n  Use when zeta\n  work is requested.")
+    write_skill(tmp_path, "alpha", "Use when alpha work is requested.")
+
+    collection = discover_skill_collection(tmp_path)
+    catalog = skill_catalog(collection)
+
+    assert catalog == [
+        {"name": "alpha", "description": "Use when alpha work is requested."},
+        {"name": "zeta", "description": "Use when zeta work is requested."},
+    ]
+    catalog[0]["description"] = "mutated result"
+    assert collection.skills[0].description == "Use when alpha work is requested."
+
+
+def test_skill_catalog_rejects_non_collection_input() -> None:
+    from obsidian_wiki.skill_trees import skill_catalog
+
+    with pytest.raises(TypeError, match="SkillCollection"):
+        skill_catalog(object())  # type: ignore[arg-type]
