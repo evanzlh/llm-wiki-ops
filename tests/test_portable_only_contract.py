@@ -176,7 +176,8 @@ def test_human_docs_keep_global_adapter_outside_repository_authority() -> None:
     skills = (ROOT / "docs/skills.md").read_text(encoding="utf-8")
     combined = architecture + "\n" + skills
     for required in (
-        "optional global router",
+        "global `llm-wiki-ops` Adapter",
+        "catalog is the only routing source",
         "contains no selected wiki path",
         "never installs the repository task skill tree globally",
         "does not persist the explicit host path",

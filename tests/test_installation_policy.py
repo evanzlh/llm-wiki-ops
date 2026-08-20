@@ -1082,7 +1082,9 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
         timeout=60,
     )
     assert check.returncode == 0, check.stdout + check.stderr
-    assert json.loads(check.stdout) == {
+    check_payload = json.loads(check.stdout)
+    skill_catalog = check_payload.pop("skill_catalog")
+    assert check_payload == {
         "status": "warn",
         "errors": 0,
         "warnings": 1,
@@ -1095,6 +1097,11 @@ def test_uv_tool_install_survives_source_move(tmp_path: Path) -> None:
             }
         ],
     }
+    assert [entry["name"] for entry in skill_catalog] == canonical_skill_names
+    assert all(
+        set(entry) == {"name", "description"} and entry["description"]
+        for entry in skill_catalog
+    )
     sync = subprocess.run(
         [executable, "repo", "sync-skills", "--json"],
         cwd=portable,

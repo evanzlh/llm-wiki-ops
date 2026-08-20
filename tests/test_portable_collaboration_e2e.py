@@ -16,7 +16,7 @@ from obsidian_wiki.operations import parse_operation_log, render_operation_log
 from obsidian_wiki.portable import PROJECT_AGENT_DIRS, setup_portable_repo
 from obsidian_wiki.portable_check import check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
-from obsidian_wiki.skill_trees import discover_skill_collection
+from obsidian_wiki.skill_trees import discover_skill_collection, skill_catalog
 from obsidian_wiki.transaction import TransactionManager
 
 
@@ -498,7 +498,11 @@ def test_unrelated_source_transactions_only_need_owner_resolution_for_log(
             _git_bytes(alice, "show", f"HEAD:{relative_path}").stdout
             == working_tree_bytes
         )
-    assert check_portable_repo(_config(alice)) == {
+    check_report = check_portable_repo(_config(alice))
+    assert check_report.pop("skill_catalog") == skill_catalog(
+        discover_skill_collection(alice / ".skills")
+    )
+    assert check_report == {
         "status": "pass",
         "errors": 0,
         "warnings": 0,
@@ -660,7 +664,11 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
 
     checked = _cli(root, "check", "--json")
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert json.loads(checked.stdout) == {
+    check_payload = json.loads(checked.stdout)
+    assert check_payload.pop("skill_catalog") == skill_catalog(
+        discover_skill_collection(root / ".skills")
+    )
+    assert check_payload == {
         "status": "pass",
         "errors": 0,
         "warnings": 0,
