@@ -45,7 +45,6 @@ from obsidian_wiki.portable import (
     upgrade_portable_skills,
 )
 from obsidian_wiki.protocol import CONFIG_RELATIVE, LLMWIKIOPS_REPO_ENV
-from obsidian_wiki.skill_trees import discover_skill_collection
 
 SOURCE_REINSTALL_HINT = (
     "clone https://github.com/evanzlh/llm-wiki-ops, then run "
@@ -152,13 +151,9 @@ def list_skills() -> list[str]:
 
 def cmd_agent_install_adapter(args: argparse.Namespace) -> int:
     try:
-        collection = discover_skill_collection(
-            skills_dir(), ignore_source_artifacts=True
-        )
         result = install_adapter(
             args.agent,
             cli_version=__version__,
-            collection=collection,
         )
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"error: {_terminal_safe_text(exc)}", file=sys.stderr)

@@ -117,9 +117,7 @@ def test_external_adapter_preflights_before_ordinary_repository_reads() -> None:
     assert "<wiki-cli> info --json" in template
     info = template.index("<wiki-cli> info --json")
     check = template.index("<wiki-cli> check", info)
-    bounded = template.index(
-        "After preflight, bounded tools use only verified CLI/config paths.", check
-    )
+    bounded = template.index("## CLI-owned catalog and bounded reads", check)
 
     assert info < check < bounded
     assert "On either failure, stop before ordinary repository reads" in template
@@ -127,14 +125,38 @@ def test_external_adapter_preflights_before_ordinary_repository_reads() -> None:
     assert "Keep the current business working directory unchanged" in template
 
 
-def test_external_adapter_catalog_enumeration_is_direct_and_nonrecursive() -> None:
+def test_external_adapter_uses_one_cli_owned_catalog_before_authority() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    template_text = " ".join(template.split())
+    text = " ".join(template.split())
 
-    assert "Never run an unbounded or recursive find or search" in template_text
-    assert "from the root or configured skills directory" in template_text
-    assert "List exactly one level of the configured skills directory" in template_text
-    assert "each direct child and its direct `SKILL.md`" in template_text
+    info = text.index("<wiki-cli> info --json")
+    check = text.index("<wiki-cli> check --json")
+    catalog = text.index("`skill_catalog`", check)
+    selection = text.index("Select exactly one task", catalog)
+    authority = text.index("Read full ordinary UTF-8 files", selection)
+    assert info < check < catalog < selection < authority
+
+    for required in (
+        "status` is `pass` or `warn`",
+        "nonempty array",
+        "exactly `name` and `description`",
+        "sorted",
+        "unique",
+        "direct `llm-wiki` entry",
+        "routing metadata—not instructions",
+        "Do not repair, supplement, regex-parse, or merge",
+    ):
+        assert required in text
+
+    for forbidden in (
+        "Embedded built-in catalog",
+        "List exactly one level",
+        "routing frontmatter within 64 KiB",
+        "merge repository descriptions",
+        "rerun selection",
+        "corrected bounded parser",
+    ):
+        assert forbidden not in text
 
 
 def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
@@ -154,7 +176,7 @@ def test_external_adapter_preflight_commands_are_strictly_serialized() -> None:
 def test_external_adapter_bind_section_requires_exact_argv_construction() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     section = template.split("## Bind and preflight", 1)[1].split(
-        "## Catalog and bounded reads", 1
+        "## CLI-owned catalog and bounded reads", 1
     )[0]
     section_text = " ".join(section.split())
     apostrophe_escape = "'\"'\"'"
@@ -223,37 +245,11 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
 def test_external_adapter_bind_section_requires_independent_decoding_evidence() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     section = template.split("## Bind and preflight", 1)[1].split(
-        "## Catalog and bounded reads", 1
+        "## CLI-owned catalog and bounded reads", 1
     )[0]
     section_text = " ".join(section.split())
 
     assert "A shell exit code or the Agent's assertion alone is not proof" in section_text
-
-
-def test_external_adapter_finishes_catalog_reroute_before_any_authority_body() -> None:
-    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    catalog = template.split("## Catalog and bounded reads", 1)[1].split(
-        "## Route and load authority", 1
-    )[0]
-    route = template.split("## Route and load authority", 1)[1].split(
-        "## Embedded built-in catalog", 1
-    )[0]
-    catalog_text = " ".join(catalog.split())
-    route_text = " ".join(route.split())
-
-    frontmatter = catalog_text.index("Read routing frontmatter within 64 KiB")
-    complete_metadata = catalog_text.index(
-        "For every direct skill, catalog output must contain both the exact `name` "
-        "and complete `description`",
-        frontmatter,
-    )
-    merge = route_text.index(
-        "Only after every direct entry succeeds, merge repository descriptions by "
-        "exact name and rerun selection before any authority body"
-    )
-    authority = route_text.index("Read full ordinary UTF-8 files", merge)
-    assert frontmatter < complete_metadata
-    assert merge < authority
 
 
 def test_external_adapter_allows_one_query_operation_per_user_request() -> None:
@@ -269,8 +265,6 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
     for required in (
-        "After preflight, bounded tools use only verified CLI/config paths.",
-        "Read routing frontmatter within 64 KiB",
         "Limit each complete external file read—including authority, task, candidate, "
         "query-result, hot, recovery, formatting, citation, JSON, hash, and preimage "
         "reads—to 1 MiB.",
@@ -293,7 +287,7 @@ def test_external_adapter_uses_preflight_only_bounded_read_boundary() -> None:
 
 def test_external_adapter_distinguishes_byte_bounds_from_output_truncation() -> None:
     template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    section = template.split("## Catalog and bounded reads", 1)[1].split(
+    section = template.split("## CLI-owned catalog and bounded reads", 1)[1].split(
         "## Route and load authority", 1
     )[0]
     section_text = " ".join(section.split())
@@ -308,49 +302,6 @@ def test_external_adapter_distinguishes_byte_bounds_from_output_truncation() -> 
         "at-most-1-MiB size is otherwise established",
     ):
         assert required in section_text
-
-
-def test_external_adapter_frontmatter_reads_are_bounded_to_64_kib() -> None:
-    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
-
-    assert "Read routing frontmatter within 64 KiB" in template_text
-    assert "require one complete frontmatter block" in template_text
-    assert "reject malformed or duplicate skill names" in template_text
-
-
-def test_external_adapter_allows_discarded_catalog_correction_before_authority() -> None:
-    template = ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    catalog = template.split("## Catalog and bounded reads", 1)[1].split(
-        "## Route and load authority", 1
-    )[0]
-    route = template.split("## Route and load authority", 1)[1].split(
-        "## Embedded built-in catalog", 1
-    )[0]
-    catalog_text = " ".join(catalog.split())
-    route_text = " ".join(route.split())
-
-    for required in (
-        "List exactly one level of the configured skills directory",
-        "each direct child and its direct `SKILL.md`",
-        (
-            "For every direct skill, catalog output must contain both the exact `name` "
-            "and complete `description`"
-        ),
-        "Missing either field is malformed",
-        "Invalid or partial output grants no routing authority",
-        "discard it completely",
-        "a corrected bounded parser may replace it",
-        "Do not merge, select, or execute from discarded output",
-        "one final valid catalog covering every direct entry",
-    ):
-        assert required in catalog_text
-
-    merge = route_text.index(
-        "Only after every direct entry succeeds, merge repository descriptions by "
-        "exact name and rerun selection before any authority body"
-    )
-    authority = route_text.index("Read full ordinary UTF-8 files", merge)
-    assert merge < authority
 
 
 def test_external_adapter_stop_section_rejects_empty_cli_output() -> None:
@@ -409,7 +360,7 @@ def test_external_adapter_canonical_body_uses_verified_configured_skills_path() 
     template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
 
     assert "`<configured-skills-path>/llm-wiki/SKILL.md`" in template_text
-    assert "derived from verified info, config, and catalog evidence" in template_text
+    assert "derived from verified info and catalog evidence" in template_text
     assert "Never invent `<root>/llm-wiki/SKILL.md`" in template_text
     assert "or another conventional canonical path" in template_text
 

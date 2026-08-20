@@ -6,7 +6,7 @@ import os
 import stat
 import subprocess
 import sys
-from dataclasses import MISSING, FrozenInstanceError, fields, replace
+from dataclasses import MISSING, FrozenInstanceError, fields
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
@@ -19,16 +19,10 @@ from obsidian_wiki.agent_adapter import (
     ADAPTER_DESCRIPTION,
     ADAPTER_EOF,
     ADAPTER_NAME,
-    BUILTIN_CATALOG_END,
-    BUILTIN_CATALOG_START,
     render_adapter_skill,
 )
 from obsidian_wiki.frontmatter import parse_frontmatter
-from obsidian_wiki.skill_trees import (
-    SkillCollection,
-    SkillEntry,
-    discover_skill_collection,
-)
+from obsidian_wiki.skill_trees import discover_skill_collection
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -270,152 +264,28 @@ def test_adapter_command_escapes_control_characters_in_errors(
     assert captured.out == ""
     assert captured.err == r"error: unsafe\nforged\tmessage" + "\n"
 
-EXPECTED_BUNDLED_CATALOG = (
-    (
-        "claude-history-ingest",
-        "Use when mining selected Claude Code or Claude Desktop session history for durable repository knowledge.",
-    ),
-    (
-        "codex-history-ingest",
-        "Use when mining selected Codex rollout sessions for durable repository knowledge.",
-    ),
-    (
-        "copilot-history-ingest",
-        "Use when mining selected GitHub Copilot CLI or VS Code chat sessions for durable repository knowledge.",
-    ),
-    (
-        "cross-linker",
-        "Use when wiki pages need missing cross-references, orphan repair, or stronger graph connectivity.",
-    ),
-    (
-        "daily-update",
-        "Use when manually checking repository freshness, retained transactions, hot state, or selecting a routine page repair.",
-    ),
-    (
-        "graph-colorize",
-        "Use when the user wants Obsidian graph nodes colored by tag, category, visibility, or an explicit custom mapping.\n",
-    ),
-    (
-        "hermes-history-ingest",
-        "Use when mining selected Hermes memory or session history for durable repository knowledge.",
-    ),
-    (
-        "impl-validator",
-        'Validate whether an implementation matches its stated goal. Use this skill when a skill or agent wants a second opinion on its own output, when the user says "check this implementation", "validate what you did", "is this correct?", "review the output", or "did you do this right?". Also spawned automatically as a subagent by other skills to self-check their outputs before presenting to the user. Returns a structured pass/warn/fail verdict with specific actionable issues.\n',
-    ),
-    (
-        "llm-wiki",
-        "Canonical repository runtime protocol for resolving configuration, preserving source authority, and compiling reviewed knowledge through transactions.\n",
-    ),
-    (
-        "obsidian-layout-adjustment",
-        "Use when changing or debugging Obsidian appearance, layout, active CSS snippets, panes, tabs, sidebars, note surfaces, properties, backlinks, graph, or icons.\n",
-    ),
-    (
-        "openclaw-history-ingest",
-        "Use when mining selected OpenClaw memory or session history for durable repository knowledge.",
-    ),
-    (
-        "pi-history-ingest",
-        "Use when mining selected Pi agent session history for durable repository knowledge.",
-    ),
-    (
-        "session-brain",
-        'Build and maintain a topic graph over your agent session history. Reads every Claude session transcript plus the pruned sessions that survive only in history.jsonl, clusters them by topic using local TF-IDF (no API calls, no embeddings), and writes an interactive graph you can open in a browser. Use when the user says "/session-brain", "build my session map", "cluster my claude sessions", "map my session history", "rebuild the session graph", "show me my session graph", "what have I been working on lately", "what topics have gone stale". Different from wiki-history-ingest, which distils sessions into vault pages: this builds a retrieval index over the raw sessions and never writes to the vault.\n',
-    ),
-    (
-        "session-search",
-        'Find a past agent session by topic and load its context into the current conversation. Searches the session-brain topic graph, ranking by relevance, topic membership, and time decay, then loads the winning transcript. Use when the user says "/wiki-sessions <topic>", "which session did I do X in", "find the session where I fixed X", "when did I last work on Y", "what was that session about Z", "load the session where I set up X", "have I done this before". Read-only — never writes to the vault. Requires a graph built by the session-brain skill.\n',
-    ),
-    (
-        "skill-creator",
-        "Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
-    ),
-    (
-        "tag-taxonomy",
-        "Use when auditing wiki tags, normalizing tag vocabulary, or proposing tags for knowledge pages.",
-    ),
-    (
-        "vault-skill-factory",
-        "Use when mature, curated pages in the configured portable wiki should be distilled into a reviewable Agent Skill without installing it.\n",
-    ),
-    (
-        "wiki-agent",
-        "Use when answering a focused question from selected sessions of a named supported coding agent.",
-    ),
-    (
-        "wiki-capture",
-        "Use when the user asks to preserve the current conversation, save a finding, record a correction, or quickly place reviewed text into the source inbox.\n",
-    ),
-    (
-        "wiki-context-pack",
-        "Use when a downstream task needs a token-bounded, citation-ready context slice from the configured portable LLMWikiOps.\n",
-    ),
-    (
-        "wiki-dedup",
-        "Use when detecting duplicate knowledge pages, resolving identity collisions, or merging an owner-approved duplicate pair.",
-    ),
-    (
-        "wiki-digest",
-        "Use when the user wants a daily, weekly, monthly, or date-bounded digest of recent knowledge in the configured portable wiki.\n",
-    ),
-    (
-        "wiki-export",
-        "Use when the configured portable wiki needs a local review export as JSON, GraphML, Cypher, interactive HTML, or an optional OKF Markdown bundle.\n",
-    ),
-    (
-        "wiki-history-ingest",
-        "Use when selecting the supported tool-specific skill for coding-agent history input.",
-    ),
-    (
-        "wiki-import",
-        "Use when importing a graph.json export or OKF Markdown bundle into the configured wiki repository.\n",
-    ),
-    (
-        "wiki-ingest",
-        "Use when converting one or more reviewed source documents into structured wiki pages, including incremental, full, append, URL, and PageIndex inputs.\n",
-    ),
-    (
-        "wiki-lint",
-        "Use when auditing wiki health, validating page schema, or applying an owner-selected set of lint repairs.",
-    ),
-    (
-        "wiki-narrate",
-        "Use when turning a topic in the configured portable wiki into a cited briefing, plain-language explanation, or progressive lecture.\n",
-    ),
-    (
-        "wiki-query",
-        "Use when retrieving evidence from the compiled LLMWikiOps with one exact query-language/v1 operation.\n",
-    ),
-    (
-        "wiki-rebuild",
-        "Use when rebuilding an explicit set of knowledge pages from declared repository sources or replacing drifted derived pages.",
-    ),
-    (
-        "wiki-research",
-        "Use when researching a topic from external sources and compiling reviewed, cited findings into the configured wiki repository.\n",
-    ),
-    (
-        "wiki-setup",
-        "Initialize, clone, inspect, or upgrade an LLMWikiOps repository.",
-    ),
-    (
-        "wiki-status",
-        "Use when reporting repository knowledge health, source freshness, transaction state, graph structure, or durable wiki insights.",
-    ),
-    (
-        "wiki-synthesize",
-        "Use when discovering cross-page synthesis opportunities or drafting an owner-selected synthesis page from repository knowledge.",
-    ),
-    (
-        "wiki-transaction-review",
-        "Use when users ask to inspect, approve, reject, or recover a repository-local wiki transaction.",
-    ),
-    (
-        "wiki-update",
-        "Use when syncing reviewed project evidence into repository knowledge pages or refreshing project-derived knowledge.",
-    ),
-)
+
+def test_adapter_install_does_not_inspect_packaged_skill_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    def forbidden_skills_dir() -> Path:
+        raise AssertionError("adapter installation must not inspect packaged skills")
+
+    monkeypatch.setattr(cli, "skills_dir", forbidden_skills_dir)
+
+    result = cli.cmd_agent_install_adapter(cli.argparse.Namespace(agent="codex"))
+
+    assert result == 0
+    assert "installed codex adapter" in capsys.readouterr().out
+    assert (home / ".codex/skills/llm-wiki-ops/SKILL.md").is_file()
+
 
 EXPECTED_ADAPTER_DESCRIPTION = (
     "Use when any request asks to access or operate on an external LLMWikiOps wiki, "
@@ -424,249 +294,29 @@ EXPECTED_ADAPTER_DESCRIPTION = (
 )
 
 
-def make_skill_collection(
-    root: Path, descriptions: dict[str, str], *, body: str = "# Task body\n"
-) -> Path:
-    for name, description in descriptions.items():
-        skill = root / name
-        skill.mkdir(parents=True)
-        if description.endswith("\n"):
-            encoded_description = "description: >\n" + "".join(
-                f"  {line}\n" for line in description.splitlines()
-            )
-        else:
-            encoded_description = f"description: {description}\n"
-        (skill / "SKILL.md").write_text(
-            f"---\nname: {name}\n"
-            + encoded_description
-            + "---\n\n"
-            + body,
-            encoding="utf-8",
-        )
-    return root
+def test_renderer_is_byte_stable_and_contains_only_cli_owned_catalog_protocol() -> None:
+    first = render_adapter_skill()
+    second = render_adapter_skill()
 
-
-def encoded_catalog(rendered: str) -> list[dict[str, str]]:
-    encoded = rendered.split(BUILTIN_CATALOG_START, 1)[1].split(
-        BUILTIN_CATALOG_END, 1
-    )[0]
-    return json.loads(encoded)
-
-
-def render_demo_adapter(tmp_path: Path) -> str:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "catalog", {"demo": "Use when demo is requested."}
-        )
-    )
-    return render_adapter_skill(collection)
-
-
-def forged_collection_with_entries(
-    collection: SkillCollection, entries: tuple[SkillEntry, ...]
-) -> SkillCollection:
-    skill = collection.skills[0]
-    digest = sha256()
-
-    def add(value: bytes) -> None:
-        digest.update(str(len(value)).encode("ascii"))
-        digest.update(b":")
-        digest.update(value)
-
-    add(skill.name.encode("utf-8"))
-    for entry in entries:
-        add(entry.path.encode("utf-8"))
-        add(entry.kind.encode("ascii"))
-        add(b"1" if entry.executable else b"0")
-        add(str(len(entry.content)).encode("ascii"))
-        add(entry.content)
-    forged = replace(
-        skill,
-        entries=entries,
-        digest="sha256:" + digest.hexdigest(),
-    )
-    return SkillCollection((forged,))
-
-
-def test_renderer_embeds_exact_sorted_name_description_catalog(tmp_path: Path) -> None:
-    source = make_skill_collection(
-        tmp_path,
-        {
-            "zeta": "Use when a zeta task is requested.\n",
-            "alpha": "Use when an alpha task is requested.",
-        },
-    )
-    collection = discover_skill_collection(source)
-    rendered = render_adapter_skill(collection)
-    encoded = rendered.split(BUILTIN_CATALOG_START, 1)[1].split(
-        BUILTIN_CATALOG_END, 1
-    )[0]
-    assert json.loads(encoded) == [
-        {"name": "alpha", "description": "Use when an alpha task is requested."},
-        {"name": "zeta", "description": "Use when a zeta task is requested.\n"},
-    ]
-    assert ADAPTER_NAME == "llm-wiki-ops"
-
-
-def test_renderer_is_byte_stable_and_contains_no_task_bodies(tmp_path: Path) -> None:
-    source = make_skill_collection(
-        tmp_path,
-        {"demo": "Use when demo routing is needed."},
-        body="# SECRET TASK BODY SENTINEL\n",
-    )
-    collection = discover_skill_collection(source)
-    first = render_adapter_skill(collection)
-    second = render_adapter_skill(collection)
     assert first == second
-    assert "SECRET TASK BODY SENTINEL" not in first
-
-
-@pytest.mark.parametrize(
-    ("contents", "message"),
-    [
-        ("---\nname: other\ndescription: Use when demo runs.\n---\n", "equal"),
-        ("---\nname: demo\n---\n", "required"),
-    ],
-)
-def test_renderer_source_uses_strict_collection_metadata_boundaries(
-    tmp_path: Path, contents: str, message: str
-) -> None:
-    skill = tmp_path / "demo"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text(contents, encoding="utf-8")
-
-    with pytest.raises(ValueError, match=message):
-        discover_skill_collection(tmp_path)
-
-
-def test_renderer_rejects_duplicate_unsorted_or_changed_collection_metadata(
-    tmp_path: Path,
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path,
-            {
-                "alpha": "Use when alpha is requested.",
-                "zeta": "Use when zeta is requested.",
-            },
-        )
-    )
-    alpha, zeta = collection.skills
-
-    with pytest.raises(ValueError, match="duplicate"):
-        render_adapter_skill(SkillCollection((alpha, alpha)))
-    with pytest.raises(ValueError, match="sorted"):
-        render_adapter_skill(SkillCollection((zeta, alpha)))
-    with pytest.raises(ValueError, match="description"):
-        render_adapter_skill(SkillCollection((replace(alpha, description=""),)))
-    with pytest.raises(ValueError, match="metadata|description"):
-        render_adapter_skill(
-            SkillCollection((replace(alpha, description="Use when changed."),))
-        )
-
-
-def test_renderer_rejects_forged_orphan_entry_before_reading_template(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
-    entries = tuple(
-        sorted(
-            collection.skills[0].entries
-            + (SkillEntry("references/orphan.md", "file", False, b"orphan\n"),),
-            key=lambda entry: entry.path,
-        )
-    )
-    forged = forged_collection_with_entries(collection, entries)
-    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", tmp_path / "missing.in")
-
-    with pytest.raises(ValueError, match="orphan|parent directory|topology"):
-        render_adapter_skill(forged)
-
-
-def test_renderer_rejects_forged_nul_entry_before_reading_template(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
-    entries = tuple(
-        sorted(
-            collection.skills[0].entries
-            + (SkillEntry("references/unsafe\x00.md", "file", False, b"unsafe\n"),),
-            key=lambda entry: entry.path,
-        )
-    )
-    forged = forged_collection_with_entries(collection, entries)
-    monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", tmp_path / "missing.in")
-
-    with pytest.raises(ValueError, match="unsafe skill entry path"):
-        render_adapter_skill(forged)
-
-
-@pytest.mark.parametrize(
-    "path",
-    (
-        "",
-        "/absolute.md",
-        "./relative.md",
-        "references//note.md",
-        "references/../note.md",
-        "references\\note.md",
-        "references/note.md/",
-    ),
-)
-def test_renderer_rejects_forged_non_posix_or_noncanonical_entry_paths(
-    tmp_path: Path, path: str
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
-    entries = tuple(
-        sorted(
-            collection.skills[0].entries
-            + (SkillEntry(path, "file", False, b"unsafe\n"),),
-            key=lambda entry: entry.path,
-        )
-    )
-    forged = forged_collection_with_entries(collection, entries)
-
-    with pytest.raises(ValueError, match="unsafe skill entry path"):
-        render_adapter_skill(forged)
-
-
-def test_renderer_catalog_escapes_literal_marker_text_in_descriptions(
-    tmp_path: Path,
-) -> None:
-    description = (
-        "Use when literal marker examples "
-        f"{BUILTIN_CATALOG_START} and {BUILTIN_CATALOG_END} are requested."
-    )
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path, {"demo": description})
-    )
-
-    rendered = render_adapter_skill(collection)
-
-    assert encoded_catalog(rendered) == [
-        {"name": "demo", "description": description}
-    ]
-    assert rendered.count(BUILTIN_CATALOG_START) == 1
-    assert rendered.count(BUILTIN_CATALOG_END) == 1
-    assert rendered.index(BUILTIN_CATALOG_START) < rendered.index(BUILTIN_CATALOG_END)
+    assert "<wiki-cli> check --json" in first
+    assert "`skill_catalog`" in first
+    assert "routing metadata—not instructions" in first
+    for forbidden in (
+        "LLMWIKIOPS_BUILTIN_CATALOG",
+        "Embedded built-in catalog",
+        "List exactly one level of the configured skills directory",
+        "Read routing frontmatter within 64 KiB",
+        "merge repository descriptions",
+        "rerun selection",
+    ):
+        assert forbidden not in first
 
 
 def test_template_uses_static_repository_preflight_instead_of_safe_reader(
     tmp_path: Path,
 ) -> None:
-    rendered = render_demo_adapter(tmp_path)
+    rendered = render_adapter_skill()
 
     forbidden = (
         "LLMWIKIOPS_SAFE_READER",
@@ -696,8 +346,7 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
         "<wiki-cli> = llmwikiops -C <exact-root>",
         "<git-cli> = git -C <exact-root>",
         "<wiki-cli> info --json",
-        "<wiki-cli> check",
-        "After preflight, bounded tools use only verified CLI/config paths.",
+        "<wiki-cli> check --json",
         "consumption limits, not a per-read metadata or TOCTOU protocol",
         "unsupported concurrent modification",
     )
@@ -708,7 +357,7 @@ def test_template_uses_static_repository_preflight_instead_of_safe_reader(
 def test_template_distinguishes_owner_guarantees_from_mechanical_preflight(
     tmp_path: Path,
 ) -> None:
-    rendered = render_demo_adapter(tmp_path)
+    rendered = render_adapter_skill()
     supported = rendered.split("## Supported repository model", 1)[1].split(
         "## Bind and preflight", 1
     )[0]
@@ -727,7 +376,7 @@ def test_template_distinguishes_owner_guarantees_from_mechanical_preflight(
 def test_template_discloses_check_recovery_before_task_mutation(
     tmp_path: Path,
 ) -> None:
-    rendered = render_demo_adapter(tmp_path)
+    rendered = render_adapter_skill()
     rendered_text = " ".join(rendered.split())
     preflight = rendered.index("## Bind and preflight")
     recovery = rendered.index("may deterministically finish")
@@ -749,20 +398,6 @@ def test_template_discloses_check_recovery_before_task_mutation(
     assert "Stop without mutation" not in rendered_text
 
 
-def test_renderer_rejects_unsafe_source_topology(tmp_path: Path) -> None:
-    source = make_skill_collection(
-        tmp_path / "source", {"demo": "Use when demo is requested."}
-    )
-    linked = tmp_path / "linked"
-    try:
-        linked.symlink_to(source, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symbolic links unavailable: {exc}")
-
-    with pytest.raises(ValueError, match="ordinary directory"):
-        discover_skill_collection(linked)
-
-
 def test_renderer_rejects_unsafe_template_topology(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -773,43 +408,9 @@ def test_renderer_rejects_unsafe_template_topology(
     except OSError as exc:
         pytest.skip(f"symbolic links unavailable: {exc}")
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", linked)
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
 
     with pytest.raises(ValueError, match="ordinary|symbolic"):
-        render_adapter_skill(collection)
-
-
-def test_renderer_requires_exactly_one_ordered_empty_catalog_placeholder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
-    original = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
-    cases = (
-        original.replace(BUILTIN_CATALOG_START, "missing", 1),
-        original.replace(BUILTIN_CATALOG_END, BUILTIN_CATALOG_START, 1),
-        original.replace(
-            f"{BUILTIN_CATALOG_START}\n{BUILTIN_CATALOG_END}",
-            f"{BUILTIN_CATALOG_END}\n{BUILTIN_CATALOG_START}",
-        ),
-        original.replace(
-            f"{BUILTIN_CATALOG_START}\n{BUILTIN_CATALOG_END}",
-            f"{BUILTIN_CATALOG_START}\nnot empty\n{BUILTIN_CATALOG_END}",
-        ),
-    )
-    for index, template in enumerate(cases):
-        path = tmp_path / f"template-{index}.in"
-        path.write_text(template, encoding="utf-8")
-        monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
-        with pytest.raises(ValueError, match="marker|placeholder|order"):
-            render_adapter_skill(collection)
+        render_adapter_skill()
 
 
 @pytest.mark.parametrize(
@@ -840,11 +441,6 @@ def test_renderer_rejects_unapproved_template_frontmatter(
     replacement: str,
     message: str,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
     template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     assert template.count(original) == 1
     mutated = tmp_path / "mutated-SKILL.md.in"
@@ -852,7 +448,7 @@ def test_renderer_rejects_unapproved_template_frontmatter(
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", mutated)
 
     with pytest.raises(ValueError, match=message):
-        render_adapter_skill(collection)
+        render_adapter_skill()
 
 
 @pytest.mark.parametrize(
@@ -873,11 +469,6 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
     mutation: str,
     message: str,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
     template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     if mutation == "missing-gate":
         mutated = template.replace(ADAPTER_BOOTSTRAP_GATE_END, "", 1)
@@ -912,7 +503,7 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
 
     with pytest.raises(ValueError, match=message):
-        render_adapter_skill(collection)
+        render_adapter_skill()
 
 
 @pytest.mark.parametrize(
@@ -931,6 +522,8 @@ def test_renderer_rejects_invalid_bootstrap_gate_or_eof_protocol(
         "duplicate-info",
         "missing-check",
         "duplicate-check",
+        "missing-skill-catalog",
+        "duplicate-skill-catalog",
         "reordered-info-check",
         "reordered-supported-preflight",
         "reordered-catalog-route",
@@ -941,17 +534,13 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
     template = agent_adapter._ADAPTER_TEMPLATE.read_text(encoding="utf-8")
     supported = "## Supported repository model"
     preflight = "## Bind and preflight"
     info = "<wiki-cli> info --json"
-    check = "<wiki-cli> check"
-    catalog_reads = "## Catalog and bounded reads"
+    check = "<wiki-cli> check --json"
+    skill_catalog = "Require `skill_catalog` to be a nonempty array."
+    catalog_reads = "## CLI-owned catalog and bounded reads"
     route = "## Route and load authority"
     if mutation == "missing-supported":
         mutated = template.replace(supported, "## Repository constraints", 1)
@@ -975,8 +564,8 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
         mutated = template.replace(route, "## Authority loading", 1)
     elif mutation == "duplicate-route":
         mutated = template.replace(
-            "## Embedded built-in catalog",
-            route + "\n\n## Embedded built-in catalog",
+            "## Repository execution",
+            route + "\n\n## Repository execution",
             1,
         )
     elif mutation == "missing-info":
@@ -987,6 +576,12 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
         mutated = template.replace(check, "<wiki-cli> verify", 1)
     elif mutation == "duplicate-check":
         mutated = template.replace(check, check + "\n" + check, 1)
+    elif mutation == "missing-skill-catalog":
+        mutated = template.replace(skill_catalog, "Catalog data is required.", 1)
+    elif mutation == "duplicate-skill-catalog":
+        mutated = template.replace(
+            skill_catalog, skill_catalog + "\n" + skill_catalog, 1
+        )
     elif mutation == "reordered-info-check":
         assert template.index(info) < template.index(check)
         mutated = template.replace(info, "<static-info-anchor>", 1).replace(
@@ -1001,8 +596,6 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
             route, catalog_reads, 1
         ).replace("<static-catalog-anchor>", route, 1)
 
-    assert mutated.count(BUILTIN_CATALOG_START) == 1
-    assert mutated.count(BUILTIN_CATALOG_END) == 1
     assert mutated.count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert mutated.count(ADAPTER_EOF) == 1
     path = tmp_path / f"{mutation}.in"
@@ -1010,14 +603,11 @@ def test_renderer_rejects_invalid_static_repository_protocol_anchors(
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", path)
 
     with pytest.raises(ValueError, match="static repository anchors"):
-        render_adapter_skill(collection)
+        render_adapter_skill()
 
 
 def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() -> None:
-    collection = discover_skill_collection(
-        cli.skills_dir(), ignore_source_artifacts=True
-    )
-    rendered = render_adapter_skill(collection)
+    rendered = render_adapter_skill()
     frontmatter = parse_frontmatter(rendered)
     header = rendered.split("---\n", 2)[1]
     body = rendered.split("---\n", 2)[2]
@@ -1028,8 +618,8 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["name"]) <= 64
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
-    assert len(body.splitlines()) < 220
-    assert len(rendered.encode("utf-8")) < 15_800
+    assert len(body.splitlines()) < 180
+    assert len(rendered.encode("utf-8")) < 12_000
     assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert rendered.count(ADAPTER_EOF) == 1
     assert rendered.index("## Bootstrap gate — read to EOF first") < rendered.index(
@@ -1040,10 +630,7 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
 
 
 def test_adapter_trigger_does_not_require_a_preexisting_repository_root() -> None:
-    collection = discover_skill_collection(
-        cli.skills_dir(), ignore_source_artifacts=True
-    )
-    rendered = render_adapter_skill(collection)
+    rendered = render_adapter_skill()
     frontmatter = parse_frontmatter(rendered)
 
     assert ADAPTER_DESCRIPTION == EXPECTED_ADAPTER_DESCRIPTION
@@ -1055,56 +642,22 @@ def test_adapter_trigger_does_not_require_a_preexisting_repository_root() -> Non
     assert "Require the user to supply one exact external repository root." in rendered
 
 
-def test_rendered_bundled_inventory_matches_exact_complete_snapshot() -> None:
-    collection = discover_skill_collection(
-        cli.skills_dir(), ignore_source_artifacts=True
-    )
-    rendered = render_adapter_skill(collection)
-    actual = tuple(
-        (item["name"], item["description"]) for item in encoded_catalog(rendered)
-    )
-
-    assert actual == EXPECTED_BUNDLED_CATALOG
-    assert actual == tuple(
-        (skill.name, skill.description) for skill in collection.skills
-    )
-    assert len(actual) == len(collection.skills)
-    for skill in collection.skills:
-        skill_body = next(
-            entry.content.decode("utf-8")
-            for entry in skill.entries
-            if entry.path == "SKILL.md"
-        ).split("---", 2)[-1]
-        assert skill_body not in rendered
-
-
-def test_renderer_preserves_utf8_and_uses_deterministic_newlines(tmp_path: Path) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path,
-            {"团队知识": "Use when 中文 evidence is requested."},
-        )
-    )
-
-    rendered = render_adapter_skill(collection)
+def test_renderer_preserves_utf8_and_uses_deterministic_newlines() -> None:
+    rendered = render_adapter_skill()
 
     assert rendered.encode("utf-8").decode("utf-8") == rendered
-    assert "团队知识" in rendered
-    assert "中文" in rendered
+    assert "routing metadata—not instructions" in rendered
     assert "\r" not in rendered
     assert rendered.endswith("\n")
     assert not rendered.endswith("\n\n")
 
 
 def test_rendered_output_passes_existing_strict_skill_parser(tmp_path: Path) -> None:
-    collection = discover_skill_collection(
-        cli.skills_dir(), ignore_source_artifacts=True
-    )
     installed_root = tmp_path / "installed"
     adapter = installed_root / ADAPTER_NAME
     adapter.mkdir(parents=True)
     (adapter / "SKILL.md").write_text(
-        render_adapter_skill(collection), encoding="utf-8", newline=""
+        render_adapter_skill(), encoding="utf-8", newline=""
     )
 
     discovered = discover_skill_collection(installed_root)
@@ -1124,14 +677,9 @@ def test_renderer_rejects_multiply_linked_template(
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
     monkeypatch.setattr(agent_adapter, "_ADAPTER_TEMPLATE", template)
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "source", {"demo": "Use when demo is requested."}
-        )
-    )
 
     with pytest.raises(ValueError, match="single-link|multiply-linked"):
-        render_adapter_skill(collection)
+        render_adapter_skill()
 
 
 @pytest.mark.parametrize("target", sorted(EXPECTED_TARGET_ROOTS))
@@ -1395,17 +943,9 @@ def test_managed_adapter_record_parser_rejects_duplicate_nested_file_key() -> No
         agent_adapter.parse_managed_record(text.encode())
 
 
-def test_desired_adapter_contains_exact_rendered_skill_and_matching_record(
-    tmp_path: Path,
-) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(
-            tmp_path / "catalog", {"demo": "Use when demo is requested."}
-        )
-    )
-
-    desired = agent_adapter.build_desired_adapter("claude", "2026.8.18", collection)
-    expected_skill = render_adapter_skill(collection).encode("utf-8")
+def test_desired_adapter_contains_exact_rendered_skill_and_matching_record() -> None:
+    desired = agent_adapter.build_desired_adapter("claude", "2026.8.20")
+    expected_skill = render_adapter_skill().encode("utf-8")
     record = agent_adapter.parse_managed_record(desired.managed_record)
 
     assert desired.target == "claude"
@@ -1712,21 +1252,18 @@ def test_adapter_installation_inspection_rejects_file_name_replacement(
 def test_adapter_installation_fresh_idempotent_and_upgrade(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     tokens = iter(tuple(str(index) * 32 for index in range(1, 9)))
     monkeypatch.setattr(agent_adapter.secrets, "token_hex", lambda size: next(tokens))
 
     installed = agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     unchanged = agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     upgraded = agent_adapter.install_adapter(
-        "codex", cli_version="2", collection=collection, home=home, environ={}
+        "codex", cli_version="2", home=home, environ={}
     )
 
     expected = home / ".codex/skills" / ADAPTER_NAME
@@ -1737,8 +1274,8 @@ def test_adapter_installation_fresh_idempotent_and_upgrade(
         "unchanged", "codex", expected
     )
     assert upgraded == agent_adapter.AdapterInstallResult("upgraded", "codex", expected)
-    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
-    old_desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "2")
+    old_desired = agent_adapter.build_desired_adapter("codex", "1")
     assert (expected / "SKILL.md").read_bytes() == desired.skill_md
     assert (
         expected / agent_adapter.MANAGED_ADAPTER_RECORD
@@ -1758,11 +1295,8 @@ def test_adapter_installation_fresh_idempotent_and_upgrade(
 def test_adapter_installation_preserves_unmanaged_or_owner_drift(
     tmp_path: Path, kind: str
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     destination = tmp_path / "home/.codex/skills" / ADAPTER_NAME
-    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "1")
     write_adapter_tree(destination, desired)
     if kind == "unmanaged":
         (destination / agent_adapter.MANAGED_ADAPTER_RECORD).unlink()
@@ -1774,7 +1308,6 @@ def test_adapter_installation_preserves_unmanaged_or_owner_drift(
         agent_adapter.install_adapter(
             "codex",
             cli_version="2",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
         )
@@ -1786,13 +1319,10 @@ def test_adapter_installation_preserves_unmanaged_or_owner_drift(
 def test_adapter_installation_read_only_outcomes_do_not_create_retention_root(
     tmp_path: Path, state: str
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     config_root = home / ".codex"
     destination = config_root / "skills" / ADAPTER_NAME
-    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "1")
     write_adapter_tree(destination, desired)
     if state == "unmanaged":
         (destination / agent_adapter.MANAGED_ADAPTER_RECORD).unlink()
@@ -1817,7 +1347,6 @@ def test_adapter_installation_read_only_outcomes_do_not_create_retention_root(
         result = agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=home,
             environ={},
         )
@@ -1827,7 +1356,6 @@ def test_adapter_installation_read_only_outcomes_do_not_create_retention_root(
             agent_adapter.install_adapter(
                 "codex",
                 cli_version="2",
-                collection=collection,
                 home=home,
                 environ={},
             )
@@ -1849,12 +1377,9 @@ def test_adapter_installation_read_only_outcomes_do_not_create_retention_root(
 def test_adapter_installation_checkpoint_failure_recovers_on_rerun(
     tmp_path: Path, point: str
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
 
     class InjectedFailure(RuntimeError):
@@ -1871,17 +1396,16 @@ def test_adapter_installation_checkpoint_failure_recovers_on_rerun(
         agent_adapter.install_adapter(
             "codex",
             cli_version="2",
-            collection=collection,
             home=home,
             environ={},
             checkpoint=checkpoint,
         )
     result = agent_adapter.install_adapter(
-        "codex", cli_version="2", collection=collection, home=home, environ={}
+        "codex", cli_version="2", home=home, environ={}
     )
 
     destination = home / ".codex/skills" / ADAPTER_NAME
-    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "2")
     assert result.status in {"unchanged", "upgraded"}
     assert (destination / "SKILL.md").read_bytes() == desired.skill_md
     assert (
@@ -1903,11 +1427,8 @@ def test_adapter_installation_checkpoint_failure_recovers_on_rerun(
 def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
     tmp_path: Path,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
-    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "1")
     evidence = tmp_path / "original-stage-evidence"
 
     class InjectedFailure(RuntimeError):
@@ -1926,7 +1447,6 @@ def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
         agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
             checkpoint=replace_stage,
@@ -1941,11 +1461,8 @@ def test_adapter_installation_preserves_replaced_partial_stage_at_checkpoint(
 def test_adapter_installation_preserves_stage_replaced_during_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
-    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "1")
     evidence = tmp_path / "write-stage-evidence"
     real_write = os.write
     swapped = False
@@ -1967,7 +1484,6 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
         agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
         )
@@ -1983,12 +1499,9 @@ def test_adapter_installation_preserves_stage_replaced_during_write(
 def test_adapter_installation_retains_partial_stage_after_io_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     root = home / ".codex/skills"
     failed = False
@@ -2023,7 +1536,7 @@ def test_adapter_installation_retains_partial_stage_after_io_failure(
 
     with pytest.raises(OSError) as raised:
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert raised.value.errno == expected_errno
@@ -2032,7 +1545,7 @@ def test_adapter_installation_retains_partial_stage_after_io_failure(
     assert list((home / ".codex/.llmwikiops-retained").iterdir())
 
     rerun = agent_adapter.install_adapter(
-        "codex", cli_version="2", collection=collection, home=home, environ={}
+        "codex", cli_version="2", home=home, environ={}
     )
     assert rerun.status == "upgraded"
 
@@ -2040,9 +1553,6 @@ def test_adapter_installation_retains_partial_stage_after_io_failure(
 def test_adapter_installation_retains_empty_stage_after_open_emfile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     real_open = os.open
     failed = False
@@ -2063,7 +1573,7 @@ def test_adapter_installation_retains_empty_stage_after_open_emfile(
     monkeypatch.setattr(os, "open", failing_stage_open)
     with pytest.raises(OSError) as raised:
         agent_adapter.install_adapter(
-            "codex", cli_version="1", collection=collection, home=home, environ={}
+            "codex", cli_version="1", home=home, environ={}
         )
 
     assert raised.value.errno == errno.EMFILE
@@ -2074,7 +1584,7 @@ def test_adapter_installation_retains_empty_stage_after_open_emfile(
     assert retained[0].is_dir() and not list(retained[0].iterdir())
 
     rerun = agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     assert rerun.status == "installed"
 
@@ -2082,9 +1592,6 @@ def test_adapter_installation_retains_empty_stage_after_open_emfile(
 def test_adapter_installation_preserves_stage_replacement_on_open_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     retained_root = home / ".codex/.llmwikiops-retained"
     evidence = tmp_path / "original-empty-stage"
@@ -2112,7 +1619,7 @@ def test_adapter_installation_preserves_stage_replacement_on_open_failure(
     monkeypatch.setattr(os, "open", replacing_stage_open)
     with pytest.raises(OSError, match="replaced stage failure"):
         agent_adapter.install_adapter(
-            "codex", cli_version="1", collection=collection, home=home, environ={}
+            "codex", cli_version="1", home=home, environ={}
         )
 
     assert replaced and evidence.is_dir()
@@ -2214,14 +1721,11 @@ def test_retention_preserves_replaced_retained_name(
 def test_adapter_installation_fails_closed_if_retention_root_is_replaced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     retained_root = home / ".codex/.llmwikiops-retained"
     evidence = tmp_path / "retention-root-evidence"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     real_rename = agent_adapter._rename_noreplace_between
     swapped = False
@@ -2245,7 +1749,7 @@ def test_adapter_installation_fails_closed_if_retention_root_is_replaced(
 
     with pytest.raises(ValueError, match="retention|changed|replaced|identity"):
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert swapped
@@ -2345,12 +1849,9 @@ def test_retention_collision_exdev_and_missing_capability_preserve_source(
 def test_adapter_upgrade_probes_rename_noreplace_before_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capability_errno: int
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     config_root = home / ".codex"
     retained_root = config_root / ".llmwikiops-retained"
@@ -2386,7 +1887,7 @@ def test_adapter_upgrade_probes_rename_noreplace_before_staging(
 
     with pytest.raises(OSError, match="injected rename capability failure"):
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert events == ["rename-probe"]
@@ -2398,15 +1899,12 @@ def test_adapter_upgrade_probes_rename_noreplace_before_staging(
 def test_actual_filesystem_rename_failure_leaves_stage_only_in_retention(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_live: bool
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     root = home / ".codex/skills"
-    old = agent_adapter.build_desired_adapter("codex", "1", collection)
+    old = agent_adapter.build_desired_adapter("codex", "1")
     if existing_live:
         agent_adapter.install_adapter(
-            "codex", cli_version="1", collection=collection, home=home, environ={}
+            "codex", cli_version="1", home=home, environ={}
         )
     real_call = agent_adapter._call_atomic_noreplace
 
@@ -2425,7 +1923,7 @@ def test_actual_filesystem_rename_failure_leaves_stage_only_in_retention(
     )
     with pytest.raises(OSError) as raised:
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert raised.value.errno == errno.EOPNOTSUPP
@@ -2438,7 +1936,7 @@ def test_actual_filesystem_rename_failure_leaves_stage_only_in_retention(
         )
     else:
         assert not live.exists()
-    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "2")
     retained = list((home / ".codex/.llmwikiops-retained").iterdir())
     assert len(retained) == 1
     assert (retained[0] / "SKILL.md").read_bytes() == desired.skill_md
@@ -2450,15 +1948,12 @@ def test_actual_filesystem_rename_failure_leaves_stage_only_in_retention(
 def test_upgrade_restores_backup_when_retained_stage_promotion_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     root = home / ".codex/skills"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
-    old = agent_adapter.build_desired_adapter("codex", "1", collection)
+    old = agent_adapter.build_desired_adapter("codex", "1")
     real_call = agent_adapter._call_atomic_noreplace
     real_path_calls = 0
 
@@ -2481,7 +1976,7 @@ def test_upgrade_restores_backup_when_retained_stage_promotion_fails(
     )
     with pytest.raises(OSError, match="stage promotion rejected"):
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     live = root / ADAPTER_NAME
@@ -2492,7 +1987,7 @@ def test_upgrade_restores_backup_when_retained_stage_promotion_fails(
     assert retained_before
 
     rerun = agent_adapter.install_adapter(
-        "codex", cli_version="2", collection=collection, home=home, environ={}
+        "codex", cli_version="2", home=home, environ={}
     )
     assert rerun.status == "upgraded"
     assert all(path.exists() for path in retained_before)
@@ -2531,12 +2026,9 @@ def test_rename_noreplace_probe_passes_uncreatable_empty_paths(
 def test_adapter_rename_probe_cannot_move_racing_owner_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     skills_root = home / ".codex/skills"
     retained_root = home / ".codex/.llmwikiops-retained"
@@ -2593,7 +2085,7 @@ def test_adapter_rename_probe_cannot_move_racing_owner_entry(
 
     with pytest.raises(StopBeforeStage):
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert calls == [(b"", b"")]
@@ -2644,12 +2136,9 @@ def test_atomic_noreplace_resolver_rejects_missing_or_unsupported_primitive(
 def test_adapter_installation_rejects_unsupported_platform_before_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     root = home / ".codex/skills"
     live_before = {
@@ -2664,7 +2153,7 @@ def test_adapter_installation_rejects_unsupported_platform_before_staging(
 
     with pytest.raises(OSError) as raised:
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
 
     assert raised.value.errno == errno.ENOTSUP
@@ -2677,9 +2166,6 @@ def test_adapter_installation_rejects_unsupported_platform_before_staging(
 def test_adapter_installation_never_overwrites_racing_live_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     root = tmp_path / "home/.codex/skills"
     live = root / ADAPTER_NAME
     retained_root = tmp_path / "home/.codex/.llmwikiops-retained"
@@ -2709,7 +2195,6 @@ def test_adapter_installation_never_overwrites_racing_live_directory(
         agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
         )
@@ -2739,9 +2224,6 @@ def test_adapter_installation_inspection_fails_closed_without_posix_open_flags(
 def test_adapter_installation_preserves_ambiguous_recovery_artifacts(
     tmp_path: Path,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     root = tmp_path / "home/.codex/skills"
     ambiguous = root / (".llm-wiki-ops.stage-" + "a" * 32)
     ambiguous.mkdir(parents=True)
@@ -2751,7 +2233,6 @@ def test_adapter_installation_preserves_ambiguous_recovery_artifacts(
         agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
         )
@@ -2762,13 +2243,10 @@ def test_adapter_installation_preserves_ambiguous_recovery_artifacts(
 def test_adapter_installation_recovers_verified_stage_beside_clean_old_live(
     tmp_path: Path,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     root = tmp_path / "home/.codex/skills"
     live = root / ADAPTER_NAME
-    old = agent_adapter.build_desired_adapter("codex", "1", collection)
-    desired = agent_adapter.build_desired_adapter("codex", "2", collection)
+    old = agent_adapter.build_desired_adapter("codex", "1")
+    desired = agent_adapter.build_desired_adapter("codex", "2")
     write_adapter_tree(live, old)
     stage = root / (".llm-wiki-ops.stage-" + "a" * 32)
     write_adapter_tree(stage, desired)
@@ -2777,7 +2255,6 @@ def test_adapter_installation_recovers_verified_stage_beside_clean_old_live(
     result = agent_adapter.install_adapter(
         "codex",
         cli_version="2",
-        collection=collection,
         home=tmp_path / "home",
         environ={},
     )
@@ -2790,10 +2267,7 @@ def test_adapter_installation_recovers_verified_stage_beside_clean_old_live(
 def test_adapter_installation_preserves_recovery_tree_with_wrong_mode(
     tmp_path: Path,
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
-    desired = agent_adapter.build_desired_adapter("codex", "1", collection)
+    desired = agent_adapter.build_desired_adapter("codex", "1")
     stage = tmp_path / "home/.codex/skills" / (".llm-wiki-ops.stage-" + "a" * 32)
     write_adapter_tree(stage, desired)
     stage.chmod(0o755)
@@ -2802,7 +2276,6 @@ def test_adapter_installation_preserves_recovery_tree_with_wrong_mode(
         agent_adapter.install_adapter(
             "codex",
             cli_version="1",
-            collection=collection,
             home=tmp_path / "home",
             environ={},
         )
@@ -2813,9 +2286,6 @@ def test_adapter_installation_preserves_recovery_tree_with_wrong_mode(
 def test_adapter_installation_avoids_path_recursive_mutation_apis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("forbidden path-based recursive mutation")
@@ -2826,7 +2296,6 @@ def test_adapter_installation_avoids_path_recursive_mutation_apis(
     result = agent_adapter.install_adapter(
         "codex",
         cli_version="1",
-        collection=collection,
         home=tmp_path / "prepared",
         environ={},
     )
@@ -2836,12 +2305,9 @@ def test_adapter_installation_avoids_path_recursive_mutation_apis(
 def test_adapter_installation_never_unlinks_or_removes_managed_trees(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
 
     def forbidden(*args: object, **kwargs: object) -> None:
@@ -2851,7 +2317,7 @@ def test_adapter_installation_never_unlinks_or_removes_managed_trees(
     monkeypatch.setattr(os, "rmdir", forbidden)
 
     result = agent_adapter.install_adapter(
-        "codex", cli_version="2", collection=collection, home=home, environ={}
+        "codex", cli_version="2", home=home, environ={}
     )
 
     assert result.status == "upgraded"
@@ -2861,12 +2327,9 @@ def test_adapter_installation_never_unlinks_or_removes_managed_trees(
 def test_adapter_installation_rejects_unsafe_retention_root_and_ignores_contents(
     tmp_path: Path
 ) -> None:
-    collection = discover_skill_collection(
-        make_skill_collection(tmp_path / "catalog", {"demo": "Use when demo."})
-    )
     home = tmp_path / "home"
     agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     retained_root = home / ".codex/.llmwikiops-retained"
     retained_root.mkdir(mode=0o700, exist_ok=True)
@@ -2875,7 +2338,7 @@ def test_adapter_installation_rejects_unsafe_retention_root_and_ignores_contents
     (ignored / "unknown").write_bytes(b"preserve\n")
 
     unchanged = agent_adapter.install_adapter(
-        "codex", cli_version="1", collection=collection, home=home, environ={}
+        "codex", cli_version="1", home=home, environ={}
     )
     assert unchanged.status == "unchanged"
     assert (ignored / "unknown").read_bytes() == b"preserve\n"
@@ -2883,6 +2346,6 @@ def test_adapter_installation_rejects_unsafe_retention_root_and_ignores_contents
     retained_root.chmod(0o755)
     with pytest.raises(ValueError, match="retention|mode|0700|unsafe"):
         agent_adapter.install_adapter(
-            "codex", cli_version="2", collection=collection, home=home, environ={}
+            "codex", cli_version="2", home=home, environ={}
         )
     assert (ignored / "unknown").read_bytes() == b"preserve\n"

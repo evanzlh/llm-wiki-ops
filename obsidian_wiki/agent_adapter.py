@@ -1,4 +1,4 @@
-"""Render the packaged external-repository adapter from captured skill metadata."""
+"""Render and install the packaged external-repository adapter."""
 
 from __future__ import annotations
 
@@ -19,10 +19,9 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal
 
-from . import IMPLEMENTATION_ID, skill_trees
+from . import IMPLEMENTATION_ID
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .skill_names import is_safe_skill_name
-from .skill_trees import SkillCollection, SkillEntry, SkillTree
 
 ADAPTER_NAME = "llm-wiki-ops"
 ADAPTER_DESCRIPTION = (
@@ -30,8 +29,6 @@ ADAPTER_DESCRIPTION = (
     "including querying, ingesting, maintaining, or recovering it, whether or not "
     "the user has supplied its repository root."
 )
-BUILTIN_CATALOG_START = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_START -->"
-BUILTIN_CATALOG_END = "<!-- LLMWIKIOPS_BUILTIN_CATALOG_END -->"
 ADAPTER_BOOTSTRAP_GATE_END = "<!-- LLMWIKIOPS_ADAPTER_BOOTSTRAP_GATE_END -->"
 ADAPTER_EOF = "<!-- LLMWIKIOPS_ADAPTER_EOF -->"
 _ADAPTER_TEMPLATE = Path(__file__).parent / "_data" / "adapter" / "SKILL.md.in"
@@ -259,13 +256,11 @@ class DesiredAdapter:
             )
 
 
-def build_desired_adapter(
-    target: object, cli_version: object, collection: SkillCollection
-) -> DesiredAdapter:
+def build_desired_adapter(target: object, cli_version: object) -> DesiredAdapter:
     """Build deterministic adapter and ownership-record bytes without writing them."""
     target_name = _require_target_name(target)
     version = _validate_cli_version(cli_version)
-    skill_md = render_adapter_skill(collection).encode("utf-8")
+    skill_md = render_adapter_skill().encode("utf-8")
     record = ManagedAdapterRecord(
         schema_version=MANAGED_ADAPTER_SCHEMA_VERSION,
         implementation=IMPLEMENTATION_ID,
@@ -336,106 +331,6 @@ def _read_template(path: Path) -> str:
     return template
 
 
-def _validate_entry_path(path: object) -> tuple[str, ...]:
-    if not isinstance(path, str) or not path or "\x00" in path or "\\" in path:
-        raise ValueError(f"unsafe skill entry path: {path!r}")
-    if path.startswith("/") or path.endswith("/"):
-        raise ValueError(f"unsafe skill entry path: {path!r}")
-    parts = tuple(path.split("/"))
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"unsafe skill entry path: {path!r}")
-    return parts
-
-
-def _validate_entry(entry: SkillEntry) -> tuple[str, ...]:
-    parts = _validate_entry_path(entry.path)
-    if entry.kind not in {"directory", "file"}:
-        raise ValueError(f"invalid captured skill entry kind: {entry.path}")
-    if not isinstance(entry.executable, bool) or not isinstance(entry.content, bytes):
-        raise TypeError(f"invalid captured skill entry metadata: {entry.path}")
-    if entry.kind == "directory" and (entry.executable or entry.content):
-        raise ValueError(f"invalid captured skill directory metadata: {entry.path}")
-    return parts
-
-
-def _validate_skill(skill: SkillTree) -> SkillTree:
-    if not is_safe_skill_name(skill.name):
-        raise ValueError(f"unsafe captured skill name: {skill.name!r}")
-    if not isinstance(skill.description, str) or not skill.description:
-        raise ValueError(f"captured skill description is required: {skill.name}")
-    if not isinstance(skill.entries, tuple) or not skill.entries:
-        raise ValueError(f"captured skill entries are required: {skill.name}")
-
-    paths = tuple(entry.path for entry in skill.entries)
-    if paths != tuple(sorted(paths)):
-        raise ValueError(f"captured skill entries must be sorted: {skill.name}")
-    if len(paths) != len(set(paths)):
-        raise ValueError(f"duplicate captured skill entry path: {skill.name}")
-
-    parts_by_path = {entry.path: _validate_entry(entry) for entry in skill.entries}
-    directories = {
-        entry.path for entry in skill.entries if entry.kind == "directory"
-    }
-    for path, parts in parts_by_path.items():
-        for depth in range(1, len(parts)):
-            parent = "/".join(parts[:depth])
-            if parent not in directories:
-                raise ValueError(
-                    f"orphan captured skill entry has no parent directory: {path}"
-                )
-
-    direct_skill_files = [
-        entry
-        for entry in skill.entries
-        if entry.path == "SKILL.md" and entry.kind == "file"
-    ]
-    if len(direct_skill_files) != 1:
-        raise ValueError(
-            f"captured skill topology requires one direct SKILL.md file: {skill.name}"
-        )
-
-    rebuilt = skill_trees._skill_tree_from_entries(  # type: ignore[attr-defined]
-        Path("<captured-skill-collection>"), skill.name, skill.entries
-    )
-    if rebuilt.description != skill.description:
-        raise ValueError(
-            f"captured skill metadata description does not match SKILL.md: {skill.name}"
-        )
-    if rebuilt.digest != skill.digest:
-        raise ValueError(f"captured skill digest does not match entries: {skill.name}")
-    return rebuilt
-
-
-def _validated_catalog(collection: SkillCollection) -> list[dict[str, str]]:
-    if not isinstance(collection, SkillCollection) or not collection.skills:
-        raise ValueError("skill collection must not be empty")
-    if not isinstance(collection.skills, tuple):
-        raise TypeError("captured skills must be a tuple")
-    names = tuple(skill.name for skill in collection.skills)
-    if len(names) != len(set(names)):
-        raise ValueError("duplicate skill name in captured collection")
-    if names != tuple(sorted(names)):
-        raise ValueError("captured skill collection must be sorted")
-
-    validated = tuple(_validate_skill(skill) for skill in collection.skills)
-    return [
-        {"name": skill.name, "description": skill.description}
-        for skill in validated
-    ]
-
-
-def _encoded_catalog(catalog: list[dict[str, str]]) -> str:
-    encoded = json.dumps(
-        catalog,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    # JSON permits literal '<'. Escaping it preserves json.loads() values while
-    # preventing metadata from manufacturing HTML catalog delimiters.
-    return encoded.replace("<", "\\u003c")
-
-
 def _validate_template_frontmatter(template: str) -> None:
     try:
         parsed = parse_frontmatter(template)
@@ -465,10 +360,11 @@ def _validate_template_bootstrap_protocol(template: str) -> None:
     authority = "## Authority and routing"
     supported = "## Supported repository model"
     preflight = "## Bind and preflight"
-    catalog_reads = "## Catalog and bounded reads"
+    catalog_reads = "## CLI-owned catalog and bounded reads"
     route = "## Route and load authority"
     info = "<wiki-cli> info --json"
-    check = "<wiki-cli> check"
+    check = "<wiki-cli> check --json"
+    skill_catalog = "Require `skill_catalog` to be a nonempty array."
     if any(
         template.count(anchor) != 1
         for anchor in (title, bootstrap, operation, authority)
@@ -485,59 +381,40 @@ def _validate_template_bootstrap_protocol(template: str) -> None:
         raise ValueError("adapter template bootstrap gate is not front-loaded")
     if any(
         template.count(anchor) != 1
-        for anchor in (supported, preflight, catalog_reads, route, info, check)
+        for anchor in (
+            supported,
+            preflight,
+            catalog_reads,
+            route,
+            info,
+            check,
+            skill_catalog,
+        )
     ):
         raise ValueError("adapter template static repository anchors must be unique")
-    if template.count(BUILTIN_CATALOG_START) == 1 and not (
+    if not (
         template.index(authority)
         < template.index(supported)
         < template.index(preflight)
         < template.index(info)
         < template.index(check)
         < template.index(catalog_reads)
+        < template.index(skill_catalog)
         < template.index(route)
-        < template.index(BUILTIN_CATALOG_START)
         < template.index(ADAPTER_EOF)
     ):
         raise ValueError("adapter template static repository anchors are out of order")
 
 
-def render_adapter_skill(collection: SkillCollection) -> str:
-    """Return one deterministic adapter skill containing catalog metadata only."""
-    catalog = _validated_catalog(collection)
+def render_adapter_skill() -> str:
+    """Return one deterministic external-repository adapter skill."""
     template = _read_template(_ADAPTER_TEMPLATE)
     _validate_template_frontmatter(template)
     _validate_template_bootstrap_protocol(template)
-    placeholder = BUILTIN_CATALOG_START + "\n" + BUILTIN_CATALOG_END
-    if (
-        template.count(BUILTIN_CATALOG_START) != 1
-        or template.count(BUILTIN_CATALOG_END) != 1
-        or placeholder not in template
-        or template.index(BUILTIN_CATALOG_START) > template.index(BUILTIN_CATALOG_END)
-    ):
-        raise ValueError(
-            "adapter template requires exactly one ordered empty catalog placeholder"
-        )
-
-    rendered = template.replace(
-        placeholder,
-        BUILTIN_CATALOG_START
-        + "\n"
-        + _encoded_catalog(catalog)
-        + "\n"
-        + BUILTIN_CATALOG_END,
-        1,
-    )
-    if (
-        rendered.count(BUILTIN_CATALOG_START) != 1
-        or rendered.count(BUILTIN_CATALOG_END) != 1
-        or rendered.index(BUILTIN_CATALOG_START) > rendered.index(BUILTIN_CATALOG_END)
-    ):
-        raise ValueError("rendered adapter catalog markers are not unique and ordered")
-    if "\r" in rendered or not rendered.endswith("\n") or rendered.endswith("\n\n"):
+    if "\r" in template or not template.endswith("\n") or template.endswith("\n\n"):
         raise ValueError("rendered adapter must use UTF-8/LF with one final newline")
-    rendered.encode("utf-8")
-    return rendered
+    template.encode("utf-8")
+    return template
 
 
 @dataclass(frozen=True)
@@ -1143,7 +1020,6 @@ def install_adapter(
     target: str,
     *,
     cli_version: str,
-    collection: SkillCollection,
     home: Path | None = None,
     environ: Mapping[str, str] | None = None,
     checkpoint: Callable[[str], None] | None = None,
@@ -1159,7 +1035,7 @@ def install_adapter(
     destination = resolve_adapter_destination(
         target, home=actual_home, environ=actual_environ
     )
-    desired = build_desired_adapter(target, cli_version, collection)
+    desired = build_desired_adapter(target, cli_version)
     invoke = _checkpoint_callback(checkpoint)
     retention_root = destination.parent.parent / _RETAINED_ADAPTER_ROOT
     stage_name: str | None = None
