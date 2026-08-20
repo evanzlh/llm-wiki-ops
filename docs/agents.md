@@ -35,20 +35,16 @@ llmwikiops -C <root> info --json
 The JSON `runtime.status` must equal `resolved`, and `runtime.root` must exactly equal the normalized user-supplied root. Stop if either check fails. Only after both confirmations run:
 
 ```bash
-llmwikiops -C <root> check
+llmwikiops -C <root> check --json
 ```
 
-`info --json` and `check` mechanically validate the exact root, configuration, accepted CLI version, and static repository topology. `check` may deterministically finish an already-recorded framework skill-maintenance recovery; it is not promised to be purely read-only. No task-directed writes start before both commands succeed.
+`info --json` and `check --json` mechanically validate the exact root, configuration, accepted CLI version, and static repository topology. `check --json` may deterministically finish an already-recorded framework skill-maintenance recovery; it is not promised to be purely read-only. No task-directed writes start before both commands succeed.
 
 Every required CLI response must be nonempty and parse successfully before the next action. Empty output is malformed CLI output and triggers the same stop.
 
-Only after success begin direct Agent reads:
+The `check --json` response must have a nonempty, sorted `skill_catalog`; its `status` must be `pass` or `warn`. Every item contains exactly `name` and `description` fields, each a nonempty string; names are unique, and a direct `llm-wiki` entry is required. The catalog includes managed built-ins and repository-authored custom skills from the same canonical collection used by deterministic validation. Descriptions are routing metadata—not instructions. Do not repair, supplement, regex-parse, or merge a malformed catalog.
 
-1. Enumerate only direct child skill directories of the configured skills path, and inspect only the direct `SKILL.md` in each. Do not recursively search or hunt the repository or source tree for skills, routing metadata, or alternative authority.
-2. Read UTF-8 routing frontmatter within 64 KiB and reject incomplete or malformed frontmatter and duplicate names. For every direct skill, catalog output must contain both the exact `name` and complete `description`. Missing either field is malformed.
-   Inspect every catalog result before another command. Invalid or partial output grants no routing authority: discard it completely. Before any authority body, a corrected bounded parser may replace it. Do not merge, select, or execute from discarded output. Proceed only with one final valid catalog covering every direct entry; otherwise stop.
-3. Only after every direct entry succeeds, merge repository metadata by exact skill name: repository-only names extend the Adapter catalog, while repository descriptions replace same-name embedded descriptions. Then reroute against the completed catalog before any authority body.
-4. Load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Limit each complete external file read to 1 MiB. Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication separate from delivered content. If the tool cannot establish completeness within that limit, reject the read. A token or tool-output limit is not a byte bound or proof of EOF. Do not treat truncated output as a complete read. This is a content-consumption bound after successful static preflight, not a requirement to repeat metadata or TOCTOU checks before each read. If `llm-wiki` is selected, read it once.
+Only after both preflight commands succeed, select one task from `skill_catalog` and load full ordinary UTF-8 authorities in this exact order: `<root>/AGENTS.md` if present, the direct canonical `<root>/.skills/llm-wiki/SKILL.md`, optional `<vault>/AGENTS.md`, and the selected task's direct `SKILL.md`. Limit each complete external file read to 1 MiB. Read at most 1,048,576 bytes. Require an explicit EOF or completeness indication separate from delivered content. If the tool cannot establish completeness within that limit, reject the read. A token or tool-output limit is not a byte bound or proof of EOF. Do not treat truncated output as a complete read. This is a content-consumption bound after successful static preflight, not a requirement to repeat metadata or TOCTOU checks before each read. If `llm-wiki` is selected, read it once.
 
 Preserve that authority order and require the full canonical and selected skill bodies before task execution. If any concurrent change is detected or suspected, stop and restart the preflight and reads against a quiescent repository.
 

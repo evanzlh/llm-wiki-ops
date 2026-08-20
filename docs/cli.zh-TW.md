@@ -27,6 +27,7 @@
 ```bash
 llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
@@ -46,6 +47,8 @@ llmwikiops check
 ```
 
 `setup` 的目錄參數可以省略，此時使用目前目錄。`doctor` 檢查設定與受管理資產；`check` 驗證來源、受版本管理的來源快照、manifest v2 分片、頁面、技能鏡像與引導檔案。
+
+`check --json` 也會回傳 `skill_catalog`：這是從已驗證的規範技能集合投影而來、依名稱排序的陣列，每個物件只含精確的 `name` 與完整正規化的 `description`。規範技能探索失敗時其值為 `null`；人類可讀輸出不會列印此目錄。
 
 ## 技能維護
 

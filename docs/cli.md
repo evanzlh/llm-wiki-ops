@@ -15,6 +15,7 @@ Use `-C` or its `--repo` alias as a global option before the subcommand:
 ```bash
 llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
+llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
@@ -34,6 +35,8 @@ llmwikiops check [--json] [--pretty] [--strict]
 ```
 
 `setup` creates a clone-ready repository in `DIR`, or in the current directory when omitted. `list` reports bundled skills. `info` reports version, install paths, and resolved context. `doctor` checks configuration and managed assets. `check` performs full deterministic repository validation; `--strict` also treats warnings as failure.
+
+`check --json` also returns `skill_catalog`, a sorted array of exact `name` and normalized complete `description` objects projected from the validated canonical skill collection. It is `null` when canonical skill discovery fails. Human output does not print the catalog.
 
 ## Repository skills
 

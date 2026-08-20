@@ -32,7 +32,10 @@ Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Out
 
 ## Optional external router
 
-The global `llm-wiki-ops` Adapter is an optional global router, not a second repository mode. It contains generated built-in routing descriptions but no task bodies, contains no selected wiki path, and never installs the repository task skill tree globally. Each external request binds one exact root through the CLI; the runtime does not persist the explicit host path in tracked content or in the Adapter. Supplying that root trusts its tracked repository authority, subject to Git and owner review. After validation, the target repository's bootstrap, canonical protocol, skill metadata, and skill bodies remain authoritative.
+The global `llm-wiki-ops` Adapter contains no built-in skill catalog or task
+bodies. After exact-root resolution, `check --json` projects routing metadata
+from the same Python-validated canonical `SkillCollection`; that repository
+catalog is the only routing source for the external operation. The Adapter contains no selected wiki path and never installs the repository task skill tree globally. Each external request binds one exact root through the CLI; the runtime does not persist the explicit host path in tracked content or in the Adapter. Supplying that root trusts its tracked repository authority, subject to Git and owner review. After validation, the target repository's bootstrap, canonical protocol, skill metadata, and skill bodies remain authoritative.
 
 External Adapter authority reads support only a user-controlled local, quiescent repository. The owner guarantees the stable environment: concurrent mutation, shared-writable repositories, network-sync activity, and network filesystems requiring concurrent consistency are unsupported. The CLI mechanically performs static validation of the selected root, configuration, version, and topology. This model does not claim adversarial TOCTOU protection between validation and later direct Agent reads; a detected or suspected change requires stopping and restarting from preflight.
 

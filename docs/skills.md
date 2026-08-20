@@ -4,7 +4,12 @@ LLMWikiOps packages 36 skills. `setup` copies them into the repository's canonic
 
 Inside a wiki, repository-aware commands use nearest-ancestor CWD discovery. Outside a wiki, use an explicitly installed global adapter and mandatory `-C` / `--repo` on every repository-aware command.
 
-The optional global Adapter is only a router. It embeds the installed CLI's built-in names and descriptions, contains no selected wiki path or task bodies, and never installs the repository task skill tree globally. After the exact target repository is validated, direct `.skills/*/SKILL.md` frontmatter is loaded again: custom names extend the catalog, while repository-local skill metadata and body take precedence for a matching built-in name. If metadata differs, re-evaluate the route, then read the complete selected body from that repository under the same immutable repository binding.
+The optional global Adapter is only a router. It contains no selected wiki path,
+built-in skill catalog, or task bodies, and never installs the repository task
+skill tree globally. After exact-root resolution, `check --json` returns one
+Python-validated catalog containing managed and repository-authored custom skills.
+The Agent selects from that repository-authoritative metadata and then reads the
+complete selected body under the same immutable repository binding.
 
 Updating this global router retains verified prior Adapter artifacts in the Agent configuration root's `.llmwikiops-retained/` evidence area. Runtime skills have no authority to delete or garbage-collect that area; cleanup is a separate user-confirmed manual filesystem action.
 

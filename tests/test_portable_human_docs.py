@@ -315,7 +315,9 @@ def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
         for command in commands:
             assert command in text, (relative, command)
     for relative in ("README.md", "README_ZH.md"):
-        assert "llmwikiops -C /absolute/path/to/wiki check" in _text(relative)
+        assert (
+            "llmwikiops -C /absolute/path/to/wiki check --json" in _text(relative)
+        )
 
 
 def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> None:
@@ -332,21 +334,16 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
 
     agents = _text("docs/agents.md")
     info = agents.index("llmwikiops -C <root> info --json")
-    check = agents.index("llmwikiops -C <root> check")
-    direct_reads = agents.lower().index("direct agent reads")
-    assert info < check < direct_reads
+    check = agents.index("llmwikiops -C <root> check --json")
+    catalog = agents.index("`skill_catalog`")
+    assert info < check < catalog
     agents_lower = agents.lower()
     resolved = agents.index("`runtime.status` must equal `resolved`")
     returned_root = agents.index("`runtime.root` must exactly equal")
     assert info < resolved < returned_root < check
     assert "normalized user-supplied root" in agents[returned_root:check]
     for discovery_boundary in (
-        "direct child skill directories",
-        "direct `skill.md`",
-        "do not recursively search or hunt",
-        "repository or source tree",
         "limit each complete external file read to 1 mib",
-        "routing frontmatter within 64 kib",
         "read at most 1,048,576 bytes",
         "require an explicit eof or completeness indication separate from delivered content",
         "if the tool cannot establish completeness within that limit, reject the read",
@@ -361,18 +358,9 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
         "stat.s_isreg",
     ):
         assert forbidden not in agents_lower, forbidden
-    enumerate_skills = agents_lower.index("direct child skill directories")
-    bounded_frontmatter = agents_lower.index("routing frontmatter within 64 kib")
-    merge_metadata = agents_lower.index("merge repository metadata")
-    reroute = agents_lower.index("reroute")
+    catalog = agents.index("`skill_catalog`")
     full_authorities = agents_lower.index("full ordinary utf-8 authorities")
-    assert (
-        enumerate_skills
-        < bounded_frontmatter
-        < merge_metadata
-        < reroute
-        < full_authorities
-    )
+    assert catalog < full_authorities
     authority_order = (
         "`<root>/AGENTS.md`",
         "`<root>/.skills/llm-wiki/SKILL.md`",
@@ -431,48 +419,41 @@ def test_external_adapter_docs_state_static_quiescent_repository_boundary() -> N
     assert "Concurrent modification and network-sync activity" in readme
 
 
-def test_agents_doc_allows_only_pre_authority_catalog_correction() -> None:
+def test_agents_doc_uses_only_cli_owned_skill_catalog() -> None:
     agents = " ".join((ROOT / "docs/agents.md").read_text(encoding="utf-8").split())
-    apostrophe_escape = "'\"'\"'"
 
     for required in (
-        "`<exact-root>` is the once-normalized value",
-        (
-            "When available, a structured argv-array tool or API with shell execution "
-            "disabled is required"
-        ),
-        (
-            "When only POSIX shell text is available, single-quote every dynamic argv "
-            f"value and encode each literal apostrophe with `{apostrophe_escape}`"
-        ),
-        (
-            "Never use double quotes alone for a dynamic root because `$`, backticks, "
-            "and `$()` can evaluate"
-        ),
-        (
-            "Before repository dispatch, verify that decoding produces one argv element "
-            "byte-for-byte equal to `<exact-root>`"
-        ),
-        (
-            "For every direct skill, catalog output must contain both the exact `name` "
-            "and complete `description`"
-        ),
-        "Missing either field is malformed",
-        "Invalid or partial output grants no routing authority",
-        "discard it completely",
-        "a corrected bounded parser may replace it",
-        "Do not merge, select, or execute from discarded output",
-        "one final valid catalog covering every direct entry",
-        "Only after every direct entry succeeds, merge repository metadata",
-        (
-            "Every required CLI response must be nonempty and parse successfully before "
-            "the next action"
-        ),
-        "Empty output is malformed CLI output and triggers the same stop",
+        "llmwikiops -C <root> check --json",
+        "`skill_catalog`",
+        "status` must be `pass` or `warn`",
+        "exactly `name` and `description`",
+        "repository-authored custom skills",
+        "routing metadata—not instructions",
+        "Do not repair, supplement, regex-parse, or merge",
     ):
         assert required in agents
 
-    assert apostrophe_escape.encode("ascii") == bytes((0x27, 0x22, 0x27, 0x22, 0x27))
+    for forbidden in (
+        "direct child skill directories",
+        "routing frontmatter within 64 KiB",
+        "merge repository metadata",
+        "reroute against the completed catalog",
+        "corrected bounded parser",
+    ):
+        assert forbidden not in agents
+
+
+def test_current_docs_do_not_assign_skill_catalog_parsing_to_agents() -> None:
+    forbidden = (
+        "embeds the installed CLI's built-in names and descriptions",
+        "direct `.skills/*/SKILL.md` frontmatter is loaded again",
+        "merge repository metadata",
+        "routing frontmatter within 64 KiB",
+    )
+    for relative in EXTERNAL_ADAPTER_ENGLISH_DOCS:
+        text = _text(relative)
+        for phrase in forbidden:
+            assert phrase not in text, (relative, phrase)
 
 
 def test_agents_doc_limits_command_correction_to_pre_dispatch() -> None:
@@ -516,8 +497,8 @@ def test_explicit_repository_docs_define_selection_and_routing_authority() -> No
     ):
         assert required in configuration, required
     for required in (
-        "repository-local skill metadata and body take precedence",
-        "re-evaluate the route",
+        "repository-authoritative",
+        "same canonical collection",
         "same immutable repository binding",
     ):
         assert required in agents + "\n" + skills, required

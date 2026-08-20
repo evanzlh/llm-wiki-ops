@@ -54,16 +54,16 @@ The `CODEX_HOME` override must be an absolute path. When `CODEX_HOME` is unset, 
 
 During an upgrade or recovery, verified old managed trees and interrupted-installation evidence move out of the active namespace to `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`, where `<agent-config>` is the directory containing that target's `skills/` directory. This retention is the evidence and recovery boundary: the installer does not automatically call `unlink` or `rmdir`, performs no automatic garbage collection, and provides no cleanup command. Retained directories can accumulate and consume disk space. An owner may inspect and perform manual cleanup only after user confirmation that the evidence is no longer needed; LLMWikiOps does not perform that cleanup.
 
-The Adapter stores routing metadata only. It does not store a wiki path or install a wiki's task skill tree globally. For every external operation, explicitly name the exact repository root and put the global option before the subcommand:
+The Adapter stores no packaged skill metadata: installation no longer reads or embeds it. It does not store a wiki path or install a wiki's task skill tree globally. For every external operation, explicitly name the exact repository root and put the global option before the subcommand:
 
 ```bash
 llmwikiops -C /absolute/path/to/wiki info --json
-llmwikiops -C /absolute/path/to/wiki check
+llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
 llmwikiops -C /absolute/path/to/wiki transaction list --json
 ```
 
-The environment conditions are owner guarantees; the Adapter does not mechanically prove quiescence. `info --json` and `check` mechanically perform static validation of the root, configuration, accepted CLI version, and repository topology. `check` may deterministically finish an already-recorded framework skill-maintenance recovery, so it is not promised to be purely read-only. Start no direct Agent reads or task-directed writes until both preflight commands succeed. If concurrent mutation or network-sync activity is detected or suspected, stop and restart the operation against a quiescent repository.
+The environment conditions are owner guarantees; the Adapter does not mechanically prove quiescence. `info --json` and `check --json` mechanically perform static validation of the root, configuration, accepted CLI version, and repository topology. `check --json` may deterministically finish an already-recorded framework skill-maintenance recovery, so it is not promised to be purely read-only. Start no direct Agent reads or task-directed writes until both preflight commands succeed. If concurrent mutation or network-sync activity is detected or suspected, stop and restart the operation against a quiescent repository.
 
 The selected directory itself must directly contain `.llmwikiops/config.toml`; an unconfigured child is rejected without ancestor fallback. No default, profile, environment, or recently used repository is consulted.
 
