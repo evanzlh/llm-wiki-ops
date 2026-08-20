@@ -41,6 +41,7 @@ from .skill_trees import (
     SkillCollection,
     SkillEntry,
     discover_anchored_skill_collection,
+    skill_catalog,
     snapshot_ordinary_tree_with_unsafe,
 )
 
@@ -217,6 +218,16 @@ def _report(issues: list[CheckIssue]) -> dict[str, object]:
         "warnings": warnings,
         "issues": [asdict(issue) for issue in issues],
     }
+
+
+def _repository_report(
+    issues: list[CheckIssue], canonical: SkillCollection | None
+) -> dict[str, object]:
+    report = _report(issues)
+    report["skill_catalog"] = (
+        None if canonical is None else skill_catalog(canonical)
+    )
+    return report
 
 
 def _reload_config(
@@ -969,13 +980,15 @@ def _check_skill_mirrors(
             )
 
 
-def _check_managed_skills(config: PortableConfig, issues: list[CheckIssue]) -> None:
+def _check_managed_skills(
+    config: PortableConfig, issues: list[CheckIssue]
+) -> SkillCollection | None:
     canonical = _load_canonical_skills(config, issues)
     if canonical is None:
-        return
-    if not _load_managed_inventory(config, canonical, issues):
-        return
-    _check_skill_mirrors(config, canonical, issues)
+        return None
+    if _load_managed_inventory(config, canonical, issues):
+        _check_skill_mirrors(config, canonical, issues)
+    return canonical
 
 
 def check_portable_skills(config: PortableConfig) -> dict[str, object]:
@@ -1097,7 +1110,7 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     issues: list[CheckIssue] = []
     loaded = _reload_config(config, issues)
     if loaded is None:
-        return _report(issues)
+        return _repository_report(issues, None)
 
     _check_unsupported_personal_artifacts(loaded, issues)
     store, entries = _load_manifest(loaded, issues)
@@ -1107,8 +1120,8 @@ def check_portable_repo(config: PortableConfig) -> dict[str, object]:
     _check_operation_log(loaded, store, entries, issues)
     _check_lint(loaded, issues)
     _check_git(loaded, issues)
-    _check_managed_skills(loaded, issues)
+    canonical = _check_managed_skills(loaded, issues)
     _check_bootstrap(loaded, issues)
     _check_stable_views(loaded, issues)
     _check_hot_view(loaded, issues)
-    return _report(issues)
+    return _repository_report(issues, canonical)

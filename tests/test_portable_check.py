@@ -36,6 +36,10 @@ from obsidian_wiki.portable import (
 )
 from obsidian_wiki.portable_check import CheckIssue, check_portable_repo
 from obsidian_wiki.portable_manifest import ShardedManifest
+from obsidian_wiki.skill_trees import (
+    discover_anchored_skill_collection,
+    skill_catalog,
+)
 
 
 def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
@@ -1231,14 +1235,16 @@ def test_check_issue_contract_is_exact() -> None:
     )
 
 
-def test_valid_portable_repo_passes(tmp_path: Path) -> None:
+def test_valid_portable_repo_returns_validated_skill_catalog(tmp_path: Path) -> None:
     _, config, _, _, _ = valid_repo(tmp_path)
+    canonical = discover_anchored_skill_collection(config.skills, anchor=config.root)
 
     assert check_portable_repo(config) == {
         "status": "pass",
         "errors": 0,
         "warnings": 0,
         "issues": [],
+        "skill_catalog": skill_catalog(canonical),
     }
 
 
@@ -1274,6 +1280,7 @@ def test_valid_portable_repo_accepts_supported_nested_frontmatter(
     tmp_path: Path,
 ) -> None:
     _, config, _, page, _ = valid_repo(tmp_path)
+    canonical = discover_anchored_skill_collection(config.skills, anchor=config.root)
     page.write_text(
         page.read_text(encoding="utf-8").replace(
             "---\n# A\n",
@@ -1296,6 +1303,7 @@ relationships:
         "errors": 0,
         "warnings": 0,
         "issues": [],
+        "skill_catalog": skill_catalog(canonical),
     }
 
 
@@ -1888,6 +1896,7 @@ def test_malformed_canonical_skill_is_reported_separately(
     report = check_portable_repo(config)
 
     assert "canonical-skill-invalid" in issue_codes(report)
+    assert report["skill_catalog"] is None
     assert str(root) not in json.dumps(report)
 
 
@@ -1906,6 +1915,74 @@ def test_custom_canonical_skills_must_exist_in_every_mirror(
 
     assert "skill-mirror-missing" in issue_codes(report)
     assert "managed-skills-invalid" not in issue_codes(report)
+
+
+def test_check_catalog_includes_repository_custom_skill_description(
+    tmp_path: Path,
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    custom = _write_custom_skill(root / ".skills", "team-routing")
+    (custom / "SKILL.md").write_text(
+        "---\n"
+        "name: team-routing\n"
+        "description: >-\n"
+        "  Use when team-owned\n"
+        "  routing is requested.\n"
+        "---\n\n"
+        "# Team routing\n",
+        encoding="utf-8",
+    )
+    _copy_skill_to_all_mirrors(root, custom)
+
+    report = check_portable_repo(config)
+
+    catalog = {
+        item["name"]: item["description"] for item in report["skill_catalog"]
+    }
+    assert report["status"] == "pass"
+    assert catalog["team-routing"] == "Use when team-owned routing is requested."
+
+
+def test_check_reuses_one_canonical_snapshot_for_validation_and_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, config, _, _, _ = valid_repo(tmp_path)
+    original = portable_check_module.discover_anchored_skill_collection
+    canonical_calls = 0
+
+    def counting_discovery(root: Path, *, anchor: Path):
+        nonlocal canonical_calls
+        if root == config.skills:
+            canonical_calls += 1
+        return original(root, anchor=anchor)
+
+    monkeypatch.setattr(
+        portable_check_module,
+        "discover_anchored_skill_collection",
+        counting_discovery,
+    )
+
+    report = check_portable_repo(config)
+
+    assert report["status"] == "pass"
+    assert report["skill_catalog"]
+    assert canonical_calls == 1
+
+
+def test_failed_repository_check_cannot_make_catalog_authoritative(
+    tmp_path: Path,
+) -> None:
+    _, config, _, page, _ = valid_repo(tmp_path)
+    page.write_text(
+        page.read_text(encoding="utf-8") + "\n[[Missing target]]\n",
+        encoding="utf-8",
+    )
+
+    report = check_portable_repo(config)
+
+    assert report["status"] == "fail"
+    assert report["skill_catalog"]
 
 
 def test_custom_skill_binary_executable_and_cjk_resources_compare_exactly(
@@ -2277,6 +2354,32 @@ def _run_cli(home: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[s
         text=True,
         capture_output=True,
     )
+
+
+def test_cli_check_json_serializes_catalog_but_human_output_does_not(
+    tmp_path: Path,
+) -> None:
+    root, _, _, _, _ = valid_repo(tmp_path)
+    home = tmp_path / "home"
+
+    machine = _run_cli(home, root, "check", "--json")
+    human = _run_cli(home, root, "check")
+
+    machine_payload = json.loads(machine.stdout)
+    assert machine.returncode == 0
+    assert machine.stderr == ""
+    assert machine_payload["status"] == "pass"
+    assert machine_payload["skill_catalog"]
+    assert {"name": "llm-wiki", "description": next(
+        item["description"]
+        for item in machine_payload["skill_catalog"]
+        if item["name"] == "llm-wiki"
+    )} in machine_payload["skill_catalog"]
+
+    assert human.returncode == 0
+    assert human.stderr == ""
+    assert human.stdout == "portable check: pass (0 errors, 0 warnings)\n"
+    assert "llm-wiki" not in human.stdout
 
 
 def test_cli_check_json_from_nested_source_is_nonzero_when_stale(
