@@ -52,11 +52,13 @@ as the separator. Exactly one configured source root supplies those IDs; an
 absolute host path is never provenance.
 
 External URLs, live services, terminal output, binary files, and Git LFS objects
-are not ordinary source authority. Materializing one as a reviewed Markdown snapshot is
-an owner-authorized, owner-reviewed authority prerequisite, not a candidate
-wiki write. Complete that review beneath the configured sources directory
-before `transaction begin`; the snapshot's repository-relative Source ID then
-becomes transaction provenance.
+are not ordinary source authority. An explicit task request authorizes Agent
+materialization and review of one as a reviewed Markdown snapshot: complete that
+work beneath the configured sources directory before `transaction begin`; the
+snapshot's repository-relative Source ID then becomes transaction provenance.
+Materialization requires sufficient, unambiguous evidence; insufficient or
+ambiguous evidence requires a user decision, and
+owner-overlapping dirty paths require confirmation rather than overwrite.
 
 Compiled vault pages are derived output, not sources. Follow their `sources`
 frontmatter only to close an update or deletion over the authoritative tracked

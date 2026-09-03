@@ -414,6 +414,9 @@ def test_canonical_protocol_defines_task_scoped_autonomy_and_risk_escalation() -
     for required in (
         "explicit user request authorizes ordinary local steps",
         "create or update an in-scope Source snapshot",
+        "explicit task request authorizes Agent materialization and review",
+        "insufficient or ambiguous evidence",
+        "owner-overlapping dirty paths",
         "stage and locally commit exact task-owned paths",
         "inspect the staged diff",
         "leave unrelated paths untouched",
