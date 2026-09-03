@@ -771,3 +771,239 @@ def test_cjk_source_id_survives_cache_transaction_operation_and_check(
         assert clone_path.is_file()
         assert clone_path.read_bytes() == expected
         assert _git_bytes(clone, "show", f"HEAD:{relative}").stdout == expected
+
+
+def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_changes(
+    tmp_path: Path,
+) -> None:
+    root = _portable_seed(tmp_path)
+    unrelated = root / "owner-notes.md"
+    unrelated.write_bytes(b"owner baseline\n")
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "agent@example.invalid")
+    _git(root, "config", "user.name", "Agent")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "portable seed")
+
+    unrelated_bytes = b"unrelated owner change\n"
+    unrelated.write_bytes(unrelated_bytes)
+    source_id = "sources/task-scoped.md"
+    source = root / source_id
+    source.write_text("# Task-scoped source\n", encoding="utf-8")
+    _git(root, "--literal-pathspecs", "add", "--", source_id)
+    staged_source = _git(
+        root, "--literal-pathspecs", "diff", "--cached", "--", source_id
+    ).stdout
+    assert source_id in staged_source
+    _git(root, "--literal-pathspecs", "diff", "--cached", "--check", "--", source_id)
+    _git(
+        root,
+        "--literal-pathspecs",
+        "commit",
+        "-m",
+        "source: add task-scoped authority",
+        "--",
+        source_id,
+    )
+    source_create_commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert set(
+        _git(
+            root,
+            "show",
+            "--pretty=format:",
+            "--name-only",
+            source_create_commit,
+        ).stdout.splitlines()
+    ) == {source_id}
+
+    warning = _cli(root, "check", "--json")
+    assert warning.returncode == 0, warning.stdout + warning.stderr
+    assert json.loads(warning.stdout)["status"] == "warn"
+
+    begun = _cli(root, "transaction", "begin", "--source", source_id, "--json")
+    assert begun.returncode == 0, begun.stdout + begun.stderr
+    first = json.loads(begun.stdout)
+    page_id = "concepts/task-scoped.md"
+    candidate = Path(first["candidate_vault"]) / page_id
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(
+        _page(
+            title="Task Scoped",
+            source_id=source_id,
+            created=first["started_at"],
+        ),
+        encoding="utf-8",
+    )
+    validated = _cli(
+        root, "transaction", "validate", first["transaction_id"], "--json"
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    assert json.loads(validated.stdout)["status"] == "pass"
+    committed = _cli(
+        root, "transaction", "commit", first["transaction_id"], "--json"
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    first_result = json.loads(committed.stdout)
+    assert first_result["created"] == [page_id]
+    checked = _cli(root, "check", "--json")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert json.loads(checked.stdout)["status"] == "pass"
+
+    shard = ShardedManifest(_config(root)).entry_path(source_id)
+    first_result_paths = [
+        f"wiki/{page_id}",
+        shard.relative_to(root).as_posix(),
+        f"wiki/{first_result['log_path']}",
+    ]
+    hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
+    assert hot_diff.returncode in (0, 1)
+    if hot_diff.returncode == 1:
+        first_result_paths.append("wiki/hot.md")
+    _git(root, "--literal-pathspecs", "add", "--", *first_result_paths)
+    assert set(
+        _git(root, "diff", "--cached", "--name-only", "--", *first_result_paths)
+        .stdout.splitlines()
+    ) == set(first_result_paths)
+    _git(
+        root,
+        "--literal-pathspecs",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        *first_result_paths,
+    )
+    _git(
+        root,
+        "--literal-pathspecs",
+        "commit",
+        "-m",
+        "wiki: compile task-scoped source",
+        "--",
+        *first_result_paths,
+    )
+    first_result_commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert set(
+        _git(
+            root,
+            "show",
+            "--pretty=format:",
+            "--name-only",
+            first_result_commit,
+        ).stdout.splitlines()
+    ) == set(first_result_paths)
+
+    source.write_text("# Task-scoped source\n\nUpdated authority.\n", encoding="utf-8")
+    _git(root, "--literal-pathspecs", "add", "--", source_id)
+    assert source_id in _git(
+        root, "--literal-pathspecs", "diff", "--cached", "--", source_id
+    ).stdout
+    _git(root, "--literal-pathspecs", "diff", "--cached", "--check", "--", source_id)
+    _git(
+        root,
+        "--literal-pathspecs",
+        "commit",
+        "-m",
+        "source: update task-scoped authority",
+        "--",
+        source_id,
+    )
+    source_update_commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert set(
+        _git(
+            root,
+            "show",
+            "--pretty=format:",
+            "--name-only",
+            source_update_commit,
+        ).stdout.splitlines()
+    ) == {source_id}
+
+    begun = _cli(root, "transaction", "begin", "--source", source_id, "--json")
+    assert begun.returncode == 0, begun.stdout + begun.stderr
+    second = json.loads(begun.stdout)
+    candidate = Path(second["candidate_vault"]) / page_id
+    candidate.parent.mkdir(parents=True)
+    updated_page = _page(
+        title="Task Scoped",
+        source_id=source_id,
+        created=first["started_at"],
+    ).replace(
+        f"updated: {first['started_at']}",
+        f"updated: {second['started_at']}",
+    )
+    candidate.write_text(updated_page + "\nUpdated knowledge.\n", encoding="utf-8")
+    validated = _cli(
+        root, "transaction", "validate", second["transaction_id"], "--json"
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    assert json.loads(validated.stdout)["status"] == "pass"
+    committed = _cli(
+        root, "transaction", "commit", second["transaction_id"], "--json"
+    )
+    assert committed.returncode == 0, committed.stdout + committed.stderr
+    second_result = json.loads(committed.stdout)
+    assert second_result["updated"] == [page_id]
+    checked = _cli(root, "check", "--json")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert json.loads(checked.stdout)["status"] == "pass"
+
+    second_result_paths = [
+        f"wiki/{page_id}",
+        shard.relative_to(root).as_posix(),
+        f"wiki/{second_result['log_path']}",
+    ]
+    hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
+    assert hot_diff.returncode in (0, 1)
+    if hot_diff.returncode == 1:
+        second_result_paths.append("wiki/hot.md")
+    _git(root, "--literal-pathspecs", "add", "--", *second_result_paths)
+    assert set(
+        _git(root, "diff", "--cached", "--name-only", "--", *second_result_paths)
+        .stdout.splitlines()
+    ) == set(second_result_paths)
+    _git(
+        root,
+        "--literal-pathspecs",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        *second_result_paths,
+    )
+    _git(
+        root,
+        "--literal-pathspecs",
+        "commit",
+        "-m",
+        "wiki: recompile task-scoped source",
+        "--",
+        *second_result_paths,
+    )
+    second_result_commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert set(
+        _git(
+            root,
+            "show",
+            "--pretty=format:",
+            "--name-only",
+            second_result_commit,
+        ).stdout.splitlines()
+    ) == set(second_result_paths)
+
+    checked = _cli(root, "check", "--json")
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert json.loads(checked.stdout)["status"] == "pass"
+    assert unrelated.read_bytes() == unrelated_bytes
+    assert _git(root, "status", "--short").stdout.splitlines() == [
+        " M owner-notes.md"
+    ]
+    for commit in (
+        source_create_commit,
+        first_result_commit,
+        source_update_commit,
+        second_result_commit,
+    ):
+        assert "owner-notes.md" not in _git(
+            root, "show", "--pretty=format:", "--name-only", commit
+        ).stdout.splitlines()

@@ -75,6 +75,7 @@ exclude = [
 # Prune build noise and project-local agent configuration.
 exclude = [
   "/.claude",
+  "/.superpowers",
   "/dist",
   "/build",
 ]

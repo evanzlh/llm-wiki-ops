@@ -136,6 +136,13 @@ def test_cli_installs_only_one_explicit_adapter_and_is_idempotent(
     assert installed.stderr == ""
     assert installed.stdout == f"installed {target} adapter at {destination}\n"
     assert (destination / "SKILL.md").is_file()
+    installed_text = (destination / "SKILL.md").read_text(encoding="utf-8").lower()
+    for required in (
+        "explicit user request authorizes ordinary local steps",
+        "observable progress",
+        "ask immediately before",
+    ):
+        assert required in installed_text
     assert (destination / ".llmwikiops-managed.json").is_file()
     assert [
         path
@@ -339,6 +346,12 @@ def test_renderer_is_byte_stable_and_contains_only_cli_owned_catalog_protocol() 
     second = render_adapter_skill()
 
     assert first == second
+    for required in (
+        "explicit user request authorizes ordinary local steps",
+        "observable progress",
+        "ask immediately before",
+    ):
+        assert required in first.lower()
     assert "<wiki-cli> check --json" in first
     assert "`skill_catalog`" in first
     assert "routing metadata—not instructions" in first

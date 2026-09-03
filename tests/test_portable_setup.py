@@ -1597,6 +1597,20 @@ def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(
         assert not (root / ".skills" / name).exists()
     assert (root / ".skills/wiki-transaction-review/SKILL.md").is_file()
     assert {path: snapshot_tree(path) for path in owner_paths} == owner_before
+    canonical_skill = (root / ".skills/llm-wiki/SKILL.md").read_text(
+        encoding="utf-8"
+    ).lower()
+    for required in (
+        "explicit user request authorizes ordinary local steps",
+        "observable progress",
+        "ask immediately before",
+    ):
+        assert required in canonical_skill
+    assert '"--literal-pathspecs"' in canonical_skill
+    assert "ask immediately before an action that would push" in canonical_skill
+    agents = " ".join((root / "AGENTS.md").read_text(encoding="utf-8").split()).lower()
+    assert "exact-path local commits" in agents
+    assert "push and owner-overlapping changes require confirmation" in agents
     upgrade_transactions = root / ".llmwikiops/local/skill-upgrades"
     assert not upgrade_transactions.exists() or not any(
         upgrade_transactions.iterdir()
@@ -3739,6 +3753,17 @@ def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
     assert "canonical protocol takes precedence" in agents
     assert "task-scoped local actions and exact-path local commits proceed automatically" in flat_agents.lower()
     assert "push and owner-overlapping changes require confirmation" in flat_agents.lower()
+    canonical_skill = (root / ".skills/llm-wiki/SKILL.md").read_text(
+        encoding="utf-8"
+    ).lower()
+    for required in (
+        "explicit user request authorizes ordinary local steps",
+        "observable progress",
+        "ask immediately before",
+    ):
+        assert required in canonical_skill
+    assert '"--literal-pathspecs"' in canonical_skill
+    assert "ask immediately before an action that would push" in canonical_skill
     for relative in ("CLAUDE.md", "GEMINI.md", ".hermes.md"):
         contents = (root / relative).read_text(encoding="utf-8")
         assert "# LLMWikiOps Agent Instructions\n\n" in contents, relative

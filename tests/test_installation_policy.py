@@ -200,6 +200,9 @@ def test_source_wheel_and_sdist_install_identical_explicit_adapters(
         ),
         symlinks=True,
     )
+    controller_evidence = source / ".superpowers/sdd/controller.md"
+    controller_evidence.parent.mkdir(parents=True, exist_ok=True)
+    controller_evidence.write_text("controller scratch\n", encoding="utf-8")
     build_env = _uv_tool_environment(tmp_path / "build-machine")
     Path(build_env["HOME"]).mkdir(parents=True)
     subprocess.run(
@@ -250,6 +253,11 @@ def test_source_wheel_and_sdist_install_identical_explicit_adapters(
     )
     wheel = next(build_dir.glob("*.whl"))
     sdist = next(build_dir.glob("*.tar.gz"))
+    with tarfile.open(sdist) as archive:
+        assert not any(
+            ".superpowers" in Path(member.name).parts
+            for member in archive.getmembers()
+        )
     install_inputs = {"source": source, "wheel": wheel, "sdist": sdist}
     installations: dict[str, tuple[dict[str, str], str]] = {}
     for label, install_input in install_inputs.items():
@@ -586,7 +594,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
             "`requires_cli`",
             "PEP 440",
             "branch",
-            "collaborator",
+            "Agent",
             "does not rewrite",
             "commit",
             SOURCE_REINSTALL_COMMAND,
@@ -596,7 +604,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         constraint = protocol.index("`requires_cli`")
         upgrade = protocol.index("llmwikiops repo upgrade-skills")
         check = protocol.index("llmwikiops check")
-        diff = protocol.index("git diff")
+        diff = protocol.index("git --literal-pathspecs diff")
         assert constraint < upgrade < check < diff, relative
 
     chinese = (ROOT / "README_ZH.md").read_text(encoding="utf-8")
@@ -608,7 +616,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
         "`requires_cli`",
         "PEP 440",
         "分支",
-        "协作者",
+        "Agent",
         "失败并停止",
         "不会改写",
         "提交",
@@ -618,7 +626,7 @@ def test_portable_cli_upgrade_docs_require_two_step_compatibility_protocol() -> 
     constraint = protocol_zh.index("`requires_cli`")
     upgrade = protocol_zh.index("llmwikiops repo upgrade-skills")
     check = protocol_zh.index("llmwikiops check")
-    diff = protocol_zh.index("git diff")
+    diff = protocol_zh.index("git --literal-pathspecs diff")
     assert constraint < upgrade < check < diff
 
 

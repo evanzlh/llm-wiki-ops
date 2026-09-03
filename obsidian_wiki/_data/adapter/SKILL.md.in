@@ -128,9 +128,10 @@ command prefixes.
 
 Keep exact root and literal `-C <exact-root>` on every repository command.
 Contain verified paths; reject unsafe components/types.
-Preserve owner changes; let only the CLI manage CLI-owned state. An explicit
-request authorizes ordinary task-scoped local work and one verified exact-path
-local commit after the canonical and selected task protocols complete.
+Preserve owner changes; let only the CLI manage CLI-owned state.
+An explicit user request authorizes ordinary local steps for the selected task,
+including verified exact-path local commits, after the canonical and selected
+task protocols complete.
 
 Derive every exact task-owned path from validated CLI output and Git status.
 Reject owner overlap, directories used as broad pathspecs, and globs. Run these
@@ -146,10 +147,10 @@ path:
 ```
 
 Display and review each exact cached diff before the cached check and commit,
-leaving all unrelated staged and unstaged paths untouched. Ask immediately
-before push, pull-request open/merge/publication, remote change, branch switch
-or history rewrite, reset, checkout, clean, force, or any owner-overlapping
-change. Confirmation applies only to that action.
+leaving all unrelated staged and unstaged paths untouched. Ask immediately before
+push, pull-request open/merge/publication, remote change, branch switch or history
+rewrite, reset, checkout, clean, force, or any owner-overlapping change.
+Confirmation applies only to that action.
 
 ## Queries
 
