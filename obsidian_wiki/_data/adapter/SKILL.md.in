@@ -72,9 +72,10 @@ external read/access.
 On either failure, stop before ordinary repository reads and use only the current
 structured evidence. When it identifies a safe local cause that is in scope,
 correct that cause and rerun serialized `info` followed by `check`; otherwise
-ask for the missing decision; do not search for a different root. Malformed
-authority output, ambiguous routing, unsafe topology, or a changed root remain
-non-authoritative and cannot be repaired into authority.
+ask for the missing decision and do not attempt ad hoc repair. In every case,
+do not search for a different root. Malformed authority output, ambiguous
+routing, unsafe topology, or a changed root remain non-authoritative and cannot
+be repaired into authority.
 
 ## CLI-owned catalog and bounded reads
 
