@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import errno
 import json
 import os
@@ -37,6 +38,45 @@ EXPECTED_TARGET_ROOTS = {
     "pi": ".pi/agent/skills",
     "kiro": ".kiro/skills",
 }
+
+ADAPTER_GIT_PREFIX = ["git", "-C", "/test/repo", "--literal-pathspecs"]
+EXPECTED_ADAPTER_GIT_ARGV = (
+    [
+        *ADAPTER_GIT_PREFIX,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        "<task-path>",
+    ],
+    [*ADAPTER_GIT_PREFIX, "add", "--", "<task-path>"],
+    [*ADAPTER_GIT_PREFIX, "diff", "--cached", "--", "<task-path>"],
+    [
+        *ADAPTER_GIT_PREFIX,
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "<task-path>",
+    ],
+    [
+        *ADAPTER_GIT_PREFIX,
+        "commit",
+        "-m",
+        "<task summary>",
+        "--",
+        "<task-path>",
+    ],
+)
+
+
+def _documented_adapter_git_argv(contents: str) -> tuple[list[str], ...]:
+    prefix = ", ".join(repr(part) for part in ADAPTER_GIT_PREFIX[:3])
+    return tuple(
+        ast.literal_eval(line.strip().replace("<git-cli>", prefix, 1))
+        for line in contents.splitlines()
+        if line.strip().startswith("[<git-cli>,")
+    )
 
 
 def run_adapter_cli(
@@ -311,6 +351,57 @@ def test_renderer_is_byte_stable_and_contains_only_cli_owned_catalog_protocol() 
         "rerun selection",
     ):
         assert forbidden not in first
+
+
+def test_rendered_adapter_uses_canonical_exact_path_local_commit_argv() -> None:
+    rendered = render_adapter_skill()
+    section = rendered.split("## Repository execution", 1)[1].split(
+        "## Queries", 1
+    )[0]
+
+    assert _documented_adapter_git_argv(section) == EXPECTED_ADAPTER_GIT_ARGV
+    assert "Never commit/push/reset/checkout/clean with Git" not in section
+    section_text = " ".join(section.split())
+    commit = section_text.index("Display and review each exact cached diff")
+    preserve = section_text.index(
+        "leaving all unrelated staged and unstaged paths untouched", commit
+    )
+    ask = section_text.index("Ask immediately before", preserve)
+    assert commit < preserve < ask
+    for boundary in (
+        "push",
+        "pull-request open/merge/publication",
+        "remote change",
+        "branch switch",
+        "history rewrite",
+        "reset",
+        "checkout",
+        "clean",
+        "force",
+        "owner-overlapping change",
+    ):
+        assert boundary in section_text[ask:], boundary
+    assert "Confirmation applies only to that action" in section_text[ask:]
+
+
+def test_installed_adapter_matches_rendered_exact_path_commit_protocol(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    home.mkdir()
+    work.mkdir()
+
+    result = run_adapter_cli(
+        home, work, "agent", "install-adapter", "--agent", "codex"
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = (home / ".codex/skills/llm-wiki-ops/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert installed == render_adapter_skill()
+    assert _documented_adapter_git_argv(installed) == EXPECTED_ADAPTER_GIT_ARGV
 
 
 def test_template_uses_static_repository_preflight_instead_of_safe_reader(
@@ -618,7 +709,7 @@ def test_rendered_frontmatter_has_only_name_and_description_and_stays_bounded() 
     assert len(frontmatter.scalars["name"]) <= 64
     assert len(frontmatter.scalars["description"]) <= 1024
     assert len(header) <= 1024
-    assert len(body.splitlines()) < 180
+    assert len(body.splitlines()) < 210
     assert len(rendered.encode("utf-8")) < 12_000
     assert rendered.splitlines().count(ADAPTER_BOOTSTRAP_GATE_END) == 1
     assert rendered.count(ADAPTER_EOF) == 1

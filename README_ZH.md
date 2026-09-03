@@ -81,8 +81,17 @@ ${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check
-git diff
-git commit -m "Upgrade LLMWikiOps"
+```
+
+根据已审查的维护与 status 输出推导精确的变更路径集合。逐一确认路径属于当前任务；任何与所有者重叠的变更都须先询问。将下方的 `<upgrade-path> ...` 替换为各个独立的精确变更文件；每个值绝不是目录或 glob：
+
+```bash
+git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <upgrade-path> ...
+git --literal-pathspecs diff -- <upgrade-path> ...
+git --literal-pathspecs add -- <upgrade-path> ...
+git --literal-pathspecs diff --cached -- <upgrade-path> ...
+git --literal-pathspecs diff --cached --check -- <upgrade-path> ...
+git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...
 ```
 
 当前产品界面仅包含本文与 `docs/` 所述的仓库工作流。Dashboard 有意不提供；未来若要加入，必须另行设计与实现，本版本不包含占位实现。

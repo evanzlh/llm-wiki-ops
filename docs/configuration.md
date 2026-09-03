@@ -81,10 +81,13 @@ race is not promised kernel-level compare-and-swap protection.
 
 Transaction source bytes are frozen by hash at `transaction begin`; a source change
 before commit fails closed and requires a new transaction. To reconcile a fixed
-manifest `CONFLICT`, inspect the live shard and repository diff, then run
-`llmwikiops manifest resolve-conflict --keep-live`. Reconciliation removes only
-recovery files whose recorded inode identity and content still match; changed evidence
-remains blocked for manual inspection.
+manifest `CONFLICT`, inspect the live shard and repository diff. Choosing the live
+semantic side discards the retained alternative, so obtain action-specific user
+confirmation before the initial decision and
+`llmwikiops manifest resolve-conflict --keep-live`. After that exact confirmation,
+identity-bound resumable cleanup may proceed automatically and removes only recovery
+files whose recorded inode identity and content still match; changed evidence remains
+blocked and requires a new decision.
 
 ## Skill mirrors
 

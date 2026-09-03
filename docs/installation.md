@@ -136,8 +136,20 @@ ${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check
-git diff
-git commit -m "Upgrade LLMWikiOps"
+```
+
+From the reviewed maintenance and status output, derive the exact changed path set.
+Verify every path is task-owned and ask before any owner-overlapping change. Replace
+`<upgrade-path> ...` with those paths as separate argv elements; each value is an
+exact changed file, never a directory or glob:
+
+```bash
+git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <upgrade-path> ...
+git --literal-pathspecs diff -- <upgrade-path> ...
+git --literal-pathspecs add -- <upgrade-path> ...
+git --literal-pathspecs diff --cached -- <upgrade-path> ...
+git --literal-pathspecs diff --cached --check -- <upgrade-path> ...
+git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...
 ```
 
 `repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses user-modified managed files. A requested managed upgrade completes through validation and an exact-path local commit; publication asks first.

@@ -128,8 +128,28 @@ command prefixes.
 
 Keep exact root and literal `-C <exact-root>` on every repository command.
 Contain verified paths; reject unsafe components/types.
-Preserve owner changes; let only the CLI manage CLI-owned state. Never
-commit/push/reset/checkout/clean with Git.
+Preserve owner changes; let only the CLI manage CLI-owned state. An explicit
+request authorizes ordinary task-scoped local work and one verified exact-path
+local commit after the canonical and selected task protocols complete.
+
+Derive every exact task-owned path from validated CLI output and Git status.
+Reject owner overlap, directories used as broad pathspecs, and globs. Run these
+argv forms, repeating `<task-path>` as a separate argv element for every exact
+path:
+
+```text
+[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]
+```
+
+Display and review each exact cached diff before the cached check and commit,
+leaving all unrelated staged and unstaged paths untouched. Ask immediately
+before push, pull-request open/merge/publication, remote change, branch switch
+or history rewrite, reset, checkout, clean, force, or any owner-overlapping
+change. Confirmation applies only to that action.
 
 ## Queries
 
@@ -151,6 +171,11 @@ identities, and exposed pre/postimages. Continue only when the next safe action
 is currently allowed and the last action made observable progress. Do not repeat
 the same action with identical inputs and unchanged state; diagnose a different
 safe cause or ask for the missing decision.
+
+Require action-specific user confirmation before the initial keep-live decision
+and `<wiki-cli> manifest resolve-conflict --keep-live`. After that exact
+confirmation, identity-bound resumable cleanup may proceed automatically while
+the recorded live identity and content still match; drift requires a new decision.
 
 After knowledge commit/retry succeeds, run `hot status`. If stale, get
 `hot inputs`; update only requested tracked hot file and verify its

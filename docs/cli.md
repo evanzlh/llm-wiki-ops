@@ -68,8 +68,20 @@ ${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check
-git diff
-git commit -m "Upgrade LLMWikiOps"
+```
+
+From the reviewed maintenance and status output, derive the exact changed path set.
+Verify every path is task-owned and ask before any owner-overlapping change. Replace
+`<upgrade-path> ...` with those paths as separate argv elements; each value is an
+exact changed file, never a directory or glob:
+
+```bash
+git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <upgrade-path> ...
+git --literal-pathspecs diff -- <upgrade-path> ...
+git --literal-pathspecs add -- <upgrade-path> ...
+git --literal-pathspecs diff --cached -- <upgrade-path> ...
+git --literal-pathspecs diff --cached --check -- <upgrade-path> ...
+git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...
 ```
 
 `upgrade-skills` refreshes framework-managed built-ins, preserves custom skills, rebuilds mirrors, and refuses managed drift. It does not bypass compatibility checks and does not rewrite `requires_cli`. The Agent reviews the complete diff and may make the exact-path local upgrade commit; publication still asks first.
@@ -98,15 +110,19 @@ bind current source bytes.
 
 ## Manifest conflict reconciliation
 
+Choosing the live semantic side discards the retained conflicting alternative. Inspect
+the live shard and recovery evidence, then obtain action-specific user confirmation
+before the initial keep-live decision and command:
+
 ```bash
 llmwikiops manifest resolve-conflict --keep-live [--json] [--pretty]
 ```
 
-After inspecting the live shard and recovery evidence, an Agent can keep the live
-version when the structured action is currently allowed. Cleanup is resumable after
-interruption and removes only fixed artifacts whose recorded identity and content
+After that exact confirmation, identity-bound resumable cleanup may proceed
+automatically. It removes only fixed artifacts whose recorded identity and content
 still match. Reload the state after each action and continue only on observable
-progress; drift stops recovery rather than authorizing overwrite.
+progress; drift stops recovery and requires a new decision rather than authorizing
+overwrite.
 
 ## Tracked hot view
 

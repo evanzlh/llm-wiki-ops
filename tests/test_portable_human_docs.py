@@ -565,6 +565,84 @@ def test_cli_docs_bind_skill_apply_to_plan_and_trust_approval_to_reviewer() -> N
     assert "does not prove that review occurred" in approval_text
 
 
+def test_manifest_keep_live_requires_confirmation_before_resumable_cleanup() -> None:
+    expectations = {
+        "docs/cli.md": (
+            "action-specific user confirmation",
+            "llmwikiops manifest resolve-conflict --keep-live",
+            "identity-bound resumable cleanup may proceed automatically",
+        ),
+        "docs/configuration.md": (
+            "action-specific user confirmation",
+            "llmwikiops manifest resolve-conflict --keep-live",
+            "identity-bound resumable cleanup may proceed automatically",
+        ),
+        "docs/cli.zh-TW.md": (
+            "針對該操作的使用者確認",
+            "llmwikiops manifest resolve-conflict --keep-live",
+            "受身份綁定且可恢復的清理可以自動繼續",
+        ),
+    }
+    for relative, (confirmation, command, cleanup) in expectations.items():
+        text = " ".join(_text(relative).split())
+        assert text.index(confirmation) < text.index(command) < text.index(cleanup)
+
+
+def test_every_upgrade_example_uses_one_exact_path_git_sequence() -> None:
+    command_fragments = (
+        "git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <upgrade-path> ...",
+        "git --literal-pathspecs diff -- <upgrade-path> ...",
+        "git --literal-pathspecs add -- <upgrade-path> ...",
+        "git --literal-pathspecs diff --cached -- <upgrade-path> ...",
+        "git --literal-pathspecs diff --cached --check -- <upgrade-path> ...",
+        'git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...',
+    )
+    documents = {
+        "README.md": (
+            "derive the exact changed path set",
+            "owner-overlapping",
+            "never a directory or glob",
+        ),
+        "README_ZH.md": (
+            "推导精确的变更路径集合",
+            "与所有者重叠",
+            "绝不是目录或 glob",
+        ),
+        "docs/cli.md": (
+            "derive the exact changed path set",
+            "owner-overlapping",
+            "never a directory or glob",
+        ),
+        "docs/installation.md": (
+            "derive the exact changed path set",
+            "owner-overlapping",
+            "never a directory or glob",
+        ),
+        "docs/contributing.md": (
+            "derive the exact changed path set",
+            "owner-overlapping",
+            "never a directory or glob",
+        ),
+    }
+    for relative, (derivation, overlap, narrow_path) in documents.items():
+        text = _text(relative)
+        upgrade = text.index("llmwikiops repo upgrade-skills")
+        section = text[upgrade:]
+        cursor = 0
+        for command in command_fragments:
+            position = section.find(command, cursor)
+            assert position >= 0, (relative, command)
+            cursor = position + len(command)
+        before_commit = section[:cursor]
+        assert derivation in before_commit
+        assert overlap in before_commit
+        assert narrow_path in before_commit
+        assert "\ngit diff\n" not in before_commit
+        assert "\ngit commit " not in before_commit
+        assert "git add -A" not in before_commit
+        assert "git add --all" not in before_commit
+
+
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
     cli = _text("docs/cli.md")
     configuration = _text("docs/configuration.md")

@@ -96,8 +96,20 @@ ${EDITOR:?} .llmwikiops/config.toml
 llmwikiops repo upgrade-skills
 llmwikiops doctor
 llmwikiops check
-git diff
-git commit -m "Upgrade LLMWikiOps"
+```
+
+From the reviewed maintenance and status output, derive the exact changed path set.
+Verify every path is task-owned and ask before any owner-overlapping change. Replace
+`<upgrade-path> ...` below with those paths as separate argv elements; each value is
+an exact changed file, never a directory or glob:
+
+```bash
+git --literal-pathspecs status --porcelain=v1 --untracked-files=all -- <upgrade-path> ...
+git --literal-pathspecs diff -- <upgrade-path> ...
+git --literal-pathspecs add -- <upgrade-path> ...
+git --literal-pathspecs diff --cached -- <upgrade-path> ...
+git --literal-pathspecs diff --cached --check -- <upgrade-path> ...
+git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...
 ```
 
 The current product surface is the repository workflow documented here and in `docs/`. A Dashboard is intentionally absent; any future Dashboard requires a separate design and implementation, with no placeholder in this release.

@@ -408,6 +408,14 @@ def test_external_adapter_enforces_recovery_review_and_hot_write_gates() -> None
     assert "A status or validation envelope alone is not review" in section_text
     assert "verify its content-changing working-tree diff" in section_text
     assert "Reading existing `hot.md` is not regeneration" in section_text
+    confirmation = section_text.index(
+        "action-specific user confirmation before the initial keep-live decision"
+    )
+    command = section_text.index("manifest resolve-conflict --keep-live", confirmation)
+    cleanup = section_text.index(
+        "identity-bound resumable cleanup may proceed automatically", command
+    )
+    assert confirmation < command < cleanup
     assert "never call `hot mark-current` after a read-only or no-write path" in section_text
 
 
