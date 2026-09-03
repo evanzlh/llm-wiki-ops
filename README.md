@@ -44,7 +44,7 @@ validation. The Agent does not enumerate skills or parse their frontmatter. Shar
 
 Installing the CLI does not install the Adapter or write Agent integration files in the home directory. The explicit `agent install-adapter` command installs one optional global router for one Agent; see [Installation](docs/installation.md#install-the-external-wiki-adapter).
 
-Adapter upgrades and failed-installation recovery retain verified evidence below the target Agent configuration directory's `.llmwikiops-retained/` tree rather than deleting it automatically. Retained evidence can accumulate and consume disk space; inspect it and perform manual cleanup only after user confirmation. LLMWikiOps provides no automatic garbage collection, cleanup command, or uninstall command.
+Adapter upgrades and failed-installation recovery retain verified evidence below the target Agent configuration directory's `.llmwikiops-retained/` tree rather than deleting it automatically. Retained evidence can accumulate and consume disk space. An Agent deletes retained evidence only after user confirmation; LLMWikiOps provides no automatic garbage collection, cleanup command, or uninstall command.
 
 ## Create a knowledge repository
 
@@ -62,11 +62,13 @@ read, migrated, or deleted. A repository containing only it is uninitialized; wh
 both directories exist, `.llmwikiops/` is the only authority. Explicitly run
 `llmwikiops setup` and review its new files; do not manually copy former state.
 
-Setup does not initialize Git. Before collaboration, the owner initializes the knowledge repository and reviews, stages, and commits the scaffold; see [Installation](docs/installation.md#create-a-repository).
+Setup does not initialize Git. Before collaboration, initialize the knowledge repository and validate, stage, and locally commit the scaffold at exact paths; an Agent may complete those requested task-scoped steps. See [Installation](docs/installation.md#create-a-repository).
 
 ## Collaborate safely
 
-Source snapshots are owner-reviewed and tracked before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and finally appends one canonical block to the tracked authoritative operation log at `wiki/log.md`; JSON output returns its `log_path`. A transaction never modifies tracked source snapshots. The tracked `wiki/hot.md` is a derived semantic view: `hot status` is read-only and must not remove it. The CLI never commits, pushes, or opens a pull request: owners review the working-tree diff, resolve ordinary Git conflicts in `log.md` and `hot.md`, and handle Git publication externally.
+Source snapshots are Agent-reviewed, tracked and locally committed at exact paths before `transaction begin`. Agents then write through local transactions. Validation happens before promotion; failures retain recovery state. A successful commit promotes candidate pages, upserts manifest shards, and finally appends one canonical block to the tracked authoritative operation log at `wiki/log.md`; JSON output returns its `log_path`. A transaction never modifies tracked source snapshots. The tracked `wiki/hot.md` is a derived semantic view: `hot status` is read-only and must not remove it.
+
+Ordinary task-scoped work completes automatically: an Agent may inspect, update, validate, and locally commit exact task-owned paths. Failed safety conditions trigger validate and recover steps without bypass, continuing only while structured state shows progress. Ask before external publication, destructive or work-losing actions, owner-overlapping changes, authority-expanding actions, or semantic decisions. A local commit is not Git publication; pushing, opening or merging pull requests, remote mutation, and history rewrites still require confirmation.
 
 Manifest shard updates use a repository-local lock and bounded recovery journal. Every
 writer in the same working tree must cooperate by using the repository transaction
@@ -78,14 +80,12 @@ guarantee.
 
 `transaction begin` freezes the selected source hashes; commit fails and requires a
 restart if a source changes while candidates are prepared. If a detected manifest
-conflict leaves a fixed recovery journal, inspect the live shard and working-tree diff,
-then explicitly keep that version with
-`llmwikiops manifest resolve-conflict --keep-live`. Only recovery artifacts whose
-recorded identity and content still match are removed. If cleanup is interrupted and
-the live shard changes, automatic recovery stops until the owner reruns the command to
-confirm the current live version.
+conflict leaves recovery state, inspect its structured evidence and use the currently
+allowed action. Reload state after each action and continue only while it makes
+observable progress; never repeat an unchanged action with identical inputs. Only
+recovery artifacts whose recorded identity and content still match are removed.
 
-Use this two-step CLI and repository upgrade protocol. An owner starts a branch, installs the new CLI from the framework clone, then reads the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version, so the owner must explicitly review and edit `.llmwikiops/config.toml` to accept the transition version before running maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, collaborators review the complete change and the owner decides whether to commit it.
+Use this two-step CLI and repository upgrade protocol. After any required branch switch is separately confirmed, install the new CLI from the framework clone, then read the tracked `requires_cli` constraint. Repository commands fail closed while that PEP 440 constraint excludes the installed version; when the accepted range is unambiguous, an Agent may make the task-scoped edit before maintenance. `repo upgrade-skills` does not rewrite `requires_cli`. After validation and diff inspection, the Agent may make the exact-path local upgrade commit; publishing it remains a separate confirmed action.
 
 ```bash
 git switch -c upgrade-llmwikiops

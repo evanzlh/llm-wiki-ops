@@ -22,7 +22,9 @@ llmwikiops -C /absolute/path/to/wiki transaction list --json
 
 The selected directory is the exact root: it must directly contain `.llmwikiops/config.toml`, and explicit selection never searches ancestors or falls back to invocation CWD. The aliases are single-valued and cannot be repeated. There is no default, profile, environment-variable, or recently used repository selection. Repository-independent commands reject the option; supported repository-aware families are `info`, `doctor`, `check`, `repo`, `transaction`, `manifest`, `hot`, `batch-plan`, `graph-analyse`, `cache-check`, `lint`, `trust-record`, `trust-check`, `query`, `context-pack`, and `context`.
 
-Adapter replacement is non-destructive. Verified old versions and retained failure evidence leave the active namespace under `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`. The installer never automatically unlinks these directories, garbage-collects them, or offers cleanup/uninstall commands. They may accumulate and consume disk space; inspect them and use manual cleanup only after user confirmation that their evidence and recovery value is no longer needed.
+Adapter replacement is non-destructive. Verified old versions and retained failure evidence leave the active namespace under `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`. The installer never automatically unlinks these directories, garbage-collects them, or offers cleanup/uninstall commands. They may accumulate and consume disk space. An Agent deletes retained evidence only after user confirmation that its evidence and recovery value is no longer needed.
+
+Ordinary task-scoped work completes automatically: an Agent may inspect, update, validate, and locally commit exact task-owned paths. Failed safety conditions trigger validate and recover steps without bypass, continuing only while structured state shows progress. Ask before external publication, destructive or work-losing actions, owner-overlapping changes, authority-expanding actions, or semantic decisions.
 
 ## Setup and inspection
 
@@ -43,17 +45,19 @@ A new ordinary Source that is unchanged from `HEAD` is reported as a warning unt
 ## Repository skills
 
 ```bash
-llmwikiops repo sync-skills [--apply [--expected-plan TOKEN]] [--json] [--pretty]
+llmwikiops repo sync-skills --json --pretty
+llmwikiops repo sync-skills --apply --expected-plan TOKEN --json --pretty
 ```
 
 `sync-skills` is read-only unless `--apply` is supplied. JSON dry runs return a
 `plan_token`; pass that value with `--expected-plan` to apply only the exact reviewed
-canonical and mirror preimages. A changed or malformed token refuses before mirror
-writes. Existing unbound `--apply` calls remain supported.
+canonical and mirror preimages. A changed or malformed token refuses the operation;
+the CLI refuses before mirror writes. The CLI still accepts an unbound `--apply`, but Agent workflows use the
+reviewed plan token rather than bypassing that preimage binding.
 
 ## Upgrade protocol
 
-Use this two-step CLI and repository upgrade protocol on an owner branch. Install the new CLI from its separate framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if that PEP 440 constraint excludes the installed version. The owner must explicitly review and edit the constraint before invoking repository maintenance:
+Use this two-step CLI and repository upgrade protocol. After any required branch switch is separately confirmed, install the new CLI from its separate framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if that PEP 440 constraint excludes the installed version. When the accepted range is unambiguous, an Agent may make the task-scoped edit before invoking repository maintenance:
 
 ```bash
 git switch -c upgrade-llmwikiops
@@ -68,7 +72,7 @@ git diff
 git commit -m "Upgrade LLMWikiOps"
 ```
 
-`upgrade-skills` refreshes framework-managed built-ins, preserves custom skills, rebuilds mirrors, and refuses managed drift. It does not bypass compatibility checks and does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
+`upgrade-skills` refreshes framework-managed built-ins, preserves custom skills, rebuilds mirrors, and refuses managed drift. It does not bypass compatibility checks and does not rewrite `requires_cli`. The Agent reviews the complete diff and may make the exact-path local upgrade commit; publication still asks first.
 
 ## Transactions
 
@@ -86,7 +90,7 @@ llmwikiops transaction abort TRANSACTION_ID [--json] [--pretty]
 
 `begin` accepts one or more authoritative source paths and returns an ID plus a runtime `candidate_vault`. Agents write candidates only there. `delete` declares a vault-relative knowledge-page removal. `validate` checks the full prospective vault without promotion. Transaction review inspects candidates, deletions, and the report before `commit` revalidates, promotes pages, updates manifest shards, and appends one canonical block to the tracked authoritative operation log `wiki/log.md` last. JSON commit and retry outputs return `log_path`.
 
-Failures retain recovery state when a safe next action is possible. Use `list` to inspect it; then follow the reported `retry`, `restore`, `discard`, or `abort` action. Transaction commands do not perform Git publication.
+Failures retain recovery state when a safe next action is possible. Use `list` to inspect it; then follow only a currently allowed `retry`, `restore`, `discard`, or `abort` action. Reload structured state afterward and continue while the action makes observable progress; do not repeat an action with identical inputs and unchanged state. Safe `retry` and drift-free `restore` complete automatically. `discard`, `abort`, and restore over owner drift ask first, and confirmation never bypasses a failed precondition.
 
 Legacy retained transactions without frozen source hashes remain listable and can be
 restored, aborted, or discarded, but cannot be committed or retried. Restart them to
@@ -98,11 +102,11 @@ bind current source bytes.
 llmwikiops manifest resolve-conflict --keep-live [--json] [--pretty]
 ```
 
-After inspecting the live shard and recovery evidence, an owner can explicitly keep
-the live version. Cleanup is resumable after interruption and removes only fixed
-artifacts whose recorded identity and content still match. If the live shard changes
-between attempts, automatic recovery stops and the owner must rerun the command to
-confirm the current live version.
+After inspecting the live shard and recovery evidence, an Agent can keep the live
+version when the structured action is currently allowed. Cleanup is resumable after
+interruption and removes only fixed artifacts whose recorded identity and content
+still match. Reload the state after each action and continue only on observable
+progress; drift stops recovery rather than authorizing overwrite.
 
 ## Tracked hot view
 
@@ -112,7 +116,7 @@ llmwikiops hot inputs [--pages PAGES] [--operations OPERATIONS] [--json] [--pret
 llmwikiops hot mark-current [--json] [--pretty]
 ```
 
-`status` reports freshness read-only and must not remove the tracked `wiki/hot.md`. `inputs` emits bounded page summaries and canonical operation blocks parsed from `wiki/log.md`; defaults are 50 pages and 10 operations. After an agent semantically rewrites the tracked derived semantic view, `mark-current` records its fingerprint. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
+`status` reports freshness read-only and must not remove the tracked `wiki/hot.md`. `inputs` emits bounded page summaries and canonical operation blocks parsed from `wiki/log.md`; defaults are 50 pages and 10 operations. After an agent semantically rewrites the tracked derived semantic view, `mark-current` records its fingerprint. Owner-overlapping Git conflicts in `log.md` and `hot.md` require confirmation before resolution.
 
 ## Query and context
 
@@ -196,7 +200,7 @@ llmwikiops trust-record (--all | --page VAULT_RELATIVE_PATH) --reviewed-at ISO_T
 llmwikiops trust-check [--json] [--pretty] [--strict] [SCHEMA_OPTIONS]
 ```
 
-Schema options extend allowed lifecycle or relationship values, select required trust fields, and identify a schema authority. `trust-record` requires explicit human approval; `trust-check` verifies recorded values and fingerprints.
+Schema options extend allowed lifecycle or relationship values, select required trust fields, and identify a schema authority. For `trust-record`, `--approved` is a reviewer attestation by the current actor that the recorded values were actually reviewed; the flag does not prove that review occurred. `trust-check` verifies recorded values and fingerprints.
 
 ## Cache, batches, and extraction
 
@@ -218,4 +222,4 @@ llmwikiops doctor
 llmwikiops check
 ```
 
-After a knowledge transaction, rerun `check`, inspect `git diff`, and let the repository owner choose the external Git publication workflow.
+After a knowledge transaction, rerun `check`, validate and stage only the exact task paths, inspect the staged diff, and make the path-limited local commit. A local commit is not Git publication; ask before a push, pull request, remote change, or history rewrite.

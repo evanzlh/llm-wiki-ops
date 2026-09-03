@@ -36,7 +36,7 @@ Install the optional router for one agent per command:
 llmwikiops agent install-adapter --agent codex
 ```
 
-`--agent` is required and accepts exactly one of `codex`, `claude`, `cursor`, `windsurf`, `opencode`, `pi`, or `kiro`. Run a separate command for every Agent that needs the Adapter. CLI installation, `setup`, and upgrade do not automatically install it. There is no automatic target detection, default target, `--all`, custom destination, or repository argument. There is no `--force` and no uninstall command. Conflicting unmanaged or owner-modified destinations fail closed; the owner must inspect and move or remove them manually.
+`--agent` is required and accepts exactly one of `codex`, `claude`, `cursor`, `windsurf`, `opencode`, `pi`, or `kiro`. Run a separate command for every Agent that needs the Adapter. CLI installation, `setup`, and upgrade do not automatically install it. There is no automatic target detection, default target, `--all`, custom destination, or repository argument. There is no `--force` and no uninstall command. Conflicting unmanaged or user-modified destinations fail closed; ask before moving or removing the overlapping path.
 
 The destination registry is fixed:
 
@@ -52,7 +52,7 @@ The destination registry is fixed:
 
 The `CODEX_HOME` override must be an absolute path. When `CODEX_HOME` is unset, Codex uses the invoking user's `~/.codex`; other targets always use the listed home-relative location. The CLI accepts no custom destination.
 
-During an upgrade or recovery, verified old managed trees and interrupted-installation evidence move out of the active namespace to `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`, where `<agent-config>` is the directory containing that target's `skills/` directory. This retention is the evidence and recovery boundary: the installer does not automatically call `unlink` or `rmdir`, performs no automatic garbage collection, and provides no cleanup command. Retained directories can accumulate and consume disk space. An owner may inspect and perform manual cleanup only after user confirmation that the evidence is no longer needed; LLMWikiOps does not perform that cleanup.
+During an upgrade or recovery, verified old managed trees and interrupted-installation evidence move out of the active namespace to `<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`, where `<agent-config>` is the directory containing that target's `skills/` directory. This retention is the evidence and recovery boundary: the installer does not automatically call `unlink` or `rmdir`, performs no automatic garbage collection, and provides no cleanup command. Retained directories can accumulate and consume disk space. An Agent deletes retained evidence only after user confirmation that the evidence is no longer needed; there is no uninstall command.
 
 The Adapter stores no packaged skill metadata: installation no longer reads or embeds it. It does not store a wiki path or install a wiki's task skill tree globally. For every external operation, explicitly name the exact repository root and put the global option before the subcommand:
 
@@ -67,9 +67,11 @@ The environment conditions are owner guarantees; the Adapter does not mechanical
 
 The selected directory itself must directly contain `.llmwikiops/config.toml`; an unconfigured child is rejected without ancestor fallback. No default, profile, environment, or recently used repository is consulted.
 
+Ordinary task-scoped work completes automatically: an Agent may inspect, update, validate, and locally commit exact task-owned paths. Failed safety conditions trigger validate and recover steps without bypass, continuing only while structured state shows progress. Ask before external publication, destructive or work-losing actions, owner-overlapping changes, authority-expanding actions, or semantic decisions.
+
 ## Create a repository
 
-Setup accepts an optional directory and uses the current directory when it is omitted. It does not initialize Git; repository creation and publication remain owner actions. One executable workflow is to initialize an otherwise empty target first, then scaffold it:
+Setup accepts an optional directory and uses the current directory when it is omitted. It does not initialize Git. A requested setup completes locally after existing-path validation; one executable workflow is to initialize an otherwise empty target first, then scaffold it:
 
 ```bash
 mkdir ./team-knowledge
@@ -77,13 +79,17 @@ git -C ./team-knowledge init
 llmwikiops setup ./team-knowledge
 ```
 
-From the same parent directory, the owner can review and record the scaffold explicitly:
+From the same parent directory, an Agent handling the explicit setup request can validate and record the scaffold locally:
 
 ```bash
-git -C ./team-knowledge status
-git -C ./team-knowledge add --all
-git -C ./team-knowledge commit -m "Initialize knowledge repository"
+git -C ./team-knowledge status --short
+git -C ./team-knowledge --literal-pathspecs add -- <setup-path> ...
+git -C ./team-knowledge --literal-pathspecs diff --cached --check -- <same-paths>
+git -C ./team-knowledge --literal-pathspecs commit -m "Initialize knowledge repository" -- <same-paths>
 ```
+
+Replace the placeholders with separate argv elements for every path created by this
+setup; inspect the staged diff and leave any unrelated path untouched.
 
 Then enter the knowledge repository, validate it, and open `wiki/` in Obsidian:
 
@@ -93,7 +99,7 @@ llmwikiops doctor
 llmwikiops check
 ```
 
-Adding, committing, configuring a remote, and pushing are external Git publication steps, not framework actions.
+The exact-path local commit is part of completing the requested setup. Configuring a remote and pushing are separate Git publication steps.
 
 ## Join an existing repository
 
@@ -112,7 +118,7 @@ After cloning, you can work from anywhere inside it: each repository-aware comma
 
 ## Upgrade
 
-Use this two-step CLI and repository upgrade protocol. First create an owner-controlled branch in the knowledge repository, update the separate framework clone, and reinstall the CLI:
+Use this two-step CLI and repository upgrade protocol on the selected local branch. After any required branch switch or remote update is separately confirmed, update the separate framework clone and reinstall the CLI:
 
 ```bash
 cd /path/to/team-knowledge
@@ -122,7 +128,7 @@ git pull --ff-only
 uv tool install --force --reinstall --link-mode copy .
 ```
 
-Return to the knowledge repository and read its tracked `requires_cli`. Resolution fails closed if the old PEP 440 constraint excludes the installed CLI. Before any repository command, the owner must explicitly review and edit the constraint to accept the transition version. A range that accepts both collaborator versions can support a staged rollout; every collaborator must ultimately install an accepted version. Then refresh managed files:
+Return to the knowledge repository and read its tracked `requires_cli`. Resolution fails closed if the old PEP 440 constraint excludes the installed CLI. When the accepted range is unambiguous, the Agent may make the task-scoped edit to accept the transition version. A range that accepts both collaborator versions can support a staged rollout; every collaborator must ultimately install an accepted version. Then refresh managed files:
 
 ```bash
 cd /path/to/team-knowledge
@@ -134,7 +140,9 @@ git diff
 git commit -m "Upgrade LLMWikiOps"
 ```
 
-`repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses owner-modified managed files. Collaborators review the configuration and managed-file diff before the owner commits or publishes it.
+`repo upgrade-skills` does not bypass compatibility checks and does not rewrite `requires_cli`. It preserves custom skills and refuses user-modified managed files. A requested managed upgrade completes through validation and an exact-path local commit; publication asks first.
+
+A local commit is not Git publication; ask before branch switching, remote changes, pushes, pull requests, or history rewrites.
 
 ## CI
 

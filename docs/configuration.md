@@ -59,11 +59,13 @@ Integration policy is commonly summarized as CLI flags > resolved environment/co
 
 ## Tracked and ignored state
 
-Tracked repository authority includes `.llmwikiops/config.toml`, owner-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and the tracked authoritative operation log `wiki/log.md`.
+Tracked repository authority includes `.llmwikiops/config.toml`, Agent-reviewed source snapshots under `sources/`, `.skills/`, agent mirrors, bootstrap files, generated knowledge pages, `wiki/.manifest.json`, `wiki/.manifest/sources/` manifest v2 shards, and the tracked authoritative operation log `wiki/log.md`.
 
 Ignored local state includes `.llmwikiops/local/`, transaction workspaces, and recovery copies. `wiki/hot.md` is instead a tracked derived semantic view; `hot status` is read-only and must not remove it.
 
-A transaction commit owns affected manifest shards and appends one canonical block to `wiki/log.md` last, but never modifies tracked source snapshots. Its JSON output returns `log_path`. Agents must never edit manifest shards directly and must not edit `log.md` directly. Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
+A transaction commit atomically owns affected manifest shards and appends one canonical block to `wiki/log.md` last, but never modifies tracked source snapshots. Its JSON output returns `log_path`. Agents must never edit manifest shards directly and must not edit `log.md` directly. Owner-overlapping Git conflicts in `log.md` and `hot.md` require confirmation before resolution.
+
+Ordinary task-scoped work completes automatically: an Agent may inspect, update, validate, and locally commit exact task-owned paths, including tracked authority changed by the request. Failed safety conditions trigger validate and recover steps without bypass, continuing only while structured state shows progress. Ask before external publication, destructive or work-losing actions, owner-overlapping changes, authority-expanding actions, or semantic decisions.
 
 Manifest v2 consists of the tracked `wiki/.manifest.json` marker and shards below `wiki/.manifest/sources/`.
 
@@ -86,8 +88,8 @@ remains blocked for manual inspection.
 
 ## Skill mirrors
 
-`.skills/` is canonical. The `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` directories are complete derived ordinary-file mirrors. Check drift with `llmwikiops repo sync-skills`; add `--apply` to rebuild them, then run `llmwikiops check` and review the tracked diff.
+`.skills/` is canonical. The `.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.pi/skills/`, and `.kiro/skills/` directories are complete derived ordinary-file mirrors. Check drift with `llmwikiops repo sync-skills --json --pretty`, retain its `plan_token`, and rebuild the reviewed plan with `llmwikiops repo sync-skills --apply --expected-plan TOKEN --json --pretty`; then run `llmwikiops check` and review the tracked diff.
 
 ## Git boundary
 
-The CLI reads limited Git metadata for containment and validation, but Git publication stays external. A repository owner chooses branches, commits, remotes, pushes, and pull requests.
+The CLI reads limited Git metadata for containment and validation. Agents may make exact-path local commits for requested tracked authority. A local commit is not Git publication; branch switching, remotes, pushes, pull requests, and history decisions remain external and ask first.

@@ -11,6 +11,8 @@ This checkout is framework source, not an initialized knowledge repository. Do n
 
 Preserve owner changes, reject unsafe links and special files, and keep persisted paths repository-relative.
 
+Ordinary task-scoped work completes automatically: an Agent may inspect, update, validate, and locally commit exact task-owned paths. Failed safety conditions trigger validate and recover steps without bypass, continuing only while structured state shows progress. Ask before external publication, destructive or work-losing actions, owner-overlapping changes, authority-expanding actions, or semantic decisions.
+
 ## Tests
 
 Run a focused test while iterating, then the full suite:
@@ -55,7 +57,7 @@ The disposable repository is the runtime fixture. Never use the framework source
 
 ## Upgrade protocol for maintainers
 
-Use the same two-step CLI and repository upgrade protocol as users. On an owner branch, install the new CLI from the framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if its PEP 440 constraint excludes the new version, so explicitly review and edit the constraint before maintenance:
+Use the same two-step CLI and repository upgrade protocol as users. After any required branch switch is separately confirmed, install the new CLI from the framework clone, then read the knowledge repository's tracked `requires_cli`. Resolution fails closed if its PEP 440 constraint excludes the new version; when the accepted range is unambiguous, an Agent may make the task-scoped edit before maintenance:
 
 ```bash
 git switch -c upgrade-llmwikiops
@@ -69,8 +71,8 @@ git diff
 git commit -m "Upgrade LLMWikiOps"
 ```
 
-The command does not rewrite `requires_cli`. Collaborators review the complete diff before the owner commits or publishes it.
+The command does not rewrite `requires_cli`. Contributors or Agents review the complete diff and may make the exact-path local upgrade commit; publication still asks first.
 
 ## Commits
 
-Keep changes scoped, run `git diff --check`, and include the tests that establish the contract. Publishing a branch or pull request remains an explicit maintainer action.
+Keep changes scoped, run `git diff --check`, and include the tests that establish the contract. A local commit is not Git publication; ask before pushing, publishing a branch or pull request, modifying a remote, or rewriting history.

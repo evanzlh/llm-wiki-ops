@@ -44,6 +44,18 @@ EXTERNAL_ADAPTER_ENGLISH_DOCS = (
     "docs/skills.md",
 )
 
+AUTONOMY_ENGLISH_DOCS = (
+    "README.md",
+    "docs/agents.md",
+    "docs/architecture.md",
+    "docs/cli.md",
+    "docs/configuration.md",
+    "docs/installation.md",
+    "docs/skills.md",
+    "docs/contributing.md",
+    "docs/fork.md",
+)
+
 EXTERNAL_ADAPTER_LOCALIZED_DOCS = {
     "README_ZH.md": (
         "在 wiki 内部，仓库感知命令使用基于当前工作目录的最近祖先发现。",
@@ -271,9 +283,9 @@ def test_external_adapter_docs_explain_retained_evidence_policy() -> None:
         "no automatic garbage collection",
         "accumulate and consume disk space",
         "evidence and recovery boundary",
-        "only after user confirmation",
-        "manual cleanup",
+        "Agent deletes retained evidence only after user confirmation",
         "no cleanup command",
+        "no uninstall command",
     ):
         assert required in english, required
 
@@ -284,8 +296,9 @@ def test_external_adapter_docs_explain_retained_evidence_policy() -> None:
             "不会自动执行垃圾回收",
             "累积并占用磁盘空间",
             "证据与恢复边界",
-            "用户确认后手工清理",
+            "Agent 仅在用户确认后删除保留证据",
             "不提供清理命令",
+            "不提供卸载命令",
         ),
         "docs/cli.zh-TW.md": (
             "`<agent-config>/.llmwikiops-retained/.llmwikiops-retained-<token>`",
@@ -293,8 +306,9 @@ def test_external_adapter_docs_explain_retained_evidence_policy() -> None:
             "不會自動執行垃圾回收",
             "累積並占用磁碟空間",
             "證據與復原邊界",
-            "使用者確認後手動清理",
+            "Agent 只在使用者確認後刪除保留證據",
             "不提供清理命令",
+            "不提供解除安裝命令",
         ),
     }
     for relative, phrases in localized.items():
@@ -454,29 +468,101 @@ def test_current_docs_do_not_assign_skill_catalog_parsing_to_agents() -> None:
             assert phrase not in text, (relative, phrase)
 
 
-def test_agents_doc_limits_command_correction_to_pre_dispatch() -> None:
+def test_agents_doc_continues_recovery_only_while_state_makes_progress() -> None:
     agents = (ROOT / "docs/agents.md").read_text(encoding="utf-8")
-    section = agents.split("For an external wiki request", 1)[1].split(
-        "External Adapter authority reads", 1
+    section = agents.split("If a command retains recovery state", 1)[1].split(
+        "The read-only `hot status`", 1
     )[0]
     text = " ".join(section.split())
     cursor = 0
     for required in (
-        (
-            "One shell parse failure proven to occur before any repository process, "
-            "read, or mutation may be corrected once"
-        ),
-        "Preserve the exact root, recovery ID, action, and argument values",
-        (
-            "Any repository dispatch, partial execution, or second construction "
-            "failure stops"
-        ),
-        "at most one real recovery action",
-        "This is not general command retry",
+        "reload current structured state",
+        "observable progress",
+        "Do not repeat the same action with identical inputs and unchanged state",
+        "There is no fixed recovery attempt count",
+        "ask for the missing decision",
     ):
         position = text.find(required, cursor)
         assert position >= 0, required
         cursor = position + len(required)
+
+
+def test_current_docs_share_one_autonomy_and_escalation_workflow() -> None:
+    for relative in AUTONOMY_ENGLISH_DOCS:
+        text = " ".join(_text(relative).split()).lower()
+        complete = text.index("ordinary task-scoped work completes automatically")
+        recover = text.index("validate and recover", complete)
+        ask = text.index("ask before", recover)
+        escalation = text[ask : ask + 400]
+        for boundary in (
+            "external",
+            "destructive",
+            "owner-overlapping",
+            "authority-expanding",
+            "semantic",
+        ):
+            assert boundary in escalation, (relative, boundary)
+
+    localized = {
+        "README_ZH.md": (
+            "普通的任务范围内工作会自动完成",
+            "校验并恢复",
+            "以下情况须先询问",
+            "外部发布",
+            "破坏性",
+            "与所有者重叠",
+            "扩大权威",
+            "语义",
+        ),
+        "docs/cli.zh-TW.md": (
+            "一般的任務範圍內工作會自動完成",
+            "驗證並復原",
+            "以下情況須先詢問",
+            "外部發布",
+            "破壞性",
+            "與擁有者重疊",
+            "擴大權威",
+            "語意",
+        ),
+    }
+    for relative, phrases in localized.items():
+        text = _text(relative)
+        positions = [text.index(phrase) for phrase in phrases[:3]]
+        assert positions == sorted(positions), relative
+        for phrase in phrases[3:]:
+            assert phrase in text[positions[-1] : positions[-1] + 250], (
+                relative,
+                phrase,
+            )
+
+
+def test_current_docs_distinguish_exact_path_local_commits_from_publication() -> None:
+    for relative in AUTONOMY_ENGLISH_DOCS:
+        text = " ".join(_text(relative).split())
+        boundary = text.index("A local commit is not Git publication")
+        assert "exact task-owned paths" in text[:boundary]
+        assert "push" in text[boundary : boundary + 300].lower()
+
+    localized = {
+        "README_ZH.md": ("精确的任务自有路径", "本地提交不等于 Git 发布", "推送"),
+        "docs/cli.zh-TW.md": ("精確的任務自有路徑", "本機提交不等於 Git 發布", "推送"),
+    }
+    for relative, (scope, boundary, publication) in localized.items():
+        text = _text(relative)
+        assert text.index(scope) < text.index(boundary) < text.index(publication)
+
+
+def test_cli_docs_bind_skill_apply_to_plan_and_trust_approval_to_reviewer() -> None:
+    cli = _text("docs/cli.md")
+    dry_run = "llmwikiops repo sync-skills --json --pretty"
+    apply = "llmwikiops repo sync-skills --apply --expected-plan TOKEN --json --pretty"
+    assert cli.index(dry_run) < cli.index(apply)
+    assert "refuses before mirror writes" in cli[cli.index(apply) :]
+
+    approved = cli.index("--approved")
+    approval_text = cli[approved : approved + 700]
+    assert "reviewer attestation" in approval_text
+    assert "does not prove that review occurred" in approval_text
 
 
 def test_explicit_repository_docs_define_selection_and_routing_authority() -> None:
@@ -652,7 +738,7 @@ def test_each_authoritative_page_documents_its_role() -> None:
         "docs/cli.md": ("llmwikiops --help", "Only commands", "transaction commit"),
         "docs/cli.zh-TW.md": ("llmwikiops --help", "目前支援", "transaction commit"),
         "docs/agents.md": ("canonical protocol", "candidate_vault", "Git publication"),
-        "docs/skills.md": ("36 skills", "metadata-first", "never installs"),
+        "docs/skills.md": ("36 skills", "metadata-first", "request-scoped installation"),
         "docs/contributing.md": ("source checkout", "disposable", "check_readme_sync.py"),
         "docs/fork.md": ("independently", "does not track future upstream changes", "single repository product"),
         "docs/README.md": ("Installation", "Architecture", "CLI reference"),
@@ -758,22 +844,32 @@ def test_architecture_layout_and_source_shard_example_match_runtime(
     )
 
 
-def test_installation_documents_owner_initialized_git_repository() -> None:
+def test_installation_documents_exact_path_local_setup_commit() -> None:
     installation = _text("docs/installation.md")
     assert "does not initialize Git" in installation
     initialize = installation.index("git -C ./team-knowledge init")
     setup = installation.index("llmwikiops setup ./team-knowledge", initialize)
-    review = installation.index("git -C ./team-knowledge status", setup)
-    add = installation.index("git -C ./team-knowledge add", review)
-    commit = installation.index("git -C ./team-knowledge commit", add)
-    assert initialize < setup < review < add < commit
+    review = installation.index("git -C ./team-knowledge status --short", setup)
+    add = installation.index(
+        "git -C ./team-knowledge --literal-pathspecs add -- <setup-path>", review
+    )
+    check = installation.index(
+        "git -C ./team-knowledge --literal-pathspecs diff --cached --check -- "
+        "<same-paths>",
+        add,
+    )
+    commit = installation.index(
+        "git -C ./team-knowledge --literal-pathspecs commit", check
+    )
+    assert initialize < setup < review < add < check < commit
+    assert "git -C ./team-knowledge add --all" not in installation[setup:commit]
 
 
 def test_readmes_define_source_and_transaction_ownership() -> None:
     expectations = {
         "README.md": (
-            "owner-reviewed",
-            "tracked before `transaction begin`",
+            "Agent-reviewed",
+            "tracked and locally committed at exact paths before `transaction begin`",
             "promotes candidate pages",
             "upserts manifest shards",
             "appends one canonical block",
@@ -781,8 +877,8 @@ def test_readmes_define_source_and_transaction_ownership() -> None:
             "never modifies tracked source snapshots",
         ),
         "README_ZH.md": (
-            "由所有者审查",
-            "在 `transaction begin` 之前纳入版本管理",
+            "由 Agent 审查",
+            "在 `transaction begin` 之前按精确路径纳入版本管理并完成本地提交",
             "提升候选页面",
             "更新 manifest 分片",
             "追加一个规范区块",
@@ -794,6 +890,17 @@ def test_readmes_define_source_and_transaction_ownership() -> None:
         text = _text(relative)
         for required in required_phrases:
             assert required in text, (relative, required)
+
+
+def test_generated_skill_docs_complete_requested_installation_after_validation() -> None:
+    skills = _text("docs/skills.md")
+    factory = skills.index("`vault-skill-factory`")
+    validate = skills.index("repository-managed validator", factory)
+    install = skills.index("request-scoped installation", validate)
+    expected_plan = skills.index("--expected-plan", install)
+    local_commit = skills.index("exact-path local commit", expected_plan)
+    assert factory < validate < install < expected_plan < local_commit
+    assert "never installs the result" not in skills[factory:]
 
 
 def test_current_documentation_links_resolve() -> None:
