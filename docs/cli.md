@@ -36,6 +36,8 @@ llmwikiops check [--json] [--pretty] [--strict]
 
 `setup` creates a clone-ready repository in `DIR`, or in the current directory when omitted. `list` reports bundled skills. `info` reports version, install paths, and resolved context. `doctor` checks configuration and managed assets. `check` performs full deterministic repository validation; `--strict` also treats warnings as failure.
 
+A new ordinary Source that is unchanged from `HEAD` is reported as a warning until a transaction commit adds its manifest entry. A new Source without that Git authority remains an error.
+
 `check --json` also returns `skill_catalog`, a sorted array of exact `name` and normalized complete `description` objects projected from the validated canonical skill collection. It is `null` when canonical skill discovery fails. Human output does not print the catalog.
 
 ## Repository skills

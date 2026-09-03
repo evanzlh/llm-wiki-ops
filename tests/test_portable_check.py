@@ -40,6 +40,7 @@ from obsidian_wiki.skill_trees import (
     discover_anchored_skill_collection,
     skill_catalog,
 )
+from obsidian_wiki.transaction import TransactionManager
 
 
 def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
@@ -1217,6 +1218,28 @@ summary: A compiled example.
     return root, config, source, page, store.entry_path("sources/a.md")
 
 
+def commit_all(root: Path, message: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(root), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            message,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def issue_codes(report: dict[str, object]) -> set[str]:
     return {issue["code"] for issue in report["issues"]}
 
@@ -1365,6 +1388,74 @@ def test_new_and_orphaned_sources_are_errors(tmp_path: Path) -> None:
 
     codes = issue_codes(check_portable_repo(config))
     assert {"source-new", "source-orphaned"} <= codes
+
+
+def test_committed_new_source_warns_until_transaction_commit(tmp_path: Path) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    commit_all(root, "initial")
+    source = root / "sources/new.md"
+    source.write_text("reviewed source", encoding="utf-8")
+    commit_all(root, "review source")
+
+    report = check_portable_repo(config)
+    assert report["status"] == "warn"
+    assert issues_with_code(report, "source-new") == [
+        {
+            "code": "source-new",
+            "path": "sources/new.md",
+            "message": "source is not present in the manifest",
+            "severity": "warning",
+        }
+    ]
+
+    manager = TransactionManager(config)
+    record = manager.begin(
+        [source], transaction_id="tx-new", started_at="2026-08-07T00:00:00Z"
+    )
+    candidate = record.candidate_vault / "concepts/new.md"
+    candidate.parent.mkdir()
+    candidate.write_text(
+        """---
+title: New
+category: concepts
+tags:
+  - example
+sources:
+  - sources/new.md
+created: 2026-08-07T00:00:00Z
+updated: 2026-08-07T00:00:00Z
+summary: Compiled new source.
+---
+# New
+""",
+        encoding="utf-8",
+    )
+    manager.commit("tx-new", completed_at="2026-08-07T01:00:00Z")
+
+    assert check_portable_repo(config)["status"] == "pass"
+
+
+@pytest.mark.parametrize("state", ["untracked", "staged", "dirty"])
+def test_new_source_without_clean_head_authority_is_error(
+    tmp_path: Path, state: str
+) -> None:
+    root, config, _, _, _ = valid_repo(tmp_path)
+    commit_all(root, "initial")
+    source = root / "sources/new.md"
+    source.write_text("new", encoding="utf-8")
+    if state == "staged":
+        subprocess.run(
+            ["git", "-C", str(root), "add", "sources/new.md"],
+            check=True,
+            capture_output=True,
+        )
+    elif state == "dirty":
+        commit_all(root, "review source")
+        source.write_text("dirty", encoding="utf-8")
+
+    report = check_portable_repo(config)
+    assert report["status"] == "fail"
+    assert issues_with_code(report, "source-new")[0]["severity"] == "error"
 
 
 def test_git_lfs_pointer_replaces_stale_source_error(tmp_path: Path) -> None:

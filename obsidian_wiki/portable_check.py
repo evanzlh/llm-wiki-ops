@@ -15,7 +15,7 @@ from . import IMPLEMENTATION_ID, __version__
 from .cache import compute_hash
 from .config import ConfigError, PortableConfig, load_portable_config
 from .frontmatter import FrontmatterError, parse_frontmatter
-from .git_support import discover_git_root, tracked_paths
+from .git_support import discover_git_root, git_path_is_head_clean, tracked_paths
 from .lint import lint_vault
 from .operations import OperationError, parse_operation_log
 from .portable import (
@@ -398,6 +398,7 @@ def _check_sources(
 ) -> None:
     tracked = {entry.source_id: entry for entry in entries}
     current, invalid = _source_files(store, issues)
+    git_root = discover_git_root(store.config.root)
     for source_id, path in sorted(current.items()):
         if source_id in invalid:
             continue
@@ -415,7 +416,15 @@ def _check_sources(
         if entry is None:
             issues.append(
                 CheckIssue(
-                    "source-new", source_id, "source is not present in the manifest"
+                    "source-new",
+                    source_id,
+                    "source is not present in the manifest",
+                    (
+                        "warning"
+                        if git_root == store.config.root
+                        and git_path_is_head_clean(git_root, source_id)
+                        else "error"
+                    ),
                 )
             )
             continue

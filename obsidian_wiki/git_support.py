@@ -27,6 +27,7 @@ def _git_environment() -> dict[str, str]:
         and not key.upper().startswith("GIT_TRACE")
     }
     environment["GIT_OPTIONAL_LOCKS"] = "0"
+    environment["GIT_LITERAL_PATHSPECS"] = "1"
     environment["GIT_TERMINAL_PROMPT"] = "0"
     return environment
 
@@ -98,3 +99,42 @@ def tracked_paths(root: Path) -> tuple[str, ...]:
     return tuple(
         sorted(os.fsdecode(part) for part in result.stdout.split(b"\0") if part)
     )
+
+
+def git_path_is_head_clean(root: Path, path: str) -> bool:
+    """Return whether one literal path exists unchanged in ``HEAD``."""
+
+    head = _git_bytes(root, "rev-parse", "--verify", f"HEAD:{path}")
+    if head is None or head.returncode != 0:
+        return False
+    index = _git_bytes(root, "ls-files", "--stage", "-z", "--", path)
+    if (
+        index is None
+        or index.returncode != 0
+        or not index.stdout.endswith(b"\0")
+    ):
+        return False
+    try:
+        metadata, indexed_path = index.stdout[:-1].split(b"\t", 1)
+        mode, object_id, stage = metadata.split(b" ")
+    except ValueError:
+        return False
+    if (
+        indexed_path != os.fsencode(path)
+        or mode not in {b"100644", b"100755"}
+        or stage != b"0"
+        or object_id != _output_line(head.stdout)
+    ):
+        return False
+    dirty = _git_bytes(
+        root,
+        "ls-files",
+        "--modified",
+        "--deleted",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        path,
+    )
+    return dirty is not None and dirty.returncode == 0 and not dirty.stdout
