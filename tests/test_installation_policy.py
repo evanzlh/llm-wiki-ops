@@ -830,7 +830,7 @@ def test_requested_generated_skill_install_is_plan_limited_and_path_committed(
             "expected mirror path for `<name>`",
             "mirror entries are changed only for an approved replacement",
             "no unsafe or unrelated path",
-            "<wiki-cli> repo sync-skills --apply --json --pretty",
+            "<wiki-cli> repo sync-skills --apply --expected-plan <plan_token> --json --pretty",
             "existing CLI preimage and quiescence protections",
             "exact `.skills/<name>/`",
             *(
@@ -883,6 +883,7 @@ def test_requested_generated_skill_install_is_plan_limited_and_path_committed(
         and target["unsafe"] == []
         for target in plan["targets"]
     )
+    plan_token = plan["plan_token"]
 
     applied = _run_repository_cli(
         home,
@@ -890,6 +891,8 @@ def test_requested_generated_skill_install_is_plan_limited_and_path_committed(
         "repo",
         "sync-skills",
         "--apply",
+        "--expected-plan",
+        plan_token,
         "--json",
         "--pretty",
     )
@@ -983,6 +986,16 @@ def test_generated_skill_install_stops_on_preexisting_owner_mirror_drift(
     tmp_path: Path,
 ) -> None:
     home, repository = _setup_committed_repository(tmp_path)
+    name = "reviewed-example"
+    generated = repository / ".llmwikiops/local/generated-skills" / name
+    generated.mkdir(parents=True)
+    generated_bytes = (
+        "---\n"
+        f"name: {name}\n"
+        "description: Use when proving owner drift blocks installation.\n"
+        "---\n\n# Reviewed Example\n"
+    ).encode()
+    (generated / "SKILL.md").write_bytes(generated_bytes)
     mirror = repository / ".claude/skills/wiki-query/SKILL.md"
     owner_bytes = mirror.read_bytes() + b"\nOwner mirror edit remains.\n"
     mirror.write_bytes(owner_bytes)
@@ -1000,10 +1013,11 @@ def test_generated_skill_install_stops_on_preexisting_owner_mirror_drift(
         if target["path"] == ".claude/skills"
     )
     assert claude["changed"] == ["wiki-query/SKILL.md"]
+    assert (generated / "SKILL.md").read_bytes() == generated_bytes
     assert mirror.read_bytes() == owner_bytes
-    assert not (repository / ".skills/reviewed-example").exists()
+    assert not (repository / ".skills" / name).exists()
     assert not any(
-        (repository / agent_relative / "reviewed-example").exists()
+        (repository / agent_relative / name).exists()
         for agent_relative, _label in PROJECT_AGENT_DIRS
     )
 

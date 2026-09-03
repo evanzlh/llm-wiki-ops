@@ -165,22 +165,24 @@ For a new canonical target, require exactly `added: ["<name>"]` and empty `chang
 changed only for an approved replacement: every added, changed, or removed entry must
 match the reviewed old/new `<name>` tree and remain at or below `<name>`. Require no
 unsafe or unrelated path. Any other plan is drift: stop before apply and retain the
-evidence.
+evidence. Require the top-level `plan_token` to be lowercase `sha256:` plus 64 hex
+digits and retain that exact reviewed value as `<plan_token>`.
 
 Only after that plan check, run in order:
 
 ```bash
-<wiki-cli> repo sync-skills --apply --json --pretty
+<wiki-cli> repo sync-skills --apply --expected-plan <plan_token> --json --pretty
 <wiki-cli> check --json --pretty
 ```
 
-Rely on the existing CLI preimage and quiescence protections during apply; do not add
-or bypass orchestration. Require both commands to pass. The exact local commit path set
-is the exact `.skills/<name>/` plus the six exact mirror paths listed above. Validate
-every path separately, stage all seven literal paths, inspect each staged diff, run the
-cached diff check, and make one commit restricted to those paths. Never use a parent
-directory, glob, or whole-repository add; leave unrelated dirty and staged paths
-untouched.
+Pass the token as its own argv value. Apply recomputes the plan under the existing CLI
+preimage and quiescence protections and refuses without mirror writes if any canonical
+or mirror preimage changed after review; do not add or bypass orchestration. Require
+both commands to pass. The exact local commit path set is the exact
+`.skills/<name>/` plus the six exact mirror paths listed above. Validate every path
+separately, stage all seven literal paths, inspect each staged diff, run the cached diff
+check, and make one commit restricted to those paths. Never use a parent directory,
+glob, or whole-repository add; leave unrelated dirty and staged paths untouched.
 
 An action that would install outside the validated repository, acquire external
 dependencies or credentials, publish, push, change remotes, or rewrite branch history

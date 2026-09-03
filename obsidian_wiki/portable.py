@@ -64,6 +64,7 @@ from obsidian_wiki.skill_names import is_safe_skill_name
 from obsidian_wiki.skill_trees import (
     SkillCollection,
     SkillEntry,
+    UnsafeSkillEntry,
     discover_anchored_skill_collection,
     discover_skill_collection,
     materialize_skill_collection,
@@ -1612,6 +1613,7 @@ class SkillSyncReport:
     status: Literal["clean", "drift", "applied"]
     canonical_skills: tuple[str, ...]
     targets: tuple[SkillMirrorChange, ...]
+    plan_token: str
     warnings: tuple[Mapping[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -1625,6 +1627,7 @@ class SkillSyncReport:
         return {
             "status": self.status,
             "canonical_skills": list(self.canonical_skills),
+            "plan_token": self.plan_token,
             "targets": [
                 {
                     "path": target.path,
@@ -1637,6 +1640,14 @@ class SkillSyncReport:
             ],
             "warnings": [dict(warning) for warning in self.warnings],
         }
+
+
+@dataclass(frozen=True)
+class _SkillMirrorPlanState:
+    change: SkillMirrorChange
+    present: bool
+    entries: tuple[SkillEntry, ...]
+    unsafe_findings: tuple[UnsafeSkillEntry, ...]
 
 
 def _canonical_skill_entries(collection: SkillCollection) -> tuple[SkillEntry, ...]:
@@ -1683,11 +1694,12 @@ def _plan_one_skill_mirror(
     root: Path,
     target_relative: str,
     canonical_entries: tuple[SkillEntry, ...],
-) -> SkillMirrorChange:
+) -> _SkillMirrorPlanState:
     target = root / target_relative
+    present = target.exists() or target.is_symlink()
     try:
         _assert_safe_managed_path(root, target)
-        if target.exists():
+        if present:
             mirror_snapshot, unsafe_findings = snapshot_ordinary_tree_with_unsafe(
                 target, anchor=root
             )
@@ -1695,12 +1707,17 @@ def _plan_one_skill_mirror(
             mirror_snapshot, unsafe_findings = (), ()
         _assert_safe_managed_path(root, target)
     except (OSError, ValueError):
-        return SkillMirrorChange(
-            path=target_relative,
-            added=(),
-            changed=(),
-            removed=(),
-            unsafe=(".",),
+        return _SkillMirrorPlanState(
+            change=SkillMirrorChange(
+                path=target_relative,
+                added=(),
+                changed=(),
+                removed=(),
+                unsafe=(".",),
+            ),
+            present=present,
+            entries=(),
+            unsafe_findings=(UnsafeSkillEntry(".", "read-error"),),
         )
 
     canonical = {entry.path: entry for entry in canonical_entries}
@@ -1721,13 +1738,55 @@ def _plan_one_skill_mirror(
     removed = _minimal_changed_paths(
         set(mirror) - set(canonical), blocking_ancestors=blockers
     )
-    return SkillMirrorChange(
-        path=target_relative,
-        added=added,
-        changed=changed,
-        removed=removed,
-        unsafe=unsafe,
+    return _SkillMirrorPlanState(
+        change=SkillMirrorChange(
+            path=target_relative,
+            added=added,
+            changed=changed,
+            removed=removed,
+            unsafe=unsafe,
+        ),
+        present=present,
+        entries=mirror_snapshot,
+        unsafe_findings=unsafe_findings,
     )
+
+
+def _skill_sync_plan_token(
+    canonical_entries: tuple[SkillEntry, ...],
+    inventory: ManagedSkillsInventory,
+    mirrors: tuple[_SkillMirrorPlanState, ...],
+) -> str:
+    digest = hashlib.sha256()
+
+    def add(value: bytes) -> None:
+        digest.update(str(len(value)).encode("ascii"))
+        digest.update(b":")
+        digest.update(value)
+
+    def add_entry(entry: SkillEntry) -> None:
+        add(entry.path.encode("utf-8"))
+        add(entry.kind.encode("ascii"))
+        add(b"1" if entry.executable else b"0")
+        add(entry.content)
+
+    add(b"portable-skill-sync-plan-v1")
+    add(render_inventory(inventory).encode("utf-8"))
+    add(str(len(canonical_entries)).encode("ascii"))
+    for entry in canonical_entries:
+        add_entry(entry)
+    add(str(len(mirrors)).encode("ascii"))
+    for mirror in mirrors:
+        add(mirror.change.path.encode("utf-8"))
+        add(b"1" if mirror.present else b"0")
+        add(str(len(mirror.entries)).encode("ascii"))
+        for entry in mirror.entries:
+            add_entry(entry)
+        add(str(len(mirror.unsafe_findings)).encode("ascii"))
+        for finding in mirror.unsafe_findings:
+            add(finding.path.encode("utf-8"))
+            add(finding.reason.encode("ascii"))
+    return "sha256:" + digest.hexdigest()
 
 
 def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
@@ -1775,10 +1834,11 @@ def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
     )
 
     canonical_entries = _canonical_skill_entries(canonical)
-    targets = tuple(
+    mirror_states = tuple(
         _plan_one_skill_mirror(root, relative, canonical_entries)
         for relative, _label in PROJECT_AGENT_DIRS
     )
+    targets = tuple(state.change for state in mirror_states)
     drift = any(
         target.added or target.changed or target.removed or target.unsafe
         for target in targets
@@ -1787,6 +1847,9 @@ def plan_portable_skill_sync(root: Path) -> SkillSyncReport:
         status="drift" if drift else "clean",
         canonical_skills=canonical.names,
         targets=targets,
+        plan_token=_skill_sync_plan_token(
+            canonical_entries, inventory, mirror_states
+        ),
         warnings=warnings,
     )
 
@@ -5403,15 +5466,27 @@ def sync_portable_skill_mirrors(
     *,
     apply: bool,
     expected_root_identity: tuple[int, ...],
+    expected_plan_token: str | None = None,
 ) -> SkillSyncReport:
     """Check or transactionally rebuild all derived agent skill mirrors."""
+    if expected_plan_token is not None and (
+        type(expected_plan_token) is not str
+        or _SKILL_DIGEST.fullmatch(expected_plan_token) is None
+    ):
+        raise ValueError(
+            "expected skill sync plan token must be lowercase sha256: plus 64 hex digits"
+        )
+    if expected_plan_token is not None and not apply:
+        raise ValueError("expected skill sync plan token requires apply")
     root = Path(os.path.abspath(os.fspath(root)))
     with _bound_portable_mutation_root(root, expected_root_identity):
-        return _sync_portable_skill_mirrors_bound(root, apply=apply)
+        return _sync_portable_skill_mirrors_bound(
+            root, apply=apply, expected_plan_token=expected_plan_token
+        )
 
 
 def _sync_portable_skill_mirrors_bound(
-    root: Path, *, apply: bool
+    root: Path, *, apply: bool, expected_plan_token: str | None = None
 ) -> SkillSyncReport:
     root = _safe_root(root)
     if not root.is_dir():
@@ -5419,6 +5494,11 @@ def _sync_portable_skill_mirrors_bound(
     with _portable_skills_lock(root):
         _recover_skill_operations(root)
         report = plan_portable_skill_sync(root)
+        if (
+            expected_plan_token is not None
+            and report.plan_token != expected_plan_token
+        ):
+            raise ValueError("portable skill sync plan changed; refusing apply")
         if not apply or report.status == "clean":
             return report
 

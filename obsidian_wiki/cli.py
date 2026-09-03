@@ -2210,6 +2210,7 @@ def cmd_repo_sync_skills(args: argparse.Namespace) -> int:
             root,
             apply=args.apply,
             expected_root_identity=resolved.root_identity,
+            expected_plan_token=args.expected_plan,
         )
     except (ConfigError, ValueError, OSError, RuntimeError) as exc:
         error = str(exc)
@@ -2706,6 +2707,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="replace all derived mirrors from .skills",
+    )
+    rss.add_argument(
+        "--expected-plan",
+        metavar="TOKEN",
+        help="apply only the exact plan token returned by a reviewed dry run",
     )
     _add_json_args(rss)
     rss.set_defaults(func=cmd_repo_sync_skills)

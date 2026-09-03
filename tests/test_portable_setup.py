@@ -1659,7 +1659,9 @@ def test_skill_sync_plan_reports_all_agent_additions_without_writing(
         not target.changed and not target.removed and not target.unsafe
         for target in report.targets
     )
-    assert report.as_dict() == {
+    payload = report.as_dict()
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", payload.pop("plan_token"))
+    assert payload == {
         "status": "drift",
         "canonical_skills": ["team-note", "wiki-ingest", "wiki-query"],
         "targets": [
@@ -2318,11 +2320,21 @@ def test_repo_sync_skills_json_dry_run_and_apply(tmp_path: Path) -> None:
 
     assert dry.returncode == 1
     assert dry.stderr == ""
-    assert json.loads(dry.stdout)["status"] == "drift"
+    dry_report = json.loads(dry.stdout)
+    assert dry_report["status"] == "drift"
+    plan_token = dry_report["plan_token"]
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", plan_token)
     assert not (root / ".claude/skills/team-note").exists()
 
     applied = run_cli(
-        tmp_path / "home", root, "repo", "sync-skills", "--apply", "--json"
+        tmp_path / "home",
+        root,
+        "repo",
+        "sync-skills",
+        "--apply",
+        "--expected-plan",
+        plan_token,
+        "--json",
     )
 
     assert applied.returncode == 0, applied.stderr
@@ -2333,6 +2345,86 @@ def test_repo_sync_skills_json_dry_run_and_apply(tmp_path: Path) -> None:
     clean = run_cli(tmp_path / "home", root, "repo", "sync-skills", "--json")
     assert clean.returncode == 0, clean.stderr
     assert json.loads(clean.stdout)["status"] == "clean"
+
+
+def test_repo_sync_skills_expected_plan_rejects_new_owner_drift_before_writes(
+    tmp_path: Path,
+) -> None:
+    root = _setup_cli_portable_repo(tmp_path)
+    _add_custom_canonical_skill(root)
+    dry = run_cli(tmp_path / "home", root, "repo", "sync-skills", "--json")
+    assert dry.returncode == 1 and dry.stderr == ""
+    plan_token = json.loads(dry.stdout)["plan_token"]
+
+    owner_mirror = root / ".claude/skills/wiki-query/SKILL.md"
+    owner_bytes = owner_mirror.read_bytes() + b"\nowner drift after review\n"
+    owner_mirror.write_bytes(owner_bytes)
+    canonical_before = snapshot_tree(root / ".skills")
+    mirrors_before = {
+        relative: snapshot_tree(root / relative)
+        for relative, _label in portable.PROJECT_AGENT_DIRS
+    }
+
+    stale = run_cli(
+        tmp_path / "home",
+        root,
+        "repo",
+        "sync-skills",
+        "--apply",
+        "--expected-plan",
+        plan_token,
+        "--json",
+    )
+
+    assert stale.returncode == 1 and stale.stderr == ""
+    stale_error = json.loads(stale.stdout)
+    assert stale_error["status"] == "error"
+    assert "plan changed" in stale_error["error"]
+    assert owner_mirror.read_bytes() == owner_bytes
+    assert snapshot_tree(root / ".skills") == canonical_before
+    assert {
+        relative: snapshot_tree(root / relative)
+        for relative, _label in portable.PROJECT_AGENT_DIRS
+    } == mirrors_before
+
+
+def test_repo_sync_skills_rejects_malformed_expected_plan_before_writes(
+    tmp_path: Path,
+) -> None:
+    root = _setup_cli_portable_repo(tmp_path)
+    _add_custom_canonical_skill(root)
+    canonical_before = snapshot_tree(root / ".skills")
+    mirrors_before = {
+        relative: snapshot_tree(root / relative)
+        for relative, _label in portable.PROJECT_AGENT_DIRS
+    }
+
+    malformed = run_cli(
+        tmp_path / "home",
+        root,
+        "repo",
+        "sync-skills",
+        "--apply",
+        "--expected-plan",
+        "sha256:not-a-plan",
+        "--json",
+    )
+
+    assert malformed.returncode == 1 and malformed.stderr == ""
+    error = json.loads(malformed.stdout)
+    assert error == {
+        "status": "error",
+        "error": (
+            "expected skill sync plan token must be lowercase sha256: plus 64 "
+            "hex digits"
+        ),
+        "warnings": [],
+    }
+    assert snapshot_tree(root / ".skills") == canonical_before
+    assert {
+        relative: snapshot_tree(root / relative)
+        for relative, _label in portable.PROJECT_AGENT_DIRS
+    } == mirrors_before
 
 
 def test_repo_sync_skills_human_output_describes_rebuilt_derived_roots(

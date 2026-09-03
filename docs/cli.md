@@ -43,10 +43,13 @@ A new ordinary Source that is unchanged from `HEAD` is reported as a warning unt
 ## Repository skills
 
 ```bash
-llmwikiops repo sync-skills [--apply] [--json] [--pretty]
+llmwikiops repo sync-skills [--apply [--expected-plan TOKEN]] [--json] [--pretty]
 ```
 
-`sync-skills` is read-only unless `--apply` is supplied. It compares or rebuilds all derived mirrors from `.skills/`.
+`sync-skills` is read-only unless `--apply` is supplied. JSON dry runs return a
+`plan_token`; pass that value with `--expected-plan` to apply only the exact reviewed
+canonical and mirror preimages. A changed or malformed token refuses before mirror
+writes. Existing unbound `--apply` calls remain supported.
 
 ## Upgrade protocol
 

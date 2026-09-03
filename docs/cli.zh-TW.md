@@ -54,10 +54,13 @@ llmwikiops check
 
 ```bash
 llmwikiops repo sync-skills --json --pretty
-llmwikiops repo sync-skills --apply --json --pretty
+llmwikiops repo sync-skills --apply --expected-plan TOKEN --json --pretty
 ```
 
-第一條命令是唯讀檢查；加入 `--apply` 才會從 `.skills/` 重建完整鏡像。受管理技能的升級必須先完成下述版本相容流程。
+第一條命令是唯讀檢查，其 JSON 會回傳 `plan_token`；將該值傳給
+`--expected-plan`，才會套用審查過的規範與鏡像前映像。若 token 格式錯誤或
+狀態已變更，會在寫入鏡像前拒絕。既有不帶 token 的 `--apply` 呼叫仍受支援。
+受管理技能的升級必須先完成下述版本相容流程。
 
 ## 升級流程
 
