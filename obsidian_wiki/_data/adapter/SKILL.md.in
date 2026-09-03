@@ -49,9 +49,9 @@ repository dispatch, verify that decoding produces one argv element byte-for-byt
 equal to `<exact-root>`. A shell exit code or the Agent's assertion alone is not
 proof. One shell parse failure proven to occur before any
 repository process, read, or mutation may be corrected once. Preserve the exact
-root, recovery ID, action, and argument values. Any repository dispatch, partial
-execution, or second construction failure stops. Execute at most one real recovery
-action. Never pass the root as shell code. This is not general command retry.
+root, recovery ID, action, and argument values. A second construction failure,
+repository dispatch, or partial execution ends this narrow correction path. Never
+pass the root as shell code.
 `check` may deterministically finish an already-recorded framework-managed skill
 maintenance recovery, part of establishing the preflight state. Do not begin
 task-directed repository mutation before preflight succeeds.
@@ -69,9 +69,12 @@ process must complete successfully; require JSON showing
 Only then start `check`; it must complete successfully before any ordinary
 external read/access.
 
-On either failure, stop before ordinary repository reads;
-do not search for a different root. Failed recovered `check`: do not attempt ad
-hoc repair.
+On either failure, stop before ordinary repository reads and use only the current
+structured evidence. When it identifies a safe local cause that is in scope,
+correct that cause and rerun serialized `info` followed by `check`; otherwise
+ask for the missing decision; do not search for a different root. Malformed
+authority output, ambiguous routing, unsafe topology, or a changed root remain
+non-authoritative and cannot be repaired into authority.
 
 ## CLI-owned catalog and bounded reads
 
@@ -140,6 +143,13 @@ Begin with `transaction list` for review/recovery; match exact reported ID. Post
 bounded-inspect every reported candidate before promotion. A status or validation
 envelope alone is not review. When requirements hold, execute a still-reported
 allowed/recommended action.
+
+After each action, reload current structured state and compare the error code,
+status, preferred action, allowed actions, preconditions expressed by `requires`,
+identities, and exposed pre/postimages. Continue only when the next safe action
+is currently allowed and the last action made observable progress. Do not repeat
+the same action with identical inputs and unchanged state; diagnose a different
+safe cause or ask for the missing decision.
 
 After knowledge commit/retry succeeds, run `hot status`. If stale, get
 `hot inputs`; update only requested tracked hot file and verify its

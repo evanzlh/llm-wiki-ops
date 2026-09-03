@@ -191,12 +191,6 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
             "read, or mutation may be corrected once"
         ),
         "Preserve the exact root, recovery ID, action, and argument values",
-        (
-            "Any repository dispatch, partial execution, or second construction "
-            "failure stops"
-        ),
-        "at most one real recovery action",
-        "This is not general command retry",
     )
     cursor = 0
     for required in correction_phrases:
@@ -225,6 +219,13 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
     ):
         assert required in section_text
 
+    for forbidden in (
+        "Any repository dispatch, partial execution, or second construction failure stops",
+        "at most one real recovery action",
+        "This is not general command retry",
+    ):
+        assert forbidden not in section_text
+
     assert apostrophe_escape.encode("ascii") == bytes((0x27, 0x22, 0x27, 0x22, 0x27))
     assert f"`{apostrophe_escape}`" in section
 
@@ -240,6 +241,37 @@ def test_external_adapter_bind_section_requires_exact_argv_construction() -> Non
         capture_output=True,
     )
     assert result.stdout.decode("utf-8") == exact_root
+
+
+def test_external_adapter_recovery_is_progress_based_and_risk_bounded() -> None:
+    template_text = " ".join(ADAPTER_TEMPLATE.read_text(encoding="utf-8").split())
+    ordered = (
+        "reload current structured state",
+        "error code",
+        "preferred action",
+        "allowed actions",
+        "preconditions",
+        "observable progress",
+        "do not repeat the same action with identical inputs and unchanged state",
+        "ask",
+    )
+
+    cursor = 0
+    for required in ordered:
+        position = template_text.lower().find(required, cursor)
+        assert position >= 0, required
+        cursor = position + len(required)
+
+    for required in (
+        "safe local cause",
+        "serialized `info` followed by `check`",
+        "Malformed authority output",
+        "ambiguous routing",
+        "unsafe topology",
+        "changed root",
+        "remain non-authoritative",
+    ):
+        assert required in template_text
 
 
 def test_external_adapter_bind_section_requires_independent_decoding_evidence() -> None:

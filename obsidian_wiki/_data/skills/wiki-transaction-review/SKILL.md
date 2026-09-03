@@ -98,11 +98,15 @@ then execute only the still-reported selection after all `requires` hold.
 Save any failed command envelope, refresh the list, and match exactly one
 retained record to its trusted transaction ID. Cross-check the envelope with
 the refreshed record's status, `recommended_action`, and `allowed_actions`.
-Execute only the reported recommendation or an applicable reported action the
-user explicitly selects, after all `requires` hold. This applies to active,
-promoting, failed, complete, and restored recovery. On missing or mismatched
-identity, conflict, multiple matches, or any ambiguous outcome, stop without
-mutation.
+Execute only the reported recommendation or an applicable reported action after
+all `requires` hold and any action-specific confirmation below. Retry
+automatically when its current requirements hold. Restore automatically only
+when recorded originals can be restored with no owner drift. The work-losing
+`discard` and `abort` require action-specific confirmation. If owner drift
+prevents restore, ask for a decision without overwriting owner changes or
+bypassing the failed requirement. This applies to active, promoting, failed,
+complete, and restored recovery. On missing or mismatched identity, conflict,
+multiple matches, or any ambiguous outcome, stop without mutation.
 
 Before a retry or other recovery action that promotes candidates, validate and
 bounded-inspect every page returned in `candidate_pages` using the sparse-diff

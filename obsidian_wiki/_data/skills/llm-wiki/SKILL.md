@@ -134,6 +134,21 @@ validated repository binding unchanged throughout.
    mismatched, duplicated, or ambiguous, stop without changing repository
    content. A failure envelope without a trusted ID is inspection-only.
 
+   After each action, reload current structured state and compare the error code,
+   status, preferred action, allowed actions, preconditions expressed by
+   `requires`, identities, and exposed pre/postimages. Continue only when the next
+   safe action is currently allowed and the last action made observable progress.
+   Do not repeat the same action with identical inputs and unchanged state;
+   diagnose a different safe cause or ask for the missing decision. There is no
+   fixed recovery attempt count; structured-state progress controls continuation.
+
+   A reported `transaction retry` proceeds automatically when its current
+   requirements hold. A reported `transaction restore` proceeds automatically
+   only when recorded originals can be restored with no owner drift. Ask for
+   action-specific confirmation before work-losing `discard` or `abort`. Ask
+   before `restore` when owner drift is present; confirmation does not bypass the
+   precondition or authorize overwriting owner changes.
+
    `transaction commit` promotes a reviewed active transaction. `transaction
    retry` retries a failed promotion and commits on success. `transaction
    restore` restores recorded originals; `transaction abort` abandons staged
