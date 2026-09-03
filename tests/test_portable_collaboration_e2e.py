@@ -818,7 +818,16 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
 
     warning = _cli(root, "check", "--json")
     assert warning.returncode == 0, warning.stdout + warning.stderr
-    assert json.loads(warning.stdout)["status"] == "warn"
+    warning_payload = json.loads(warning.stdout)
+    assert warning_payload["status"] == "warn"
+    assert warning_payload["issues"] == [
+        {
+            "code": "source-new",
+            "path": source_id,
+            "message": "source is not present in the manifest",
+            "severity": "warning",
+        }
+    ]
 
     begun = _cli(root, "transaction", "begin", "--source", source_id, "--json")
     assert begun.returncode == 0, begun.stdout + begun.stderr
@@ -845,6 +854,45 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     assert committed.returncode == 0, committed.stdout + committed.stderr
     first_result = json.loads(committed.stdout)
     assert first_result["created"] == [page_id]
+
+    hot_status = _cli(root, "hot", "status", "--json")
+    assert hot_status.returncode == 0, hot_status.stdout + hot_status.stderr
+    assert json.loads(hot_status.stdout)["stale"] is True
+    hot_inputs = _cli(root, "hot", "inputs", "--json")
+    assert hot_inputs.returncode == 0, hot_inputs.stdout + hot_inputs.stderr
+    first_hot_inputs = json.loads(hot_inputs.stdout)
+    assert any(page["path"] == page_id for page in first_hot_inputs["pages"])
+    assert any(
+        operation["transaction_id"] == first["transaction_id"]
+        for operation in first_hot_inputs["operations"]
+    )
+    hot = root / "wiki/hot.md"
+    hot_before = hot.read_bytes()
+    hot.write_text(
+        "# Hot\n\n"
+        + "\n".join(
+            f"- [[{page['path']}|{page['title']}]]: {page['summary']}"
+            for page in first_hot_inputs["pages"]
+        )
+        + "\n\n"
+        + "\n".join(
+            f"- Transaction `{operation['transaction_id']}`"
+            for operation in first_hot_inputs["operations"]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert hot.read_bytes() != hot_before
+    marked = _cli(root, "hot", "mark-current", "--json")
+    assert marked.returncode == 0, marked.stdout + marked.stderr
+    assert json.loads(marked.stdout) == {"stale": False, "status": "current"}
+    current = _cli(root, "hot", "status", "--json")
+    assert current.returncode == 0, current.stdout + current.stderr
+    assert json.loads(current.stdout) == {
+        "stale": False,
+        "reason": "current",
+        "fingerprint": first_hot_inputs["fingerprint"],
+    }
     checked = _cli(root, "check", "--json")
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert json.loads(checked.stdout)["status"] == "pass"
@@ -856,7 +904,7 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
         f"wiki/{first_result['log_path']}",
     ]
     hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
-    assert hot_diff.returncode in (0, 1)
+    assert hot_diff.returncode == 1
     if hot_diff.returncode == 1:
         first_result_paths.append("wiki/hot.md")
     _git(root, "--literal-pathspecs", "add", "--", *first_result_paths)
@@ -944,6 +992,44 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     assert committed.returncode == 0, committed.stdout + committed.stderr
     second_result = json.loads(committed.stdout)
     assert second_result["updated"] == [page_id]
+
+    hot_status = _cli(root, "hot", "status", "--json")
+    assert hot_status.returncode == 0, hot_status.stdout + hot_status.stderr
+    assert json.loads(hot_status.stdout)["stale"] is True
+    hot_inputs = _cli(root, "hot", "inputs", "--json")
+    assert hot_inputs.returncode == 0, hot_inputs.stdout + hot_inputs.stderr
+    second_hot_inputs = json.loads(hot_inputs.stdout)
+    assert any(page["path"] == page_id for page in second_hot_inputs["pages"])
+    assert any(
+        operation["transaction_id"] == second["transaction_id"]
+        for operation in second_hot_inputs["operations"]
+    )
+    hot_before = hot.read_bytes()
+    hot.write_text(
+        "# Hot\n\n"
+        + "\n".join(
+            f"- [[{page['path']}|{page['title']}]]: {page['summary']}"
+            for page in second_hot_inputs["pages"]
+        )
+        + "\n\n"
+        + "\n".join(
+            f"- Transaction `{operation['transaction_id']}`"
+            for operation in second_hot_inputs["operations"]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert hot.read_bytes() != hot_before
+    marked = _cli(root, "hot", "mark-current", "--json")
+    assert marked.returncode == 0, marked.stdout + marked.stderr
+    assert json.loads(marked.stdout) == {"stale": False, "status": "current"}
+    current = _cli(root, "hot", "status", "--json")
+    assert current.returncode == 0, current.stdout + current.stderr
+    assert json.loads(current.stdout) == {
+        "stale": False,
+        "reason": "current",
+        "fingerprint": second_hot_inputs["fingerprint"],
+    }
     checked = _cli(root, "check", "--json")
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert json.loads(checked.stdout)["status"] == "pass"
@@ -954,7 +1040,7 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
         f"wiki/{second_result['log_path']}",
     ]
     hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
-    assert hot_diff.returncode in (0, 1)
+    assert hot_diff.returncode == 1
     if hot_diff.returncode == 1:
         second_result_paths.append("wiki/hot.md")
     _git(root, "--literal-pathspecs", "add", "--", *second_result_paths)
