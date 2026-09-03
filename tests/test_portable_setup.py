@@ -3487,12 +3487,15 @@ def test_fresh_cli_setup_renders_bundled_bootstrap_assets_with_frontmatter(
         assert managed_body(installed) == asset_body, target_relative
 
     agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    flat_agents = " ".join(agents.split())
     canonical = agents.index("`llm-wiki` skill")
     task = agents.index("task skill")
     assert canonical < task
     assert "`<root>/.skills/llm-wiki/SKILL.md`" in agents
     assert "`<root>/.skills/<selected-task>/SKILL.md`" in agents
     assert "canonical protocol takes precedence" in agents
+    assert "task-scoped local actions and exact-path local commits proceed automatically" in flat_agents.lower()
+    assert "push and owner-overlapping changes require confirmation" in flat_agents.lower()
     for relative in ("CLAUDE.md", "GEMINI.md", ".hermes.md"):
         contents = (root / relative).read_text(encoding="utf-8")
         assert "# LLMWikiOps Agent Instructions\n\n" in contents, relative
@@ -3554,7 +3557,8 @@ def test_root_agents_is_portable_dedicated_and_preserves_team_conventions(
     assert "`<root>/.skills/<selected-task>/SKILL.md`" in flat
     assert "canonical protocol takes precedence" in flat
     assert "All knowledge writes use CLI transactions" in flat
-    assert "commits, pushes, and pull requests" in flat
+    assert "task-scoped local actions and exact-path local commits proceed automatically" in flat.lower()
+    assert "push and owner-overlapping changes require confirmation" in flat.lower()
     assert "## Team conventions" in text
     assert "terminology" in text and "writing style" in text
     assert "README Translation Parity" not in text

@@ -27,6 +27,9 @@ not remove the tracked file. Agents must not edit `wiki/log.md` directly;
 transaction commit owns that authoritative file and appends its canonical operation
 block last.
 
-Treat owner changes as authoritative. The CLI does not perform Git publication;
-commits, pushes, and pull requests require a separate owner decision.
-Owners resolve ordinary Git conflicts in `log.md` and `hot.md`.
+The canonical task-scoped autonomy policy takes precedence. Task-scoped local
+actions and exact-path local commits proceed automatically after an explicit
+request: validate each path, inspect the staged diff, and leave unrelated paths
+untouched. Push and owner-overlapping changes require confirmation, as do
+remote mutation, history rewrites, destructive recovery, retained-evidence
+deletion, authority expansion, and semantic ambiguity.

@@ -105,36 +105,24 @@ NON_REPOSITORY_RUNTIME_SKILLS = {
 }
 
 
-def test_git_examples_use_context_aware_argv_prefix(tmp_path: Path) -> None:
-    repository = tmp_path / "root with spaces"
+@pytest.mark.parametrize("external", [False, True])
+def test_git_examples_use_context_aware_argv_prefix(
+    tmp_path: Path, external: bool
+) -> None:
+    repository = tmp_path / ("external" if external else "local")
     repository.mkdir()
     subprocess.run(
         ["git", "init"], cwd=repository, check=True, capture_output=True, text=True
     )
-    local_prefix = ["git"]
-    external_prefix = ["git", "-C", str(repository)]
-    local = subprocess.run(
-        [*local_prefix, "rev-parse", "--show-toplevel"],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    external_cwd = tmp_path / "outside"
-    external_cwd.mkdir()
-    external = subprocess.run(
-        [*external_prefix, "rev-parse", "--show-toplevel"],
-        cwd=external_cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert local.stdout == external.stdout == f"{repository}\n"
+    cwd = tmp_path / "outside" if external else repository
+    cwd.mkdir(exist_ok=True)
+    prefix = ["git", "-C", str(repository)] if external else ["git"]
 
     source_id = "sources/tracked file.md"
     source = repository / source_id
     source.parent.mkdir()
     source.write_text("reviewed\n", encoding="utf-8")
+    (repository / "notes.txt").write_text("owner staging\n", encoding="utf-8")
     subprocess.run(
         ["git", "config", "user.name", "Protocol Test"],
         cwd=repository,
@@ -145,11 +133,6 @@ def test_git_examples_use_context_aware_argv_prefix(tmp_path: Path) -> None:
         cwd=repository,
         check=True,
     )
-    subprocess.run(["git", "add", "--", source_id], cwd=repository, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "review source"], cwd=repository, check=True
-    )
-
     ls_files = (
         "--literal-pathspecs",
         "ls-files",
@@ -165,26 +148,50 @@ def test_git_examples_use_context_aware_argv_prefix(tmp_path: Path) -> None:
         "--",
         source_id,
     )
-    for prefix, cwd in (
-        (local_prefix, repository),
-        (external_prefix, external_cwd),
-    ):
-        listed = subprocess.run(
-            [*prefix, *ls_files],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        clean = subprocess.run(
-            [*prefix, *status],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert listed.stdout == f"{source_id}\n"
-        assert clean.stdout == ""
+    subprocess.run(
+        [*prefix, "--literal-pathspecs", "add", "--", source_id],
+        cwd=cwd,
+        check=True,
+    )
+    subprocess.run(
+        [*prefix, "--literal-pathspecs", "add", "--", "notes.txt"],
+        cwd=cwd,
+        check=True,
+    )
+    subprocess.run(
+        [*prefix, "--literal-pathspecs", "diff", "--cached", "--check", "--", source_id],
+        cwd=cwd,
+        check=True,
+    )
+    subprocess.run(
+        [*prefix, "--literal-pathspecs", "commit", "-m", "review source", "--", source_id],
+        cwd=cwd,
+        check=True,
+    )
+    committed_paths = subprocess.run(
+        [*prefix, "show", "--format=", "--name-only", "HEAD"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert committed_paths == [source_id]
+    assert subprocess.run(
+        [*prefix, "diff", "--cached", "--name-only"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == "notes.txt\n"
+
+    listed = subprocess.run(
+        [*prefix, *ls_files], cwd=cwd, check=True, capture_output=True, text=True
+    )
+    clean = subprocess.run(
+        [*prefix, *status], cwd=cwd, check=True, capture_output=True, text=True
+    )
+    assert listed.stdout == f"{source_id}\n"
+    assert clean.stdout == ""
 
     documented_ls_files = (
         '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", '
@@ -338,8 +345,13 @@ def test_canonical_protocol_defines_dual_context_cli_and_git_forms() -> None:
         "`[\"git\", \"-C\", \"<root>\"]`",
     ):
         assert required in text
+    for required in (
+        '[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]',
+    ):
+        assert required in text
     for preserved in (
-        "Do not commit, push, or open a pull request",
         "repository-relative Source ID",
         "candidate_vault",
         "transaction commit owns `log.md`",
@@ -397,16 +409,27 @@ def test_begin_passes_the_complete_source_closure_to_one_option() -> None:
     assert "Repeat `--source`" not in text
 
 
-def test_cli_ownership_and_git_boundary_are_explicit() -> None:
-    text = CANONICAL.read_text(encoding="utf-8")
+def test_canonical_protocol_defines_task_scoped_autonomy_and_risk_escalation() -> None:
+    flat = " ".join(CANONICAL.read_text(encoding="utf-8").split())
     for required in (
-        "Do not commit, push, or open a pull request",
-        "never edit manifest shards directly",
-        "transaction commit owns `log.md`",
-        "`log_path`",
-        "owners resolve ordinary Git conflicts",
+        "explicit user request authorizes ordinary local steps",
+        "create or update an in-scope Source snapshot",
+        "stage and locally commit exact task-owned paths",
+        "inspect the staged diff",
+        "leave unrelated paths untouched",
+        "ask immediately before",
+        "push",
+        "remote",
+        "rewrite branch history",
+        "overwrite a dirty owner path",
+        "discard",
+        "abort",
+        "retained recovery evidence",
+        "semantic ambiguity",
     ):
-        assert required in text
+        assert required in flat
+    assert "never edit manifest shards directly" in flat
+    assert "transaction commit owns `log.md`" in flat
 
 
 def test_candidate_contract_preserves_transaction_validated_invariants() -> None:

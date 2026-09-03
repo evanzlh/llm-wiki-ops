@@ -115,8 +115,7 @@ validated repository binding unchanged throughout.
    When correct, run `<wiki-cli> transaction commit <id> --json --pretty`.
    The CLI promotes validated pages, records manifest v2 ownership, and appends
    one canonical operation block to `log.md` last. Read `log_path` from the
-   result. Do not commit, push, or open a pull request; those are separate user-controlled Git
-   actions.
+   result.
 
 7. **Recover failures explicitly.** Save the failed command envelope before
    doing anything else. Its top-level `error` holds `code` and `message`; its
@@ -150,15 +149,47 @@ validated repository binding unchanged throughout.
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.
 
+## Task-scoped autonomy and escalation
+
+An explicit user request authorizes ordinary local steps needed to complete the
+selected task at the validated root. Agents proceed automatically to inspect
+validated repository content; create or update an in-scope Source snapshot;
+validate, redact, normalize, and hash it; stage and locally commit exact
+task-owned paths; run, review, commit, and safely retry transactions; refresh
+the derived hot view; and run bounded corrections required by checks. The
+request does not authorize unrelated repository work.
+
+Before a local commit, validate every task path separately, inspect the staged
+diff, and leave unrelated paths untouched. `<git-cli>` expands into separate
+argv elements, not one shell token. Use these context-aware forms:
+
+```text
+[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]
+```
+
+Agents ask immediately before an action that would push, open, merge, or publish a
+pull request; send repository content to a remote service; add, remove, or
+modify a Git remote; switch, reset, or rewrite branch history; overwrite a
+dirty owner path or combine overlapping edits; force an operation or bypass a
+failed safety precondition; discard or abort candidate work; delete retained
+recovery evidence; expand the requested root, data scope, credentials, or
+external authority; or resolve semantic ambiguity between conflicting claims,
+identities, repositories, or targets. Confirmation applies only to that action.
+
+Validation failures remain recoverable states: use current structured evidence
+to restore a safe in-scope condition and retry when progress is observable. Ask
+when recovery crosses one of these boundaries or lacks validated evidence.
+
 ## Operational boundaries
 
 The CLI manages deterministic validation, promotion, manifest shards, recovery,
-and freshness bookkeeping. Do not commit, push, or open a pull request as
-part of wiki runtime work. Agents never edit manifest shards directly and never
+and freshness bookkeeping. Agents never edit manifest shards directly and never
 edit `log.md` directly; transaction commit owns `log.md`. Its result includes
-`log_path`. Repository owners resolve ordinary Git conflicts in `log.md` and
-`hot.md`.
+`log_path`. The transaction route preserves its rollback and preimage checks.
 
 Read operations may inspect only the configured repository, vault, and bounded
-inputs permitted by the owner instructions. Any requested content that lacks a
+inputs permitted by the task instructions. Any requested content that lacks a
 repository-relative source must be materialized and reviewed before compilation.
