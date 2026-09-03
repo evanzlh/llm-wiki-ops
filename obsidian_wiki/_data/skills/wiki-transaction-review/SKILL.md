@@ -26,6 +26,15 @@ profiles, or recent use.
 Append every Git subcommand and path as separate argv elements; `<git-cli>` is
 an argv prefix, never one shell token.
 
+From the retained `info --json` result, resolve the configured vault root once
+against the validated repository root. Require it to be strictly contained in
+the repository and derive its normalized, non-empty repository-relative vault
+prefix; never hardcode `wiki/`. Validate every vault-relative Git target as a
+non-empty canonical POSIX path, rejecting absolute, NUL, backslash, `.`, `..`,
+empty-component, ambiguous, or escaping values. Prefix it with that vault prefix
+and verify the joined path remains contained. Manifest shards are already
+repository-relative and must not be prefixed again.
+
 Use this skill to inspect or resolve CLI-owned retained transaction state. It
 does not create candidate knowledge or invent filesystem paths or commands.
 
@@ -94,7 +103,9 @@ the commit action in `allowed_actions`, show its reason, and satisfy every strin
 in its `requires`. If anything changed or is ambiguous, stop and re-review. With
 no intervening work, apply the canonical pre-promotion overlap guard to every
 candidate page and deletion target, affected manifest shard, and the configured
-vault's canonical log target before any transaction mutation, then immediately run
+vault's canonical log target before any transaction mutation. Convert candidate,
+deletion, and log targets with the retained repository-relative vault prefix but
+do not prefix the already repository-relative shard paths, then immediately run
 `<wiki-cli> transaction commit <id> --json --pretty`.
 
 For rejection, first show all reported actions and requirements. A generic
@@ -129,15 +140,18 @@ mandatory. A status or validation envelope alone is not candidate review.
 ## Close a successful local result
 
 After a successful `transaction commit` or `transaction retry`, run
-`<wiki-cli> hot status --json`. If stale,
-apply the canonical pre-hot-write overlap guard, run
+`<wiki-cli> hot status --json`. If stale, derive the exact repository-relative
+hot path by prefixing validated vault-relative `hot.md` with the retained vault
+prefix, apply the canonical pre-hot-write overlap guard, run
 `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
 `hot.md` working-tree diff, and run `<wiki-cli> hot mark-current --json`. Then run
 `<wiki-cli> check --json --pretty` and require it to pass. Collect from the
 successful result the exact vault-relative paths in `created`, `updated`, and
-`removed` plus vault-relative `log_path`; derive affected manifest shards from the
-frozen Source IDs, and include the exact changed `hot.md` path only when it changed. Individually validate
-and inspect those paths, stage only them,
+`removed` plus vault-relative `log_path`. Prefix every validated vault-relative
+result path and changed `hot.md` with the retained repository-relative vault
+prefix; derive affected manifest shards from the frozen Source IDs and keep their
+already repository-relative paths unprefixed. Individually validate and inspect
+those exact converted paths, stage only them,
 display the exact staged patch, run the cached diff check, and make one exact-path
 local result commit through the canonical literal-path Git sequence. Leave
 unrelated paths untouched.

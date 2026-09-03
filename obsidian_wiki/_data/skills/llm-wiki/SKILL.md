@@ -35,6 +35,17 @@ Use `<wiki-cli> transaction <operation>`, `<wiki-cli> hot <operation>`, and
 Append every Git subcommand and path as separate argv elements; `<git-cli>` is
 an argv prefix, never one shell token.
 
+From the retained `info --json` result, resolve the configured vault root once
+against the validated repository root. Require the vault root to be contained
+strictly inside that repository, then derive its normalized, non-empty
+repository-relative vault prefix; never hardcode `wiki/`. Before a vault-relative
+value becomes a root-scoped Git pathspec, require a non-empty canonical POSIX
+path and reject absolute paths, NUL, backslash, `.`, `..`, empty components, or
+any other ambiguous or escaping form. Prefix every validated vault-relative path
+with the repository-relative vault prefix and verify the joined path remains in
+the configured vault and repository. Manifest shard paths are already
+repository-relative and must not be prefixed again.
+
 If no configuration exists, stop and recommend `llmwikiops setup [DIR]`. If
 the configuration is malformed, incomplete, unsafe, or resolves outside its
 declared repository boundary, fail closed. Never guess a vault, source root, or
@@ -66,8 +77,8 @@ files. Do not cite a compiled page as its own source.
 
 The repository uses manifest v2 with sharded entries and exactly one configured source root.
 The `<wiki-cli> transaction commit` command owns shard mutation and the tracked
-authoritative operation log at `wiki/log.md`. It appends one canonical block last
-and returns `log_path`. Agents never edit manifest shards or `log.md` directly.
+authoritative operation log at the configured vault's `log.md`. It appends one
+canonical block last and returns `log_path`. Agents never edit manifest shards or `log.md` directly.
 In short, transaction commit owns `log.md`; agents do not.
 
 ## Knowledge write protocol
@@ -120,8 +131,10 @@ validated repository binding unchanged throughout.
    the commit: individually derive every candidate page and deletion target, every
    affected manifest shard from the frozen Source IDs through the canonical
    manifest-v2 source-root-relative mapping, and the configured vault's canonical log target that
-   the result will identify as vault-relative `log_path`. Check each exact
-   repository-relative path with:
+   the result will identify as vault-relative `log_path`. Convert each candidate,
+   deletion, and log target with the retained repository-relative vault prefix;
+   do not prefix the already repository-relative shard paths. Check each exact
+   converted repository-relative path with:
 
    ```text
    [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<promotion-path>"]
@@ -176,7 +189,9 @@ validated repository binding unchanged throughout.
 
 8. **Refresh bounded tracked context after success.** Only after a successful
    knowledge commit, run `<wiki-cli> hot status --json`.
-   If stale, derive the exact tracked `hot.md` repository path and establish the
+   If stale, derive the exact tracked `hot.md` repository path by prefixing the
+   validated vault-relative `hot.md` path with the retained repository-relative
+   vault prefix, and establish the
    pre-hot-write overlap guard with:
 
    ```text
@@ -195,9 +210,11 @@ validated repository binding unchanged throughout.
 
    Finish with `<wiki-cli> check --json --pretty`; it must pass before staging.
    From the successful result, collect and individually validate the exact
-   vault-relative paths in `created`, `updated`, and `removed` plus vault-relative `log_path`;
-   derive the affected manifest shards from the frozen Source IDs, and include the
-   exact changed `hot.md` path only when it changed. Under the
+   vault-relative paths in `created`, `updated`, and `removed` plus vault-relative `log_path`.
+   Convert all of those vault-relative result paths, and changed `hot.md` when it
+   changed, to exact repository-relative pathspecs with the retained vault prefix;
+   derive the affected manifest shards from the frozen Source IDs and use their
+   already repository-relative paths without prefixing them again. Under the
    explicit write request, display the exact staged patch, run the cached diff
    check, leave unrelated paths untouched, and make one exact-path local result
    commit using the command sequence below with every result path passed

@@ -727,6 +727,41 @@ def test_canonical_uses_agent_review_and_closes_the_local_lifecycle() -> None:
         assert required in flat
 
 
+def test_root_scoped_git_prefixes_every_vault_relative_result_path() -> None:
+    documents = (
+        CANONICAL,
+        TRANSACTION_REVIEW,
+        *SOURCE_WORKFLOW_SKILLS,
+        *HISTORY_SKILLS,
+        *MAINTENANCE_SKILLS,
+    )
+    for path in documents:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "configured vault root",
+            "validated repository root",
+            "repository-relative vault prefix",
+            "vault-relative",
+            "`created`",
+            "`updated`",
+            "`removed`",
+            "`log_path`",
+            "`hot.md`",
+            "manifest shard",
+            "already repository-relative",
+            "absolute",
+            "NUL",
+            "backslash",
+            "ambiguous",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+        assert "prefix" in flat.lower(), path
+
+    for path in (CANONICAL, TRANSACTION_REVIEW, *MAINTENANCE_SKILLS):
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        assert "never hardcode `wiki/`" in flat, path
+
+
 def test_candidate_contract_preserves_transaction_validated_invariants() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     flat = " ".join(text.split())
@@ -1135,7 +1170,7 @@ def test_absent_source_contract_checks_index_and_status_before_write() -> None:
     head_command = '[<git-cli>, "rev-parse", "--verify", "HEAD"]'
     status_command = (
         '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
-        '"--untracked-files=all", "--", "<Source ID>"]'
+        '"-z", "--untracked-files=all", "--", "<Source ID>"]'
     )
     for path in documents:
         flat = " ".join(path.read_text(encoding="utf-8").split())
@@ -1147,12 +1182,96 @@ def test_absent_source_contract_checks_index_and_status_before_write() -> None:
         assert head < index < status < write, path
         for required in (
             "no index entry",
-            "empty literal-path status",
-            "exactly `?? <Source ID>`",
+            "status output as bytes",
+            "exactly `b\"\"` before the write",
+            '`b"?? " + <Source ID encoded as UTF-8> + b"\\0"`',
             "staged or unstaged deletion",
             "do not write",
         ):
             assert required in flat[absent:], f"{path}: missing {required!r}"
+
+
+def test_absent_source_nul_porcelain_accepts_cjk_space_id(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Source Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "source@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    baseline = repo / "README.md"
+    baseline.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert head.strip()
+
+    source_id = "sources/证据 文件.md"
+    status_argv = [
+        "git",
+        "--literal-pathspecs",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        source_id,
+    ]
+    before = subprocess.run(
+        status_argv, cwd=repo, check=True, capture_output=True
+    ).stdout
+    assert before == b""
+    assert not _literal_path_is_indexed(repo, source_id)
+
+    source = repo / source_id
+    source.parent.mkdir()
+    source.write_text("reviewed evidence\n", encoding="utf-8")
+    expected = b"?? " + source_id.encode("utf-8") + b"\0"
+    after = subprocess.run(
+        status_argv, cwd=repo, check=True, capture_output=True
+    ).stdout
+    legacy = subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            source_id,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert after == expected
+    assert legacy != expected
+    assert not _literal_path_is_indexed(repo, source_id)
+
+    documents = (
+        *SOURCE_WORKFLOW_SKILLS,
+        SOURCE_WORKFLOW_REFERENCES[0],
+        *HISTORY_SKILLS,
+        ROOT / "obsidian_wiki/_data/skills/wiki-update/SKILL.md",
+    )
+    contract_command = (
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
+        '"-z", "--untracked-files=all", "--", "<Source ID>"]'
+    )
+    for path in documents:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        absent = flat.index("absent Source Git gate")
+        assert contract_command in flat[absent:], path
+        assert (
+            '`b"?? " + <Source ID encoded as UTF-8> + b"\\0"`' in flat[absent:]
+        ), path
 
 
 @pytest.mark.parametrize("state", ("staged-deletion", "unstaged-deletion"))

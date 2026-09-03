@@ -21,9 +21,10 @@ Load the `llm-wiki` skill as canonical, then the selected task skill.
 The canonical protocol takes precedence over task-skill conflicts. All knowledge
 writes use CLI transactions; direct vault, manifest, index, or log mutation is
 outside agent authority. The sole exception to the direct live-vault mutation ban is a tracked
-`wiki/hot.md` semantic refresh after a successful `transaction commit` or
+`<vault>/hot.md` semantic refresh after a successful `transaction commit` or
 `transaction retry`. Freshness status is read-only, may run at any time, and must
-not remove the tracked file. Agents must not edit `wiki/log.md` directly;
+not remove the tracked file. Here `<vault>` means the configured vault root, not a
+literal `wiki/` directory. Agents must not edit `<vault>/log.md` directly;
 transaction commit owns that authoritative file and appends its canonical operation
 block last.
 

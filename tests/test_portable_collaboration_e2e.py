@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -777,8 +777,23 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     tmp_path: Path,
 ) -> None:
     root = _portable_seed(tmp_path)
+    configured_vault_relative = Path("knowledge/vault")
+    configured_vault = root / configured_vault_relative
+    configured_vault.parent.mkdir()
+    (root / "wiki").rename(configured_vault)
+    config_path = root / ".llmwikiops/config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'vault = "wiki"', 'vault = "knowledge/vault"'
+        ),
+        encoding="utf-8",
+    )
     unrelated = root / "owner-notes.md"
     unrelated.write_bytes(b"owner baseline\n")
+    page_id = "concepts/task-scoped.md"
+    root_level_collision = root / page_id
+    root_level_collision.parent.mkdir()
+    root_level_collision.write_bytes(b"root collision baseline\n")
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "agent@example.invalid")
     _git(root, "config", "user.name", "Agent")
@@ -787,6 +802,52 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
 
     unrelated_bytes = b"unrelated owner change\n"
     unrelated.write_bytes(unrelated_bytes)
+    collision_bytes = b"unrelated root collision\n"
+    root_level_collision.write_bytes(collision_bytes)
+
+    info = _cli(root, "info", "--json")
+    assert info.returncode == 0, info.stdout + info.stderr
+    info_payload = json.loads(info.stdout)
+    assert set(info_payload) == {"runtime", "installation", "warnings"}
+    runtime = info_payload["runtime"]
+    validated_root = Path(runtime["root"])
+    runtime_vault = Path(runtime["vault"])
+    assert runtime["status"] == "resolved"
+    assert validated_root == root.resolve()
+    assert runtime_vault == configured_vault.resolve()
+    assert runtime_vault.is_relative_to(validated_root)
+    vault_prefix = runtime_vault.relative_to(validated_root)
+    assert vault_prefix == configured_vault_relative
+
+    def repo_result_paths(result: dict[str, object]) -> list[str]:
+        assert set(result) == {
+            "transaction_id",
+            "created",
+            "updated",
+            "removed",
+            "log_path",
+        }
+        vault_relative = [
+            *result["created"],
+            *result["updated"],
+            *result["removed"],
+            result["log_path"],
+        ]
+        converted = []
+        for value in vault_relative:
+            assert isinstance(value, str)
+            path = PurePosixPath(value)
+            assert value and not path.is_absolute()
+            assert path.as_posix() == value
+            assert "\\" not in value and "\x00" not in value
+            assert all(part not in {"", ".", ".."} for part in path.parts)
+            repo_relative = vault_prefix.joinpath(*path.parts)
+            assert (validated_root / repo_relative).resolve(strict=False).is_relative_to(
+                runtime_vault
+            )
+            converted.append(repo_relative.as_posix())
+        return converted
+
     source_id = "sources/task-scoped.md"
     source = root / source_id
     source.write_text("# Task-scoped source\n", encoding="utf-8")
@@ -832,12 +893,21 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     begun = _cli(root, "transaction", "begin", "--source", source_id, "--json")
     assert begun.returncode == 0, begun.stdout + begun.stderr
     first = json.loads(begun.stdout)
-    page_id = "concepts/task-scoped.md"
+    obsolete_id = "concepts/obsolete-task-scoped.md"
     candidate = Path(first["candidate_vault"]) / page_id
     candidate.parent.mkdir(parents=True)
     candidate.write_text(
         _page(
             title="Task Scoped",
+            source_id=source_id,
+            created=first["started_at"],
+        ),
+        encoding="utf-8",
+    )
+    obsolete = Path(first["candidate_vault"]) / obsolete_id
+    obsolete.write_text(
+        _page(
+            title="Obsolete Task Scoped",
             source_id=source_id,
             created=first["started_at"],
         ),
@@ -853,7 +923,9 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     )
     assert committed.returncode == 0, committed.stdout + committed.stderr
     first_result = json.loads(committed.stdout)
-    assert first_result["created"] == [page_id]
+    assert set(first_result["created"]) == {page_id, obsolete_id}
+    assert first_result["updated"] == []
+    assert first_result["removed"] == []
 
     hot_status = _cli(root, "hot", "status", "--json")
     assert hot_status.returncode == 0, hot_status.stdout + hot_status.stderr
@@ -866,7 +938,7 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
         operation["transaction_id"] == first["transaction_id"]
         for operation in first_hot_inputs["operations"]
     )
-    hot = root / "wiki/hot.md"
+    hot = runtime_vault / "hot.md"
     hot_before = hot.read_bytes()
     hot.write_text(
         "# Hot\n\n"
@@ -899,14 +971,16 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
 
     shard = ShardedManifest(_config(root)).entry_path(source_id)
     first_result_paths = [
-        f"wiki/{page_id}",
-        shard.relative_to(root).as_posix(),
-        f"wiki/{first_result['log_path']}",
+        *repo_result_paths(first_result),
+        shard.relative_to(validated_root).as_posix(),
     ]
-    hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
+    hot_repo_path = (vault_prefix / "hot.md").as_posix()
+    hot_diff = _git(root, "diff", "--quiet", "--", hot_repo_path, check=False)
     assert hot_diff.returncode == 1
     if hot_diff.returncode == 1:
-        first_result_paths.append("wiki/hot.md")
+        first_result_paths.append(hot_repo_path)
+    assert page_id not in first_result_paths
+    assert (vault_prefix / page_id).as_posix() in first_result_paths
     _git(root, "--literal-pathspecs", "add", "--", *first_result_paths)
     assert set(
         _git(root, "diff", "--cached", "--name-only", "--", *first_result_paths)
@@ -981,6 +1055,15 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
         f"updated: {second['started_at']}",
     )
     candidate.write_text(updated_page + "\nUpdated knowledge.\n", encoding="utf-8")
+    deleted = _cli(
+        root,
+        "transaction",
+        "delete",
+        second["transaction_id"],
+        obsolete_id,
+        "--json",
+    )
+    assert deleted.returncode == 0, deleted.stdout + deleted.stderr
     validated = _cli(
         root, "transaction", "validate", second["transaction_id"], "--json"
     )
@@ -992,6 +1075,8 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     assert committed.returncode == 0, committed.stdout + committed.stderr
     second_result = json.loads(committed.stdout)
     assert second_result["updated"] == [page_id]
+    assert second_result["created"] == []
+    assert second_result["removed"] == [obsolete_id]
 
     hot_status = _cli(root, "hot", "status", "--json")
     assert hot_status.returncode == 0, hot_status.stdout + hot_status.stderr
@@ -1035,14 +1120,17 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     assert json.loads(checked.stdout)["status"] == "pass"
 
     second_result_paths = [
-        f"wiki/{page_id}",
-        shard.relative_to(root).as_posix(),
-        f"wiki/{second_result['log_path']}",
+        *repo_result_paths(second_result),
+        shard.relative_to(validated_root).as_posix(),
     ]
-    hot_diff = _git(root, "diff", "--quiet", "--", "wiki/hot.md", check=False)
+    hot_diff = _git(root, "diff", "--quiet", "--", hot_repo_path, check=False)
     assert hot_diff.returncode == 1
     if hot_diff.returncode == 1:
-        second_result_paths.append("wiki/hot.md")
+        second_result_paths.append(hot_repo_path)
+    assert page_id not in second_result_paths
+    assert obsolete_id not in second_result_paths
+    assert (vault_prefix / page_id).as_posix() in second_result_paths
+    assert (vault_prefix / obsolete_id).as_posix() in second_result_paths
     _git(root, "--literal-pathspecs", "add", "--", *second_result_paths)
     assert set(
         _git(root, "diff", "--cached", "--name-only", "--", *second_result_paths)
@@ -1081,9 +1169,11 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert json.loads(checked.stdout)["status"] == "pass"
     assert unrelated.read_bytes() == unrelated_bytes
-    assert _git(root, "status", "--short").stdout.splitlines() == [
-        " M owner-notes.md"
-    ]
+    assert root_level_collision.read_bytes() == collision_bytes
+    assert set(_git(root, "status", "--short").stdout.splitlines()) == {
+        " M concepts/task-scoped.md",
+        " M owner-notes.md",
+    }
     for commit in (
         source_create_commit,
         first_result_commit,
@@ -1093,3 +1183,20 @@ def test_task_scoped_source_transaction_and_result_commits_preserve_unrelated_ch
         assert "owner-notes.md" not in _git(
             root, "show", "--pretty=format:", "--name-only", commit
         ).stdout.splitlines()
+        assert page_id not in _git(
+            root, "show", "--pretty=format:", "--name-only", commit
+        ).stdout.splitlines()
+
+    canonical = (
+        Path(__file__).resolve().parents[1]
+        / "obsidian_wiki/_data/skills/llm-wiki/SKILL.md"
+    ).read_text(encoding="utf-8")
+    canonical_flat = " ".join(canonical.split())
+    for required in (
+        "configured vault root",
+        "validated repository root",
+        "repository-relative vault prefix",
+        "vault-relative result paths",
+        "must not be prefixed again",
+    ):
+        assert required in canonical_flat

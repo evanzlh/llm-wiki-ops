@@ -70,11 +70,14 @@ source boundary and filesystem absence is confirmed. Then apply the absent Sourc
 Git gate with
 `[<git-cli>, "rev-parse", "--verify", "HEAD"]`,
 `[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]` and
-`[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
-Require a valid HEAD, empty `ls-files` output (no index entry), and empty literal-path status. A
+`[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "<Source ID>"]`.
+Require a valid HEAD and empty `ls-files` output (no index entry). Treat the status
+output as bytes and require it to be exactly `b""` before the write. A
 staged or unstaged deletion, any other status, or an index entry means do not write.
-Only after the HEAD, index, and status checks pass may the absent Source be written; rerun status
-immediately and require its sole record to be exactly `?? <Source ID>`.
+Only after the HEAD, index, and status checks pass may the absent Source be written;
+rerun the same `-z` status command immediately and require exactly one NUL-terminated
+record, `b"?? " + <Source ID encoded as UTF-8> + b"\0"`. Do not decode or compare
+Git's quoted newline form.
 An existing target first passes the
 pre-write owner preservation gate: valid HEAD, literal tracked identity, empty
 status, repository containment, real-directory ancestors, and an ordinary
@@ -130,6 +133,16 @@ non-empty sources, concise summary, provenance, lifecycle, and resolved link for
 Complete this read-only inventory and intent confirmation before mutation.
 
 ## Maintenance transaction protocol
+
+For every promotion guard and final step 8, resolve the configured vault root
+once relative to the validated repository root, require strict containment, and
+derive its normalized non-empty repository-relative vault prefix; never hardcode
+`wiki/`. Reject absolute, escaping, NUL, backslash, dot-segment,
+empty-component, or ambiguous values. Prefix every validated vault-relative
+candidate, deletion, canonical log, `created`, `updated`, `removed`,
+`log_path`, and changed `hot.md` path with that vault prefix before
+root-scoped literal-path Git. Manifest shards are already repository-relative
+and must remain unprefixed.
 
 1. Finish the read-only inventory and intent confirmation. If there is no selected
    page change, stop without an empty transaction or operation record. Keep the
@@ -192,7 +205,10 @@ Complete this read-only inventory and intent confirmation before mutation.
 8. Run `<wiki-cli> check --json --pretty` as the final check; it must pass before
    staging. The exact task paths are final created and updated knowledge paths, final
    deleted knowledge paths, every changed Source manifest shard, returned `log_path`,
-   and changed `hot.md` when requested. For each path, individually derive and
+   and changed `hot.md` when requested. Convert every validated vault-relative
+   knowledge, `log_path`, and changed `hot.md` value by prefixing it with the
+   retained repository-relative vault prefix; keep already repository-relative
+   manifest shards unprefixed. For each converted path, individually derive and
    validate it; never replace them with a directory, glob, or whole-repository path.
    This requested write completes through this
    canonical transaction and exact-path, path-limited local commit flow. Inspect each

@@ -478,8 +478,9 @@ def test_root_bootstrap_defines_the_single_tracked_hot_write_exception() -> None
     for required in (
         "sole exception to the direct live-vault mutation ban",
         "successful `transaction commit` or `transaction retry`",
-        "tracked `wiki/hot.md` semantic refresh",
-        "must not edit `wiki/log.md` directly",
+        "tracked `<vault>/hot.md` semantic refresh",
+        "configured vault root, not a literal `wiki/` directory",
+        "must not edit `<vault>/log.md` directly",
     ):
         assert required in bootstrap, required
 

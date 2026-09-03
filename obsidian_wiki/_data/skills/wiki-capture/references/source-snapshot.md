@@ -59,13 +59,15 @@ material into bounded, independently reviewable snapshots.
   absence. Then apply the absent Source Git gate with
   `[<git-cli>, "rev-parse", "--verify", "HEAD"]`,
   `[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]` and
-  `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
-  Require a valid HEAD, empty `ls-files` output (no index entry), and empty literal-path status.
+  `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "<Source ID>"]`.
+  Require a valid HEAD and empty `ls-files` output (no index entry). Treat the
+  status output as bytes and require it to be exactly `b""` before the write.
   A staged or unstaged deletion, any other status, or any index entry means do not
   write. Only after the HEAD, index, and status checks pass may the absent Source be written. Immediately
-  rerun the status command and require its sole record to be exactly
-  `?? <Source ID>`; that is the only expected task-owned new state. For an
-  unchanged existing Source, revalidate authority and must not create an empty
+  rerun the same `-z` status command and require exactly one NUL-terminated
+  record, `b"?? " + <Source ID encoded as UTF-8> + b"\0"`; that is the only
+  expected task-owned new state. Do not decode or compare Git's quoted newline
+  form. For an unchanged existing Source, revalidate authority and must not create an empty
   commit. After substantive Agent review, stage and locally commit only the exact
   Source ID with canonical literal-pathspec status, add, staged-diff display,
   cached diff check, and commit forms; rerun tracking and clean-path checks before

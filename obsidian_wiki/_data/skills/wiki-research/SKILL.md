@@ -70,13 +70,15 @@ requires explicit owner authorization.
    `[<git-cli>, "rev-parse", "--verify", "HEAD"]`,
    `[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]`
    followed by
-   `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
-   Require a valid HEAD, empty `ls-files` output (no index entry), and empty literal-path status.
+   `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "<Source ID>"]`.
+   Require a valid HEAD and empty `ls-files` output (no index entry). Treat the
+   status output as bytes and require it to be exactly `b""` before the write.
    A staged or unstaged deletion, any other status, or any index entry means do
    not write. Only after the HEAD, index, and status checks pass may the absent Source be written; rerun
-   the status command immediately afterward and require its sole record to be
-   exactly `?? <Source ID>`. Before reading or replacing an
-   existing Source, require exact successful `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   the same `-z` status command immediately afterward and require exactly one
+   NUL-terminated record, `b"?? " + <Source ID encoded as UTF-8> + b"\0"`.
+   Do not decode or compare Git's quoted newline form. Before reading or replacing
+   an existing Source, require exact successful `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
    and empty `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`, then verify identity.
    Its status output must be empty; on no HEAD, dirty, untracked, or identity-
    changed state, stop before staging.
@@ -124,12 +126,16 @@ requires explicit owner authorization.
    Run `<wiki-cli> check --json --pretty` as the final check and require it to
    pass. From the successful transaction result, collect and individually validate
    the exact vault-relative paths in `created`, `updated`, and `removed` plus
-   vault-relative `log_path`; derive affected manifest shards from the frozen
-   Source IDs, and include the exact changed `hot.md` path only when it changed.
-   For the explicit write
-   request, inspect each path for overlap, stage
-   only those exact result paths, display the exact staged patch, run the cached
-   diff check, and make one exact-path local result commit through the canonical
+   vault-relative `log_path`. Resolve the configured vault root once relative to
+   the validated repository root, require strict containment, and derive its
+   normalized non-empty repository-relative vault prefix. Reject absolute,
+   escaping, NUL, backslash, dot-segment, empty-component, or ambiguous result
+   values. Prefix every validated vault-relative result path and changed `hot.md`
+   with that vault prefix; derive affected manifest shards from the frozen Source
+   IDs and keep their already repository-relative paths unprefixed. For the
+   explicit write request, inspect each converted path for overlap, stage
+   only those exact repository-relative pathspecs, display the exact staged patch,
+   run the cached diff check, and make one exact-path local result commit through the canonical
    literal-path Git sequence. Leave unrelated paths untouched; an overlap stops for
    a preserve, separate, or combine decision. Do not push, publish, change remotes,
    switch or rewrite history, reset, clean, force, or make a semantic/destructive

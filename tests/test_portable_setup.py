@@ -1555,6 +1555,13 @@ def test_bundled_setup_installs_the_exact_current_skill_inventory(tmp_path: Path
     )
     canonical = (root / ".skills/llm-wiki/SKILL.md").read_text(encoding="utf-8")
     canonical_flat = " ".join(canonical.split())
+    root_agents = " ".join(
+        (root / "AGENTS.md").read_text(encoding="utf-8").split()
+    )
+    assert "tracked `<vault>/hot.md` semantic refresh" in root_agents
+    assert "must not edit `<vault>/log.md` directly" in root_agents
+    assert "tracked `wiki/hot.md`" not in root_agents
+    assert "edit `wiki/log.md`" not in root_agents
     assert "owner review described above" not in canonical
     for required in (
         "Agent substantive review",
@@ -1585,6 +1592,59 @@ def test_bundled_setup_installs_the_exact_current_skill_inventory(tmp_path: Path
             "one exact-path local result commit",
         ):
             assert required in installed, (name, required)
+
+    closure_skills = (
+        "llm-wiki",
+        "wiki-transaction-review",
+        *lifecycle_skills,
+        "cross-linker",
+        "daily-update",
+        "tag-taxonomy",
+        "wiki-dedup",
+        "wiki-lint",
+        "wiki-rebuild",
+        "wiki-status",
+        "wiki-synthesize",
+        "wiki-update",
+    )
+    for name in closure_skills:
+        flat = " ".join(
+            (root / ".skills" / name / "SKILL.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for required in (
+            "configured vault root",
+            "validated repository root",
+            "repository-relative vault prefix",
+            "already repository-relative",
+            "`created`",
+            "`updated`",
+            "`removed`",
+            "`log_path`",
+            "`hot.md`",
+        ):
+            assert required in flat, (name, required)
+
+    absent_gate_documents = [
+        root / ".skills" / name / "SKILL.md"
+        for name in (*lifecycle_skills, "wiki-update")
+    ]
+    absent_gate_documents.append(
+        root / ".skills/wiki-capture/references/source-snapshot.md"
+    )
+    for path in absent_gate_documents:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        absent = flat.index("absent Source Git gate")
+        assert (
+            '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
+            '"-z", "--untracked-files=all", "--", "<Source ID>"]'
+            in flat[absent:]
+        ), path
+        assert (
+            '`b"?? " + <Source ID encoded as UTF-8> + b"\\0"`'
+            in flat[absent:]
+        ), path
 
 
 def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(

@@ -408,6 +408,13 @@ def test_distribution_assets_exactly_match_canonical_package_data(
         assert inventory == expected
         canonical = inventory["skills/llm-wiki/SKILL.md"][0].decode("utf-8")
         canonical_flat = " ".join(canonical.split())
+        bootstrap = " ".join(
+            inventory["bootstrap/AGENTS.md"][0].decode("utf-8").split()
+        )
+        assert "tracked `<vault>/hot.md` semantic refresh" in bootstrap, artifact
+        assert "must not edit `<vault>/log.md` directly" in bootstrap, artifact
+        assert "tracked `wiki/hot.md`" not in bootstrap, artifact
+        assert "edit `wiki/log.md`" not in bootstrap, artifact
         assert "owner review described above" not in canonical, artifact
         for required in (
             "Agent substantive review",
@@ -436,6 +443,51 @@ def test_distribution_assets_exactly_match_canonical_package_data(
                 "one exact-path local result commit",
             ):
                 assert required in contract, (artifact, relative, required)
+        closure_paths = (
+            "skills/llm-wiki/SKILL.md",
+            "skills/wiki-transaction-review/SKILL.md",
+            *lifecycle_paths,
+            "skills/cross-linker/SKILL.md",
+            "skills/daily-update/SKILL.md",
+            "skills/tag-taxonomy/SKILL.md",
+            "skills/wiki-dedup/SKILL.md",
+            "skills/wiki-lint/SKILL.md",
+            "skills/wiki-rebuild/SKILL.md",
+            "skills/wiki-status/SKILL.md",
+            "skills/wiki-synthesize/SKILL.md",
+            "skills/wiki-update/SKILL.md",
+        )
+        for relative in closure_paths:
+            flat = " ".join(inventory[relative][0].decode("utf-8").split())
+            for required in (
+                "configured vault root",
+                "validated repository root",
+                "repository-relative vault prefix",
+                "already repository-relative",
+                "`created`",
+                "`updated`",
+                "`removed`",
+                "`log_path`",
+                "`hot.md`",
+            ):
+                assert required in flat, (artifact, relative, required)
+        absent_gate_paths = (
+            *lifecycle_paths,
+            "skills/wiki-update/SKILL.md",
+            "skills/wiki-capture/references/source-snapshot.md",
+        )
+        for relative in absent_gate_paths:
+            flat = " ".join(inventory[relative][0].decode("utf-8").split())
+            absent = flat.index("absent Source Git gate")
+            assert (
+                '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
+                '"-z", "--untracked-files=all", "--", "<Source ID>"]'
+                in flat[absent:]
+            ), (artifact, relative)
+            assert (
+                '`b"?? " + <Source ID encoded as UTF-8> + b"\\0"`'
+                in flat[absent:]
+            ), (artifact, relative)
         for relative, (contents, _) in inventory.items():
             if Path(relative).suffix in {".md", ".mdc"}:
                 assert b"\r" not in contents, f"{artifact}:{relative}"

@@ -124,6 +124,16 @@ confirmation before any merge. Audit-only mode stops after the report.
 
 ## Maintenance transaction protocol
 
+For every promotion guard and final step 8, resolve the configured vault root
+once relative to the validated repository root, require strict containment, and
+derive its normalized non-empty repository-relative vault prefix; never hardcode
+`wiki/`. Reject absolute, escaping, NUL, backslash, dot-segment,
+empty-component, or ambiguous values. Prefix every validated vault-relative
+candidate, deletion, canonical log, `created`, `updated`, `removed`,
+`log_path`, and changed `hot.md` path with that vault prefix before
+root-scoped literal-path Git. Manifest shards are already repository-relative
+and must remain unprefixed.
+
 1. Finish the read-only inventory and intent confirmation. If there is no selected
    page change, stop without an empty transaction or operation record. Keep the
    live vault read-only while computing the complete source closure: every existing
@@ -185,7 +195,10 @@ confirmation before any merge. Audit-only mode stops after the report.
 8. Run `<wiki-cli> check --json --pretty` as the final check; it must pass before
    staging. The exact task paths are final created and updated knowledge paths, final
    deleted knowledge paths, every changed Source manifest shard, returned `log_path`,
-   and changed `hot.md` when requested. For each path, individually derive and
+   and changed `hot.md` when requested. Convert every validated vault-relative
+   knowledge, `log_path`, and changed `hot.md` value by prefixing it with the
+   retained repository-relative vault prefix; keep already repository-relative
+   manifest shards unprefixed. For each converted path, individually derive and
    validate it; never replace them with a directory, glob, or whole-repository path.
    This requested write completes through this
    canonical transaction and exact-path, path-limited local commit flow. Inspect each
