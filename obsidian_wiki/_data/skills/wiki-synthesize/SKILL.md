@@ -118,8 +118,8 @@ and must remain unprefixed.
    run `<wiki-cli> transaction commit <id> --json --pretty`.
 6. Save the failed command envelope, including top-level `error` and `recovery`, on
    any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
-   when present, then run `<wiki-cli> transaction list --json --pretty` and
-   require exactly one retained record with the same ID and status. Follow only a
+   when present, then run `<wiki-cli> transaction show <id> --json --pretty` and
+   require the retained record to have the same ID and status. Follow only a
    reported `recommended_action` or entry in `allowed_actions`, after satisfying
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful

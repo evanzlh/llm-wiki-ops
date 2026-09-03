@@ -141,7 +141,7 @@ def test_guidance_status_matrix(
     assert guidance == RecoveryGuidance(
         transaction_id="tx-1",
         transaction_status=status,
-        inspect_command=INSPECT_COMMAND,
+        inspect_command="llmwikiops transaction show tx-1 --json",
         preferred_action=preferred,
         alternatives=alternatives,
     )
@@ -155,7 +155,10 @@ def test_inspection_only_guidance_has_no_recovery_actions() -> None:
     assert inspection_only_guidance() == RecoveryGuidance(
         transaction_id=None,
         transaction_status=None,
-        inspect_command="llmwikiops transaction list --json",
+        inspect_command=(
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         preferred_action=None,
         alternatives=(),
     )
@@ -168,7 +171,7 @@ def test_guidance_as_dict_uses_only_public_serialized_fields(record: Transaction
     assert guidance.as_dict() == {
         "transaction_id": "tx-1",
         "transaction_status": "active",
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": "llmwikiops transaction show tx-1 --json",
         "preferred_action": {
             "command": "llmwikiops transaction commit tx-1",
             "reason": "commit after fixing the original cause and reviewing the candidate",
@@ -226,7 +229,7 @@ def test_explicit_repository_is_rendered_in_every_recovery_command(
     guidance = guidance_for_record(record, repository=Path("/srv/wiki root"))
 
     rendered = json.dumps(guidance.as_dict())
-    assert "llmwikiops -C '/srv/wiki root' transaction list --json" in rendered
+    assert "llmwikiops -C '/srv/wiki root' transaction show tx-1 --json" in rendered
     for action in guidance.allowed_actions:
         assert action.command.startswith(
             "llmwikiops -C '/srv/wiki root' transaction "
@@ -237,7 +240,8 @@ def test_explicit_repository_is_rendered_in_inspection_only_guidance() -> None:
     guidance = inspection_only_guidance(Path("/srv/wiki root"))
 
     assert guidance.inspect_command == (
-        "llmwikiops -C '/srv/wiki root' transaction list --json"
+        "llmwikiops -C '/srv/wiki root' transaction list --status "
+        "active,promoting,failed --summary --json"
     )
 
 

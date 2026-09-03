@@ -56,7 +56,7 @@ After authority preflight, inventory configured Source IDs without modifying the
 Run these read-only commands through the retained prefix:
 
 ```bash
-<wiki-cli> transaction list --json --pretty
+<wiki-cli> transaction list --status active,promoting,failed --summary --json --pretty
 <wiki-cli> cache-check <source1> [source2 ...] --json --pretty
 <wiki-cli> hot status --json
 ```
@@ -65,8 +65,8 @@ Run these read-only commands through the retained prefix:
 The tracked `hot.md` is a derived semantic view; status reports whether it is stale
 and must not remove it.
 
-Report retained transaction IDs, statuses, `recommended_action`, and
-`allowed_actions`; report the cache result's exact `missing`, `new`, `modified`, and
+Report retained transaction IDs, statuses, and `recommended_action`; report the
+cache result's exact `missing`, `new`, `modified`, and
 `unchanged` Source IDs; and report hot freshness. Missing sources or an ambiguous
 retained outcome stop the run. Do not treat missing-only results as no work.
 
@@ -122,8 +122,8 @@ and must remain unprefixed.
    run `<wiki-cli> transaction commit <id> --json --pretty`.
 6. Save the failed command envelope, including top-level `error` and `recovery`, on
    any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
-   when present, then run `<wiki-cli> transaction list --json --pretty` and
-   require exactly one retained record with the same ID and status. Follow only a
+   when present, then run `<wiki-cli> transaction show <id> --json --pretty` and
+   require the retained record to have the same ID and status. Follow only a
    reported `recommended_action` or entry in `allowed_actions`, after satisfying
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful

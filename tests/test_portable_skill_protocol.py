@@ -583,7 +583,11 @@ def test_transaction_review_resolves_repository_authority_before_listing() -> No
         "root `AGENTS.md`",
         "vault `AGENTS.md`",
         "canonical `llm-wiki`",
-        "<wiki-cli> transaction list --json --pretty",
+        (
+            "<wiki-cli> transaction list --status active,promoting,failed "
+            "--summary --json --pretty"
+        ),
+        "<wiki-cli> transaction show <id> --json --pretty",
         "Do not infer",
     ):
         assert required in flat
@@ -772,7 +776,10 @@ def test_daily_update_is_manual_and_has_no_scheduler_infrastructure() -> None:
     flat = " ".join(contents.split())
     for required in (
         "manual",
-        "<wiki-cli> transaction list --json --pretty",
+        (
+            "<wiki-cli> transaction list --status active,promoting,failed "
+            "--summary --json --pretty"
+        ),
         "<wiki-cli> cache-check <source1> [source2 ...] --json --pretty",
         "<wiki-cli> hot status --json",
         "selected page repair",

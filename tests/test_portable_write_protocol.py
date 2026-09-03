@@ -568,7 +568,7 @@ def test_canonical_protocol_is_one_eight_step_transaction() -> None:
         "transaction delete",
         "transaction validate",
         "transaction commit",
-        "transaction list --json --pretty",
+        "transaction show <id> --json --pretty",
         "recommended_action",
         "allowed_actions",
         "hot status --json",
@@ -832,7 +832,7 @@ def test_recovery_protocol_cross_checks_identity_requirements_and_outcomes() -> 
     for required in (
         "Save the failed command envelope",
         "does not repeat `error` or `recovery`",
-        "exactly one retained record",
+        "require the retained record",
         "empty, missing, mismatched, duplicated, or ambiguous",
         "satisfy every string in the action's `requires` list",
         "After each action, reload current structured state",
@@ -875,7 +875,7 @@ def test_transaction_review_fields_follow_cli_payload_ownership() -> None:
 
     text = TRANSACTION_REVIEW.read_text(encoding="utf-8")
     flat = " ".join(text.split())
-    assert "list record's `source_ids`" in flat
+    assert "show record's `source_ids`" in flat
     assert "validation report's `candidate_pages`" in flat
 
 
@@ -884,7 +884,11 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
     flat = " ".join(text.split())
 
     for required in (
-        "<wiki-cli> transaction list --json --pretty",
+        (
+            "<wiki-cli> transaction list --status active,promoting,failed "
+            "--summary --json --pretty"
+        ),
+        "<wiki-cli> transaction show <id> --json --pretty",
         "candidate_vault",
         "source_ids",
         "candidate_pages",
@@ -909,7 +913,7 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
         "explicit completion or recovery request",
         "Agent substantive review",
         "exact-path local result commit",
-        "refresh the list immediately",
+        "refresh the record immediately",
         "commit action",
         "re-review",
         "Retry automatically when its current requirements hold",
@@ -1685,7 +1689,7 @@ def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
             "final candidates",
             "transaction validate",
             "transaction commit",
-            "transaction list --json --pretty",
+            "transaction show <id> --json --pretty",
             "hot status --json",
             ls_template,
             status_template,
@@ -2394,7 +2398,7 @@ def test_maintenance_writes_have_one_canonical_transaction_completion() -> None:
             "preferred_action",
             "trusted transaction ID",
             "same ID and status",
-            "transaction list --json --pretty",
+            "transaction show <id> --json --pretty",
             "recommended_action",
             "allowed_actions",
             "`requires`",
@@ -2561,7 +2565,10 @@ def test_status_graph_and_audit_commands_use_real_parser() -> None:
     ).read_text(encoding="utf-8")
     commands = (
         "<wiki-cli> graph-analyse --pretty",
-        "<wiki-cli> transaction list --json --pretty",
+        (
+            "<wiki-cli> transaction list --status active,promoting,failed "
+            "--summary --json --pretty"
+        ),
         "<wiki-cli> hot status --json",
     )
     parser = build_parser()

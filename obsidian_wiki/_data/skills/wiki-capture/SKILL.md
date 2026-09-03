@@ -171,7 +171,7 @@ Use these eight steps for Full and Correction.
    Review the complete candidate diff and deletions, then run
    `<wiki-cli> transaction commit <id> --json --pretty`. For reported
    recovery, save the failure envelope, inspect
-   `<wiki-cli> transaction list --json --pretty`, require one exact match,
+   `<wiki-cli> transaction show <id> --json --pretty`, require the exact match,
    satisfy `requires`, and stop on ambiguity.
 8. **Refresh and close the local result.** Only after a successful
    `transaction commit` or `transaction retry`, run

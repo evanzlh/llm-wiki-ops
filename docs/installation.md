@@ -60,7 +60,7 @@ The Adapter stores no packaged skill metadata: installation no longer reads or e
 llmwikiops -C /absolute/path/to/wiki info --json
 llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
-llmwikiops -C /absolute/path/to/wiki transaction list --json
+llmwikiops -C /absolute/path/to/wiki transaction list --status active,promoting,failed --summary --json
 ```
 
 The environment conditions are owner guarantees; the Adapter does not mechanically prove quiescence. `info --json` and `check --json` mechanically perform static validation of the root, configuration, accepted CLI version, and repository topology. `check --json` may deterministically finish an already-recorded framework skill-maintenance recovery, so it is not promised to be purely read-only. Start no direct Agent reads or task-directed writes until both preflight commands succeed. If concurrent mutation or network-sync activity is detected or suspected, stop and restart the operation against a quiescent repository.

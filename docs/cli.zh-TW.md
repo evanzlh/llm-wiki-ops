@@ -29,7 +29,7 @@ llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
 llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
-llmwikiops -C /absolute/path/to/wiki transaction list --json
+llmwikiops -C /absolute/path/to/wiki transaction list --status active,promoting,failed --summary --json
 ```
 
 選取的目錄就是精確根目錄，必須直接包含 `.llmwikiops/config.toml`；明確選取不會向上探索，也不會回退到呼叫時的工作目錄。兩個別名都是單值且不可重複。不存在預設、設定檔、環境變數或最近使用的儲存庫選取。與儲存庫無關的命令會拒絕此選項。
@@ -74,10 +74,13 @@ llmwikiops repo sync-skills --apply --expected-plan TOKEN --json --pretty
 llmwikiops transaction begin --source sources/example.md --json --pretty
 llmwikiops transaction validate <transaction-id> --json --pretty
 llmwikiops transaction commit <transaction-id> --json --pretty
-llmwikiops transaction list --json --pretty
+llmwikiops transaction list --status active,promoting,failed --summary --json --pretty
+llmwikiops transaction show <transaction-id> --json --pretty
 ```
 
 代理程式只在 `begin` 回傳的 `candidate_vault` 中寫候選頁。`validate` 在提升前檢查預期知識庫；交易審查確認候選、刪除與報告後，才執行 `transaction commit`。成功提交會提升頁面、更新 manifest 分片，並在最後附加一個規範區塊到受版本管理的權威操作日誌 `wiki/log.md`；JSON commit 與 retry 輸出會回傳 `log_path`。若保留復原狀態，只執行目前允許的 `retry`、`restore`、`discard` 或 `abort`；每次操作後重新載入結構化狀態，只有出現可觀察進展時才繼續，輸入與狀態未變時不重複操作。安全的 retry 與沒有擁有者漂移的 restore 會自動完成；discard、abort 或覆蓋漂移的 restore 須先詢問，而且確認絕不繞過失敗的安全條件。
+
+Agent 預檢使用 `list --status active,promoting,failed --summary --json`，避免已完成歷史讓結構化輸出無界增長。摘要記錄只含 `transaction_id`、`status` 與 `recommended_action`；沒有相符記錄時固定輸出 `[]`。使用 `show <transaction-id> --json` 按可信 ID 載入完整記錄；不帶篩選的 `list` 保留為完整歷史的相容介面。
 
 缺少凍結來源雜湊的舊版保留交易仍可列出、還原、中止或捨棄，但不可 commit 或 retry；請重新開始交易以綁定目前來源內容。
 

@@ -34,7 +34,7 @@ llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
 llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
-llmwikiops -C /absolute/path/to/wiki transaction list --json
+llmwikiops -C /absolute/path/to/wiki transaction list --status active,promoting,failed --summary --json
 ```
 
 外部 Adapter 的权威读取仅支持用户控制的本地、静止仓库。依次运行

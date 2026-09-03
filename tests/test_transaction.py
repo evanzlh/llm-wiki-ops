@@ -4160,6 +4160,119 @@ def test_transaction_cli_complete_lifecycle_and_git_is_read_only(
     assert git_output(root, "remote", "-v") == before_remotes
 
 
+def test_transaction_list_filters_and_summarizes_records(
+    tmp_path: Path, log_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    source = add_source(root)
+    manager = TransactionManager(config, log_writer=log_writer(config))
+    complete = manager.begin([source], transaction_id="tx-complete")
+    candidate_page(complete, "concepts/a.md")
+    manager.commit(complete.transaction_id)
+    manager.begin([source], transaction_id="tx-active")
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "list",
+        "--status",
+        "active,promoting,failed",
+        "--summary",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {
+            "transaction_id": "tx-active",
+            "status": "active",
+            "recommended_action": {
+                "command": "llmwikiops transaction commit tx-active",
+                "reason": (
+                    "commit after fixing the original cause and reviewing the "
+                    "candidate"
+                ),
+                "requires": [
+                    "the original failure cause is removed",
+                    "the candidate vault has been reviewed",
+                ],
+            },
+        }
+    ]
+
+
+def test_transaction_list_filtered_empty_result_is_json_array(
+    tmp_path: Path, log_writer
+) -> None:
+    root, config = make_config(tmp_path)
+    manager = TransactionManager(config, log_writer=log_writer(config))
+    complete = manager.begin([add_source(root)], transaction_id="tx-complete")
+    candidate_page(complete, "concepts/a.md")
+    manager.commit(complete.transaction_id)
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "list",
+        "--status",
+        "active,promoting,failed",
+        "--summary",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[]\n"
+
+
+def test_transaction_list_human_summary_omits_paths(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    TransactionManager(config).begin([add_source(root)], transaction_id="tx-active")
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "list",
+        "--status",
+        "active",
+        "--summary",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "tx-active\tactive\tllmwikiops transaction commit tx-active\n"
+    )
+
+
+def test_transaction_show_returns_one_full_record(tmp_path: Path) -> None:
+    root, config = make_config(tmp_path)
+    record = TransactionManager(config).begin(
+        [add_source(root)], transaction_id="tx-show"
+    )
+
+    result = run_cli(
+        tmp_path / "home",
+        root,
+        "transaction",
+        "show",
+        record.transaction_id,
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["transaction_id"] == "tx-show"
+    assert payload["status"] == "active"
+    assert payload["source_ids"] == ["sources/a.md"]
+    assert payload["candidate_vault"] == str(record.candidate_vault)
+    assert payload["recommended_action"]["command"] == (
+        "llmwikiops transaction commit tx-show"
+    )
+    assert payload["allowed_actions"]
+
+
 def test_transaction_validate_parser_accepts_full_json_flags() -> None:
     args = cli_module.build_parser().parse_args(
         ["transaction", "validate", "tx-1", "--json", "--pretty"]
@@ -4304,7 +4417,10 @@ def test_transaction_validate_cli_invalid_id_uses_structured_error_envelope(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": (
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4412,7 +4528,10 @@ def test_transaction_cli_json_failures_outside_portable_mode_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": (
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4520,7 +4639,10 @@ def test_transaction_cli_corrupt_record_only_reports_inspection_guidance(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": (
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4559,7 +4681,10 @@ def test_transaction_cli_corrupt_manifest_marker_reports_manifest_error(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": (
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         "preferred_action": None,
         "alternatives": [],
     }
@@ -4687,7 +4812,7 @@ def test_transaction_human_failure_escapes_terminal_control_characters(
         "preferred: llmwikiops transaction commit tx-1 — "
         "commit after fixing the original cause and reviewing the candidate"
     ]
-    assert "inspect: llmwikiops transaction list --json" in captured.err
+    assert "inspect: llmwikiops transaction show tx-1 --json" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -4715,7 +4840,10 @@ def test_transaction_cli_json_parse_errors_are_structured(
     assert payload["recovery"] == {
         "transaction_id": None,
         "transaction_status": None,
-        "inspect_command": "llmwikiops transaction list --json",
+        "inspect_command": (
+            "llmwikiops transaction list --status active,promoting,failed "
+            "--summary --json"
+        ),
         "preferred_action": None,
         "alternatives": [],
     }
@@ -5141,7 +5269,10 @@ def test_transaction_cli_human_missing_transaction_is_stderr_only(
     assert result.returncode == 1
     assert result.stdout == ""
     assert "error:" in result.stderr
-    assert "inspect: llmwikiops transaction list --json" in result.stderr
+    assert (
+        "inspect: llmwikiops transaction list --status active,promoting,failed "
+        "--summary --json"
+    ) in result.stderr
     assert "preferred:" not in result.stderr
     assert "alternative:" not in result.stderr
 
@@ -5161,7 +5292,7 @@ def test_transaction_cli_human_failure_explains_trusted_recovery_actions(
     assert result.stdout == ""
     assert "error:" in result.stderr
     assert "transaction status: active" in result.stderr
-    assert "inspect: llmwikiops transaction list --json" in result.stderr
+    assert "inspect: llmwikiops transaction show tx-1 --json" in result.stderr
     assert "preferred: llmwikiops transaction commit tx-1 — " in result.stderr
     assert "alternative: llmwikiops transaction abort tx-1 — " in result.stderr
     assert "requires: the original failure cause is removed" in result.stderr

@@ -506,7 +506,8 @@ def test_malformed_repository_value_keeps_transaction_recovery_rootless(
     assert payload["error"]["code"] == "transaction-error"
     assert "argument -C/--repo: expected one argument" in payload["error"]["message"]
     assert payload["recovery"]["inspect_command"] == (
-        "llmwikiops transaction list --json"
+        "llmwikiops transaction list --status active,promoting,failed "
+        "--summary --json"
     )
     assert "llmwikiops -C" not in result.stdout
 
@@ -635,7 +636,7 @@ def test_explicit_transaction_config_failure_keeps_repository_in_recovery(
     payload = json.loads(result.stdout)
     assert payload["recovery"]["inspect_command"] == (
         f"{shlex.join(['llmwikiops', '-C', str(unconfigured)])} "
-        "transaction list --json"
+        "transaction list --status active,promoting,failed --summary --json"
     )
 
 
@@ -661,7 +662,7 @@ def test_explicit_transaction_parse_failure_keeps_structured_recovery(
     assert payload["error"]["code"] == "transaction-error"
     assert payload["recovery"]["inspect_command"] == (
         f"{shlex.join(['llmwikiops', '-C', str(repository)])} "
-        "transaction list --json"
+        "transaction list --status active,promoting,failed --summary --json"
     )
 
 
@@ -714,7 +715,7 @@ def test_attached_selector_transaction_parse_failure_keeps_bound_recovery(
     assert payload["error"]["code"] == "transaction-error"
     assert payload["recovery"]["inspect_command"] == (
         f"{shlex.join(['llmwikiops', '-C', str(repository)])} "
-        "transaction list --json"
+        "transaction list --status active,promoting,failed --summary --json"
     )
 
 

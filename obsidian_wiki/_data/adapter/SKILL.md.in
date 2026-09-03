@@ -161,7 +161,8 @@ preserve visibility/citation constraints.
 
 ## Transactions and recovery
 
-Begin with `transaction list` for review/recovery; match exact reported ID. Post-validate/list,
+Begin with bounded summary `transaction list --status active,promoting,failed --summary`
+for discovery and use `transaction show <id>` for review/recovery. Post-validate/show,
 bounded-inspect every reported candidate before promotion. A status or validation
 envelope alone is not review. When requirements hold, execute a still-reported
 allowed/recommended action.

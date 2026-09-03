@@ -112,6 +112,22 @@ _REPOSITORY_AWARE_COMMANDS = frozenset(
 )
 
 
+_TRANSACTION_STATUSES = frozenset(
+    {"active", "promoting", "failed", "complete", "restored"}
+)
+
+
+def _transaction_statuses(raw: str) -> frozenset[str]:
+    statuses = frozenset(raw.split(","))
+    invalid = statuses - _TRANSACTION_STATUSES
+    if "" in statuses or invalid:
+        allowed = ",".join(sorted(_TRANSACTION_STATUSES))
+        raise argparse.ArgumentTypeError(
+            f"status must be a comma-separated subset of: {allowed}"
+        )
+    return statuses
+
+
 def _repository_argument(args: argparse.Namespace) -> Path | None:
     return getattr(args, "repository", None)
 
@@ -1146,6 +1162,18 @@ def _list_record_payload(record, guidance) -> dict[str, object]:
     return payload
 
 
+def _summary_record_payload(record, guidance) -> dict[str, object]:
+    return {
+        "transaction_id": record.transaction_id,
+        "status": record.status,
+        "recommended_action": (
+            guidance.preferred_action.as_dict()
+            if guidance.preferred_action is not None
+            else None
+        ),
+    }
+
+
 def _commit_payload(result) -> dict[str, object]:
     return {
         "transaction_id": result.transaction_id,
@@ -1210,6 +1238,9 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
         records = manager.list_transactions()
     except (ConfigError, ManifestError, TransactionError) as exc:
         return _render_transaction_failure(args, exc, manager=manager)
+    statuses = getattr(args, "statuses", None)
+    if statuses is not None:
+        records = [record for record in records if record.status in statuses]
     repository = _repository_argument(args)
     guided_records = [
         (
@@ -1222,10 +1253,12 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
         )
         for record in records
     ]
-    payload = [
-        _list_record_payload(record, guidance)
-        for record, guidance in guided_records
-    ]
+    payload_for = (
+        _summary_record_payload
+        if getattr(args, "summary", False)
+        else _list_record_payload
+    )
+    payload = [payload_for(record, guidance) for record, guidance in guided_records]
     if args.json:
         _json_print(payload, pretty=args.pretty)
     elif not records:
@@ -1237,10 +1270,44 @@ def cmd_transaction_list(args: argparse.Namespace) -> int:
                 if guidance.preferred_action is not None
                 else "-"
             )
-            print(
-                f"{record.transaction_id}\t{record.status}\t"
-                f"{recommended}\t{record.workspace}"
+            suffix = (
+                "" if getattr(args, "summary", False) else f"\t{record.workspace}"
             )
+            print(f"{record.transaction_id}\t{record.status}\t{recommended}{suffix}")
+    return 0
+
+
+def cmd_transaction_show(args: argparse.Namespace) -> int:
+    from obsidian_wiki.portable_manifest import ManifestError
+    from obsidian_wiki.transaction import TransactionError
+    from obsidian_wiki.transaction_guidance import guidance_for_record
+
+    manager = None
+    try:
+        manager = _transaction_manager_for(args)
+        record = manager.load(args.transaction_id)
+    except (ConfigError, ManifestError, TransactionError) as exc:
+        return _render_transaction_failure(
+            args,
+            exc,
+            manager=manager,
+            transaction_id=args.transaction_id,
+        )
+    repository = _repository_argument(args)
+    guidance = (
+        guidance_for_record(record)
+        if repository is None
+        else guidance_for_record(record, repository=repository)
+    )
+    payload = _list_record_payload(record, guidance)
+    if args.json:
+        _json_print(payload, pretty=args.pretty)
+    else:
+        print(
+            f"{record.transaction_id}\t{record.status}\t"
+            f"{guidance.preferred_action.command if guidance.preferred_action else '-'}"
+            f"\t{record.workspace}"
+        )
     return 0
 
 
@@ -2313,6 +2380,7 @@ _TRANSACTION_SUBCOMMANDS = frozenset(
     {
         "begin",
         "list",
+        "show",
         "delete",
         "validate",
         "commit",
@@ -2760,8 +2828,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="list active and retained recovery transactions",
         allow_abbrev=False,
     )
+    transaction_list.add_argument(
+        "--status",
+        dest="statuses",
+        type=_transaction_statuses,
+        metavar="STATUS[,STATUS...]",
+        help="include only transactions with one of these statuses",
+    )
+    transaction_list.add_argument(
+        "--summary",
+        action="store_true",
+        help="omit paths, source IDs, deletions, and alternative actions",
+    )
     _add_json_args(transaction_list)
     transaction_list.set_defaults(func=cmd_transaction_list)
+
+    transaction_show = transaction_sub.add_parser(
+        "show",
+        help="show one retained transaction",
+        allow_abbrev=False,
+    )
+    transaction_show.add_argument("transaction_id")
+    _add_json_args(transaction_show)
+    transaction_show.set_defaults(func=cmd_transaction_show)
 
     transaction_delete = transaction_sub.add_parser(
         "delete",

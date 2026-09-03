@@ -9,7 +9,9 @@ from pathlib import Path
 from obsidian_wiki.transaction import TransactionRecord
 
 
-INSPECT_COMMAND = "llmwikiops transaction list --json"
+INSPECT_COMMAND = (
+    "llmwikiops transaction list --status active,promoting,failed --summary --json"
+)
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,8 @@ def inspection_only_guidance(repository: Path | None = None) -> RecoveryGuidance
     return RecoveryGuidance(
         None,
         None,
-        f"{_command_prefix(repository)} transaction list --json",
+        f"{_command_prefix(repository)} transaction list --status "
+        "active,promoting,failed --summary --json",
         None,
         (),
     )
@@ -196,7 +199,7 @@ def guidance_for_record(
     return RecoveryGuidance(
         transaction_id=transaction_id,
         transaction_status=status,
-        inspect_command=f"{prefix} transaction list --json",
+        inspect_command=f"{prefix} transaction show {transaction_id} --json",
         preferred_action=preferred,
         alternatives=alternatives,
     )

@@ -17,7 +17,7 @@ llmwikiops agent install-adapter --agent codex
 llmwikiops -C /absolute/path/to/wiki info --json
 llmwikiops -C /absolute/path/to/wiki check --json
 llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json
-llmwikiops -C /absolute/path/to/wiki transaction list --json
+llmwikiops -C /absolute/path/to/wiki transaction list --status active,promoting,failed --summary --json
 ```
 
 The selected directory is the exact root: it must directly contain `.llmwikiops/config.toml`, and explicit selection never searches ancestors or falls back to invocation CWD. The aliases are single-valued and cannot be repeated. There is no default, profile, environment-variable, or recently used repository selection. Repository-independent commands reject the option; supported repository-aware families are `info`, `doctor`, `check`, `repo`, `transaction`, `manifest`, `hot`, `batch-plan`, `graph-analyse`, `cache-check`, `lint`, `trust-record`, `trust-check`, `query`, `context-pack`, and `context`.
@@ -90,7 +90,8 @@ git --literal-pathspecs commit -m "Upgrade LLMWikiOps" -- <upgrade-path> ...
 
 ```bash
 llmwikiops transaction begin --source PATH [PATH ...] [--json] [--pretty]
-llmwikiops transaction list [--json] [--pretty]
+llmwikiops transaction list [--status STATUS[,STATUS...]] [--summary] [--json] [--pretty]
+llmwikiops transaction show TRANSACTION_ID [--json] [--pretty]
 llmwikiops transaction delete TRANSACTION_ID PATH [--json] [--pretty]
 llmwikiops transaction validate TRANSACTION_ID [--json] [--pretty]
 llmwikiops transaction commit TRANSACTION_ID [--json] [--pretty]
@@ -103,6 +104,8 @@ llmwikiops transaction abort TRANSACTION_ID [--json] [--pretty]
 `begin` accepts one or more authoritative source paths and returns an ID plus a runtime `candidate_vault`. Agents write candidates only there. `delete` declares a vault-relative knowledge-page removal. `validate` checks the full prospective vault without promotion. Transaction review inspects candidates, deletions, and the report before `commit` revalidates, promotes pages, updates manifest shards, and appends one canonical block to the tracked authoritative operation log `wiki/log.md` last. JSON commit and retry outputs return `log_path`.
 
 Failures retain recovery state when a safe next action is possible. Use `list` to inspect it; then follow only a currently allowed `retry`, `restore`, `discard`, or `abort` action. Reload structured state afterward and continue while the action makes observable progress; do not repeat an action with identical inputs and unchanged state. Safe `retry` and drift-free `restore` complete automatically. `discard`, `abort`, and restore over owner drift ask first, and confirmation never bypasses a failed precondition.
+
+Agent preflight uses `list --status active,promoting,failed --summary --json` so completed history cannot make structured output grow without bound. Summary records contain only `transaction_id`, `status`, and `recommended_action`; an empty match is always `[]`. Use `show TRANSACTION_ID --json` to load the full record for one trusted ID. Plain `list` remains the compatibility interface for complete retained history.
 
 Legacy retained transactions without frozen source hashes remain listable and can be
 restored, aborted, or discarded, but cannot be committed or retried. Restart them to

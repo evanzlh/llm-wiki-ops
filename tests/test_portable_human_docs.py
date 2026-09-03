@@ -323,7 +323,10 @@ def test_external_adapter_docs_show_canonical_explicit_root_commands() -> None:
         "llmwikiops -C /absolute/path/to/wiki info --json",
         "llmwikiops -C /absolute/path/to/wiki check --json",
         'llmwikiops -C /absolute/path/to/wiki query --mode find --term "topic" --json',
-        "llmwikiops -C /absolute/path/to/wiki transaction list --json",
+        (
+            "llmwikiops -C /absolute/path/to/wiki transaction list --status "
+            "active,promoting,failed --summary --json"
+        ),
     )
     for relative in ("README.md", "README_ZH.md", "docs/cli.md", "docs/cli.zh-TW.md"):
         text = _text(relative)

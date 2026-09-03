@@ -53,14 +53,16 @@ when present, then this task skill. The canonical protocol wins conflicts.
 
 ## Inspect the returned record
 
-Run `<wiki-cli> transaction list --json --pretty`. Do not infer a
-transaction or directory from a filesystem scan, prior message, or remembered
-identifier. Select only a returned retained record, including when its status
-is `active`, `promoting`, `failed`, `complete`, or `restored`.
+Without an exact user-selected or failure-envelope transaction ID, run
+`<wiki-cli> transaction list --status active,promoting,failed --summary --json
+--pretty` and select only one returned summary. Then run `<wiki-cli> transaction
+show <id> --json --pretty`; use an exact user-selected or trusted ID directly.
+Do not infer a transaction or directory from a filesystem scan, prior message,
+or remembered identifier.
 
-Show its transaction ID, status, the list record's `source_ids`, absolute
+Show its transaction ID, status, the show record's `source_ids`, absolute
 `candidate_vault`, `deletions`, `recommended_action`, and `allowed_actions`.
-The list record has no candidate-page inventory. Display each action's
+The show record has no candidate-page inventory. Display each action's
 `command`, `reason`, and `requires` without converting status into a command.
 
 ## Validate and build the sparse diff
@@ -95,9 +97,9 @@ For an explicitly requested completion of an active record, immediately rerun
 `<wiki-cli> transaction validate <id> --json --pretty`, reread and
 bounded-inspect every current page in `candidate_pages` plus the current deletion
 set, and display the final prospective diff. A status or validation envelope
-alone is not Agent substantive review. Then refresh the list immediately. Match
-exactly one retained record with the
-same ID; require the refreshed record's status, `source_ids`, `candidate_vault`,
+alone is not Agent substantive review. Then refresh the record immediately with
+`<wiki-cli> transaction show <id> --json --pretty`. Require the retained record's
+ID to match; require the refreshed record's status, `source_ids`, `candidate_vault`,
 `deletions`, `recommended_action`, and `allowed_actions` to be unchanged. Find
 the commit action in `allowed_actions`, show its reason, and satisfy every string
 in its `requires`. If anything changed or is ambiguous, stop and re-review. With
@@ -116,8 +118,9 @@ then execute only the still-reported selection after all `requires` hold.
 
 ## Recover failures
 
-Save any failed command envelope, refresh the list, and match exactly one
-retained record to its trusted transaction ID. Cross-check the envelope with
+Save any failed command envelope, refresh its trusted ID with `<wiki-cli>
+transaction show <id> --json --pretty`, and match the retained record to that ID.
+Cross-check the envelope with
 the refreshed record's status, `recommended_action`, and `allowed_actions`.
 Execute only the reported recommendation or an applicable reported action after
 all `requires` hold and any action-specific confirmation below. Retry

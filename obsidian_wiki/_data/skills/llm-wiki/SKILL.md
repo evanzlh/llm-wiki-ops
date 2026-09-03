@@ -154,12 +154,12 @@ validated repository binding unchanged throughout.
    preferred action, alternatives, and each action's `requires` list.
 
    With a trusted transaction ID from that envelope, run `<wiki-cli>
-   transaction list --json --pretty` and require exactly one retained record
-   with the same ID and status. A list record provides `recommended_action` and
+   transaction show <id> --json --pretty` and require the retained record
+   to have the same ID and status. The show record provides `recommended_action` and
    `allowed_actions`; it does not repeat `error` or `recovery`. The selected
    action must appear in `allowed_actions`, agree with `recommended_action` when
    choosing the recommendation, and satisfy every string in the action's
-   `requires` list before execution. If the ID or list is empty, missing,
+   `requires` list before execution. If the ID or record is empty, missing,
    mismatched, duplicated, or ambiguous, stop without changing repository
    content. A failure envelope without a trusted ID is inspection-only.
 

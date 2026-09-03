@@ -114,7 +114,7 @@ requires explicit owner authorization.
    Review the complete candidate diff, citations, uncertainties, and deletions,
    then run `<wiki-cli> transaction commit <id> --json --pretty`. For
    reported recovery, save the envelope, inspect
-   `<wiki-cli> transaction list --json --pretty`, require one exact record,
+   `<wiki-cli> transaction show <id> --json --pretty`, require the exact record,
    satisfy `requires`, and stop on ambiguity.
 8. **Refresh and close the local result.** Only after a successful
    `transaction commit` or `transaction retry`, run
