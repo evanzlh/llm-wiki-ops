@@ -5019,6 +5019,30 @@ def _recover_skill_operations(
     _recover_replacement_transactions(root, SYNC_OPERATION)
 
 
+def _assert_no_pending_skill_operations(root: Path) -> None:
+    """Refuse reviewed-plan apply while recovery evidence is present."""
+    pending: list[str] = []
+    for operation in (UPGRADE_OPERATION, SYNC_OPERATION):
+        transactions = root / operation.transactions_relative
+        _assert_safe_managed_path(root, transactions)
+        if not transactions.exists():
+            continue
+        _assert_directory(root, transactions, f"{operation.name} transactions")
+        pending.extend(
+            _repo_relative_path(root, transaction)
+            for transaction, _identity in _bound_sync_transaction_candidates(
+                root, transactions
+            )
+        )
+    if pending:
+        raise ValueError(
+            "portable skill recovery is pending at "
+            + ", ".join(pending)
+            + "; run the repository check/recovery flow separately, then review "
+            "a new sync plan"
+        )
+
+
 def recover_portable_skill_operations(
     root: Path,
     *,
@@ -5262,6 +5286,14 @@ def _apply_journaled_replacements(
             created_parents=created_parents,
             initial=initial_sync_parent_identities,
         )
+        for target, expected_target in (expected_preimages or {}).items():
+            observed_target = _bound_optional_replacement_proof(
+                root, target, label="apply target preimage"
+            )
+            if observed_target != expected_target:
+                raise OSError(
+                    f"managed {operation.name} target preimage changed: {target}"
+                )
         for index, (target, backup, staged, had_target) in enumerate(records):
             install = transaction / "install" / str(index)
             install_identity: tuple[int, int] | None = None
@@ -5420,6 +5452,7 @@ def _stage_complete_agent_mirrors(
     canonical: SkillCollection,
     *,
     parent_identities: Mapping[Path, tuple[int, int]] | None = None,
+    expected_preimages: Mapping[Path, ReplacementProof | None] | None = None,
 ) -> list[tuple[Path, Path | None]]:
     replacements: list[tuple[Path, Path | None]] = []
     canonical_entries = _canonical_skill_entries(canonical)
@@ -5435,7 +5468,18 @@ def _stage_complete_agent_mirrors(
             )
         _assert_safe_managed_path(root, target)
         target_mode = 0o755
-        if target.exists() or target.is_symlink():
+        if expected_preimages is not None:
+            expected_target = expected_preimages[target]
+            observed_target = _bound_optional_replacement_proof(
+                root, target, label="agent mirror preflight"
+            )
+            if observed_target != expected_target:
+                raise OSError(
+                    f"managed sync target preimage changed: {target}"
+                )
+            if expected_target is not None:
+                target_mode = expected_target[1][0]
+        elif target.exists() or target.is_symlink():
             _assert_directory(root, target, "agent skills mirror")
             _bound_replacement_snapshot(
                 root, target, label="agent mirror preflight"
@@ -5492,7 +5536,23 @@ def _sync_portable_skill_mirrors_bound(
     if not root.is_dir():
         raise ValueError(f"portable repository root is not a directory: {root}")
     with _portable_skills_lock(root):
-        _recover_skill_operations(root)
+        expected_preimages: dict[Path, ReplacementProof | None] | None = None
+        if expected_plan_token is None:
+            _recover_skill_operations(root)
+        else:
+            _assert_no_pending_skill_operations(root)
+            expected_preimages = {
+                target: _bound_optional_replacement_proof(
+                    root, target, label="reviewed sync plan preimage"
+                )
+                for target in (
+                    root / ".skills",
+                    *(
+                        root / relative
+                        for relative, _label in PROJECT_AGENT_DIRS
+                    ),
+                )
+            }
         report = plan_portable_skill_sync(root)
         if (
             expected_plan_token is not None
@@ -5516,6 +5576,7 @@ def _sync_portable_skill_mirrors_bound(
                 transaction,
                 canonical,
                 parent_identities=parent_identities,
+                expected_preimages=expected_preimages,
             )
             payload, records = _prepare_replacement_journal(
                 root,
@@ -5549,6 +5610,7 @@ def _sync_portable_skill_mirrors_bound(
             payload,
             records,
             initial_sync_parent_identities=parent_identities,
+            expected_preimages=expected_preimages,
         )
         verified = plan_portable_skill_sync(root)
         if verified.status != "clean":

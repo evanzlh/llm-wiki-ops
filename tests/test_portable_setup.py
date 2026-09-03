@@ -183,12 +183,13 @@ def _upgrade_portable_skills(
 
 
 def _sync_portable_skill_mirrors(
-    root: Path, *, apply: bool
+    root: Path, *, apply: bool, expected_plan_token: str | None = None
 ) -> portable.SkillSyncReport:
     return portable.sync_portable_skill_mirrors(
         root,
         apply=apply,
         expected_root_identity=portable_root_identity(root),
+        expected_plan_token=expected_plan_token,
     )
 
 
@@ -2425,6 +2426,104 @@ def test_repo_sync_skills_rejects_malformed_expected_plan_before_writes(
         relative: snapshot_tree(root / relative)
         for relative, _label in portable.PROJECT_AGENT_DIRS
     } == mirrors_before
+
+
+@pytest.mark.parametrize(
+    ("expected_plan_token", "error"),
+    [
+        ("sha256:" + "0" * 64, "recovery is pending"),
+        ("sha256:not-a-plan", "must be lowercase sha256"),
+    ],
+)
+def test_expected_plan_rejects_pending_recovery_without_touching_evidence(
+    expected_plan_token: str,
+    error: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    _add_custom_canonical_skill(root)
+    transaction, _payload, _records = write_prepared_skill_sync_journal(root)
+    before = snapshot_tree(root)
+
+    with pytest.raises(ValueError, match=error):
+        _sync_portable_skill_mirrors(
+            root,
+            apply=True,
+            expected_plan_token=expected_plan_token,
+        )
+
+    assert snapshot_tree(root) == before
+    assert (transaction / "journal.json").is_file()
+
+
+@pytest.mark.parametrize("drift_target", ["mirror", "canonical"])
+def test_expected_plan_binds_owner_edits_after_comparison_before_replacement(
+    drift_target: str,
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    _add_custom_canonical_skill(root)
+    expected_plan_token = plan_portable_skill_sync(root).plan_token
+    canonical_before = snapshot_tree(root / ".skills")
+    mirrors_before = {
+        relative: snapshot_tree(root / relative)
+        for relative, _label in portable.PROJECT_AGENT_DIRS
+    }
+    target = (
+        root / ".claude/skills/wiki-query/SKILL.md"
+        if drift_target == "mirror"
+        else root / ".skills/wiki-query/SKILL.md"
+    )
+    owner_bytes = target.read_bytes() + b"\nowner edit after plan comparison\n"
+    original_prepare = portable._prepare_replacement_journal
+    original_rename = portable._rename_sync_path
+    live_replacements: list[Path] = []
+
+    def inject_owner_edit(*args: object, **kwargs: object):
+        result = original_prepare(*args, **kwargs)
+        target.write_bytes(owner_bytes)
+        return result
+
+    def record_live_replacement(
+        repository: Path, source: Path, destination: Path, **kwargs: object
+    ) -> None:
+        if source in {
+            root / relative for relative, _label in portable.PROJECT_AGENT_DIRS
+        }:
+            live_replacements.append(source)
+        original_rename(repository, source, destination, **kwargs)
+
+    monkeypatch.setattr(portable, "_prepare_replacement_journal", inject_owner_edit)
+    monkeypatch.setattr(portable, "_rename_sync_path", record_live_replacement)
+
+    with pytest.raises((OSError, ValueError), match="preimage changed"):
+        _sync_portable_skill_mirrors(
+            root,
+            apply=True,
+            expected_plan_token=expected_plan_token,
+        )
+
+    assert live_replacements == []
+    assert target.read_bytes() == owner_bytes
+    if drift_target == "mirror":
+        assert snapshot_tree(root / ".skills") == canonical_before
+    else:
+        mirrors_after = {
+            relative: snapshot_tree(root / relative)
+            for relative, _label in portable.PROJECT_AGENT_DIRS
+        }
+        assert mirrors_after == mirrors_before
+    assert plan_portable_skill_sync(root).status == "drift"
+    assert not list(
+        (root / portable.SYNC_OPERATION.transactions_relative).glob(
+            "*/journal.json"
+        )
+    )
 
 
 def test_repo_sync_skills_human_output_describes_rebuilt_derived_roots(
