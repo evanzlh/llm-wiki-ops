@@ -66,16 +66,23 @@ capture time, content hash, format, exact reviewed text, and omission markers.
 Follow the canonical [source snapshot reference](../wiki-capture/references/source-snapshot.md).
 
 A new snapshot uses the absent target path only after its parent topology passes the
-safe source boundary. An existing target first passes the pre-write owner preservation
-gate: valid HEAD, literal tracked identity, empty status, repository containment,
-real-directory ancestors, and an ordinary single-link terminal file. A Git-tracked
-symlink does not establish authority. Identity mismatch or unsafe topology stops.
+safe source boundary and absence is confirmed. An existing target first passes the
+pre-write owner preservation gate: valid HEAD, literal tracked identity, empty
+status, repository containment, real-directory ancestors, and an ordinary
+single-link terminal file. A Git-tracked symlink does not establish authority.
+Identity mismatch or unsafe topology stops.
 
-A new snapshot is automatically eligible for Agent review: review its bounded
-UTF-8 Markdown diff, redaction, and provenance; stage and locally commit the
-exact Source path using the canonical literal-pathspec forms; then rerun the
-authority checks. Tracking alone is insufficient. Continue only after a valid
-HEAD contains the reviewed snapshot and the literal status gate is clean.
+After writing an absent target, only the expected task-owned new state is allowed.
+For an unchanged existing Source, rerun the authority checks and must not create an
+empty commit. A new snapshot or approved existing replacement is automatically eligible for Agent
+review: review its bounded UTF-8 Markdown diff, redaction, and provenance; stage
+and locally commit the exact Source path with
+`[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`,
+`[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]`,
+`[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]`, and
+`[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]`; then rerun the
+authority checks. Tracking alone is insufficient. Continue only after a valid HEAD
+contains the reviewed snapshot and the literal status gate is clean.
 
 For an existing snapshot, require a valid HEAD and apply the pre-write clean/literal
 gate before even reading its identity metadata:
@@ -92,9 +99,11 @@ status output must be empty. With no HEAD, an untracked or dirty path, identity
 mismatch, unsafe topology, or ambiguous output, do not overwrite; stop and ask
 before touching an existing dirty, identity-changed, or overlapping dirty path.
 An approved existing replacement uses a safe atomic replacement without following
-links. It then enters post-write Agent review: review the Source diff, redaction,
-and provenance; stage and locally commit the exact Source path using
+links. Only its expected task-owned modified state is then allowed. It enters
+post-write Agent review: review the Source diff, redaction, and provenance; stage
+and locally commit the exact Source path using
 `[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`,
+`[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]`,
 `[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]`, and
 `[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]`.
 On rerun, require a valid HEAD containing that replacement and rerun the authority

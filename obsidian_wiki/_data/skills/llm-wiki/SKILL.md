@@ -168,6 +168,7 @@ argv elements, not one shell token. Use these context-aware forms:
 ```text
 [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]
 [<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]
+[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]
 [<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]
 [<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]
 ```

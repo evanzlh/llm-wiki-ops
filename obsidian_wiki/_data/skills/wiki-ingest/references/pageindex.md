@@ -92,8 +92,9 @@ model, fixed command/output identity, `captured_at`, content hash, selected tree
 fields, page ranges, exact reviewed text, attribution, license, and omission
 markers.
 
-Complete Agent review, then stage and locally commit the exact Source path using
-the canonical literal-pathspec forms. Re-run Git tracking and clean-path checks
+Complete Agent review, then stage, display the staged diff, run the cached diff
+check, and locally commit the exact Source path using the canonical literal-
+pathspec forms. Re-run Git tracking and clean-path checks
 before cache-check; stop before staging an owner-overlapping dirty path and ask
 whether to preserve, separate, or combine it. The ordinary Markdown file then
 becomes tracked authority with a repository-relative Source ID. Then return to

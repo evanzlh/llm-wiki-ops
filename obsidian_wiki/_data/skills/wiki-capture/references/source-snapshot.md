@@ -23,8 +23,8 @@ closing `---`; do not insert a formatting blank line unless the reviewed text
 itself begins with one. Store the exact reviewed text as UTF-8 without BOM,
 normalize line endings to LF, and end with exactly one LF. `content_hash` is
 SHA-256 over those exact body bytes, including that final LF, prefixed by
-`sha256:`. The CLI does not validate this metadata: the agent computes it and
-the owner verifies it before tracking the file.
+`sha256:`. The CLI does not validate this metadata: under the explicit request,
+the Agent computes and substantively reviews it before tracking the file.
 
 Quote YAML strings containing `:`, `#`, brackets, leading punctuation, or
 ambiguous scalar values. Use YAML block scalars for multiline metadata, with an
@@ -55,8 +55,12 @@ material into bounded, independently reviewable snapshots.
   authority. Preserve only reviewed text and useful origin metadata.
 - Reject symbolic links, hard links, special files, and paths outside the
   configured source root.
-- After Agent review, stage and locally commit only the exact Source ID with the
-  canonical literal-pathspec status, add, cached diff, and commit forms; rerun
-  tracking and clean-path checks before cache-check. Stop before staging an
-  owner-overlapping dirty path and ask whether to preserve, separate, or combine
-  it. Do not push or open a pull request.
+- For an absent Source, confirm safe contained topology and absence before writing;
+  after writing, allow only the expected task-owned new or modified state. For an
+  unchanged existing Source, revalidate authority and must not create an empty
+  commit. After substantive Agent review, stage and locally commit only the exact
+  Source ID with canonical literal-pathspec status, add, staged-diff display,
+  cached diff check, and commit forms; rerun tracking and clean-path checks before
+  cache-check. Ask only for insufficient/ambiguous evidence or an owner-overlapping
+  dirty path, including whether to preserve, separate, or combine it. Do not push
+  or open a pull request.

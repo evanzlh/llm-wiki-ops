@@ -64,16 +64,21 @@ requires explicit owner authorization.
    First
    validate a non-empty POSIX repository-relative Source ID: it is not absolute,
    contains no `.` or `..` segment, NUL, or backslash, stays below configured
-   sources, and is accepted by cache/manifest source_id semantics. Using the
-   context-appropriate Git form above, execute
-   `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
-   and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
-   as exact read-only argument vectors. Require an existing HEAD, zero exits,
-   and status output must be empty. The manifest-tracked and Git-tracked states
-   differ, and tracked is not committed-reviewed. On no HEAD, nonzero result, or
-   status output, stop before staging. Agent review the bounded UTF-8 Markdown snapshot, verify redaction and
+   sources, and is accepted by cache/manifest source_id semantics. Require an
+   existing HEAD. Before writing an absent Source, require the safe contained
+   target/parent topology and no existing entry. Before reading or replacing an
+   existing Source, require exact successful `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
+   and empty `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`, then verify identity.
+   Its status output must be empty; on no HEAD, dirty, untracked, or identity-
+   changed state, stop before staging.
+   An unchanged existing Source is revalidated and must not create an empty
+   commit. After writing, only the expected task-owned new or modified state is
+   allowed; an unexpected, owner-overlapping, or identity-changed state stops
+   before staging. The manifest-tracked and Git-tracked states differ, and
+   tracked is not committed-reviewed. Agent review the bounded UTF-8 Markdown snapshot, verify redaction and
    provenance, then stage and locally commit the exact Source path using
-   `[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`, review the Source diff with
+   `[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`, display and review the Source diff with
+   `[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]`, verify it with
    `[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]`, and locally commit with
    `[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]`.
    If the Source path contains owner changes, stop before staging and ask whether

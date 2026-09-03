@@ -587,6 +587,8 @@ def test_source_snapshot_reference_replaces_raw_format() -> None:
         "repository-relative Source ID",
         "Agent review",
         "stage and locally commit only the exact Source ID",
+        "substantively reviews it before tracking",
+        "Ask only for insufficient/ambiguous evidence",
         "untrusted data",
         "Do not push or open a pull request",
     ):
@@ -781,15 +783,16 @@ def test_update_commits_clean_task_scoped_snapshot_before_delta() -> None:
         "status output must be empty",
         "review the Source diff",
         "stage and locally commit the exact Source path",
+        "unchanged existing Source",
+        "must not create an empty commit",
         "rerun the authority checks",
         "before delta planning",
     ):
         assert required in flat
-    assert flat.index("stage and locally commit the exact Source path") < flat.index(
+    assert "owner verifies it before tracking" not in flat
+    assert flat.index("stage and locally commit the exact Source path") < flat.rindex(
         "rerun the authority checks"
-    ) < flat.index(
-        "cache-check"
-    )
+    ) < flat.rindex("cache-check")
 
 
 @pytest.mark.parametrize("name", MAINTENANCE_SKILLS)

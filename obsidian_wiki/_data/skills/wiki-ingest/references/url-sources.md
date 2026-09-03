@@ -35,8 +35,9 @@ citation locators, and applicable license.
 Convert the accepted text to a bounded reviewable UTF-8 Markdown snapshot below
 the configured sources directory. Follow the
 [source snapshot reference](../../wiki-capture/references/source-snapshot.md),
-complete Agent review, stage and locally commit the exact Source path, then
-rerun Git tracking and clean-path checks before cache-check. Stop before staging
+complete Agent review, stage, display the staged diff, run the cached diff check,
+and locally commit the exact Source path, then rerun Git tracking and clean-path
+checks before cache-check. Stop before staging
 an owner-overlapping dirty path and ask whether to preserve, separate, or
 combine it. Use only its repository-relative Source ID for cache checking and transaction closure. A
 binary download, live URL, or absolute path is never candidate provenance.

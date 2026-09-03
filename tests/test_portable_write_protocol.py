@@ -159,6 +159,11 @@ def test_git_examples_use_context_aware_argv_prefix(
         check=True,
     )
     subprocess.run(
+        [*prefix, "--literal-pathspecs", "diff", "--cached", "--", source_id],
+        cwd=cwd,
+        check=True,
+    )
+    subprocess.run(
         [*prefix, "--literal-pathspecs", "diff", "--cached", "--check", "--", source_id],
         cwd=cwd,
         check=True,
@@ -192,6 +197,153 @@ def test_git_examples_use_context_aware_argv_prefix(
     )
     assert listed.stdout == f"{source_id}\n"
     assert clean.stdout == ""
+
+
+@pytest.mark.parametrize("state", ("absent", "modified", "unchanged"))
+def test_source_checkpoint_commits_only_expected_task_owned_changes(
+    tmp_path: Path, state: str
+) -> None:
+    repo = tmp_path / state
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Protocol Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "protocol@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True)
+
+    source_id = "sources/evidence.md"
+    source = repo / source_id
+    source.parent.mkdir()
+    if state != "absent":
+        source.write_text("reviewed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "--literal-pathspecs", "add", "--", source_id],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "--literal-pathspecs", "commit", "-m", "source", "--", source_id],
+            cwd=repo,
+            check=True,
+        )
+    if state == "absent":
+        source.write_text("new evidence\n", encoding="utf-8")
+    elif state == "modified":
+        source.write_text("updated evidence\n", encoding="utf-8")
+
+    (repo / "unrelated.md").write_text("leave staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "unrelated.md"], cwd=repo, check=True)
+    before = subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            source_id,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    if before:
+        subprocess.run(
+            ["git", "--literal-pathspecs", "add", "--", source_id],
+            cwd=repo,
+            check=True,
+        )
+        displayed = subprocess.run(
+            ["git", "--literal-pathspecs", "diff", "--cached", "--", source_id],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert source_id in displayed
+        subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "diff",
+                "--cached",
+                "--check",
+                "--",
+                source_id,
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "commit",
+                "-m",
+                "review source",
+                "--",
+                source_id,
+            ],
+            cwd=repo,
+            check=True,
+        )
+    else:
+        assert state == "unchanged"
+
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if state == "unchanged":
+        assert head_after == head_before
+    else:
+        assert head_after != head_before
+    assert subprocess.run(
+        ["git", "show", "--format=", "--name-only", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines() == [source_id]
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == "unrelated.md\n"
+    assert subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            source_id,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
 
     documented_ls_files = (
         '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", '
@@ -347,6 +499,7 @@ def test_canonical_protocol_defines_dual_context_cli_and_git_forms() -> None:
         assert required in text
     for required in (
         '[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]',
         '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]',
         '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]',
     ):
@@ -677,6 +830,10 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             "existing ordinary tracked",
             "bounded reviewable UTF-8 Markdown snapshot",
             "configured sources",
+            "absent Source",
+            "expected task-owned new or modified state",
+            "unchanged existing Source",
+            "must not create an empty commit",
             "Agent review",
             "stage and locally commit the exact Source path",
             "tracked authority",
@@ -685,6 +842,7 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
         for command in (
             '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
         ):
@@ -694,6 +852,7 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             for command in (
                 '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
             )
@@ -702,6 +861,7 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             for command in (
                 '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
                 '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
             )
@@ -773,6 +933,7 @@ def test_source_workflows_commit_reviewed_snapshots_before_begin() -> None:
             "tracked authority",
             '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
             '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
             "manifest-tracked",
@@ -812,7 +973,7 @@ def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
         "1-indexed physical PDF pages",
         "bounded reviewable UTF-8 Markdown snapshot",
         "Agent review",
-        "stage and locally commit the exact Source path",
+        "stage, display the staged diff, run the cached diff check",
         "tracked authority",
         "repository-relative Source ID",
         "transaction begin --source",
@@ -821,7 +982,7 @@ def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
         assert required in flat
     assert flat.index("run_pageindex.py") < flat.index(
         "bounded reviewable UTF-8 Markdown snapshot"
-    ) < flat.index("Agent review") < flat.index("stage and locally commit the exact Source path") < flat.index("tracked authority") < flat.index(
+    ) < flat.index("Agent review") < flat.index("stage, display the staged diff, run the cached diff check") < flat.index("tracked authority") < flat.index(
         "transaction begin --source"
     )
     match = re.search(
@@ -1010,7 +1171,8 @@ def test_git_authority_commands_are_argv_safe_and_require_clean_head(tmp_path: P
         flat = " ".join(path.read_text(encoding="utf-8").split())
         for required in (
             ls_template,
-            status_template,
+                status_template,
+                '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<Source ID>"]',
             "non-empty POSIX repository-relative Source ID",
             "NUL",
             "backslash",
@@ -1165,6 +1327,10 @@ def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
             "stage and locally commit the exact Source path",
             "Rerun Git tracking and clean-path checks",
             "workers never commit",
+            "absent Source",
+            "expected task-owned new or modified state",
+            "unchanged existing Source",
+            "must not create an empty commit",
         ):
             assert required in flat, f"{path}: missing {required!r}"
         assert flat.index("Rerun Git tracking and clean-path checks") < flat.index(
@@ -1180,6 +1346,9 @@ def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
             "central files",
             "Git publication",
             "Git stage/commit remain owner-only",
+            "owner-only",
+            "owner must stage",
+            "owner must commit",
             "commit externally",
             "--configured",
         ):
