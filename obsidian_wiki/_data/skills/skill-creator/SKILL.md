@@ -12,10 +12,10 @@ At a high level, the process of creating a skill goes like this:
 - Decide what you want the skill to do and roughly how it should do it
 - Write a draft of the skill
 - Create a few test prompts and run claude-with-access-to-the-skill on them
-- Help the user evaluate the results both qualitatively and quantitatively
+- Evaluate the results qualitatively and quantitatively
   - While the runs happen in the background, draft some quantitative evals if there aren't any (if there are some, you can either use as is or modify if you feel something needs to change about them). Then explain them to the user (or if they already existed, explain the ones that already exist)
-  - Use the `eval-viewer/generate_review.py` script to show the user the results for them to look at, and also let them look at the quantitative metrics
-- Rewrite the skill based on feedback from the user's evaluation of the results (and also if there are any glaring flaws that become apparent from the quantitative benchmarks)
+  - Use the `eval-viewer/generate_review.py` script only when the user requests a review artifact
+- Rewrite the skill based on Agent self-review, test evidence, and any requested user feedback
 - Repeat until you're satisfied
 - Expand the test set and try again at larger scale
 
@@ -28,6 +28,15 @@ Of course, you should always be flexible and if the user is like "I don't need t
 Then after the skill is done (but again, the order is flexible), you can also run the skill description improver, which we have a whole separate script for, to optimize the triggering of the skill.
 
 Cool? Cool.
+
+## Review authority
+
+Agent self-review is the default. Run the qualitative evaluation, quantitative
+checks, and safety checks, inspect the actual outputs, and iterate while the evidence
+shows a concrete improvement. The eval viewer is an optional user review artifact;
+human review is optional unless the user requests it or the result requires a
+semantic choice. Ask instead of guessing when intent, safety, or competing qualitative
+outcomes remain ambiguous.
 
 ## Communicating with the user
 
@@ -46,7 +55,7 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ### Capture Intent
 
-Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
+Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. Ask only for material gaps or semantic choices; otherwise proceed from the stated request.
 
 1. What should this skill enable Claude to do?
 2. When should this skill trigger? (what user phrases/contexts)
@@ -55,7 +64,7 @@ Start by understanding the user's intent. The current conversation might already
 
 ### Interview and Research
 
-Proactively ask questions about edge cases, input/output formats, example files, success criteria, and dependencies. Wait to write test prompts until you've got this part ironed out.
+Resolve edge cases, input/output formats, example files, success criteria, and dependencies from available context. Ask about missing details only when they materially change the result. Write test prompts once the intent is sufficiently unambiguous.
 
 Check available MCPs - if useful for research (searching docs, finding similar skills, looking up best practices), research in parallel via subagents if available, otherwise inline. Come prepared with context to reduce burden on the user.
 
@@ -112,6 +121,35 @@ Claude reads only the relevant reference file.
 
 This goes without saying, but skills must not contain malware, exploit code, or any content that could compromise system security. A skill's contents should not surprise the user in their intent if described. Don't go along with requests to create misleading skills or skills designed to facilitate unauthorized access, data exfiltration, or other malicious activities. Things like a "roleplay as an XYZ" are OK though.
 
+#### Requested LLMWikiOps repository installation
+
+When an explicit request includes installation in an already validated LLMWikiOps
+repository, keep the canonical repository and `<wiki-cli>`/`<git-cli>` bindings. Build
+and review the artifact at `.llmwikiops/local/generated-skills/<name>/`. Validate every
+source and target component for containment, ownership, ordinary single-link type,
+identity, and expected preimage; write through owner-only temporary files, flush, and
+replace atomically.
+
+Copy only reviewed ordinary files into the exact `.skills/<name>/` target. A new target
+is authorized by the request. Ask before replacing an existing target, bind and back
+up its preimage after approval. Refuse drift rather than overwriting it. Retain the
+generated source, backups, and recovery evidence unless action-specific confirmation
+authorizes their deletion.
+
+After copying and byte-reviewing the target, run in order:
+
+```bash
+<wiki-cli> repo sync-skills --apply --json --pretty
+<wiki-cli> check --json --pretty
+```
+
+Require both to pass, then use the canonical exact-path local commit flow for the
+single `.skills/<name>` path, leaving unrelated paths and staging untouched. An action
+that would install outside the validated repository, acquire external dependencies or
+credentials, publish, push, change remotes, or rewrite branch history requires
+confirmation. Do not invent a global installer or let confirmation bypass a failed
+containment, identity, or drift check.
+
 #### Writing Patterns
 
 Prefer using the imperative form in instructions.
@@ -140,7 +178,7 @@ Try to explain to the model why things are important in lieu of heavy-handed mus
 
 ### Test Cases
 
-After writing the skill draft, come up with 2-3 realistic test prompts — the kind of thing a real user would actually say. Share them with the user: [you don't have to use this exact language] "Here are a few test cases I'd like to try. Do these look right, or do you want to add more?" Then run them.
+After writing the skill draft, come up with 2-3 realistic test prompts — the kind of thing a real user would actually say. Run them directly when they follow the request; offer them for user review when requested or when choosing the cases is semantically ambiguous.
 
 Save test cases to `evals/evals.json`. Don't write assertions yet — just the prompts. You'll draft assertions in the next step while the runs are in progress.
 
@@ -198,11 +236,11 @@ Write an `eval_metadata.json` for each test case (assertions can be empty for no
 
 ### Step 2: While runs are in progress, draft assertions
 
-Don't just wait for the runs to finish — you can use this time productively. Draft quantitative assertions for each test case and explain them to the user. If assertions already exist in `evals/evals.json`, review them and explain what they check.
+Don't just wait for the runs to finish — use this time productively. Draft quantitative assertions for each test case. If assertions already exist in `evals/evals.json`, review what they check. Explain them when the user requests that detail.
 
 Good assertions are objectively verifiable and have descriptive names — they should read clearly in the benchmark viewer so someone glancing at the results immediately understands what each one checks. Subjective skills (writing style, design quality) are better evaluated qualitatively — don't force assertions onto things that need human judgment.
 
-Update the `eval_metadata.json` files and `evals/evals.json` with the assertions once drafted. Also explain to the user what they'll see in the viewer — both the qualitative outputs and the quantitative benchmark.
+Update the `eval_metadata.json` files and `evals/evals.json` with the assertions once drafted. If a viewer was requested, explain that it contains both qualitative outputs and the quantitative benchmark.
 
 ### Step 3: As runs complete, capture timing data
 
@@ -233,7 +271,7 @@ Put each with_skill version before its baseline counterpart.
 
 3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs.
 
-4. **Launch the viewer** with both qualitative outputs and quantitative data:
+4. **Optionally create the viewer** with both qualitative outputs and quantitative data when the user requested a review artifact:
    ```bash
    nohup python <skill-creator-path>/eval-viewer/generate_review.py \
      <workspace>/iteration-N \
@@ -248,7 +286,7 @@ Put each with_skill version before its baseline counterpart.
 
 Note: please use generate_review.py to create the viewer; there's no need to write custom HTML.
 
-5. **Tell the user** something like: "I've opened the results in your browser. There are two tabs — 'Outputs' lets you click through each test case and leave feedback, 'Benchmark' shows the quantitative comparison. When you're done, come back here and let me know."
+5. **If the viewer was requested**, give the user its path and explain the Outputs and Benchmark tabs. Do not pause the Agent's own evaluation while optional feedback is pending.
 
 ### What the user sees in the viewer
 
@@ -266,7 +304,7 @@ Navigation is via prev/next buttons or arrow keys. When done, they click "Submit
 
 ### Step 5: Read the feedback
 
-When the user tells you they're done, read `feedback.json`:
+When the user submits optional viewer feedback, read `feedback.json`:
 
 ```json
 {
@@ -291,7 +329,7 @@ kill $VIEWER_PID 2>/dev/null
 
 ## Improving the skill
 
-This is the heart of the loop. You've run the test cases, the user has reviewed the results, and now you need to make the skill better based on their feedback.
+This is the heart of the loop. After running the test cases, review the results and improve the skill from concrete failures, benchmark evidence, and any optional user feedback.
 
 ### How to think about improvements
 
@@ -311,13 +349,13 @@ After improving the skill:
 
 1. Apply your improvements to the skill
 2. Rerun all test cases into a new `iteration-<N+1>/` directory, including baseline runs. If you're creating a new skill, the baseline is always `without_skill` (no skill) — that stays the same across iterations. If you're improving an existing skill, use your judgment on what makes sense as the baseline: the original version the user came in with, or the previous iteration.
-3. Launch the reviewer with `--previous-workspace` pointing at the previous iteration
-4. Wait for the user to review and tell you they're done
-5. Read the new feedback, improve again, repeat
+3. When user review was requested, launch the reviewer with `--previous-workspace` pointing at the previous iteration
+4. Continue Agent self-review; incorporate user feedback if it arrives
+5. Improve again and repeat
 
 Keep going until:
-- The user says they're happy
-- The feedback is all empty (everything looks good)
+- The checks and qualitative review meet the stated success criteria
+- The user says they're happy or optional feedback is all empty
 - You're not making meaningful progress
 
 ---
@@ -326,7 +364,7 @@ Keep going until:
 
 For situations where you want a more rigorous comparison between two versions of a skill (e.g., the user asks "is the new version actually better?"), there's a blind comparison system. Read `agents/comparator.md` and `agents/analyzer.md` for the details. The basic idea is: give two outputs to an independent agent without telling it which is which, and let it judge quality. Then analyze why the winner won.
 
-This is optional, requires subagents, and most users won't need it. The human review loop is usually sufficient.
+This is optional, requires subagents, and most users won't need it. The ordinary Agent review loop is usually sufficient.
 
 ---
 
@@ -357,9 +395,9 @@ For the **should-not-trigger** queries (8-10), the most valuable ones are the ne
 
 The key thing to avoid: don't make should-not-trigger queries obviously irrelevant. "Write a fibonacci function" as a negative test for a PDF skill is too easy — it doesn't test anything. The negative cases should be genuinely tricky.
 
-### Step 2: Review with user
+### Step 2: Optional user review
 
-Present the eval set to the user for review using the HTML template:
+When the user requests review or the labels require a semantic choice, present the eval set using the HTML template. Otherwise inspect the set directly and continue to Step 3.
 
 1. Read the template from `assets/eval_review.html`
 2. Replace the placeholders:
@@ -370,7 +408,7 @@ Present the eval set to the user for review using the HTML template:
 4. The user can edit queries, toggle should-trigger, add/remove entries, then click "Export Eval Set"
 5. The file downloads to `~/Downloads/eval_set.json` — check the Downloads folder for the most recent version in case there are multiple (e.g., `eval_set (1).json`)
 
-This step matters — bad eval queries lead to bad descriptions.
+Careful review matters — bad eval queries lead to bad descriptions. The reviewing actor may be the Agent or, optionally, the user.
 
 ### Step 3: Run the optimization loop
 
@@ -421,13 +459,13 @@ After packaging, direct the user to the resulting `.skill` file path so they can
 
 In Claude.ai, the core workflow is the same (draft → test → review → improve → repeat), but because Claude.ai doesn't have subagents, some mechanics change. Here's what to adapt:
 
-**Running test cases**: No subagents means no parallel execution. For each test case, read the skill's SKILL.md, then follow its instructions to accomplish the test prompt yourself. Do them one at a time. This is less rigorous than independent subagents (you wrote the skill and you're also running it, so you have full context), but it's a useful sanity check — and the human review step compensates. Skip the baseline runs — just use the skill to complete the task as requested.
+**Running test cases**: No subagents means no parallel execution. For each test case, read the skill's SKILL.md, then follow its instructions to accomplish the test prompt yourself. Do them one at a time. This is less rigorous than independent subagents (you wrote the skill and you're also running it, so you have full context), so inspect outputs carefully. Skip the baseline runs — just use the skill to complete the task as requested.
 
-**Reviewing results**: If you can't open a browser (e.g., Claude.ai's VM has no display, or you're on a remote server), skip the browser reviewer entirely. Instead, present results directly in the conversation. For each test case, show the prompt and the output. If the output is a file the user needs to see (like a .docx or .xlsx), save it to the filesystem and tell them where it is so they can download and inspect it. Ask for feedback inline: "How does this look? Anything you'd change?"
+**Reviewing results**: If you can't open a browser (e.g., Claude.ai's VM has no display, or you're on a remote server), do the qualitative review inline. If the user requested review, present each prompt and output directly in the conversation and link any output files for optional feedback.
 
 **Benchmarking**: Skip the quantitative benchmarking — it relies on baseline comparisons which aren't meaningful without subagents. Focus on qualitative feedback from the user.
 
-**The iteration loop**: Same as before — improve the skill, rerun the test cases, ask for feedback — just without the browser reviewer in the middle. You can still organize results into iteration directories on the filesystem if you have one.
+**The iteration loop**: Same as before — improve the skill, rerun the test cases, and incorporate any requested feedback — just without the browser reviewer in the middle. You can still organize results into iteration directories on the filesystem if you have one.
 
 **Description optimization**: This section requires the `claude` CLI tool (specifically `claude -p`) which is only available in Claude Code. Skip it if you're on Claude.ai.
 
@@ -448,10 +486,10 @@ If you're in Cowork, the main things to know are:
 
 - You have subagents, so the main workflow (spawn test cases in parallel, run baselines, grade, etc.) all works. (However, if you run into severe problems with timeouts, it's OK to run the test prompts in series rather than parallel.)
 - You don't have a browser or display, so when generating the eval viewer, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Then proffer a link that the user can click to open the HTML in their browser.
-- For whatever reason, the Cowork setup seems to disincline Claude from generating the eval viewer after running the tests, so just to reiterate: whether you're in Cowork or in Claude Code, after running tests, you should always generate the eval viewer for the human to look at examples before revising the skill yourself and trying to make corrections, using `generate_review.py` (not writing your own boutique html code). Sorry in advance but I'm gonna go all caps here: GENERATE THE EVAL VIEWER *BEFORE* evaluating inputs yourself. You want to get them in front of the human ASAP!
+- Generate the eval viewer with `generate_review.py` only when a user review artifact was requested; use `--static` in Cowork and do not write custom HTML.
 - Feedback works differently: since there's no running server, the viewer's "Submit All Reviews" button will download `feedback.json` as a file. You can then read it from there (you may have to request access first).
 - Packaging works — `package_skill.py` just needs Python and a filesystem.
-- Description optimization (`run_loop.py` / `run_eval.py`) should work in Cowork just fine since it uses `claude -p` via subprocess, not a browser, but please save it until you've fully finished making the skill and the user agrees it's in good shape.
+- Description optimization (`run_loop.py` / `run_eval.py`) should work in Cowork just fine since it uses `claude -p` via subprocess, not a browser; save it until the primary skill work is complete.
 - **Updating an existing skill**: The user might be asking you to update an existing skill, not create a new one. Follow the update guidance in the claude.ai section above.
 
 ---
@@ -474,12 +512,11 @@ Repeating one more time the core loop here for emphasis:
 - Figure out what the skill is about
 - Draft or edit the skill
 - Run claude-with-access-to-the-skill on test prompts
-- With the user, evaluate the outputs:
-  - Create benchmark.json and run `eval-viewer/generate_review.py` to help the user review them
-  - Run quantitative evals
-- Repeat until you and the user are satisfied
+- Evaluate outputs qualitatively and quantitatively; create `benchmark.json`
+- If requested, run `eval-viewer/generate_review.py` to create the optional user artifact
+- Repeat until the checks and qualitative review satisfy the request
 - Package the final skill and return it to the user.
 
-Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. If you're in Cowork, please specifically put "Create evals JSON and run `eval-viewer/generate_review.py` so human can review test cases" in your TodoList to make sure it happens.
+Track the eval, self-review, iteration, and optional viewer steps in your task list when one is available.
 
 Good luck!

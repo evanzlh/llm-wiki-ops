@@ -12,9 +12,11 @@ For live styling work, this translation should usually be brief and operational:
 
 > "I’m treating 'right sidebar' as the right workspace split/backlinks pane, and 'side icons' as side-dock tab/header icon states."
 
-Then inspect, obtain approval, back up to `.llmwikiops/local/obsidian-config-backups/`,
-patch atomically, reload, and screenshot. Long translation tables belong in evals,
-audits, or planning notes, not in every small visual pass.
+Then inspect, state the scoped mapping, back up to
+`.llmwikiops/local/obsidian-config-backups/`, patch atomically, reload, and
+screenshot. An explicit request for an unambiguous effect authorizes the scoped edit;
+ask only at an explicit confirmation boundary. Long translation tables belong in
+evals, audits, or planning notes, not in every small visual pass.
 
 | The user might say | Usually means | Backend / selector family to inspect |
 | --- | --- | --- |
@@ -155,8 +157,11 @@ The user's corrections are diagnostic:
 - **"Overdone"**: remove treatment before adding another.
 - **"Wrong side"**: mapping was not restated; stop and remap.
 
-If the same failure repeats twice, atomically restore the last good local backup and
-change the ownership model.
+If evidence disproves a change, atomically restore the verified preimage when the
+current target still matches the recorded postimage and no owner drift exists. Change
+the ownership model only when new evidence supports it, continue while observable
+progress occurs, and ask when the remaining visual or semantic alternatives are
+unresolved.
 
 ## Breakthrough Concepts
 
@@ -205,14 +210,18 @@ Avoid these as first moves:
 ## Portable Configuration Boundary
 
 All snippet and appearance changes remain explicit `.obsidian/` configuration edits.
-Before a subjective edit, show the proposed scope and obtain explicit user approval.
+An explicit request authorizes an unambiguous scoped edit after existing path and
+preimage validation. Show the proposed scope and ask before overwriting an overlapping
+dirty path or concurrently modified CSS.
 Backups belong under the ignored
 `.llmwikiops/local/obsidian-config-backups/<timestamp>/`, never in the active
 snippet picker. Reject symbolic links, hard links, special files, non-owner paths,
 and escaping resolutions; use owner-only temporary files and atomic replacement.
-Afterward, reload and screenshot Obsidian, review a path-scoped `git diff`, and leave
-any Git commit to the owner. A failed result should be restored from the validated
-backup rather than accumulated as another CSS override.
+Afterward, reload and screenshot Obsidian, review a path-scoped `git diff`, and use
+the canonical exact-path local commit flow for tracked task-owned changes. A failed
+result should be restored from the validated backup rather than accumulated as
+another CSS override. Push, publication, remote changes, and branch/history rewrites
+remain confirmation-requiring.
 
 ## Explicit Confirmation Zone
 

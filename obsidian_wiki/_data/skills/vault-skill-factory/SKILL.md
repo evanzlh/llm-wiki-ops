@@ -2,7 +2,7 @@
 name: vault-skill-factory
 description: >
   Use when mature, curated pages in the configured portable wiki should be
-  distilled into a reviewable Agent Skill without installing it.
+  distilled into a reviewable or repository-installed Agent Skill.
 ---
 
 # Vault Skill Factory
@@ -31,8 +31,9 @@ an argv prefix, never one shell token.
 Create a review artifact at
 `.llmwikiops/local/generated-skills/<name>/`. The repository root
 `.gitignore` ignores `.llmwikiops/local/`; this is ignored local output, is not knowledge, is not a
-transaction candidate, and must never be committed or published by this workflow.
-The factory never installs a skill or writes any canonical or agent discovery tree.
+transaction candidate, and must never itself be committed or published. Repository
+installation, when explicitly requested, follows the bounded flow below; the factory
+never writes a home or other external discovery tree implicitly.
 
 ## Authority preflight
 
@@ -54,7 +55,9 @@ Use the user's topic to search `index.md`, frontmatter, summaries, and bounded
 wikilink neighbourhoods. A page qualifies when `lifecycle` is `reviewed` or
 `verified`, or `tier` is `core`. Exclude drafts unless the user explicitly includes
 them. Preserve all `^[inferred]` and `^[ambiguous]` markers. Show the candidate paths,
-maturity fields, and count for confirmation; warn when fewer than three qualify.
+maturity fields, and count; warn when fewer than three qualify. Proceed when the
+requested topic yields one unambiguous mature cluster, and ask when competing clusters
+or source interpretations require a semantic choice.
 
 ## Safe name and output
 
@@ -65,11 +68,13 @@ outside `.llmwikiops/local/generated-skills/`.
 
 Before creating output, inspect every existing path component without following
 links. Reject a symbolic link, hard link, special file, non-owner directory, or
-unexpected file. Create a new directory with owner-only permissions. If the target
-already exists, stop without overwrite; never merge with or replace an earlier
-generation. Write each file through an owner-only temporary ordinary file, flush it,
-then use an atomic rename inside the new directory. On failure, report the incomplete
-new directory and do not represent it as validated.
+unexpected file. A requested generated skill proceeds automatically after its
+existing path and preimage validation. Create a new directory with owner-only
+permissions. If the target already exists, ask before collision replacement, bind and
+back up its complete ordinary-file preimage, and refuse any subsequent drift rather
+than overwriting it. Write each file through an owner-only temporary ordinary file,
+flush it, then use atomic replacement inside the new directory. On failure, retain and
+report the incomplete directory and backup evidence; do not represent it as validated.
 
 ## Artifact
 
@@ -141,7 +146,37 @@ frontmatter, name, JSON, link, provenance, and topology checks above. If any req
 check cannot be completed, fail closed and report the artifact as unvalidated. A
 missing validator never authorizes an external install.
 
-End with the path, source cluster, trigger description, eval count, and validation
-result. State that human review and a separate owner-controlled install are required.
-Do not copy, link, sync, package into, or mutate `.skills/`, `.agents/`, `.claude/`,
-any home directory, or any other install location.
+## Requested repository installation
+
+Agent self-review and the qualitative and deterministic checks above validate the
+generated artifact by default. Human review is optional unless the user requests it
+or the result requires a semantic choice.
+
+When the request includes repository installation, copy only the reviewed ordinary
+files from `.llmwikiops/local/generated-skills/<name>/` into the exact
+`.skills/<name>/` target. Validate containment, ownership, ordinary single-link files,
+and source/target identities before every copy. A new target is authorized by the
+request. Ask before replacing an existing target; after approval bind its complete
+preimage and preserve a private backup. Refuse drift rather than overwriting it, and
+never merge an incompletely reviewed tree.
+
+After copying and revalidating the installed bytes, run in order:
+
+```bash
+<wiki-cli> repo sync-skills --apply --json --pretty
+<wiki-cli> check --json --pretty
+```
+
+Both commands must pass. Then use the canonical exact-path local commit flow for the
+single `.skills/<name>` task path, including literal status, staging, staged diff, and
+cached diff check. Leave unrelated paths and staging untouched. Retain the generated
+artifact, backups, and recovery evidence; ask before deleting any of them.
+
+Ask before any action that would install outside the validated target. Installing
+elsewhere would install outside the validated repository and requires confirmation,
+as does acquiring an external dependency or credential, publishing, pushing,
+changing remotes, or rewriting branch history. It is not part of repository
+installation, and confirmation never bypasses containment, identity, or drift checks.
+
+End with the generated and installed paths, source cluster, trigger description, eval
+count, validation result, mirror-sync/check result, and local commit when applicable.

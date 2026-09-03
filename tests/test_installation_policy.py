@@ -713,6 +713,9 @@ def test_factory_uses_safe_managed_validator_from_nearest_repository(
     assert "Immediately before execution" in factory
     assert "package inventory expected digest" in factory
 
+    validation = factory.split("## Requested repository installation", 1)[0]
+    assert "Do not use `--apply`" in validation
+
     repository = tmp_path / "repository"
     setup = subprocess.run(
         [sys.executable, "-m", "obsidian_wiki", "setup", str(repository)],
@@ -748,6 +751,49 @@ def test_factory_uses_safe_managed_validator_from_nearest_repository(
     payload = json.loads(preflight.stdout)
     assert payload["status"] == "clean"
     assert payload["warnings"] == []
+
+
+def test_requested_managed_operations_complete_without_owner_handoff() -> None:
+    setup = (ROOT / "obsidian_wiki/_data/skills/wiki-setup/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(setup.split())
+
+    for required in (
+        "llmwikiops agent install-adapter --agent <target>",
+        "<wiki-cli> repo upgrade-skills",
+        "explicit request authorizes",
+        "complete without an extra owner handoff",
+        "Retain recovery evidence",
+        "Ask before deleting retained evidence",
+    ):
+        assert required in flat
+    for unsupported in ("--force", "uninstall", "garbage collection"):
+        assert unsupported not in flat
+
+
+def test_requested_generated_skill_install_uses_existing_repository_mechanisms() -> None:
+    for relative in (
+        "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md",
+        "obsidian_wiki/_data/skills/skill-creator/SKILL.md",
+    ):
+        contents = (ROOT / relative).read_text(encoding="utf-8")
+        flat = " ".join(contents.split())
+        ordered = (
+            "`.llmwikiops/local/generated-skills/<name>/`",
+            "reviewed ordinary files",
+            "exact `.skills/<name>/` target",
+            "<wiki-cli> repo sync-skills --apply --json --pretty",
+            "<wiki-cli> check --json --pretty",
+            "exact-path local commit",
+        )
+        for required in (*ordered, "Refuse drift"):
+            assert required in flat, (relative, required)
+        assert [flat.index(item) for item in ordered] == sorted(
+            flat.index(item) for item in ordered
+        ), relative
+        assert "install outside the validated repository" in flat
+        assert "requires confirmation" in flat
 
 
 def test_no_unsupported_install_guidance_remains() -> None:

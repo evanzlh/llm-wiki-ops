@@ -82,6 +82,11 @@ Immediately before the final `os.replace`, re-lstat and hash the destination thr
 require the exact approved absence or collision preimage, then fstat the open
 owner-only temporary file. A mismatch stops promotion without replacing anything.
 
+A requested export proceeds automatically after its existing path and preimage
+validation. Creating a new timestamped target is ordinary authorized work. Ask before
+any action that would replace an existing export target; approval applies only to the
+identity-bound collision preimage and never authorizes an unsafe or changed target.
+
 ## Graph model and formats
 
 Inventory knowledge pages only. Exclude root/control/derived Markdown including

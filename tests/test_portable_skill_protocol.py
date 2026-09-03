@@ -516,6 +516,57 @@ def test_setup_is_repository_only_and_describes_managed_assets() -> None:
     assert "review its proposed changes" not in flat
 
 
+def test_direct_write_scopes_proceed_and_confirmation_boundaries() -> None:
+    expectations = {
+        "graph-colorize": (
+            "requested graph configuration",
+            "overlapping dirty graph.json",
+        ),
+        "obsidian-layout-adjustment": (
+            "requested layout change",
+            "concurrently modified CSS",
+        ),
+        "wiki-export": ("requested export", "replace an existing export target"),
+        "wiki-setup": (
+            "requested setup or managed upgrade",
+            "push or change repository authority",
+        ),
+        "vault-skill-factory": (
+            "requested generated skill",
+            "install outside the validated target",
+        ),
+    }
+
+    for name, (routine, risky) in expectations.items():
+        flat = " ".join(skill_text(name).split())
+        assert (
+            f"A {routine} proceeds automatically after its existing path and "
+            "preimage validation."
+        ) in flat, name
+        assert risky in flat, name
+        risk_position = flat.index(risky)
+        assert "Ask before" in flat[max(0, risk_position - 100) : risk_position], name
+
+
+def test_skill_creator_defaults_to_agent_review_and_optional_user_review() -> None:
+    flat = " ".join(skill_text("skill-creator").split())
+    for required in (
+        "Agent self-review is the default",
+        "qualitative evaluation",
+        "optional user review artifact",
+        "human review is optional unless the user requests it or the result requires a semantic choice",
+        "safety checks",
+    ):
+        assert required in flat
+
+    for mandatory_handoff in (
+        "Wait for the user to review and tell you they're done",
+        "always generate the eval viewer for the human",
+        "GENERATE THE EVAL VIEWER *BEFORE* evaluating inputs yourself",
+    ):
+        assert mandatory_handoff not in flat
+
+
 def test_transaction_review_resolves_repository_authority_before_listing() -> None:
     review = text(TRANSACTION_REVIEW)
     flat = " ".join(review.split())

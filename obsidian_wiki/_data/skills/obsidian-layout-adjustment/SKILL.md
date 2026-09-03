@@ -33,7 +33,7 @@ configuration changes, not a knowledge transaction. Do not run `<wiki-cli> trans
 these edits have no knowledge candidates and do
 not update manifest shards, `index.md`, or `log.md`.
 
-## Authority and subjective approval
+## Authority and scope
 
 In repository-local context, resolve only the nearest ancestor
 `.llmwikiops/config.toml` from CWD and use the resulting root. If local discovery
@@ -49,9 +49,10 @@ invocation cannot select another vault.
 
 Read `<vault>/.obsidian/appearance.json` and treat `enabledCssSnippets` as the active
 styling source of truth. Require `.obsidian/` to exist. Explain the visible-object to
-Obsidian-layer mapping, scoped files, and intended visual effect, then obtain explicit user approval
-before a subjective edit. Also ask before switching themes, disabling
-plugins/snippets, moving properties, or substantially changing typography/density.
+Obsidian-layer mapping, scoped files, and intended visual effect. An explicit request
+for that effect authorizes the scoped edit. Ask when the mapping remains ambiguous,
+and before switching themes, disabling plugins/snippets, moving properties, or
+substantially changing typography/density.
 
 Read `references/workflow-reference.md` when the object is ambiguous, the change did
 nothing, the surface is still wrapped/not lifted/unreadable, or an accepted design is
@@ -69,9 +70,11 @@ being refactored.
    changing selector order unless the approved change requires it.
 5. Reload or focus Obsidian, screenshot the exact affected area, and compare it to
    the request. A valid stylesheet is not visual proof.
-6. If evidence disproves the change, atomically restore the backup or change the
-   ownership model. If one direction fails twice, restore before trying another.
-7. Refactor only after the user accepts the visual result.
+6. If evidence disproves the change, atomically restore the verified preimage when
+   no owner drift exists. Change the ownership model only when evidence supports it,
+   and continue only while the reload/diff state shows observable progress.
+7. Refactor only after screenshot evidence verifies the requested visual result; ask
+   when acceptance depends on an unresolved subjective choice.
 
 ## Backup and edit safety
 
@@ -83,6 +86,12 @@ editing. Store a backup manifest for every target with path, `existed`, preimage
 SHA-256, and mode, using an explicit absent marker when the target did not exist.
 Record the expected postimage identity and SHA-256 after each edit. Local backup
 parents/directories use mode `0700` and backup files use `0600` where supported.
+
+A requested layout change proceeds automatically after its existing path and
+preimage validation. Before mutation, inspect every exact `CONFIG_PATH` with the
+canonical literal-path Git status command and ask before overwriting an overlapping
+dirty path. Ask before overwriting concurrently modified CSS. Any identity or hash
+change after binding stops the write; confirmation never bypasses that precondition.
 
 Write each approved complete replacement through an owner-only temporary ordinary
 file in the target directory, flush it, recheck the target, and use atomic rename.
@@ -134,10 +143,16 @@ pathspec handling:
 <git-cli> --literal-pathspecs diff -- "$CONFIG_PATH"
 ```
 
-`CONFIG_PATH` is one validated argument, not shell text or a glob. Show each diff to
-the user. The owner decides whether to commit tracked config; this workflow never
-commits, pushes, or publishes. Reload Obsidian with Cmd/Ctrl+R after edit or restore
-and screenshot-check the result.
+`CONFIG_PATH` is one validated argument, not shell text or a glob. Inspect each diff
+and present it to the user when requested. For tracked files changed only by this
+task, complete the canonical exact-path local commit flow, validating and staging each
+path separately and leaving unrelated paths untouched. Ask before any push, pull
+request, remote change,
+branch/history rewrite, or publication. Reload Obsidian with Cmd/Ctrl+R after edit or
+restore and screenshot-check the result. If the result is disproved, restore
+automatically only while the current target matches the recorded postimage and no
+owner drift exists. Ask before choosing among unresolved visual or semantic
+alternatives.
 
 Report changed files, backup paths, phrase-to-layer mapping, `<git-cli> diff` status,
 reload/screenshot result, and anything unverified. Do not mutate wiki pages,
