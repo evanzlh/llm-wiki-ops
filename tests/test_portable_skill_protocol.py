@@ -970,6 +970,17 @@ def test_taxonomy_control_vocabulary_stays_outside_transactions() -> None:
         assert required in flat
 
 
+def test_taxonomy_only_edit_skips_empty_transaction_and_reaches_finalization() -> None:
+    flat = " ".join(skill_text("tag-taxonomy").split())
+    for required in (
+        "changed `_meta/taxonomy.md` with no selected page change",
+        "skip transaction steps 2-7",
+        "continue directly to step 8",
+        "must not begin an empty transaction",
+    ):
+        assert required in flat
+
+
 def test_lint_automates_only_deterministic_requested_repairs() -> None:
     flat = " ".join(skill_text("wiki-lint").split())
     for required in (

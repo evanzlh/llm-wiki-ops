@@ -87,11 +87,14 @@ intent confirmation before selecting fixes. A pure audit stops after its report.
 ## Maintenance transaction protocol
 
 1. Finish the read-only inventory and intent confirmation. If there is no selected
-   page change, stop without an empty transaction or operation record. Keep the
-   live vault read-only while computing the complete source closure: every existing
-   repository-relative Source ID cited by an affected page plus every authoritative
-   Source ID cited by a candidate. Preserve valid Unicode and CJK Source IDs and
-   filenames exactly. Stop on missing, ambiguous, untracked, or unsafe authority.
+   page change and `_meta/taxonomy.md` did not change, stop without an empty
+   transaction or operation record. A changed `_meta/taxonomy.md` with no selected
+   page change must skip transaction steps 2-7 and continue directly to step 8; it
+   must not begin an empty transaction. Otherwise keep the live vault read-only while
+   computing the complete source closure: every existing repository-relative Source
+   ID cited by an affected page plus every authoritative Source ID cited by a
+   candidate. Preserve valid Unicode and CJK Source IDs and filenames exactly. Stop
+   on missing, ambiguous, untracked, or unsafe authority.
 2. Begin exactly one bounded transaction with the entire closure:
    `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty`.
    Retain its `id` as the trusted transaction ID plus `candidate_vault` and
@@ -131,13 +134,14 @@ intent confirmation before selecting fixes. A pure audit stops after its report.
    discard, and must not mark stale inputs current directly.
 8. After a successful transaction write or authorized taxonomy-only edit, run
    `<wiki-cli> check --json --pretty` as the final check; it must pass before
-   staging. The exact task paths are the selected final knowledge and deletion paths,
-   changed manifest shards for the complete
-   source closure, returned `log_path`, requested changed `hot.md`, and the changed
-   `_meta/taxonomy.md` when applicable. This requested write completes through this
-   canonical transaction and exact-path, path-limited local commit flow. Inspect each
-   path separately; owner-overlapping dirty paths stop for a preserve, separate, or
-   combine choice; leave unrelated paths untouched. Stage only the exact task paths,
+   staging. When applicable, the exact task paths are final created and updated
+   knowledge paths, final deleted knowledge paths, every changed Source manifest
+   shard, returned `log_path`, changed `hot.md`, and changed `_meta/taxonomy.md`.
+   For each path, individually derive and validate it; never replace them with a
+   directory, glob, or whole-repository path. This requested write completes through
+   this canonical finalization and exact-path, path-limited local commit flow. Inspect
+   each path separately; owner-overlapping dirty paths stop for a preserve, separate,
+   or combine choice; leave unrelated paths untouched. Stage only the exact task paths,
    display the exact staged patch, run the cached diff check, and locally commit them
    in one cohesive local commit, repeating `<task-path>` as separate argv elements
    after `--`:

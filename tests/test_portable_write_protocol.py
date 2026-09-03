@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -2063,22 +2064,94 @@ def test_daily_cache_check_command_is_real_and_has_no_removed_option() -> None:
     assert parsed.json is True and parsed.pretty is True
 
 
+def _documented_git_argv(contents: str) -> list[list[str]]:
+    prefix = ("git", "-C", "/test/repo")
+    literal_prefix = ", ".join(repr(part) for part in prefix)
+    return [
+        ast.literal_eval(line.strip().replace("<git-cli>", literal_prefix, 1))
+        for line in contents.splitlines()
+        if line.strip().startswith("[<git-cli>,")
+    ]
+
+
+def test_documented_git_argv_rejects_malformed_command_despite_prose() -> None:
+    malformed = """Stage exact task paths and display the exact staged patch.
+Run the cached diff check, then make one path-limited local commit.
+[<git-cli>, "--literal-pathspecs", "add", "<task-path>"]
+"""
+    expected = [
+        [
+            "git",
+            "-C",
+            "/test/repo",
+            "--literal-pathspecs",
+            "add",
+            "--",
+            "<task-path>",
+        ]
+    ]
+    with pytest.raises(AssertionError):
+        assert _documented_git_argv(malformed) == expected
+
+
 @pytest.mark.parametrize("path", MAINTENANCE_SKILLS)
 def test_maintenance_skills_finish_with_scoped_local_commit(path: Path) -> None:
     contents = path.read_text(encoding="utf-8")
-    flat = " ".join(contents.split())
     final_check = "<wiki-cli> check --json --pretty"
-    commands = (
-        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]',
-        '[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]',
-        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]',
-        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]',
-        '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]',
+    prefix = ["git", "-C", "/test/repo"]
+    commands = [
+        [
+            *prefix,
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "<task-path>",
+        ],
+        [*prefix, "--literal-pathspecs", "add", "--", "<task-path>"],
+        [*prefix, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"],
+        [
+            *prefix,
+            "--literal-pathspecs",
+            "diff",
+            "--cached",
+            "--check",
+            "--",
+            "<task-path>",
+        ],
+        [
+            *prefix,
+            "--literal-pathspecs",
+            "commit",
+            "-m",
+            "<task summary>",
+            "--",
+            "<task-path>",
+        ],
+    ]
+    required_path_categories = (
+        "final created and updated knowledge paths",
+        "final deleted knowledge paths",
+        "every changed Source manifest shard",
+        "returned `log_path`",
+        "changed `hot.md`",
+        "individually derive and validate",
+        "never replace them with a directory, glob, or whole-repository path",
     )
 
     parsed = build_parser().parse_args(shlex.split(final_check)[1:])
     assert parsed.command == "check" and parsed.json is True and parsed.pretty is True
+    lines = contents.splitlines()
+    final_check_line = next(
+        number
+        for number, line in enumerate(lines)
+        if final_check in line and "final check" in line
+    )
+    finalization = "\n".join(lines[final_check_line:])
+    finalization_flat = " ".join(finalization.split())
     for required in (
+        "must pass before staging",
         "display the exact staged patch",
         "leave unrelated paths untouched",
         "owner-overlapping dirty paths",
@@ -2086,10 +2159,19 @@ def test_maintenance_skills_finish_with_scoped_local_commit(path: Path) -> None:
         "one cohesive local commit",
         "confirmation immediately before any push",
     ):
-        assert required in flat, f"{path}: missing {required!r}"
-    assert all(command in flat for command in commands), path
-    positions = [flat.rindex(final_check), *(flat.rindex(command) for command in commands)]
-    assert positions == sorted(positions), path
+        assert required in finalization_flat, f"{path}: missing {required!r}"
+    for required in required_path_categories:
+        assert required in finalization_flat, f"{path}: missing {required!r}"
+    if path.parent.name == "tag-taxonomy":
+        assert "changed `_meta/taxonomy.md`" in finalization_flat
+
+    assert _documented_git_argv(finalization) == commands, path
+    first_final_git_line = next(
+        number
+        for number, line in enumerate(lines)
+        if number > final_check_line and line.strip().startswith("[<git-cli>,")
+    )
+    assert final_check_line < first_final_git_line
 
 
 def test_status_graph_and_audit_commands_use_real_parser() -> None:

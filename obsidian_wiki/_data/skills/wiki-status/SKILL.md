@@ -160,9 +160,11 @@ change. Without valid source authority, return the analysis only.
    `<wiki-cli> hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
 8. Run `<wiki-cli> check --json --pretty` as the final check; it must pass before
-   staging. The exact task paths are the selected final knowledge and deletion paths,
-   changed manifest shards for the complete source closure, returned `log_path`, and
-   any requested changed `hot.md`. This requested write completes through this
+   staging. The exact task paths are final created and updated knowledge paths, final
+   deleted knowledge paths, every changed Source manifest shard, returned `log_path`,
+   and changed `hot.md` when requested. For each path, individually derive and
+   validate it; never replace them with a directory, glob, or whole-repository path.
+   This requested write completes through this
    canonical transaction and exact-path, path-limited local commit flow. Inspect each
    path separately; owner-overlapping dirty paths stop for a preserve, separate, or
    combine choice; leave unrelated paths untouched. Stage only the exact task paths,
