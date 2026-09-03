@@ -191,8 +191,7 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    bounded reviewable UTF-8 Markdown snapshot below the configured sources
    directory using the
    [source snapshot reference](../wiki-capture/references/source-snapshot.md).
-   A new snapshot requires owner review and new snapshot requires owner Git
-   review; it becomes tracked authority only after the owner tracks it. First
+   First
    validate a non-empty POSIX repository-relative Source ID: it is not absolute,
    contains no `.` or `..` segment, NUL, or backslash, stays below configured
    sources, and is accepted by cache/manifest source_id semantics. Using the
@@ -201,10 +200,16 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    and `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`
    as exact read-only argument vectors. Require an existing HEAD, zero exits,
    and status output must be empty. The manifest-tracked and Git-tracked states
-   differ, and tracked is not committed-reviewed. On any nonzero result, output,
-   or no HEAD, stop and require the owner to complete owner review, stage, and
-   commit externally, then rerun. The framework and agent must not run
-   `git add`, `git commit`, or `git push`. Continue only with the verified Source ID.
+   differ, and tracked is not committed-reviewed. On no HEAD, nonzero result, or
+   status output, stop before staging. Agent review the bounded UTF-8 Markdown snapshot, verify redaction and
+   provenance, then stage and locally commit the exact Source path using
+   `[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`, review the Source diff with
+   `[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]`, and locally commit with
+   `[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]`.
+   If the Source path contains owner changes, stop before staging and ask whether
+   to preserve, separate, or combine them. Re-run Git tracking and clean-path
+   checks before cache-check; only then is it tracked authority. Continue only
+   with the verified Source ID.
 4. **Check source cache.** Run
    `<wiki-cli> cache-check <repository-relative-source> [additional-source ...] --json --pretty`.
    A `missing` result means stop. Continue with `new` and `modified`; skip
@@ -233,4 +238,4 @@ leaves existing pages untouched. Replace writes the complete reviewed OKF body.
    `hot.md` working-tree diff, and run `<wiki-cli> hot mark-current --json`.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
-owns the canonical log append. Do not commit, push, or open a pull request.
+owns the canonical log append. Do not push or open a pull request.

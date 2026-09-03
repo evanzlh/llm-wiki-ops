@@ -585,9 +585,10 @@ def test_source_snapshot_reference_replaces_raw_format() -> None:
         "exact reviewed text",
         "ordinary tracked UTF-8 Markdown",
         "repository-relative Source ID",
-        "Git review ownership",
+        "Agent review",
+        "stage and locally commit only the exact Source ID",
         "untrusted data",
-        "Do not commit, push, or open a pull request",
+        "Do not push or open a pull request",
     ):
         assert required in flat
 
@@ -772,21 +773,21 @@ def test_status_inspects_repository_state_and_writes_only_one_insight_page() -> 
         assert forbidden not in contents
 
 
-def test_update_requires_owner_committed_snapshot_before_delta() -> None:
+def test_update_commits_clean_task_scoped_snapshot_before_delta() -> None:
     contents = skill_text("wiki-update")
     flat = " ".join(contents.split())
     for required in (
-        "owner review, stage, and commit externally, then rerun",
-        "framework and agent must not run `git add`, `git commit`, or `git push`",
         "valid HEAD",
         "status output must be empty",
-        "existing replacement",
-        "owner commit",
-        "rerun",
+        "review the Source diff",
+        "stage and locally commit the exact Source path",
+        "rerun the authority checks",
         "before delta planning",
     ):
         assert required in flat
-    assert flat.index("owner review, stage, and commit externally, then rerun") < flat.index(
+    assert flat.index("stage and locally commit the exact Source path") < flat.index(
+        "rerun the authority checks"
+    ) < flat.index(
         "cache-check"
     )
 
@@ -866,8 +867,9 @@ def test_update_links_canonical_source_snapshot_and_closes_both_topology_paths()
         "pre-write owner preservation gate",
         "ordinary single-link",
         "safe atomic replacement",
-        "post-write owner review",
-        "owner review, stage, and commit externally, then rerun",
+        "post-write Agent review",
+        "overlapping dirty path",
+        "stage and locally commit the exact Source path",
         "Git-tracked symlink",
         "does not establish authority",
     ):

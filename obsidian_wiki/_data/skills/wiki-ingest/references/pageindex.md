@@ -92,10 +92,12 @@ model, fixed command/output identity, `captured_at`, content hash, selected tree
 fields, page ranges, exact reviewed text, attribution, license, and omission
 markers.
 
-Obtain owner review and owner Git review. The framework and agent must not run
-`git add`, `git commit`, or `git push`. Only after the owner commits the ordinary
-Markdown file does it become tracked authority with a repository-relative
-Source ID. Then return to `wiki-ingest` for cache checking, complete closure,
+Complete Agent review, then stage and locally commit the exact Source path using
+the canonical literal-pathspec forms. Re-run Git tracking and clean-path checks
+before cache-check; stop before staging an owner-overlapping dirty path and ask
+whether to preserve, separate, or combine it. The ordinary Markdown file then
+becomes tracked authority with a repository-relative Source ID. Then return to
+`wiki-ingest` for cache checking, complete closure,
 and its single transaction lifecycle beginning with
 `<wiki-cli> transaction begin --source <source1> [source2 ...] --json --pretty`.
 Never cite the PDF binary or generated JSON path in candidate `sources`.

@@ -71,10 +71,11 @@ gate: valid HEAD, literal tracked identity, empty status, repository containment
 real-directory ancestors, and an ordinary single-link terminal file. A Git-tracked
 symlink does not establish authority. Identity mismatch or unsafe topology stops.
 
-A new snapshot remains pending authority: stop for owner review, stage, and commit
-externally, then rerun. The framework and agent must not run `git add`, `git commit`,
-or `git push`. Tracking alone is insufficient. Continue only after a valid HEAD
-contains the reviewed snapshot and the literal status gate is clean.
+A new snapshot is automatically eligible for Agent review: review its bounded
+UTF-8 Markdown diff, redaction, and provenance; stage and locally commit the
+exact Source path using the canonical literal-pathspec forms; then rerun the
+authority checks. Tracking alone is insufficient. Continue only after a valid
+HEAD contains the reviewed snapshot and the literal status gate is clean.
 
 For an existing snapshot, require a valid HEAD and apply the pre-write clean/literal
 gate before even reading its identity metadata:
@@ -88,13 +89,17 @@ gate before even reading its identity metadata:
 The Source ID must be a non-empty POSIX repository-relative path below configured
 sources, with no NUL or backslash. `ls-files` must return exactly that literal ID and
 status output must be empty. With no HEAD, an untracked or dirty path, identity
-mismatch, unsafe topology, or ambiguous output, do not overwrite; stop for owner
-review. An approved existing replacement uses a safe atomic replacement without
-following links. It then enters post-write owner review and stops for owner review,
-stage, and commit externally, then rerun. On rerun,
-require a valid HEAD containing that replacement and repeat the literal tracked and
-empty-status checks before delta planning. The framework and agent must not perform
-the owner commit.
+mismatch, unsafe topology, or ambiguous output, do not overwrite; stop and ask
+before touching an existing dirty, identity-changed, or overlapping dirty path.
+An approved existing replacement uses a safe atomic replacement without following
+links. It then enters post-write Agent review: review the Source diff, redaction,
+and provenance; stage and locally commit the exact Source path using
+`[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]`,
+`[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]`, and
+`[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]`.
+On rerun, require a valid HEAD containing that replacement and rerun the authority
+checks: literal `ls-files`, path-limited status, and cache-check before delta
+planning. Do not push or open a pull request.
 
 Run `<wiki-cli> cache-check <source1> [source2 ...] --json --pretty` after every
 selected source exists and authority closes. `missing` stops the workflow. `new` or

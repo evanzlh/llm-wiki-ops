@@ -677,10 +677,35 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             "existing ordinary tracked",
             "bounded reviewable UTF-8 Markdown snapshot",
             "configured sources",
-            "owner review",
+            "Agent review",
+            "stage and locally commit the exact Source path",
             "tracked authority",
         ):
             assert required in steps[2], f"{path}: step 3 missing {required!r}"
+        for command in (
+            '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
+        ):
+            assert command in steps[2], f"{path}: step 3 missing {command!r}"
+        assert [
+            steps[2].index(command)
+            for command in (
+                '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
+            )
+        ] == sorted(
+            steps[2].index(command)
+            for command in (
+                '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
+            )
+        ), path
         for required in ("cache-check", "unchanged", "Full"):
             assert required in steps[3], f"{path}: step 4 missing {required!r}"
         for required in ("complete source closure", "transaction begin --source"):
@@ -720,7 +745,6 @@ def test_source_workflows_have_no_legacy_completion_or_publication_paths() -> No
         "direct manifest",
         "central-file",
         "Git snapshot",
-        "auto-commit",
     )
     for path in (*SOURCE_WORKFLOW_SKILLS, *SOURCE_WORKFLOW_REFERENCES):
         contents = path.read_text(encoding="utf-8")
@@ -728,7 +752,7 @@ def test_source_workflows_have_no_legacy_completion_or_publication_paths() -> No
             assert term not in contents, f"{path}: contains {term!r}"
 
 
-def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
+def test_source_workflows_commit_reviewed_snapshots_before_begin() -> None:
     for path in SOURCE_WORKFLOW_SKILLS:
         contents = path.read_text(encoding="utf-8")
         match = re.search(
@@ -739,19 +763,32 @@ def test_source_workflows_link_snapshot_rules_and_leave_git_to_owner() -> None:
         assert match, path
         assert (path.parent / match.group(1)).resolve().is_file(), path
         flat = " ".join(contents.split())
+        workflow_flat = " ".join(
+            contents.split("## Source and transaction workflow", 1)[1].split()
+        )
         for required in (
-            "new snapshot requires owner Git review",
-            "becomes tracked authority",
-            "framework and agent must not run `git add`, `git commit`, or `git push`",
+            "review the Source diff",
+            "stage and locally commit the exact Source path",
+            "Re-run Git tracking and clean-path checks",
+            "tracked authority",
             '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<Source ID>"]',
+            '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
             "manifest-tracked",
             "Git-tracked",
-            "owner review, stage, and commit externally, then rerun",
         ):
             assert required in flat, f"{path}: missing {required!r}"
-        assert flat.index(
-            '[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]'
-        ) < flat.index("cache-check") < flat.index("transaction begin --source")
+        for forbidden in (
+            "owner Git review",
+            "commit externally",
+            "framework and agent must not run `git add`, `git commit`, or `git push`",
+        ):
+            assert forbidden not in flat, f"{path}: contains {forbidden!r}"
+        assert max(
+            workflow_flat.index('[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]'),
+            workflow_flat.index("Re-run Git tracking and clean-path checks"),
+        ) < workflow_flat.index("cache-check") < workflow_flat.index("transaction begin --source")
 
 
 def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
@@ -774,7 +811,8 @@ def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
         "end_index",
         "1-indexed physical PDF pages",
         "bounded reviewable UTF-8 Markdown snapshot",
-        "owner review",
+        "Agent review",
+        "stage and locally commit the exact Source path",
         "tracked authority",
         "repository-relative Source ID",
         "transaction begin --source",
@@ -783,7 +821,7 @@ def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
         assert required in flat
     assert flat.index("run_pageindex.py") < flat.index(
         "bounded reviewable UTF-8 Markdown snapshot"
-    ) < flat.index("owner review") < flat.index("tracked authority") < flat.index(
+    ) < flat.index("Agent review") < flat.index("stage and locally commit the exact Source path") < flat.index("tracked authority") < flat.index(
         "transaction begin --source"
     )
     match = re.search(
@@ -1123,10 +1161,13 @@ def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
             "hot status --json",
             ls_template,
             status_template,
-            "owner review, stage, and commit externally, then rerun",
+            "Agent review",
+            "stage and locally commit the exact Source path",
+            "Rerun Git tracking and clean-path checks",
+            "workers never commit",
         ):
             assert required in flat, f"{path}: missing {required!r}"
-        assert flat.index("owner review, stage, and commit externally, then rerun") < flat.index(
+        assert flat.index("Rerun Git tracking and clean-path checks") < flat.index(
             "transaction begin --source"
         )
         for forbidden in (
@@ -1138,6 +1179,8 @@ def test_history_parent_owns_snapshot_and_transaction_lifecycle() -> None:
             "global config",
             "central files",
             "Git publication",
+            "Git stage/commit remain owner-only",
+            "commit externally",
             "--configured",
         ):
             assert forbidden not in contents, f"{path}: contains {forbidden!r}"
@@ -1437,7 +1480,7 @@ def test_history_snapshot_names_evidence_and_metadata_are_stable() -> None:
             "exactly one LF",
             "<wiki-cli> cache-check <Source ID> --json --pretty",
             "Changed append/Full reuses the same Source ID",
-            "owner-reviewed atomic replacement",
+            "safe atomic replacement followed by Agent review",
             "identity mismatch or hash collision",
         ):
             assert required in flat, f"{path}: missing {required!r}"
@@ -1532,13 +1575,14 @@ def test_history_existing_snapshot_prewrite_git_gate_precedes_identity_read() ->
         tracked = flat.index("ls-files", head)
         clean = flat.index("status", tracked)
         metadata = flat.index("read existing frontmatter", clean)
-        replace = flat.index("owner-reviewed atomic replacement", metadata)
+        replace = flat.index("safe atomic replacement followed by Agent review", metadata)
         post_write = flat.index("post-write", replace)
         for required in (
             "dirty, untracked, missing, or no HEAD",
             "do not overwrite",
-            "stop for owner review",
-            "rerun",
+            "post-write Agent review",
+            "locally commits the exact Source path",
+            "reruns",
             "before transaction begin",
         ):
             assert required in flat, f"{path}: missing {required!r}"
@@ -1856,16 +1900,20 @@ def _positive_git_publication_lines(contents: str) -> list[str]:
     ]
 
 
-def test_maintenance_skills_have_only_negative_or_owner_git_publication_text() -> None:
+def test_maintenance_skills_keep_git_publication_scoped_to_source_authority() -> None:
     for path in MAINTENANCE_SKILLS:
         contents = path.read_text(encoding="utf-8")
-        assert _positive_git_publication_lines(contents) == [], path
         if path.parent.name == "wiki-update":
-            assert (
-                "framework and agent must not run `git add`, `git commit`, or `git push`"
-                in " ".join(contents.split())
-            )
+            flat = " ".join(contents.split())
+            for required in (
+                "stage and locally commit the exact Source path",
+                '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
+                '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
+                "Do not push",
+            ):
+                assert required in flat
         else:
+            assert _positive_git_publication_lines(contents) == [], path
             assert "Do not commit, push, or open a pull request" in contents
 
 
