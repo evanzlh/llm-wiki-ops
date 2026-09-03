@@ -92,8 +92,9 @@ equivalent path below the configured source root. Include `origin`,
 bounds, redaction, naming, and trust rules in the
 [source snapshot reference](references/source-snapshot.md).
 
-For an absent Source, require safe contained topology and absence before writing;
-after writing allow only its expected task-owned new state. Agent review the
+For an absent Source, apply the absent Source Git gate in the source snapshot
+reference before writing; after writing require its exact expected task-owned new
+porcelain state. Agent review the
 bounded UTF-8 Markdown snapshot, verify redaction and provenance, then stage,
 display the staged diff, run the cached diff check, and locally commit the exact
 Source ID using the canonical literal-pathspec Git forms. Re-run Git tracking and
@@ -121,8 +122,17 @@ Use these eight steps for Full and Correction.
    POSIX repository-relative Source ID: it is not absolute, contains no `.` or
    `..` segment, NUL, or backslash, stays below configured sources, and is
    accepted by cache/manifest source_id semantics. Require an existing HEAD.
-   Before writing an absent Source, require the safe contained target/parent
-   topology and no existing entry. Before reading or replacing an existing
+   For an absent Source, require safe contained target/parent topology and
+   filesystem absence, then apply the absent Source Git gate with
+   `[<git-cli>, "rev-parse", "--verify", "HEAD"]`,
+   `[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]`
+   followed by
+   `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
+   Require a valid HEAD, empty `ls-files` output (no index entry), and empty literal-path status.
+   A staged or unstaged deletion, any other status, or any index entry means do
+   not write. Only after the HEAD, index, and status checks pass may the absent Source be written; rerun
+   the status command immediately afterward and require its sole record to be
+   exactly `?? <Source ID>`. Before reading or replacing an existing
    Source, require exact successful
    `[<git-cli>, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", "<Source ID>"]`
    and empty `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`,
@@ -161,11 +171,26 @@ Use these eight steps for Full and Correction.
    recovery, save the failure envelope, inspect
    `<wiki-cli> transaction list --json --pretty`, require one exact match,
    satisfy `requires`, and stop on ambiguity.
-8. **Refresh bounded context after success.** Only after a successful
+8. **Refresh and close the local result.** Only after a successful
    `transaction commit` or `transaction retry`, run
-   `<wiki-cli> hot status --json`. If stale, use
-   `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
-   `hot.md` working-tree diff, and run `<wiki-cli> hot mark-current --json`.
+   `<wiki-cli> hot status --json`. If stale, first apply the canonical
+   pre-hot-write overlap guard, then use `<wiki-cli> hot inputs --json --pretty`,
+   write only the requested tracked `hot.md` working-tree diff, and run
+   `<wiki-cli> hot mark-current --json`.
+
+   Run `<wiki-cli> check --json --pretty` as the final check and require it to
+   pass. From the successful transaction result, collect and individually validate
+   the exact vault-relative paths in `created`, `updated`, and `removed` plus
+   vault-relative `log_path`; derive affected manifest shards from the frozen
+   Source IDs, and include the exact changed `hot.md` path only when it changed.
+   For the explicit write
+   request, inspect each path for overlap, stage
+   only those exact result paths, display the exact staged patch, run the cached
+   diff check, and make one exact-path local result commit through the canonical
+   literal-path Git sequence. Leave unrelated paths untouched; an overlap stops for
+   a preserve, separate, or combine decision. Do not push, publish, change remotes,
+   switch or rewrite history, reset, clean, force, or make a semantic/destructive
+   choice without action-specific confirmation.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
 owns the canonical log append. Do not push or open a pull request.

@@ -254,6 +254,8 @@ def test_source_checkpoint_commits_only_expected_task_owned_changes(
         capture_output=True,
         text=True,
     ).stdout
+    if state == "absent":
+        assert before == f"?? {source_id}\n"
     head_before = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repo,
@@ -403,7 +405,11 @@ def _history_snapshot_action(
     stored_identity: tuple[str, str, str] | None,
 ) -> str:
     if not exists:
-        return "create"
+        return (
+            "create"
+            if head_exists and not tracked and clean_before_update
+            else "collision-fail-closed"
+        )
     if (
         ordinary_single_link
         and head_exists
@@ -458,6 +464,42 @@ def _history_existing_git_gate(repo: Path, target: Path) -> bool:
         check=False,
     )
     return status.returncode == 0 and status.stdout == ""
+
+
+def _literal_path_status(repo: Path, relative: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            relative,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _literal_path_is_indexed(repo: Path, relative: str) -> bool:
+    listed = subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            relative,
+        ],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return listed.returncode == 0 and listed.stdout == f"{relative}\n"
 
 
 def test_canonical_protocol_has_required_top_level_sections() -> None:
@@ -552,6 +594,84 @@ def test_transaction_recovery_reviews_reported_candidates_before_retry() -> None
     assert "Before a retry or other recovery action that promotes candidates" in flat
 
 
+def test_promotion_and_hot_overlap_guards_precede_every_mutation() -> None:
+    for path in (CANONICAL, *MAINTENANCE_SKILLS):
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        promotion_guard = flat.index("pre-promotion overlap guard")
+        initial_commit = flat.index("<wiki-cli> transaction commit <id> --json --pretty")
+        hot_guard = flat.index("pre-hot-write overlap guard")
+        hot_write = flat.index("tracked `hot.md` working-tree diff", hot_guard)
+        assert promotion_guard < initial_commit, path
+        assert hot_guard < hot_write, path
+        for required in (
+            "every candidate page and deletion target",
+            "every affected manifest shard",
+            "vault-relative `log_path`",
+            "staged or unstaged",
+            "stop before transaction mutation",
+            '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<promotion-path>"]',
+            '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<hot-path>"]',
+            "stop before hot mutation",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "wiki/concepts/affected.md",
+        "wiki/.manifest/sources/ab/source.json",
+        "wiki/log.md",
+        "wiki/hot.md",
+    ),
+)
+@pytest.mark.parametrize("state", ("staged", "unstaged"))
+def test_literal_overlap_guard_detects_each_mutation_target_state(
+    tmp_path: Path, relative: str, state: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Overlap Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "overlap@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    target = repo / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", relative], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    target.write_text("owner overlap\n", encoding="utf-8")
+    if state == "staged":
+        subprocess.run(
+            ["git", "--literal-pathspecs", "add", "--", relative],
+            cwd=repo,
+            check=True,
+        )
+
+    status = _literal_path_status(repo, relative)
+    assert status.startswith("M ") if state == "staged" else status.startswith(" M")
+    before = target.read_bytes()
+    if status == "":
+        target.write_text("transaction or hot mutation\n", encoding="utf-8")
+    assert target.read_bytes() == before
+
+
+def test_every_promotion_capable_retry_requires_fresh_bounded_review() -> None:
+    for path in (CANONICAL, TRANSACTION_REVIEW, *MAINTENANCE_SKILLS):
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        for required in (
+            "Immediately before every promotion-capable retry",
+            "fresh validation",
+            "current `candidate_pages`",
+            "current deletion set",
+            "Failed-state checks alone are insufficient",
+        ):
+            assert required in flat, f"{path}: missing {required!r}"
+
+
 def test_begin_passes_the_complete_source_closure_to_one_option() -> None:
     text = CANONICAL.read_text(encoding="utf-8")
     command = (
@@ -587,6 +707,24 @@ def test_canonical_protocol_defines_task_scoped_autonomy_and_risk_escalation() -
         assert required in flat
     assert "never edit manifest shards directly" in flat
     assert "transaction commit owns `log.md`" in flat
+
+
+def test_canonical_uses_agent_review_and_closes_the_local_lifecycle() -> None:
+    text = CANONICAL.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    assert "owner review described above" not in text
+    for required in (
+        "Agent substantive review",
+        "exact-path local authority checkpoint",
+        "<wiki-cli> check --json --pretty",
+        "`created`, `updated`, and `removed`",
+        "affected manifest shards",
+        "vault-relative `log_path`",
+        "changed `hot.md`",
+        "display the exact staged patch",
+        "one exact-path local result commit",
+    ):
+        assert required in flat
 
 
 def test_candidate_contract_preserves_transaction_validated_invariants() -> None:
@@ -731,7 +869,11 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
         "Do not recursively diff",
         "<wiki-cli> transaction validate <id> --json --pretty",
         "<wiki-cli> transaction commit <id> --json --pretty",
-        "explicit user approval",
+        "inspection-only request",
+        "remain read-only",
+        "explicit completion or recovery request",
+        "Agent substantive review",
+        "exact-path local result commit",
         "refresh the list immediately",
         "commit action",
         "re-review",
@@ -748,9 +890,19 @@ def test_transaction_review_uses_sparse_safe_diff_and_race_aware_actions() -> No
         "complete",
         "restored",
         "ambiguous",
-        "Do not commit, push, or open a pull request",
+        "semantic ambiguity",
+        "owner-overlapping dirty path",
+        "push",
+        "remote",
+        "rewrite history",
     ):
         assert required in flat
+
+    for stale in (
+        "explicit user approval",
+        "Do not commit, push, or open a pull request with Git",
+    ):
+        assert stale not in text
 
     for forbidden in ("_staging", "_raw", "WIKI_STAGED_WRITES"):
         assert forbidden not in text
@@ -889,6 +1041,13 @@ def test_source_workflows_share_one_terminal_lifecycle() -> None:
             "successful `transaction commit` or `transaction retry`",
             "hot status",
             "requested tracked `hot.md` working-tree diff",
+            "<wiki-cli> check --json --pretty",
+            "`created`, `updated`, and `removed`",
+            "affected manifest shards",
+            "vault-relative `log_path`",
+            "changed `hot.md`",
+            "display the exact staged patch",
+            "one exact-path local result commit",
         ):
             assert required in steps[7], f"{path}: step 8 missing {required!r}"
 
@@ -961,6 +1120,83 @@ def test_source_workflows_commit_reviewed_snapshots_before_begin() -> None:
             workflow_flat.index('[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]'),
             workflow_flat.index("Re-run Git tracking and clean-path checks"),
         ) < workflow_flat.index("cache-check") < workflow_flat.index("transaction begin --source")
+
+
+def test_absent_source_contract_checks_index_and_status_before_write() -> None:
+    documents = (
+        *SOURCE_WORKFLOW_SKILLS,
+        SOURCE_WORKFLOW_REFERENCES[0],
+        *HISTORY_SKILLS,
+        ROOT / "obsidian_wiki/_data/skills/wiki-update/SKILL.md",
+    )
+    index_command = (
+        '[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]'
+    )
+    head_command = '[<git-cli>, "rev-parse", "--verify", "HEAD"]'
+    status_command = (
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", '
+        '"--untracked-files=all", "--", "<Source ID>"]'
+    )
+    for path in documents:
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        absent = flat.index("absent Source Git gate")
+        head = flat.index(head_command, absent)
+        index = flat.index(index_command, head)
+        status = flat.index(status_command, index)
+        write = flat.index("Only after the HEAD, index, and status checks", status)
+        assert head < index < status < write, path
+        for required in (
+            "no index entry",
+            "empty literal-path status",
+            "exactly `?? <Source ID>`",
+            "staged or unstaged deletion",
+            "do not write",
+        ):
+            assert required in flat[absent:], f"{path}: missing {required!r}"
+
+
+@pytest.mark.parametrize("state", ("staged-deletion", "unstaged-deletion"))
+def test_absent_source_deletion_state_never_authorizes_a_write(
+    tmp_path: Path, state: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Source Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "source@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    relative = "sources/evidence.md"
+    target = repo / relative
+    target.parent.mkdir()
+    target.write_text("reviewed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", relative], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=repo, check=True)
+    target.unlink()
+    if state == "staged-deletion":
+        subprocess.run(["git", "add", "--", relative], cwd=repo, check=True)
+
+    indexed = _literal_path_is_indexed(repo, relative)
+    status = _literal_path_status(repo, relative)
+    if state == "staged-deletion":
+        assert not indexed and status.startswith("D ")
+    else:
+        assert indexed and status.startswith(" D")
+    action = _history_snapshot_action(
+        exists=False,
+        ordinary_single_link=False,
+        head_exists=True,
+        tracked=indexed,
+        clean_before_update=status == "",
+        expected_identity=("tool", "session", "slice"),
+        stored_identity=None,
+    )
+    if action == "create":
+        target.write_text("unauthorized replacement\n", encoding="utf-8")
+    assert action == "collision-fail-closed"
+    assert not target.exists()
 
 
 def test_pageindex_documents_real_entrypoint_and_snapshot_gate() -> None:
@@ -1545,6 +1781,11 @@ def test_history_authority_and_canonical_recovery_are_complete() -> None:
 def test_history_filesystem_bounds_and_safe_reads_are_explicit() -> None:
     for path in HISTORY_SKILLS:
         flat = " ".join(path.read_text(encoding="utf-8").split())
+        assert (
+            "filesystem-absent target + passing absent Source Git gate -> create"
+            in flat
+        ), path
+        assert "Snapshot identity state table: absent target -> create" not in flat, path
         for required in (
             "100 sessions",
             "50 MiB total input",
@@ -1679,12 +1920,26 @@ def test_history_snapshot_logical_identity_state_table() -> None:
     assert _history_snapshot_action(
         exists=False,
         ordinary_single_link=False,
-        head_exists=False,
+        head_exists=True,
         tracked=False,
-        clean_before_update=False,
+        clean_before_update=True,
         expected_identity=expected,
         stored_identity=None,
     ) == "create"
+    for head_exists, indexed, clean in (
+        (False, False, True),
+        (True, True, False),
+        (True, False, False),
+    ):
+        assert _history_snapshot_action(
+            exists=False,
+            ordinary_single_link=False,
+            head_exists=head_exists,
+            tracked=indexed,
+            clean_before_update=clean,
+            expected_identity=expected,
+            stored_identity=None,
+        ) == "collision-fail-closed"
     assert _history_snapshot_action(
         exists=True,
         ordinary_single_link=True,
@@ -1855,6 +2110,13 @@ def test_history_hot_sequence_is_complete_and_parser_valid() -> None:
             "successful `transaction commit` or `transaction retry`",
             "requested tracked `hot.md` working-tree diff",
             "must not mark stale inputs current directly",
+            "<wiki-cli> check --json --pretty",
+            "`created`, `updated`, and `removed`",
+            "affected manifest shards",
+            "vault-relative `log_path`",
+            "changed `hot.md`",
+            "display the exact staged patch",
+            "one exact-path local result commit",
         ):
             assert required in flat, f"{path}: missing {required!r}"
 

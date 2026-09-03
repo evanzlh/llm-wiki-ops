@@ -406,6 +406,36 @@ def test_distribution_assets_exactly_match_canonical_package_data(
     }
     for artifact, inventory in artifact_inventories.items():
         assert inventory == expected
+        canonical = inventory["skills/llm-wiki/SKILL.md"][0].decode("utf-8")
+        canonical_flat = " ".join(canonical.split())
+        assert "owner review described above" not in canonical, artifact
+        for required in (
+            "Agent substantive review",
+            "exact-path local authority checkpoint",
+            "one exact-path local result commit",
+        ):
+            assert required in canonical_flat, (artifact, required)
+        lifecycle_paths = (
+            "skills/wiki-capture/SKILL.md",
+            "skills/wiki-ingest/SKILL.md",
+            "skills/wiki-import/SKILL.md",
+            "skills/wiki-research/SKILL.md",
+            "skills/claude-history-ingest/SKILL.md",
+            "skills/codex-history-ingest/SKILL.md",
+            "skills/copilot-history-ingest/SKILL.md",
+            "skills/hermes-history-ingest/SKILL.md",
+            "skills/openclaw-history-ingest/SKILL.md",
+            "skills/pi-history-ingest/SKILL.md",
+            "skills/wiki-agent/SKILL.md",
+        )
+        for relative in lifecycle_paths:
+            contract = inventory[relative][0].decode("utf-8")
+            for required in (
+                "<wiki-cli> check --json --pretty",
+                "vault-relative `log_path`",
+                "one exact-path local result commit",
+            ):
+                assert required in contract, (artifact, relative, required)
         for relative, (contents, _) in inventory.items():
             if Path(relative).suffix in {".md", ".mdc"}:
                 assert b"\r" not in contents, f"{artifact}:{relative}"

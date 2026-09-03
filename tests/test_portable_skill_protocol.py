@@ -1289,6 +1289,8 @@ def test_all_active_runtime_markdown_uses_tracked_hot_and_log_contract() -> None
 
 def test_dedup_bounds_candidate_generation_before_similarity_scoring() -> None:
     flat = " ".join(skill_text("wiki-dedup").split())
+    assert "evidence-supported duplicate pair" in flat
+    assert "owner-approved duplicate pair" not in flat
     for required in (
         "candidate blocks",
         "normalized titles and aliases",

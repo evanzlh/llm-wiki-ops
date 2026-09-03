@@ -73,6 +73,11 @@ def expected_action(command: str, reason: str, *requires: str) -> RecoveryAction
                 "retry after the original cause is removed",
                 "the original failure cause is removed",
                 "affected targets still match their recorded preimages",
+                "fresh transaction validation passes immediately before retry",
+                (
+                    "the current candidate_pages and deletion set receive bounded "
+                    "substantive review immediately before retry"
+                ),
             ),
             (
                 expected_action(
@@ -233,4 +238,21 @@ def test_explicit_repository_is_rendered_in_inspection_only_guidance() -> None:
 
     assert guidance.inspect_command == (
         "llmwikiops -C '/srv/wiki root' transaction list --json"
+    )
+
+
+def test_failed_retry_guidance_requires_fresh_promotion_review(
+    record: TransactionRecord,
+) -> None:
+    failed = record.__class__(**{**record.__dict__, "status": "failed"})
+
+    retry = guidance_for_record(failed).preferred_action
+
+    assert retry is not None
+    assert retry.requires[-2:] == (
+        "fresh transaction validation passes immediately before retry",
+        (
+            "the current candidate_pages and deletion set receive bounded "
+            "substantive review immediately before retry"
+        ),
     )

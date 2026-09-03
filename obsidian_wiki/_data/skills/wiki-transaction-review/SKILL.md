@@ -72,20 +72,30 @@ deletions separately against their configured-vault targets. Do not recursively
 diff either tree or treat a live page absent from `candidate_pages` as deleted.
 Candidate editing belongs to a separately invoked owning write workflow.
 
-## Approve or reject
+## Branch on request scope
 
-Immediately before requesting explicit user approval, validate again, reread
-the latest `candidate_pages`, and display the final prospective diff and
-deletions. Approval applies only to that review.
+An inspection-only request must remain read-only after the sparse review: report the
+record, issues, warnings, prospective diff, deletions, and available actions, but
+do not execute one. An explicit completion or recovery request authorizes the
+ordinary local completion steps below, including Agent substantive review,
+transaction commit or safe retry, bounded hot refresh, final check, and one
+exact-path local result commit. It does not authorize a lossy or semantic choice,
+owner-overlapping changes, a remote write, or history rewriting.
 
-After approval, refresh the list immediately. Match exactly one retained record
-with the same ID; require its status, `source_ids`, `candidate_vault`,
+For an explicitly requested completion of an active record, immediately rerun
+`<wiki-cli> transaction validate <id> --json --pretty`, reread and
+bounded-inspect every current page in `candidate_pages` plus the current deletion
+set, and display the final prospective diff. A status or validation envelope
+alone is not Agent substantive review. Then refresh the list immediately. Match
+exactly one retained record with the
+same ID; require the refreshed record's status, `source_ids`, `candidate_vault`,
 `deletions`, `recommended_action`, and `allowed_actions` to be unchanged. Find
-the commit action in `allowed_actions`, show its reason, and satisfy every
-string in its `requires`. If anything changed or is ambiguous, stop and
-re-review. With no intervening work, immediately run
-`<wiki-cli> transaction commit <id> --json --pretty`. The CLI revalidates,
-but user approval is not digest-bound; do not claim a stronger guarantee.
+the commit action in `allowed_actions`, show its reason, and satisfy every string
+in its `requires`. If anything changed or is ambiguous, stop and re-review. With
+no intervening work, apply the canonical pre-promotion overlap guard to every
+candidate page and deletion target, affected manifest shard, and the configured
+vault's canonical log target before any transaction mutation, then immediately run
+`<wiki-cli> transaction commit <id> --json --pretty`.
 
 For rejection, first show all reported actions and requirements. A generic
 "reject" is not authorization: the user explicitly selects and confirms one
@@ -108,9 +118,33 @@ bypassing the failed requirement. This applies to active, promoting, failed,
 complete, and restored recovery. On missing or mismatched identity, conflict,
 multiple matches, or any ambiguous outcome, stop without mutation.
 
-Before a retry or other recovery action that promotes candidates, validate and
-bounded-inspect every page returned in `candidate_pages` using the sparse-diff
-rules above. A status or validation envelope alone is not candidate review.
+Immediately before every promotion-capable retry, run fresh validation and
+bounded-inspect every page returned in `candidate_pages`, using the current
+`candidate_pages` and current deletion set under the sparse-diff rules above,
+then repeat the canonical
+pre-promotion overlap guard. Failed-state checks alone are insufficient. Before
+a retry or other recovery action that promotes candidates, this fresh review is
+mandatory. A status or validation envelope alone is not candidate review.
+
+## Close a successful local result
+
+After a successful `transaction commit` or `transaction retry`, run
+`<wiki-cli> hot status --json`. If stale,
+apply the canonical pre-hot-write overlap guard, run
+`<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
+`hot.md` working-tree diff, and run `<wiki-cli> hot mark-current --json`. Then run
+`<wiki-cli> check --json --pretty` and require it to pass. Collect from the
+successful result the exact vault-relative paths in `created`, `updated`, and
+`removed` plus vault-relative `log_path`; derive affected manifest shards from the
+frozen Source IDs, and include the exact changed `hot.md` path only when it changed. Individually validate
+and inspect those paths, stage only them,
+display the exact staged patch, run the cached diff check, and make one exact-path
+local result commit through the canonical literal-path Git sequence. Leave
+unrelated paths untouched.
 
 The CLI owns promotion and recovery. Do not edit managed manifests or stable
-generated pages directly. Do not commit, push, or open a pull request with Git.
+generated pages directly. Ask for action-specific confirmation only for a lossy
+`abort`, `discard`, or drifted restore; semantic ambiguity; an owner-overlapping
+dirty path or combined edits; push, pull-request publication, another remote
+write, or remote changes; or switching, resetting, cleaning, forcing, or actions
+that rewrite history. Do not infer those permissions from the completion request.

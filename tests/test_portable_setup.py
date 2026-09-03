@@ -1553,6 +1553,38 @@ def test_bundled_setup_installs_the_exact_current_skill_inventory(tmp_path: Path
     assert set(bundled).isdisjoint(
         {"memory-bridge", "wiki-dashboard", "wiki-stage-commit", "wiki-switch"}
     )
+    canonical = (root / ".skills/llm-wiki/SKILL.md").read_text(encoding="utf-8")
+    canonical_flat = " ".join(canonical.split())
+    assert "owner review described above" not in canonical
+    for required in (
+        "Agent substantive review",
+        "exact-path local authority checkpoint",
+        "one exact-path local result commit",
+    ):
+        assert required in canonical_flat
+    lifecycle_skills = (
+        "wiki-capture",
+        "wiki-ingest",
+        "wiki-import",
+        "wiki-research",
+        "claude-history-ingest",
+        "codex-history-ingest",
+        "copilot-history-ingest",
+        "hermes-history-ingest",
+        "openclaw-history-ingest",
+        "pi-history-ingest",
+        "wiki-agent",
+    )
+    for name in lifecycle_skills:
+        installed = (root / ".skills" / name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "<wiki-cli> check --json --pretty",
+            "vault-relative `log_path`",
+            "one exact-path local result commit",
+        ):
+            assert required in installed, (name, required)
 
 
 def test_bundled_upgrade_removes_personal_skills_and_adds_transaction_review(

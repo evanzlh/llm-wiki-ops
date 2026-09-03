@@ -128,6 +128,9 @@ def guidance_for_record(
             "retry after the original cause is removed",
             "the original failure cause is removed",
             "affected targets still match their recorded preimages",
+            "fresh transaction validation passes immediately before retry",
+            "the current candidate_pages and deletion set receive bounded "
+            "substantive review immediately before retry",
         )
         alternatives = (
             _action(

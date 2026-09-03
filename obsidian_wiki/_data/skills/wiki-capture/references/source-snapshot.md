@@ -55,8 +55,16 @@ material into bounded, independently reviewable snapshots.
   authority. Preserve only reviewed text and useful origin metadata.
 - Reject symbolic links, hard links, special files, and paths outside the
   configured source root.
-- For an absent Source, confirm safe contained topology and absence before writing;
-  after writing, allow only the expected task-owned new or modified state. For an
+- For an absent Source, first confirm safe contained topology and filesystem
+  absence. Then apply the absent Source Git gate with
+  `[<git-cli>, "rev-parse", "--verify", "HEAD"]`,
+  `[<git-cli>, "--literal-pathspecs", "ls-files", "--", "<Source ID>"]` and
+  `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<Source ID>"]`.
+  Require a valid HEAD, empty `ls-files` output (no index entry), and empty literal-path status.
+  A staged or unstaged deletion, any other status, or any index entry means do not
+  write. Only after the HEAD, index, and status checks pass may the absent Source be written. Immediately
+  rerun the status command and require its sole record to be exactly
+  `?? <Source ID>`; that is the only expected task-owned new state. For an
   unchanged existing Source, revalidate authority and must not create an empty
   commit. After substantive Agent review, stage and locally commit only the exact
   Source ID with canonical literal-pathspec status, add, staged-diff display,

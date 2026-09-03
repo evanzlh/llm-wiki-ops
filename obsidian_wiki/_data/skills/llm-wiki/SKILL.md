@@ -76,7 +76,8 @@ Use the following eight steps for every create, update, or deletion. Keep the
 validated repository binding unchanged throughout.
 
 1. **Close authority before wiki mutation.** Complete any explicitly authorized
-   source materialization and owner review described above. Then keep the wiki
+   source materialization, Agent substantive review, and exact-path local authority checkpoint
+   described above. Then keep the wiki
    read-only while building the source closure from each new authoritative
    Source ID plus every existing Source ID referenced by pages that may be
    updated or deleted. Stop on missing, ambiguous, untracked, or unsafe
@@ -113,8 +114,23 @@ validated repository binding unchanged throughout.
    <id> --json --pretty`. Treat validation output as authoritative, fix only the
    candidate files or declared deletions, and repeat validation until it passes.
 
-6. **Review and commit.** Review the complete candidate diff and deletion set.
-   When correct, run `<wiki-cli> transaction commit <id> --json --pretty`.
+6. **Review and commit.** Immediately before the initial promotion, rerun fresh
+   validation and bounded-review every current page in `candidate_pages` plus the
+   current deletion set. Establish the pre-promotion overlap guard before running
+   the commit: individually derive every candidate page and deletion target, every
+   affected manifest shard from the frozen Source IDs through the canonical
+   manifest-v2 source-root-relative mapping, and the configured vault's canonical log target that
+   the result will identify as vault-relative `log_path`. Check each exact
+   repository-relative path with:
+
+   ```text
+   [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<promotion-path>"]
+   ```
+
+   Every output must be empty. Any staged or unstaged change is owner overlap:
+   stop before transaction mutation and ask whether to preserve, separate, or
+   combine it. Only after the fresh substantive review and clean guard, run
+   `<wiki-cli> transaction commit <id> --json --pretty`.
    The CLI promotes validated pages, records manifest v2 ownership, and appends
    one canonical operation block to `log.md` last. Read `log_path` from the
    result.
@@ -142,8 +158,11 @@ validated repository binding unchanged throughout.
    diagnose a different safe cause or ask for the missing decision. There is no
    fixed recovery attempt count; structured-state progress controls continuation.
 
-   A reported `transaction retry` proceeds automatically when its current
-   requirements hold. A reported `transaction restore` proceeds automatically
+   Immediately before every promotion-capable retry, rerun fresh validation,
+   bounded-review every page in the current `candidate_pages` and the current
+   deletion set, and repeat the step 6 pre-promotion overlap guard. Failed-state
+   checks alone are insufficient. A reported `transaction retry` proceeds
+   automatically when its current requirements hold. A reported `transaction restore` proceeds automatically
    only when recorded originals can be restored with no owner drift. Ask for
    action-specific confirmation before work-losing `discard` or `abort`. Ask
    before `restore` when owner drift is present; confirmation does not bypass the
@@ -157,14 +176,32 @@ validated repository binding unchanged throughout.
 
 8. **Refresh bounded tracked context after success.** Only after a successful
    knowledge commit, run `<wiki-cli> hot status --json`.
-   If stale, obtain bounded inputs with `<wiki-cli> hot inputs --json --pretty`,
-   let the agent write only the requested tracked `hot.md` working-tree diff,
+   If stale, derive the exact tracked `hot.md` repository path and establish the
+   pre-hot-write overlap guard with:
+
+   ```text
+   [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<hot-path>"]
+   ```
+
+   Require empty output; on any staged or unstaged change, stop before hot mutation
+   for a preserve, separate, or combine decision. Then obtain bounded inputs with
+   `<wiki-cli> hot inputs --json --pretty`, let the agent write only the requested tracked `hot.md` working-tree diff,
    and verify a content-changing working-tree diff before finishing with
    `<wiki-cli> hot mark-current --json`. Reading existing `hot.md` is not
    regeneration; never run `<wiki-cli> hot mark-current --json` after a
    read-only or no-write path. `hot status` is read-only and must not remove the tracked file. Hot-state
    work never changes source authority, compiled pages, or transaction records.
    `transaction restore`, `abort`, and `discard` do not trigger hot refresh.
+
+   Finish with `<wiki-cli> check --json --pretty`; it must pass before staging.
+   From the successful result, collect and individually validate the exact
+   vault-relative paths in `created`, `updated`, and `removed` plus vault-relative `log_path`;
+   derive the affected manifest shards from the frozen Source IDs, and include the
+   exact changed `hot.md` path only when it changed. Under the
+   explicit write request, display the exact staged patch, run the cached diff
+   check, leave unrelated paths untouched, and make one exact-path local result
+   commit using the command sequence below with every result path passed
+   separately after `--`. Any newly discovered overlap stops for the same choice.
 
 ## Task-scoped autonomy and escalation
 

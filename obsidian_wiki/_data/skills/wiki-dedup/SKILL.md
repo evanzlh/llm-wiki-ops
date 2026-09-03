@@ -1,6 +1,6 @@
 ---
 name: wiki-dedup
-description: Use when detecting duplicate knowledge pages, resolving identity collisions, or merging an owner-approved duplicate pair.
+description: Use when detecting duplicate knowledge pages, resolving identity collisions, or merging an evidence-supported duplicate pair.
 ---
 
 # Wiki Dedup
@@ -143,9 +143,17 @@ confirmation before any merge. Audit-only mode stops after the report.
    `<wiki-cli> transaction delete <id> <vault-relative-page.md> --json --pretty`.
    Never delete a live page directly.
 5. Run `<wiki-cli> transaction validate <id> --json --pretty`, fix every issue,
-   review every warning and the complete candidate/deletion diff, then run
-   `<wiki-cli> transaction commit <id> --json --pretty` only after validation
-   passes.
+   and review every warning plus every current page in `candidate_pages` and the
+   current deletion set. Immediately before the initial promotion, repeat this
+   fresh validation and bounded review. Then establish the pre-promotion overlap
+   guard: individually derive every candidate page and deletion target, every
+   affected manifest shard, and the configured vault's canonical log target that
+   the result will identify as vault-relative `log_path`. Check each exact
+   repository-relative path with
+   `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<promotion-path>"]`.
+   Every output must be empty. On any staged or unstaged change, stop before
+   transaction mutation for a preserve, separate, or combine decision. Only then
+   run `<wiki-cli> transaction commit <id> --json --pretty`.
 6. Save the failed command envelope, including top-level `error` and `recovery`, on
    any failure. Inspect `recovery.preferred_action`. Trust its transaction ID only
    when present, then run `<wiki-cli> transaction list --json --pretty` and
@@ -158,11 +166,18 @@ confirmation before any merge. Audit-only mode stops after the report.
    status, `recovery.preferred_action`, `allowed_actions`, `requires`, identities,
    and exposed pre/postimages. Continue only when the next action is currently
    allowed and the last action made observable progress; never repeat an identical
-   action against unchanged state. Retry automatically when its current requirements
-   hold; restore automatically only with no owner drift, and ask before restore with
-   drift and before work-losing abort or discard.
+   action against unchanged state. Immediately before every promotion-capable retry,
+   rerun fresh validation, bounded-review every page in the current `candidate_pages`
+   and the current deletion set, and repeat the pre-promotion overlap guard.
+   Failed-state checks alone are insufficient. Retry automatically when its current
+   requirements hold; restore automatically only with no owner drift, and ask before
+   restore with drift and before work-losing abort or discard.
 7. Only after a successful `transaction commit` or `transaction retry`, run
-   `<wiki-cli> hot status --json`. If stale, run
+   `<wiki-cli> hot status --json`. If stale, establish the pre-hot-write overlap
+   guard on the exact tracked hot path with
+   `[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<hot-path>"]`.
+   Require empty output; on any staged or unstaged change, stop before hot mutation
+   for a preserve, separate, or combine decision. Then run
    `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
    `hot.md` working-tree diff, then run
    `<wiki-cli> hot mark-current --json`. Do not refresh after abort, restore, or
