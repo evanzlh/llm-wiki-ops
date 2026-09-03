@@ -152,25 +152,63 @@ Agent self-review and the qualitative and deterministic checks above validate th
 generated artifact by default. Human review is optional unless the user requests it
 or the result requires a semantic choice.
 
-When the request includes repository installation, copy only the reviewed ordinary
-files from `.llmwikiops/local/generated-skills/<name>/` into the exact
-`.skills/<name>/` target. Validate containment, ownership, ordinary single-link files,
-and source/target identities before every copy. A new target is authorized by the
-request. Ask before replacing an existing target; after approval bind its complete
-preimage and preserve a private backup. Refuse drift rather than overwriting it, and
-never merge an incompletely reviewed tree.
+When the request includes repository installation, require a clean read-only sync and
+check immediately before changing the canonical tree:
 
-After copying and revalidating the installed bytes, run in order:
+```bash
+<wiki-cli> repo sync-skills --json --pretty
+<wiki-cli> check --json --pretty
+```
+
+The sync must exit zero with `status: "clean"`, no warnings, and empty `added`,
+`changed`, `removed`, and `unsafe` lists for every target; the check must pass.
+Pre-existing mirror drift is owner work: stop before canonical copy or apply and
+leave it byte-identical.
+
+Then copy only the reviewed ordinary files from
+`.llmwikiops/local/generated-skills/<name>/` into the exact `.skills/<name>/` target.
+Validate containment, ownership, ordinary single-link files, and source/target
+identities before every copy. A new target is authorized by the request. Ask before
+replacing an existing target; after approval bind its complete preimage and preserve a
+private backup. Refuse drift rather than overwriting it, and never merge an
+incompletely reviewed tree.
+
+After copying and revalidating the canonical bytes, run the read-only sync again. A
+valid installation plan has `status: "drift"`, no warnings, and every planned change
+is below the expected mirror path for `<name>`:
+
+- exact `.claude/skills/<name>`
+- exact `.cursor/skills/<name>`
+- exact `.windsurf/skills/<name>`
+- exact `.agents/skills/<name>`
+- exact `.pi/skills/<name>`
+- exact `.kiro/skills/<name>`
+
+For a new canonical target, require exactly `added: ["<name>"]` and empty `changed`,
+`removed`, and `unsafe` lists under all six targets. Existing mirror entries are
+changed only for an approved replacement: every added, changed, or removed entry must
+match the reviewed old/new `<name>` tree and remain at or below `<name>`. Require no
+unsafe or unrelated path. Any other plan is drift: stop before apply and preserve all
+evidence.
+
+Only after that plan check, run in order:
 
 ```bash
 <wiki-cli> repo sync-skills --apply --json --pretty
 <wiki-cli> check --json --pretty
 ```
 
-Both commands must pass. Then use the canonical exact-path local commit flow for the
-single `.skills/<name>` task path, including literal status, staging, staged diff, and
-cached diff check. Leave unrelated paths and staging untouched. Retain the generated
-artifact, backups, and recovery evidence; ask before deleting any of them.
+Rely on the existing CLI preimage and quiescence protections during apply; do not add
+or bypass orchestration. Both commands must pass. The exact local commit path set is:
+
+- exact `.skills/<name>/`
+- the six exact mirror paths listed above
+
+Validate every path separately, stage all seven literal paths, inspect the staged diff
+for each, run the cached diff check, and make one commit restricted to those paths.
+Never use a parent directory, glob, or whole-repository add; leave unrelated dirty and
+staged paths untouched. Retain the generated artifact, backups, and recovery evidence;
+ask before deleting any of them.
 
 Ask before any action that would install outside the validated target. Installing
 elsewhere would install outside the validated repository and requires confirmation,

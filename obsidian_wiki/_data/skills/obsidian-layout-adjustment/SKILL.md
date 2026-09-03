@@ -144,15 +144,17 @@ pathspec handling:
 ```
 
 `CONFIG_PATH` is one validated argument, not shell text or a glob. Inspect each diff
-and present it to the user when requested. For tracked files changed only by this
+and present it to the user when requested. Reload Obsidian with Cmd/Ctrl+R after edit
+or restore and screenshot-check the result. If the result is disproved, restore
+automatically before any staging or commit only while the current target matches the
+recorded postimage and no owner drift exists. Ask before choosing among unresolved
+visual or semantic alternatives; owner drift requires action-specific confirmation
+without bypassing the identity/hash precondition.
+
+Only after successful screenshot verification, for tracked files changed only by this
 task, complete the canonical exact-path local commit flow, validating and staging each
 path separately and leaving unrelated paths untouched. Ask before any push, pull
-request, remote change,
-branch/history rewrite, or publication. Reload Obsidian with Cmd/Ctrl+R after edit or
-restore and screenshot-check the result. If the result is disproved, restore
-automatically only while the current target matches the recorded postimage and no
-owner drift exists. Ask before choosing among unresolved visual or semantic
-alternatives.
+request, remote change, branch/history rewrite, or publication.
 
 Report changed files, backup paths, phrase-to-layer mapping, `<git-cli> diff` status,
 reload/screenshot result, and anything unverified. Do not mutate wiki pages,

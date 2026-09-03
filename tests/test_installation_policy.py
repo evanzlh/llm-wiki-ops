@@ -772,28 +772,240 @@ def test_requested_managed_operations_complete_without_owner_handoff() -> None:
         assert unsupported not in flat
 
 
-def test_requested_generated_skill_install_uses_existing_repository_mechanisms() -> None:
+def _run_repository_cli(
+    home: Path, repository: Path, *args: str
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PYTHONPATH"] = str(ROOT)
+    return subprocess.run(
+        [sys.executable, "-m", "obsidian_wiki", *args],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def _setup_committed_repository(tmp_path: Path) -> tuple[Path, Path]:
+    home = tmp_path / "home"
+    home.mkdir()
+    repository = tmp_path / "repository"
+    setup = _run_repository_cli(home, tmp_path, "setup", str(repository))
+    assert setup.returncode == 0, setup.stderr
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Protocol Test"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "protocol@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    for name in ("owner-staged.md", "owner-dirty.md"):
+        (repository / name).write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--all"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"], cwd=repository, check=True
+    )
+    return home, repository
+
+
+def test_requested_generated_skill_install_is_plan_limited_and_path_committed(
+    tmp_path: Path,
+) -> None:
     for relative in (
         "obsidian_wiki/_data/skills/vault-skill-factory/SKILL.md",
         "obsidian_wiki/_data/skills/skill-creator/SKILL.md",
     ):
         contents = (ROOT / relative).read_text(encoding="utf-8")
         flat = " ".join(contents.split())
-        ordered = (
-            "`.llmwikiops/local/generated-skills/<name>/`",
-            "reviewed ordinary files",
-            "exact `.skills/<name>/` target",
+        for required in (
+            "clean read-only sync and check immediately before",
+            "every planned change",
+            "expected mirror path for `<name>`",
+            "mirror entries are changed only for an approved replacement",
+            "no unsafe or unrelated path",
             "<wiki-cli> repo sync-skills --apply --json --pretty",
-            "<wiki-cli> check --json --pretty",
-            "exact-path local commit",
-        )
-        for required in (*ordered, "Refuse drift"):
+            "existing CLI preimage and quiescence protections",
+            "exact `.skills/<name>/`",
+            *(
+                f"exact `{agent_relative}/<name>`"
+                for agent_relative, _label in PROJECT_AGENT_DIRS
+            ),
+        ):
             assert required in flat, (relative, required)
-        assert [flat.index(item) for item in ordered] == sorted(
-            flat.index(item) for item in ordered
-        ), relative
-        assert "install outside the validated repository" in flat
-        assert "requires confirmation" in flat
+
+    home, repository = _setup_committed_repository(tmp_path)
+    (repository / "owner-staged.md").write_text("owner staged\n", encoding="utf-8")
+    (repository / "owner-dirty.md").write_text("owner dirty\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", "owner-staged.md"], cwd=repository, check=True
+    )
+
+    name = "reviewed-example"
+    generated = repository / ".llmwikiops/local/generated-skills" / name
+    generated.mkdir(parents=True)
+    (generated / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "description: Use when exercising reviewed repository installation.\n"
+        "---\n\n# Reviewed Example\n",
+        encoding="utf-8",
+    )
+
+    clean = _run_repository_cli(home, repository, "repo", "sync-skills", "--json")
+    assert clean.returncode == 0, clean.stdout
+    assert json.loads(clean.stdout)["status"] == "clean"
+    initial_check = _run_repository_cli(
+        home, repository, "check", "--json", "--pretty"
+    )
+    assert initial_check.returncode == 0, initial_check.stdout
+    shutil.copytree(generated, repository / ".skills" / name)
+
+    dry = _run_repository_cli(
+        home, repository, "repo", "sync-skills", "--json", "--pretty"
+    )
+    assert dry.returncode == 1 and dry.stderr == ""
+    plan = json.loads(dry.stdout)
+    assert plan["status"] == "drift" and plan["warnings"] == []
+    assert [target["path"] for target in plan["targets"]] == [
+        agent_relative for agent_relative, _label in PROJECT_AGENT_DIRS
+    ]
+    assert all(
+        target["added"] == [name]
+        and target["changed"] == []
+        and target["removed"] == []
+        and target["unsafe"] == []
+        for target in plan["targets"]
+    )
+
+    applied = _run_repository_cli(
+        home,
+        repository,
+        "repo",
+        "sync-skills",
+        "--apply",
+        "--json",
+        "--pretty",
+    )
+    assert applied.returncode == 0, applied.stdout
+    assert json.loads(applied.stdout)["status"] == "applied"
+    final_check = _run_repository_cli(home, repository, "check", "--json", "--pretty")
+    assert final_check.returncode == 0, final_check.stdout
+
+    task_paths = [
+        f".skills/{name}",
+        *(f"{agent_relative}/{name}" for agent_relative, _label in PROJECT_AGENT_DIRS),
+    ]
+    for path in task_paths:
+        subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                path,
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "--literal-pathspecs", "add", "--", path],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "--literal-pathspecs", "diff", "--cached", "--", path],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "diff",
+            "--cached",
+            "--check",
+            "--",
+            *task_paths,
+        ],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "--literal-pathspecs",
+            "commit",
+            "-m",
+            "install reviewed example",
+            "--",
+            *task_paths,
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    committed = subprocess.run(
+        ["git", "show", "--format=", "--name-only", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert committed == sorted(f"{path}/SKILL.md" for path in task_paths)
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == "owner-staged.md\n"
+    assert subprocess.run(
+        ["git", "diff", "--name-only"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == "owner-dirty.md\n"
+
+
+def test_generated_skill_install_stops_on_preexisting_owner_mirror_drift(
+    tmp_path: Path,
+) -> None:
+    home, repository = _setup_committed_repository(tmp_path)
+    mirror = repository / ".claude/skills/wiki-query/SKILL.md"
+    owner_bytes = mirror.read_bytes() + b"\nOwner mirror edit remains.\n"
+    mirror.write_bytes(owner_bytes)
+
+    preflight = _run_repository_cli(
+        home, repository, "repo", "sync-skills", "--json", "--pretty"
+    )
+
+    assert preflight.returncode == 1 and preflight.stderr == ""
+    report = json.loads(preflight.stdout)
+    assert report["status"] == "drift"
+    claude = next(
+        target
+        for target in report["targets"]
+        if target["path"] == ".claude/skills"
+    )
+    assert claude["changed"] == ["wiki-query/SKILL.md"]
+    assert mirror.read_bytes() == owner_bytes
+    assert not (repository / ".skills/reviewed-example").exists()
+    assert not any(
+        (repository / agent_relative / "reviewed-example").exists()
+        for agent_relative, _label in PROJECT_AGENT_DIRS
+    )
 
 
 def test_no_unsupported_install_guidance_remains() -> None:

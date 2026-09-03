@@ -132,9 +132,7 @@ path-scoped review; present it to the user when requested:
 ```
 
 `CONFIG_PATH` is one validated repository-relative path argument, not shell text or
-a glob. If it is tracked and changed only by this task, complete the canonical
-exact-path local commit flow for that one path. Never include unrelated paths. Ask
-before any push, pull request, remote change, branch/history rewrite, or publication.
+a glob.
 
 To undo, select an explicit backup and require the current target to match the
 manifest's expected postimage identity and SHA-256; concurrent change stops restore.
@@ -144,11 +142,16 @@ or restore, reload Obsidian with Cmd/Ctrl+R and visually verify the graph. If th
 cannot access the running application, report that verification gap instead of
 claiming success.
 If evidence disproves the result and the target still matches the recorded postimage,
-restore the verified preimage automatically rather than stacking changes. Continue
-only while reload/diff evidence shows observable progress; there is no fixed attempt
-count. Ask before choosing among unresolved visual or semantic alternatives. Owner
-drift stops automatic restore and requires action-specific confirmation without
-bypassing the identity/hash precondition.
+restore the verified preimage automatically before any staging or commit rather than
+stacking changes. Continue only while reload/diff evidence shows observable progress;
+there is no fixed attempt count. Ask before choosing among unresolved visual or
+semantic alternatives. Owner drift stops automatic restore and requires
+action-specific confirmation without bypassing the identity/hash precondition.
+
+Only after successful visual verification, if `CONFIG_PATH` is tracked and changed
+only by this task, complete the canonical exact-path local commit flow for that one
+path. Never include unrelated paths. Ask before any push, pull request, remote change,
+branch/history rewrite, or publication.
 
 Report mode, group count, target, backup path, diff status, and reload status. Do not
 modify wiki pages, `log.md`, `index.md`, `hot.md`, or `.manifest.json`.

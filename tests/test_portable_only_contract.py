@@ -1242,16 +1242,27 @@ def test_local_output_workflows_stay_ignored_and_outside_transactions() -> None:
         assert "symbolic link" in text and "hard link" in text and "special file" in text
 
 
-def test_obsidian_config_edits_have_backup_approval_and_git_boundaries() -> None:
+def test_obsidian_config_edits_confirm_risk_and_commit_after_visual_proof() -> None:
+    visual_proof = {
+        "graph-colorize": "visually verify the graph",
+        "obsidian-layout-adjustment": "screenshot-check the result",
+    }
     for name in ("graph-colorize", "obsidian-layout-adjustment"):
         text = _special_skill(name)
-        assert ".llmwikiops/local/obsidian-config-backups/" in text, name
-        assert "explicit user approval" in text, name
-        assert "atomic" in text.lower(), name
-        assert "restore" in text.lower(), name
-        assert "reload" in text.lower(), name
-        assert "diff --" in text.lower(), name
-        assert "owner" in text.lower() and "commit" in text.lower(), name
+        flat = " ".join(text.split())
+        assert ".llmwikiops/local/obsidian-config-backups/" in flat, name
+        assert "explicit request" in flat, name
+        assert "Ask before" in flat, name
+        assert "overlapping dirty" in flat, name
+        assert "action-specific confirmation" in flat, name
+        assert "atomic" in flat.lower(), name
+        assert "restore" in flat.lower(), name
+        assert "reload" in flat.lower(), name
+        assert "diff --" in flat.lower(), name
+        assert "before any staging or commit" in flat, name
+        assert flat.index(visual_proof[name]) < flat.index(
+            "exact-path local commit flow"
+        ), name
 
 
 def test_obsidian_config_diff_uses_resolved_repo_relative_literal_pathspecs() -> None:
