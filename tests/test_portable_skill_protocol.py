@@ -916,11 +916,22 @@ def test_dedup_restores_deterministic_similarity_contract() -> None:
     assert score(0.6, 0.6, 0.5, 0.65, 0.20) == 1.0
 
 
+def test_dedup_request_authorizes_supported_merge_but_not_identity_choice() -> None:
+    flat = " ".join(skill_text("wiki-dedup").split())
+    for required in (
+        "explicit dedup request authorizes a supported merge",
+        "conflicting identities",
+        "ask the user to choose",
+    ):
+        assert required in flat
+
+
 def test_rebuild_batches_are_sequential_and_failure_bounded() -> None:
     flat = " ".join(skill_text("wiki-rebuild").split())
     ordered = (
         "current live state",
         "previous successful batch",
+        "safe remaining batches continue",
         "no forward references",
         "deletions last",
         "stop all subsequent batches",
@@ -934,6 +945,8 @@ def test_rebuild_batches_are_sequential_and_failure_bounded() -> None:
     assert [flat.index(item) for item in ordered] == sorted(
         flat.index(item) for item in ordered
     )
+    assert "unsafe or semantically ambiguous remaining set" in flat
+    assert "ask the user to choose" in flat
 
 
 def test_taxonomy_control_vocabulary_stays_outside_transactions() -> None:
@@ -941,15 +954,40 @@ def test_taxonomy_control_vocabulary_stays_outside_transactions() -> None:
     for required in (
         "`_meta/taxonomy.md`",
         "authoritative vocabulary",
-        "owner separately performs an explicit control-file edit",
+        "explicit taxonomy request authorizes the scoped control-file edit",
         "safe backup",
+        "preimage",
+        "flush",
+        "atomic replacement",
         "Git diff",
         "re-read",
         "must not write `_meta/taxonomy.md` into `candidate_vault`",
         "validator rejects `_meta/` candidates",
         "existing canonical mappings only",
+        "conflicting canonical mappings",
+        "ask the user to choose",
     ):
         assert required in flat
+
+
+def test_lint_automates_only_deterministic_requested_repairs() -> None:
+    flat = " ".join(skill_text("wiki-lint").split())
+    for required in (
+        "requested automatic repairs use the maintenance transaction protocol",
+        "without a deterministic repair remains reported",
+        "never fabricate a repair",
+    ):
+        assert required in flat
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("daily-update", "wiki-status", "cross-linker", "wiki-synthesize", "wiki-update"),
+)
+def test_requested_maintenance_writes_use_transaction_and_local_commit(name: str) -> None:
+    flat = " ".join(skill_text(name).split())
+    assert "requested write completes through this canonical transaction" in flat
+    assert "path-limited local commit flow" in flat
 
 
 def test_lint_preserves_material_rules_and_thresholds() -> None:

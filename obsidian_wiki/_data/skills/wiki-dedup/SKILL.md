@@ -113,6 +113,11 @@ not choose between conflicting claims without authority. Do not leave redirect
 stubs: update inbound links in candidate replacements and declare the obsolete page
 as a reviewed deletion.
 
+An explicit dedup request authorizes a supported merge when the evidence establishes
+one identity and the final path, combined content, backlink repairs, and deletion are
+deterministic; conflicting identities or claims are semantic ambiguity: ask the user
+to choose rather than merging them.
+
 Report pair scores, evidence, verdicts, unresolved conflicts, final-page selection,
 backlink impact, and proposed removals. Complete this read-only inventory and intent
 confirmation before any merge. Audit-only mode stops after the report.
@@ -149,13 +154,40 @@ confirmation before any merge. Audit-only mode stops after the report.
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful
    `transaction commit` or `transaction retry` is a knowledge commit.
+   After every reported action, reload structured state and compare its error code,
+   status, `recovery.preferred_action`, `allowed_actions`, `requires`, identities,
+   and exposed pre/postimages. Continue only when the next action is currently
+   allowed and the last action made observable progress; never repeat an identical
+   action against unchanged state. Retry automatically when its current requirements
+   hold; restore automatically only with no owner drift, and ask before restore with
+   drift and before work-losing abort or discard.
 7. Only after a successful `transaction commit` or `transaction retry`, run
    `<wiki-cli> hot status --json`. If stale, run
    `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
    `hot.md` working-tree diff, then run
    `<wiki-cli> hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
+8. Run `<wiki-cli> check --json --pretty` as the final check; it must pass before
+   staging. The exact task paths are the selected final knowledge and deletion paths,
+   changed manifest shards for the complete source closure, returned `log_path`, and
+   any requested changed `hot.md`. This requested write completes through this
+   canonical transaction and exact-path, path-limited local commit flow. Inspect each
+   path separately; owner-overlapping dirty paths stop for a preserve, separate, or
+   combine choice; leave unrelated paths untouched. Stage only the exact task paths,
+   display the exact staged patch, run the cached diff check, and locally commit them
+   in one cohesive local commit, repeating
+   `<task-path>` as separate argv elements after `--`:
+
+   ```text
+   [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]
+   ```
+
+   Ask for confirmation immediately before any push, pull-request publication, or
+   other remote write.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
-owns the canonical log append. Do not run Git publication commands or write unsupported control paths.
-Do not commit, push, or open a pull request.
+owns the canonical log append. Do not write unsupported control paths.

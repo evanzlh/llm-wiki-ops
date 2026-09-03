@@ -63,12 +63,21 @@ Unknown tags require an owner decision: map to an existing canonical tag, accept
 new taxonomy term, or leave unchanged. Never silently invent a taxonomy rule.
 
 The transaction validator rejects `_meta/` candidates, so the agent must not write
-`_meta/taxonomy.md` into `candidate_vault`. If the owner approves a new term, stop
-page normalization while the owner separately performs an explicit control-file edit
-with a safe backup and Git diff review. After that owner-controlled edit is complete,
-re-read `_meta/taxonomy.md` through the safe scanner, then plan the page-normalization
-transaction. If the owner does not approve the new term, use existing canonical
-mappings only or leave the unknown tag unchanged.
+`_meta/taxonomy.md` into `candidate_vault`. An explicit taxonomy request authorizes
+the scoped control-file edit when the requested mapping is deterministic; conflicting
+canonical mappings are semantic ambiguity: ask the user to choose. Otherwise use
+existing canonical mappings only or leave the unknown tag unchanged.
+
+For an authorized `_meta/taxonomy.md` edit, stop page normalization and first require
+an owner-clean exact path plus the safe scanner's ordinary single-link identity. Make
+an owner-only safe backup that records and flushes the exact preimage, its SHA-256,
+mode, and device/inode identity. Write the complete replacement to an owner-only
+ordinary temporary file in the same directory, flush it, recheck the target identity
+and preimage, then use atomic replacement and flush the directory. Show the exact
+path-limited Git diff and re-read `_meta/taxonomy.md` through the safe scanner before
+planning the page-normalization transaction. Any identity drift, overlapping dirty
+state, failed check, or mapping conflict stops without overwrite; an overlapping
+dirty path asks whether to preserve, separate, or combine the edits.
 
 For a new page, propose the smallest useful set: usually one broad domain tag and
 one or two specific topic tags. Report every proposed old-to-new mapping, affected
@@ -107,13 +116,42 @@ intent confirmation before selecting fixes. A pure audit stops after its report.
    every string in its `requires` list. If the ID or list is empty, missing,
    mismatched, duplicated, or ambiguous, stop and report. Only a successful
    `transaction commit` or `transaction retry` is a knowledge commit.
+   After every reported action, reload structured state and compare its error code,
+   status, `recovery.preferred_action`, `allowed_actions`, `requires`, identities,
+   and exposed pre/postimages. Continue only when the next action is currently
+   allowed and the last action made observable progress; never repeat an identical
+   action against unchanged state. Retry automatically when its current requirements
+   hold; restore automatically only with no owner drift, and ask before restore with
+   drift and before work-losing abort or discard.
 7. Only after a successful `transaction commit` or `transaction retry`, run
    `<wiki-cli> hot status --json`. If stale, run
    `<wiki-cli> hot inputs --json --pretty`, write only the requested tracked
    `hot.md` working-tree diff, then run
    `<wiki-cli> hot mark-current --json`. Do not refresh after abort, restore, or
    discard, and must not mark stale inputs current directly.
+8. After a successful transaction write or authorized taxonomy-only edit, run
+   `<wiki-cli> check --json --pretty` as the final check; it must pass before
+   staging. The exact task paths are the selected final knowledge and deletion paths,
+   changed manifest shards for the complete
+   source closure, returned `log_path`, requested changed `hot.md`, and the changed
+   `_meta/taxonomy.md` when applicable. This requested write completes through this
+   canonical transaction and exact-path, path-limited local commit flow. Inspect each
+   path separately; owner-overlapping dirty paths stop for a preserve, separate, or
+   combine choice; leave unrelated paths untouched. Stage only the exact task paths,
+   display the exact staged patch, run the cached diff check, and locally commit them
+   in one cohesive local commit, repeating `<task-path>` as separate argv elements
+   after `--`:
+
+   ```text
+   [<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]
+   [<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]
+   ```
+
+   Ask for confirmation immediately before any push, pull-request publication, or
+   other remote write.
 
 Do not edit manifest shards, `index.md`, or `log.md` directly; transaction commit
-owns the canonical log append. Do not run Git publication commands or write unsupported control paths.
-Do not commit, push, or open a pull request.
+owns the canonical log append. Do not write unsupported control paths.

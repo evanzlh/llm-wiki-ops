@@ -34,11 +34,14 @@ def test_maintenance_uses_cli_transaction_validation_and_commit() -> None:
         assert "<wiki-cli> transaction commit <id>" in text, path
 
 
-def test_maintenance_uses_trusted_recovery_and_leaves_git_to_owner() -> None:
+def test_maintenance_uses_trusted_recovery_and_scoped_local_commits() -> None:
     for path, text in _skill_texts():
-        assert "trusted transaction ID" in text, path
-        assert "recovery.preferred_action" in text, path
-        assert "allowed_actions" in text, path
-        assert "Do not commit, push, or open a pull request" in text, path
-        for forbidden in ("git add", "git commit", "reset --hard", "clean -fd"):
-            assert forbidden not in text, (path, forbidden)
+        flat = " ".join(text.split())
+        assert "trusted transaction ID" in flat, path
+        assert "recovery.preferred_action" in flat, path
+        assert "allowed_actions" in flat, path
+        assert "display the exact staged patch" in flat, path
+        assert "locally commit" in flat, path
+        assert "leave unrelated paths untouched" in flat, path
+        assert "owner-overlapping dirty paths" in flat, path
+        assert "confirmation immediately before any push" in flat, path

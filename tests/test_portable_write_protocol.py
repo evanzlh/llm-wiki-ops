@@ -2063,43 +2063,33 @@ def test_daily_cache_check_command_is_real_and_has_no_removed_option() -> None:
     assert parsed.json is True and parsed.pretty is True
 
 
-def _positive_git_publication_lines(contents: str) -> list[str]:
-    flattened = " ".join(contents.split()).lower()
-    allowed_phrases = (
-        "framework and agent must not run `git add`, `git commit`, or `git push`",
-        "do not run `git add`, `git commit`, or `git push`",
-        "do not commit, push, or open a pull request",
-        "do not run git push",
+@pytest.mark.parametrize("path", MAINTENANCE_SKILLS)
+def test_maintenance_skills_finish_with_scoped_local_commit(path: Path) -> None:
+    contents = path.read_text(encoding="utf-8")
+    flat = " ".join(contents.split())
+    final_check = "<wiki-cli> check --json --pretty"
+    commands = (
+        '[<git-cli>, "--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "add", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "diff", "--cached", "--check", "--", "<task-path>"]',
+        '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<task-path>"]',
     )
-    for phrase in allowed_phrases:
-        flattened = flattened.replace(phrase, "")
-    return [
-        match.group(0)
-        for match in re.finditer(r"\bgit\s+(?:add|commit|push)\b", flattened)
-    ]
 
-
-def test_maintenance_skills_keep_git_publication_scoped_to_source_authority() -> None:
-    for path in MAINTENANCE_SKILLS:
-        contents = path.read_text(encoding="utf-8")
-        if path.parent.name == "wiki-update":
-            flat = " ".join(contents.split())
-            for required in (
-                "stage and locally commit the exact Source path",
-                '[<git-cli>, "--literal-pathspecs", "add", "--", "<Source ID>"]',
-                '[<git-cli>, "--literal-pathspecs", "commit", "-m", "<task summary>", "--", "<Source ID>"]',
-                "Do not push",
-            ):
-                assert required in flat
-        else:
-            assert _positive_git_publication_lines(contents) == [], path
-            assert "Do not commit, push, or open a pull request" in contents
-
-
-def test_git_publication_semantic_guard_rejects_positive_command() -> None:
-    injected = "After validation, git push origin HEAD."
-    assert _positive_git_publication_lines(injected) == ["git push"]
-    assert _positive_git_publication_lines("Do not run git push origin HEAD.") == []
+    parsed = build_parser().parse_args(shlex.split(final_check)[1:])
+    assert parsed.command == "check" and parsed.json is True and parsed.pretty is True
+    for required in (
+        "display the exact staged patch",
+        "leave unrelated paths untouched",
+        "owner-overlapping dirty paths",
+        "path-limited local commit flow",
+        "one cohesive local commit",
+        "confirmation immediately before any push",
+    ):
+        assert required in flat, f"{path}: missing {required!r}"
+    assert all(command in flat for command in commands), path
+    positions = [flat.rindex(final_check), *(flat.rindex(command) for command in commands)]
+    assert positions == sorted(positions), path
 
 
 def test_status_graph_and_audit_commands_use_real_parser() -> None:
