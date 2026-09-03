@@ -5333,6 +5333,12 @@ def _apply_journaled_replacements(
                         backup.parent
                     ],
                 )
+                if _bound_replacement_proof(
+                    root, backup, label="forward moved backup proof"
+                ) != observed_target:
+                    raise OSError(
+                        f"managed {operation.name} target preimage changed: {target}"
+                    )
             elif observed_target is not None:
                 raise OSError(f"managed upgrade target appeared during transaction: {target}")
             if staged is not None:

@@ -2526,6 +2526,58 @@ def test_expected_plan_binds_owner_edits_after_comparison_before_replacement(
     )
 
 
+def test_expected_plan_restores_owner_edit_during_live_mirror_rename(
+    tmp_path: Path,
+    tiny_skills: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    setup_portable_repo(root, version="2026.8.3", source_skills=tiny_skills)
+    _add_custom_canonical_skill(root)
+    expected_plan_token = plan_portable_skill_sync(root).plan_token
+    live_target = root / portable.PROJECT_AGENT_DIRS[0][0]
+    owner_file = live_target / "wiki-query/SKILL.md"
+    owner_bytes = owner_file.read_bytes() + b"\nowner edit during live rename\n"
+    original_rename = portable.os.rename
+    edited = False
+
+    def edit_before_live_rename(
+        source_name: str,
+        target_name: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal edited
+        if source_name == "skills" and target_name == "0" and not edited:
+            owner_file.write_bytes(owner_bytes)
+            edited = True
+        original_rename(
+            source_name,
+            target_name,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(portable.os, "rename", edit_before_live_rename)
+
+    with pytest.raises(OSError, match="preimage changed"):
+        _sync_portable_skill_mirrors(
+            root,
+            apply=True,
+            expected_plan_token=expected_plan_token,
+        )
+
+    assert edited
+    assert owner_file.read_bytes() == owner_bytes
+    assert not (live_target / "team-note").exists()
+    assert not list(
+        (root / portable.SYNC_OPERATION.transactions_relative).glob(
+            "*/journal.json"
+        )
+    )
+
+
 def test_repo_sync_skills_human_output_describes_rebuilt_derived_roots(
     tmp_path: Path,
 ) -> None:
