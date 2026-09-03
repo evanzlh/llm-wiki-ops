@@ -2,8 +2,9 @@
 
 Confidence depends on semantic judgments that source-string heuristics cannot make:
 independent evidence lineages must be collapsed and material claim coverage must be
-reviewed.  This module therefore validates an approved review ledger instead of
-pretending to recompute confidence from URLs.
+reviewed. This module therefore validates an explicit lineage and claim-coverage
+review ledger instead of pretending to recompute confidence from URLs. The current
+reviewing actor attests that every recorded value was actually reviewed.
 """
 
 from __future__ import annotations
@@ -303,7 +304,7 @@ def build_trust_ledger(
     allowed_lifecycles: Collection[str] | None = None,
     required_trust_keys: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Capture explicitly approved confidence values and material fingerprints."""
+    """Capture values and fingerprints after explicit lineage and claim-coverage review."""
     reviewed_at = _validate_reviewed_at(reviewed_at)
     pages: dict[str, dict[str, Any]] = {}
     not_applicable: list[str] = []
@@ -714,7 +715,7 @@ def check_trust_ledger(
     skip_relative_subtrees: Collection[str] = (),
     schema_source: str = "framework-defaults",
 ) -> dict[str, Any]:
-    """Validate current pages against an approved manual review ledger."""
+    """Validate current pages against an explicit lineage and claim-coverage ledger."""
     lifecycles, required = _effective_schema(
         allowed_lifecycles=allowed_lifecycles,
         required_trust_keys=required_trust_keys,

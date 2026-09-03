@@ -3093,7 +3093,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tr = sub.add_parser(
         "trust-record",
-        help="record explicitly approved manual confidence reviews in the vault trust ledger",
+        help="record explicit lineage and claim-coverage reviews in the vault trust ledger",
     )
     selection = tr.add_mutually_exclusive_group(required=True)
     selection.add_argument(
@@ -3106,13 +3106,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="record only this explicitly reviewed page (repeatable)",
     )
     tr.add_argument(
-        "--reviewed-at", required=True, help="ISO timestamp for the approved review"
+        "--reviewed-at", required=True, help="ISO timestamp for the explicit review"
     )
     tr.add_argument(
         "--approved",
         action="store_true",
         required=True,
-        help="confirm a human approved every confidence value being recorded",
+        help=(
+            "confirm the current reviewing actor attests that every recorded value "
+            "was actually reviewed"
+        ),
     )
     tr.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     tr.add_argument("--pretty", action="store_true", help="pretty-print JSON output")

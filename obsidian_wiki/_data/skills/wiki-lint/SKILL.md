@@ -97,6 +97,15 @@ snapshots for the explicitly defined source-relative, provenance, tag-cohesion, 
 semantic-contradiction checks. Do not replace concrete findings with a generic
 health judgement.
 
+## Trust review
+
+An Agent may perform and attest an explicitly requested substantive lineage and
+claim-coverage review with `<wiki-cli> trust-record ... --approved`. The flag records
+the current reviewing actor's attestation that every recorded value was actually
+reviewed; it does not require a separate human approval. Inspect the required
+evidence before recording values. Insufficient or conflicting evidence remains a
+finding or user question, never a fabricated approval.
+
 Resolve schema precedence as: CLI flags > resolved environment/config values >
 framework defaults. Empty or whitespace-only values fail closed. Honor
 `OBSIDIAN_ALLOWED_LIFECYCLES`, `OBSIDIAN_ALLOWED_RELATIONSHIP_TYPES`,

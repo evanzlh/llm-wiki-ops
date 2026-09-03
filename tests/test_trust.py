@@ -1347,7 +1347,7 @@ def test_required_trust_ledger_fails_closed_when_missing(tmp_path: Path) -> None
     assert strict_report["status"] == "fail"
 
 
-def test_trust_record_cli_requires_explicit_approval(tmp_path: Path) -> None:
+def test_trust_record_cli_requires_explicit_reviewer_attestation(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = tmp_path / "vault"
     _page(vault, "concepts/alpha.md")
@@ -1366,6 +1366,13 @@ def test_trust_record_cli_requires_explicit_approval(tmp_path: Path) -> None:
     assert proc.returncode == 2
     assert "--approved" in proc.stderr
     assert not (vault / "_meta" / "trust-ledger.json").exists()
+
+    help_proc = _run_cli(home, "trust-record", "--help", cwd=nested)
+
+    assert help_proc.returncode == 0
+    help_text = " ".join(help_proc.stdout.split())
+    assert "current reviewing actor attests that every recorded value was actually reviewed" in help_text
+    assert "human" not in help_proc.stdout.lower()
 
 
 def test_trust_record_and_check_cli_round_trip(tmp_path: Path) -> None:
